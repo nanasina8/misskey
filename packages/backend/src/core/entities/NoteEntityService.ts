@@ -358,7 +358,7 @@ export class NoteEntityService implements OnModuleInit {
 			url: note.url ?? undefined,
 			poll: note.hasPoll ? this.populatePoll(note, meId) : undefined,
 			deleteAt: note.deleteAt?.toISOString() ?? undefined,
-
+			isNoteInHanaMode: note.isNoteInHanaMode,
 
 			...(opts.detail ? {
 				clippedCount: note.clippedCount,

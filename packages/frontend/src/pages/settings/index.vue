@@ -184,6 +184,14 @@ const menuDef = computed<ISuperMenuDefinitions>(() => [{
 		active: currentPage.value?.route.name === 'security',
 	}],
 }, {
+	title: i18n.ts._hana.hanaSettings,
+	items: [{
+		icon: 'ti ti-hanamisskey-hanamode',
+		text: i18n.ts._hana.hanaMode,
+		to: '/settings/hanamode',
+		active: currentPage.value?.route.name === 'hanamode',
+	}],
+}, {
 	title: i18n.ts.clientSettings,
 	items: [{
 		icon: 'ti ti-adjustments',

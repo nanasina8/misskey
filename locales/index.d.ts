@@ -309,6 +309,22 @@ export interface Locale extends ILocale {
      */
     readonly "import": string;
     /**
+     * インポート元
+     */
+    "importOrigin": string;
+    /**
+     * 他サービスでエクスポートしたノートなどをインポートすることができます。
+     */
+    "importNoteInfo": string;
+    /**
+     * すべてのノートがインポートできるわけではありません。改変のないMisskey以外では全くインポートできない場合もあります。
+     */
+    "importNoteDisclaimer": string;
+    /**
+     * インポートされたノートは、ユーザーページ以外には表示されない場合があります。
+     */
+    "importNoteWarm": string;
+    /**
      * エクスポート
      */
     readonly "export": string;
@@ -5501,6 +5517,10 @@ export interface Locale extends ILocale {
     };
     readonly "_timelineDescription": {
         /**
+         * はなみタイムラインでは、フォローしているアカウントの投稿に加えて、連合しているサーバーの人気な投稿も見られます。
+         */
+        "hanami": string;
+        /**
          * ホームタイムラインでは、あなたがフォローしているアカウントの投稿を見られます。
          */
         readonly "home": string;
@@ -6047,7 +6067,17 @@ export interface Locale extends ILocale {
                  */
                 readonly "flavor": string;
             };
-            readonly "_following1": {
+            "_markedAsHanaModeUser": {
+                /**
+                 * 菫ほどな小さき人に生まれたし
+                 */
+                "title": string;
+                /**
+                 * はなモードを有効にした
+                 */
+                "description": string;
+            };
+            "_following1": {
                 /**
                  * はじめてのフォロー
                  */
@@ -6648,6 +6678,10 @@ export interface Locale extends ILocale {
              */
             readonly "ltlAvailable": string;
             /**
+             * はなみタイムラインの閲覧
+             */
+            "hanamiTlAvailable": string;
+            /**
              * パブリック投稿の許可
              */
             readonly "canPublicNote": string;
@@ -6655,6 +6689,10 @@ export interface Locale extends ILocale {
              * ノート内の最大メンション数
              */
             readonly "mentionMax": string;
+            /**
+             * ノートのインポート
+             */
+            "canImportNotes": string;
             /**
              * サーバー招待コードの発行
              */
@@ -6769,6 +6807,10 @@ export interface Locale extends ILocale {
              * botユーザー
              */
             readonly "isBot": string;
+            /**
+             * はなモードが有効なユーザー
+             */
+            "isInHanaMode": string;
             /**
              * サスペンド済みユーザー
              */
@@ -8787,6 +8829,10 @@ export interface Locale extends ILocale {
          */
         readonly "home": string;
         /**
+         * はなみ
+         */
+        "hanami": string;
+        /**
          * ローカル
          */
         readonly "local": string;
@@ -10194,6 +10240,7 @@ export interface Locale extends ILocale {
          */
         readonly "native": string;
     };
+<<<<<<< HEAD
     readonly "_tms": {
         /**
          * taiy
@@ -10312,6 +10359,22 @@ export interface Locale extends ILocale {
          */
         readonly "memoIsNotShared": string;
         readonly "_about": {
+=======
+    "_hana": {
+        /**
+         * はなみすきー設定
+         */
+        "hanaSettings": string;
+        /**
+         * はなモード
+         */
+        "hanaMode": string;
+        /**
+         * はな
+         */
+        "hanaModeShort": string;
+        "_inDevelopment": {
+>>>>>>> 15448033b2 (Feat:はなモード / ノートインポート (#23))
             /**
              * taiymeについて
              */
@@ -10488,6 +10551,48 @@ export interface Locale extends ILocale {
              * ソースコードが公開されているリポジトリがある場合、そのURLを記入します。taiymeを現状のまま（ソースコードにいかなる変更も加えずに）使用している場合は https://github.com/taiyme/misskey と記入します。
              */
             readonly "repositoryUrlDescription": string;
+        };
+        "_hanaModeSwitcher": {
+            /**
+             * こんな方におすすめ
+             */
+            "recomenddedFor": string;
+            /**
+             * 通常
+             */
+            "normal": string;
+            /**
+             * LTLが使えます
+             */
+            "normal1": string;
+            /**
+             * 公開範囲「パブリック」で投稿した内容はLTLに表示されます
+             */
+            "normal2": string;
+            /**
+             * サーバー内のユーザーとの交流を重視したい方
+             */
+            "normalRecommend": string;
+            /**
+             * LTLが使えません
+             */
+            "hana1": string;
+            /**
+             * 公開範囲「パブリック」で投稿した内容はLTLに表示されません
+             */
+            "hana2": string;
+            /**
+             * フォロー中ユーザーの最新のノートとFediverseの人気の投稿をザッピングできる「はなみタイムライン」が使用できます
+             */
+            "hana3": string;
+            /**
+             * おひとりさまサーバーのような分散SNS体験をしたい方（内々での交流だけでなく、外部サーバーとの交流もしっかり重視したい方）
+             */
+            "hanaRecommend": string;
+            /**
+             * 一定期間にモードを変更できる回数には制限があります。
+             */
+            "saveConfirmDescription": string;
         };
     };
 }

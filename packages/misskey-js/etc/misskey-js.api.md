@@ -1524,6 +1524,7 @@ declare namespace entities {
         IGalleryPostsResponse,
         IImportBlockingRequest,
         IImportFollowingRequest,
+        IImportNotesRequest,
         IImportMutingRequest,
         IImportUserListsRequest,
         IImportAntennasRequest,
@@ -1613,6 +1614,8 @@ declare namespace entities {
         NotesHybridTimelineResponse,
         NotesLocalTimelineRequest,
         NotesLocalTimelineResponse,
+        NotesHanamiTimelineRequest,
+        NotesHanamiTimelineResponse,
         NotesMentionsRequest,
         NotesMentionsResponse,
         NotesPollsRecommendationRequest,
@@ -2165,6 +2168,9 @@ type IImportFollowingRequest = operations['i___import-following']['requestBody']
 type IImportMutingRequest = operations['i___import-muting']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
+type IImportNotesRequest = operations['i___import-notes']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
 type IImportUserListsRequest = operations['i___import-user-lists']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -2564,6 +2570,12 @@ type NotesGlobalTimelineRequest = operations['notes___global-timeline']['request
 
 // @public (undocumented)
 type NotesGlobalTimelineResponse = operations['notes___global-timeline']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTimelineRequest = operations['notes___hanami-timeline']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTimelineResponse = operations['notes___hanami-timeline']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type NotesHybridTimelineRequest = operations['notes___hybrid-timeline']['requestBody']['content']['application/json'];

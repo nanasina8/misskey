@@ -4,36 +4,56 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<MkStickyContainer>
-	<template #header><MkPageHeader :actions="headerActions" :tabs="headerTabs"/></template>
-	<MkSpacer :contentMax="900">
-		<div class="_gaps_m">
-			<FormSection first>
-				<template #label><i class="ti ti-pencil"></i> {{ i18n.ts._exportOrImport.allNotes }}</template>
-				<MkFolder>
-					<template #label>{{ i18n.ts.export }}</template>
-					<template #icon><i class="ti ti-download"></i></template>
-					<MkButton primary :class="$style.button" inline @click="exportNotes()"><i class="ti ti-download"></i> {{ i18n.ts.export }}</MkButton>
-				</MkFolder>
-			</FormSection>
-			<FormSection>
-				<template #label><i class="ti ti-star"></i> {{ i18n.ts._exportOrImport.favoritedNotes }}</template>
-				<MkFolder>
-					<template #label>{{ i18n.ts.export }}</template>
-					<template #icon><i class="ti ti-download"></i></template>
-					<MkButton primary :class="$style.button" inline @click="exportFavorites()"><i class="ti ti-download"></i> {{ i18n.ts.export }}</MkButton>
-				</MkFolder>
-			</FormSection>
-			<FormSection>
-				<template #label><i class="ti ti-star"></i> {{ i18n.ts._exportOrImport.clips }}</template>
-				<MkFolder>
-					<template #label>{{ i18n.ts.export }}</template>
-					<template #icon><i class="ti ti-download"></i></template>
-					<MkButton primary :class="$style.button" inline @click="exportClips()"><i class="ti ti-download"></i> {{ i18n.ts.export }}</MkButton>
-				</MkFolder>
-			</FormSection>
-			<FormSection>
-				<template #label><i class="ti ti-users"></i> {{ i18n.ts._exportOrImport.followingList }}</template>
+<div class="_gaps_m">
+	<FormSection first>
+		<template #label><i class="ti ti-pencil"></i> {{ i18n.ts._exportOrImport.allNotes }}</template>
+		<div class="_gaps_s">
+			<MkFolder>
+				<template #label>{{ i18n.ts.export }}</template>
+				<template #icon><i class="ti ti-download"></i></template>
+				<MkButton primary :class="$style.button" inline @click="exportNotes()"><i class="ti ti-download"></i> {{ i18n.ts.export }}</MkButton>
+			</MkFolder>
+			<MkFolder v-if="$i && $i.policies.canImportNotes">
+				<template #label>{{ i18n.ts.import }}</template>
+				<template #icon><i class="ti ti-upload"></i></template>
+				<FormInfo info style="margin-bottom: 1.5em;">{{ i18n.ts.importNoteInfo }}</FormInfo>
+				<MkRadios v-model="noteType" style="padding-bottom: 8px;" small>
+					<template #label>{{ i18n.ts.importOrigin }}</template>
+					<option value="Misskey">Misskey</option>
+					<option value="Mastodon">Mastodon</option>
+					<option value="Twitter">Twitter</option>
+				</MkRadios>
+				<MkButton primary :class="$style.button" inline @click="importNotes($event)"><i class="ti ti-upload"></i> {{ i18n.ts.import }}</MkButton>
+				<div class="_gaps_s">
+					<FormInfo info style="margin-top: 1.5em;">{{ i18n.ts.importNoteDisclaimer }}</FormInfo>
+					<FormInfo warn>{{ i18n.ts.importNoteWarm }}</FormInfo>
+				</div>
+			</MkFolder>
+		</div>
+	</FormSection>
+	<FormSection>
+		<template #label><i class="ti ti-star"></i> {{ i18n.ts._exportOrImport.favoritedNotes }}</template>
+		<MkFolder>
+			<template #label>{{ i18n.ts.export }}</template>
+			<template #icon><i class="ti ti-download"></i></template>
+			<MkButton primary :class="$style.button" inline @click="exportFavorites()"><i class="ti ti-download"></i> {{ i18n.ts.export }}</MkButton>
+		</MkFolder>
+	</FormSection>
+	<FormSection>
+		<template #label><i class="ti ti-star"></i> {{ i18n.ts._exportOrImport.clips }}</template>
+		<MkFolder>
+			<template #label>{{ i18n.ts.export }}</template>
+			<template #icon><i class="ti ti-download"></i></template>
+			<MkButton primary :class="$style.button" inline @click="exportClips()"><i class="ti ti-download"></i> {{ i18n.ts.export }}</MkButton>
+		</MkFolder>
+	</FormSection>
+	<FormSection>
+		<template #label><i class="ti ti-users"></i> {{ i18n.ts._exportOrImport.followingList }}</template>
+		<div class="_gaps_s">
+			<MkFolder>
+				<template #label>{{ i18n.ts.export }}</template>
+				<template #icon><i class="ti ti-download"></i></template>
+>>>>>>> 15448033b2 (Feat:はなモード / ノートインポート (#23))
 				<div class="_gaps_s">
 					<MkFolder>
 						<template #label>{{ i18n.ts.export }}</template>
@@ -129,6 +149,8 @@ import MkButton from '@/components/MkButton.vue';
 import FormSection from '@/components/form/section.vue';
 import MkFolder from '@/components/MkFolder.vue';
 import MkSwitch from '@/components/MkSwitch.vue';
+import MkRadios from '@/components/MkRadios.vue';
+import FormInfo from '@/components/MkInfo.vue';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/scripts/misskey-api.js';
 import { selectFile } from '@/scripts/select-file.js';
@@ -139,6 +161,7 @@ import { defaultStore } from '@/store.js';
 
 const excludeMutingUsers = ref(false);
 const excludeInactiveUsers = ref(false);
+const noteType = ref(null);
 const withReplies = ref(defaultStore.state.defaultWithReplies);
 
 const onExportSuccess = () => {
@@ -203,6 +226,14 @@ const importFollowing = async (ev) => {
 	misskeyApi('i/import-following', {
 		fileId: file.id,
 		withReplies: withReplies.value,
+	}).then(onImportSuccess).catch(onError);
+};
+
+const importNotes = async (ev) => {
+	const file = await selectFile(ev.currentTarget ?? ev.target);
+	misskeyApi('i/import-notes', {
+		fileId: file.id,
+		type: noteType.value,
 	}).then(onImportSuccess).catch(onError);
 };
 
