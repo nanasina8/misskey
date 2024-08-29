@@ -10230,7 +10230,19 @@ export interface Locale extends ILocale {
         /**
          * 石をアイコンにする
          */
-        readonly "useAvatarAsStone": string;
+        "useAvatarAsStone": string;
+        /**
+         * リモートサーバーのバージョンが不明です
+         */
+        "remoteVersionUnknown": string;
+        /**
+         * 対応していない可能性があります
+         */
+        "remoteVersionUnknownCaption": string;
+        /**
+         * リモートサーバーのバージョンが非互換です
+         */
+        "remoteVersionBad": string;
     };
     readonly "_offlineScreen": {
         /**
