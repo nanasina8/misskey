@@ -10083,7 +10083,20 @@ export interface Locale extends ILocale {
         /**
          * 石をアイコンにする
          */
-        readonly "useAvatarAsStone": string;
+        "useAvatarAsStone": string;
+        /**
+         * リモートサーバーのバージョンが不明です
+         */
+        "remoteVersionUnknown": string;
+        /**
+         * 対応していない可能性があります
+         */
+        "remoteVersionUnknownCaption": string;
+        /**
+         * リモートサーバーのバージョンが非互換です
+         */
+        "remoteVersionBad": string;
+>>>>>>> b6c6d136b2 (サーバー情報にリバーシのバージョンを表示する (#384))
     };
     readonly "_offlineScreen": {
         /**
