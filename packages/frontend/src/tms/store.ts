@@ -12,11 +12,11 @@ import { Storage } from '@/pizzax.js';
 export const tmsStore = markRaw(new Storage('tmsMain', {
 	tickerPosition: {
 		where: 'account',
-		default: 'default' as 'default' | 'leftVerticalBar' | 'rightVerticalBar' | 'leftWatermark' | 'rightWatermark',
+		default: 'default' as import('@/components/TmsInstanceTicker.impl.js').TickerPosition,
 	},
 	superMenuDisplayMode: {
 		where: 'deviceAccount',
-		default: 'default' as 'default' | 'classic' | 'forceList',
+		default: 'default' as import('@/components/TmsSuperMenu.impl.js').SuperMenuDisplayMode,
 	},
 	pullToRefreshSensitivity: {
 		where: 'device',

@@ -49,7 +49,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 				</div>
 				<div :class="$style.downloadText">{{ mediaRef.name }}</div>
 			</a>
-			<button :class="['_button', $style.downloadMenu]" @click.stop="showMediaMenu">
+			<button
+				:class="['_button', $style.downloadMenu]"
+				tabindex="-1"
+				@click.stop="() => {}"
+				@mousedown.prevent.stop="showMediaMenu"
+			>
 				<i class="ti ti-settings"></i>
 			</button>
 		</div>
@@ -61,10 +66,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { inject } from 'vue';
 import type * as Misskey from 'misskey-js';
 import { i18n } from '@/i18n.js';
-import { popupMenu } from '@/os.js';
-import bytes from '@/filters/bytes.js';
+import { confirm, popupMenu } from '@/os.js';
+import { defaultStore } from '@/store.js';
 import { getMediaMenu } from '@/scripts/tms/get-media-menu.js';
 import { useReactiveDriveFile } from '@/scripts/tms/use-reactive-drive-file.js';
+import bytes from '@/filters/bytes.js';
 
 const props = defineProps<{
 	media: Misskey.entities.DriveFile;
@@ -79,8 +85,15 @@ const {
 	reactiveIAmOwner: iAmOwnerRef,
 } = useReactiveDriveFile(() => props.media);
 
-const showMedia = () => {
+const showMedia = async () => {
 	if (!hideRef.value) return;
+	if (sensitiveRef.value && defaultStore.state.confirmWhenRevealingSensitiveMedia) {
+		const { canceled } = await confirm({
+			type: 'question',
+			text: i18n.ts.sensitiveMediaRevealConfirm,
+		});
+		if (canceled) return;
+	}
 	hideRef.value = false;
 };
 
@@ -112,7 +125,7 @@ const showMediaMenu = (ev: MouseEvent) => {
 	border: 0.5px solid var(--divider);
 	border-radius: var(--mediaList-radius, 8px);
 
-	&:focus {
+	&:focus-visible {
 		outline: none;
 	}
 }
@@ -214,6 +227,10 @@ const showMediaMenu = (ev: MouseEvent) => {
 	&:hover {
 		color: var(--accent);
 		background-color: var(--accentedBg);
+	}
+
+	&:focus-visible {
+		outline: none;
 	}
 }
 

@@ -12,6 +12,7 @@ import * as os from '@/os.js';
 import { defaultStore } from '@/store.js';
 import { MisskeyEntity } from '@/types/date-separated-list.js';
 
+// eslint-disable-next-line import/no-default-export
 export default defineComponent({
 	props: {
 		items: {
@@ -130,7 +131,7 @@ export default defineComponent({
 			el.style.left = '';
 		}
 
-		// eslint-disable-next-line vue/no-setup-props-destructure
+		// eslint-disable-next-line vue/no-setup-props-reactivity-loss
 		const classes = {
 			[$style['date-separated-list']]: true,
 			[$style['date-separated-list-nogap']]: props.noGap,
@@ -201,6 +202,7 @@ export default defineComponent({
 	}
 	}
 }
+
 .direction-down {
 	&:global {
 	> .list-enter-from,
@@ -247,4 +249,3 @@ export default defineComponent({
 	margin-left: 8px;
 }
 </style>
-

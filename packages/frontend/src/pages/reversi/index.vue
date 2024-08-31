@@ -250,7 +250,7 @@ onMounted(() => {
 		invitations.value = _invitations;
 	});
 
-	window.addEventListener('beforeunload', cancelMatching);
+	window.addEventListener('beforeunload', cancelMatching, { passive: true });
 });
 
 onDeactivated(() => {
@@ -285,7 +285,7 @@ definePageMetadata(() => ({
 .gamePreviews {
 	display: grid;
 	grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-	grid-gap: var(--margin);
+	gap: var(--margin);
 }
 
 .gamePreview {

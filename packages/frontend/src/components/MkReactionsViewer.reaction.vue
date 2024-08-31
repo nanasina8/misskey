@@ -73,22 +73,73 @@ SPDX-License-Identifier: AGPL-3.0-only
 								 return;
 				 }
 
+<<<<<<< HEAD
 		const oldReaction = props.note.myReaction;
 		if (oldReaction) {
 			const confirm = await os.confirm({
 				type: 'warning',
 				text: oldReaction !== props.reaction ? i18n.ts.changeReactionConfirm : i18n.ts.cancelReactionConfirm,
+=======
+		if (mock) {
+			emit('reactionToggled', props.reaction, (props.count - 1));
+			return;
+		}
+
+		misskeyApi('notes/reactions/delete', {
+			noteId: props.note.id,
+		}).then(() => {
+			if (oldReaction !== props.reaction) {
+				misskeyApi('notes/reactions/create', {
+					noteId: props.note.id,
+					reaction: props.reaction,
+				});
+			}
+		});
+	} else {
+		sound.playMisskeySfx('reaction');
+
+		if (mock) {
+			emit('reactionToggled', props.reaction, (props.count + 1));
+			return;
+		}
+
+		misskeyApi('notes/reactions/create', {
+			noteId: props.note.id,
+			reaction: props.reaction,
+		});
+		if (props.note.text && props.note.text.length > 100 && (Date.now() - new Date(props.note.createdAt).getTime() < 1000 * 3)) {
+			claimAchievement('reactWithoutRead');
+		}
+	}
+}
+
+async function menu(ev) {
+	if (!canGetInfo.value) return;
+
+	os.popupMenu([{
+		text: i18n.ts.info,
+		icon: 'ti ti-info-circle',
+		action: async () => {
+			const { dispose } = os.popup(MkCustomEmojiDetailedDialog, {
+				emoji: await misskeyApiGet('emoji', {
+					name: props.reaction.replace(/:/g, '').replace(/@\./, ''),
+				}),
+			}, {
+				closed: () => dispose(),
+
 			});
 			if (confirm.canceled) return;
 
 			if (oldReaction !== props.reaction) {
 				sound.playMisskeySfx('reaction');
 			}
-
-			if (mock) {
-				emit('reactionToggled', props.reaction, (props.count - 1));
-				return;
-			}
+	const rect = buttonEl.value.getBoundingClientRect();
+	const x = rect.left + 16;
+	const y = rect.top + (buttonEl.value.offsetHeight / 2);
+	const { dispose } = os.popup(MkReactionEffect, { reaction: props.reaction, x, y }, {
+		end: () => dispose(),
+	});
+}
 
 			misskeyApi('notes/reactions/delete', {
 				noteId: props.note.id,
@@ -108,13 +159,47 @@ SPDX-License-Identifier: AGPL-3.0-only
 				return;
 			}
 
-			misskeyApi('notes/reactions/create', {
-				noteId: props.note.id,
-				reaction: props.reaction,
-			});
-			if (props.note.text && props.note.text.length > 100 && (Date.now() - new Date(props.note.createdAt).getTime() < 1000 * 3)) {
-				claimAchievement('reactWithoutRead');
-			}
+
+if (!mock) {
+	useTooltip(buttonEl, async (showing) => {
+		const reactions = await misskeyApiGet('notes/reactions', {
+			noteId: props.note.id,
+			type: props.reaction,
+			limit: 10,
+			_cacheKey_: props.count,
+		});
+
+		const users = reactions.map(x => x.user);
+
+		const { dispose } = os.popup(XDetails, {
+			showing,
+			reaction: props.reaction,
+			users,
+			count: props.count,
+			targetElement: buttonEl.value,
+		}, {
+			closed: () => dispose(),
+		});
+	}, 100);
+}
+</script>
+
+<style lang="scss" module>
+.root {
+	display: inline-flex;
+	height: 42px;
+	margin: 2px;
+	padding: 0 6px;
+	font-size: 1.5em;
+	border-radius: 6px;
+	align-items: center;
+	justify-content: center;
+
+	&.canToggle {
+		background: var(--buttonBg);
+
+		&:hover {
+			background: rgba(0, 0, 0, 0.1);
 		}
 	}
 

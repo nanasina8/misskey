@@ -58,6 +58,7 @@ import { miLocalStorage } from '@/local-storage.js';
 import { customEmojis } from '@/custom-emojis.js';
 import { MFM_TAGS, MFM_PARAMS } from '@/const.js';
 import { searchEmoji, EmojiDef } from '@/scripts/search-emoji.js';
+import { filterKeyboardNonComposing } from '@/scripts/tms/filter-keyboard.js';
 
 const lib = emojilist.filter(x => x.category !== 'flags');
 
@@ -115,6 +116,7 @@ const emojiDb = computed(() => {
 	return markRaw([...customEmojiDB, ...unicodeEmojiDB]);
 });
 
+// eslint-disable-next-line import/no-default-export
 export default {
 	emojiDb,
 	emojilist,
@@ -260,7 +262,7 @@ function onMousedown(event: Event) {
 	if (!contains(rootEl.value, event.target) && (rootEl.value !== event.target)) props.close();
 }
 
-function onKeydown(event: KeyboardEvent) {
+const onKeydown = filterKeyboardNonComposing(event => {
 	const cancel = () => {
 		event.preventDefault();
 		event.stopPropagation();
@@ -313,7 +315,7 @@ function onKeydown(event: KeyboardEvent) {
 			event.stopPropagation();
 			props.textarea.focus();
 	}
-}
+});
 
 function selectNext() {
 	if (++select.value >= items.value.length) select.value = 0;
@@ -353,9 +355,9 @@ onUpdated(() => {
 onMounted(() => {
 	setPosition();
 
-	props.textarea.addEventListener('keydown', onKeydown);
+	props.textarea.addEventListener('keydown', onKeydown, { passive: false });
 
-	document.body.addEventListener('mousedown', onMousedown);
+	document.body.addEventListener('mousedown', onMousedown, { passive: true });
 
 	nextTick(() => {
 		exec();

@@ -61,19 +61,32 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<source :src="audioRef.url">
 			</audio>
 			<div :class="[$style.controlsChild, $style.controlsLeft]">
-				<button class="_button" :class="$style.controlButton" @click.stop="togglePlayPause">
+				<button
+					:class="['_button', $style.controlButton]"
+					tabindex="-1"
+					@click.stop="togglePlayPause"
+				>
 					<i v-if="isPlaying" class="ti ti-player-pause-filled"></i>
 					<i v-else class="ti ti-player-play-filled"></i>
 				</button>
 			</div>
 			<div :class="[$style.controlsChild, $style.controlsRight]">
-				<button class="_button" :class="$style.controlButton" @click.stop="showAudioMenu">
+				<button
+					:class="['_button', $style.controlButton]"
+					tabindex="-1"
+					@click.stop="() => {}"
+					@mousedown.prevent.stop="showAudioMenu"
+				>
 					<i class="ti ti-settings"></i>
 				</button>
 			</div>
 			<div :class="[$style.controlsChild, $style.controlsTime]">{{ hms(elapsedTimeMs) }}</div>
 			<div :class="[$style.controlsChild, $style.controlsVolume]">
-				<button class="_button" :class="$style.controlButton" @click.stop="toggleMute">
+				<button
+					:class="['_button', $style.controlButton]"
+					tabindex="-1"
+					@click.stop="toggleMute"
+				>
 					<i v-if="volume === 0" class="ti ti-volume-3"></i>
 					<i v-else class="ti ti-volume"></i>
 				</button>
@@ -95,14 +108,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 <script lang="ts" setup>
 import { computed, inject, onActivated, onDeactivated, onMounted, ref, shallowRef, watch } from 'vue';
 import type * as Misskey from 'misskey-js';
+import type { MenuItem } from '@/types/menu.js';
 import { i18n } from '@/i18n.js';
-import { popupMenu } from '@/os.js';
+import { confirm, popupMenu } from '@/os.js';
 import { defaultStore } from '@/store.js';
+import { type Keymap } from '@/scripts/hotkey.js';
 import { getMediaMenu } from '@/scripts/tms/get-media-menu.js';
 import { useReactiveDriveFile } from '@/scripts/tms/use-reactive-drive-file.js';
 import bytes from '@/filters/bytes.js';
 import { hms } from '@/filters/hms.js';
-import type { MenuItem } from '@/types/menu.js';
 import MkMediaRange from '@/components/MkMediaRange.vue';
 
 const props = defineProps<{
@@ -118,8 +132,15 @@ const {
 	reactiveIAmOwner: iAmOwnerRef,
 } = useReactiveDriveFile(() => props.audio);
 
-const showAudio = () => {
+const showAudio = async () => {
 	if (!hideRef.value) return;
+	if (sensitiveRef.value && defaultStore.state.confirmWhenRevealingSensitiveMedia) {
+		const { canceled } = await confirm({
+			type: 'question',
+			text: i18n.ts.sensitiveMediaRevealConfirm,
+		});
+		if (canceled) return;
+	}
 	hideRef.value = false;
 };
 
@@ -171,32 +192,44 @@ const showAudioMenu = (ev: MouseEvent) => {
 };
 
 const keymap = {
-	'up': () => {
-		if (hasFocus() && audioEl.value) {
-			volume.value = Math.min(volume.value + 0.1, 1);
-		}
+	'up': {
+		allowRepeat: true,
+		callback: () => {
+			if (hasFocus() && audioEl.value) {
+				volume.value = Math.min(volume.value + 0.1, 1);
+			}
+		},
 	},
-	'down': () => {
-		if (hasFocus() && audioEl.value) {
-			volume.value = Math.max(volume.value - 0.1, 0);
-		}
+	'down': {
+		allowRepeat: true,
+		callback: () => {
+			if (hasFocus() && audioEl.value) {
+				volume.value = Math.max(volume.value - 0.1, 0);
+			}
+		},
 	},
-	'left': () => {
-		if (hasFocus() && audioEl.value) {
-			audioEl.value.currentTime = Math.max(audioEl.value.currentTime - 5, 0);
-		}
+	'left': {
+		allowRepeat: true,
+		callback: () => {
+			if (hasFocus() && audioEl.value) {
+				audioEl.value.currentTime = Math.max(audioEl.value.currentTime - 5, 0);
+			}
+		},
 	},
-	'right': () => {
-		if (hasFocus() && audioEl.value) {
-			audioEl.value.currentTime = Math.min(audioEl.value.currentTime + 5, audioEl.value.duration);
-		}
+	'right': {
+		allowRepeat: true,
+		callback: () => {
+			if (hasFocus() && audioEl.value) {
+				audioEl.value.currentTime = Math.min(audioEl.value.currentTime + 5, audioEl.value.duration);
+			}
+		},
 	},
 	'space': () => {
 		if (hasFocus()) {
 			togglePlayPause();
 		}
 	},
-};
+} as const satisfies Keymap;
 
 // PlayerElもしくはその子要素にフォーカスがあるかどうか
 function hasFocus() {
@@ -287,25 +320,25 @@ function init() {
 
 			audioEl.value.addEventListener('play', () => {
 				isActuallyPlaying.value = true;
-			});
+			}, { passive: true });
 
 			audioEl.value.addEventListener('pause', () => {
 				isActuallyPlaying.value = false;
 				isPlaying.value = false;
-			});
+			}, { passive: true });
 
 			audioEl.value.addEventListener('ended', () => {
 				oncePlayed.value = false;
 				isActuallyPlaying.value = false;
 				isPlaying.value = false;
-			});
+			}, { passive: true });
 
 			durationMs.value = audioEl.value.duration * 1000;
 			audioEl.value.addEventListener('durationchange', () => {
 				if (audioEl.value) {
 					durationMs.value = audioEl.value.duration * 1000;
 				}
-			});
+			}, { passive: true });
 
 			audioEl.value.volume = volume.value;
 		}
@@ -366,7 +399,7 @@ onDeactivated(() => {
 	border: 0.5px solid var(--divider);
 	border-radius: var(--mediaList-radius, 8px);
 
-	&:focus {
+	&:focus-visible {
 		outline: none;
 	}
 }
@@ -444,6 +477,10 @@ onDeactivated(() => {
 		&:hover {
 			color: var(--accent);
 			background-color: var(--accentedBg);
+		}
+
+		&:focus-visible {
+			outline: none;
 		}
 	}
 }

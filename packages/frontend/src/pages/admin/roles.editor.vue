@@ -32,7 +32,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 	<MkSelect v-model="rolePermission" :readonly="readonly">
 		<template #label><i class="ti ti-shield-lock"></i> {{ i18n.ts._role.permission }}</template>
-		<template #caption><div v-html="i18n.ts._role.descriptionOfPermission.replaceAll('\n', '<br>')"></div></template>
+		<template #caption>
+			<!-- eslint-disable-next-line vue/no-v-html -->
+			<div v-html="i18n.ts._role.descriptionOfPermission.replaceAll('\n', '<br>')"></div>
+		</template>
 		<option value="normal">{{ i18n.ts.normalUser }}</option>
 		<option value="moderator">{{ i18n.ts.moderator }}</option>
 		<option value="administrator">{{ i18n.ts.administrator }}</option>
@@ -40,7 +43,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 	<MkSelect v-model="role.target" :readonly="readonly">
 		<template #label><i class="ti ti-users"></i> {{ i18n.ts._role.assignTarget }}</template>
-		<template #caption><div v-html="i18n.ts._role.descriptionOfAssignTarget.replaceAll('\n', '<br>')"></div></template>
+		<template #caption>
+			<!-- eslint-disable-next-line vue/no-v-html -->
+			<div v-html="i18n.ts._role.descriptionOfAssignTarget.replaceAll('\n', '<br>')"></div>
+		</template>
 		<option value="manual">{{ i18n.ts._role.manual }}</option>
 		<option value="conditional">{{ i18n.ts._role.conditional }}</option>
 	</MkSelect>
@@ -373,6 +379,26 @@ SPDX-License-Identifier: AGPL-3.0-only
 						<template #label>{{ i18n.ts.enable }}</template>
 					</MkSwitch>
 					<MkRange v-model="role.policies.alwaysMarkNsfw.priority" :min="0" :max="2" :step="1" easing :textConverter="(v) => v === 0 ? i18n.ts._role._priority.low : v === 1 ? i18n.ts._role._priority.middle : v === 2 ? i18n.ts._role._priority.high : ''">
+						<template #label>{{ i18n.ts._role.priority }}</template>
+					</MkRange>
+				</div>
+			</MkFolder>
+
+			<MkFolder v-if="matchQuery([i18n.ts._role._options.canUpdateBioMedia, 'canUpdateBioMedia'])">
+				<template #label>{{ i18n.ts._role._options.canUpdateBioMedia }}</template>
+				<template #suffix>
+					<span v-if="role.policies.canUpdateBioMedia.useDefault" :class="$style.useDefaultLabel">{{ i18n.ts._role.useBaseValue }}</span>
+					<span v-else>{{ role.policies.canUpdateBioMedia.value ? i18n.ts.yes : i18n.ts.no }}</span>
+					<span :class="$style.priorityIndicator"><i :class="getPriorityIcon(role.policies.canUpdateBioMedia)"></i></span>
+				</template>
+				<div class="_gaps">
+					<MkSwitch v-model="role.policies.canUpdateBioMedia.useDefault" :readonly="readonly">
+						<template #label>{{ i18n.ts._role.useBaseValue }}</template>
+					</MkSwitch>
+					<MkSwitch v-model="role.policies.canUpdateBioMedia.value" :disabled="role.policies.canUpdateBioMedia.useDefault" :readonly="readonly">
+						<template #label>{{ i18n.ts.enable }}</template>
+					</MkSwitch>
+					<MkRange v-model="role.policies.canUpdateBioMedia.priority" :min="0" :max="2" :step="1" easing :textConverter="(v) => v === 0 ? i18n.ts._role._priority.low : v === 1 ? i18n.ts._role._priority.middle : v === 2 ? i18n.ts._role._priority.high : ''">
 						<template #label>{{ i18n.ts._role.priority }}</template>
 					</MkRange>
 				</div>

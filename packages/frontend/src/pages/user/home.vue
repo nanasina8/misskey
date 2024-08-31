@@ -17,7 +17,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 				<div :key="user.id" class="main _panel">
 					<div class="banner-container">
-						<div ref="bannerEl" class="banner" :style="{ backgroundImage: props.user.bannerUrl ? `url(${ props.user.bannerUrl })` : undefined }"></div>
+						<div class="banner" :style="props.user.bannerUrl ? `background-image: url(${defaultStore.state.disableShowingAnimatedImages ? getStaticImageUrl(props.user.bannerUrl) : props.user.bannerUrl})` : ''"></div>
 						<div class="fade"></div>
 						<div class="title">
 							<MkUserName class="name" :user="user" :nowrap="true"/>
@@ -29,9 +29,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</div>
 						</div>
 						<span v-if="$i && $i.id != user.id && user.isFollowed" class="followed">{{ i18n.ts.followsYou }}</span>
-						<div v-if="$i" class="actions">
+						<div class="actions">
 							<button class="menu _button" @click="menu"><i class="ti ti-dots"></i></button>
-							<MkFollowButton v-if="$i.id != user.id" v-model:user="user" :inline="true" :transparent="false" :full="true" class="koudoku"/>
+							<MkFollowButton v-if="$i?.id != user.id" v-model:user="user" :inline="true" :transparent="false" :full="true" class="koudoku"/>
 						</div>
 					</div>
 					<MkAvatar class="avatar" :user="user" indicator/>
@@ -78,7 +78,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<div v-if="user.fields.length > 0" class="fields">
 						<dl v-for="(field, i) in user.fields" :key="i" class="field">
 							<dt class="name">
-								<Mfm :text="field.name" :plain="true" :colored="false"/>
+								<Mfm :text="field.name" :author="user" :plain="true" :colored="false"/>
 							</dt>
 							<dd class="value">
 								<Mfm :text="field.value" :author="user" :colored="false"/>
@@ -146,11 +146,13 @@ import number from '@/filters/number.js';
 import { userPage } from '@/filters/user.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
+import { defaultStore } from '@/store.js';
 import { $i } from '@/account.js';
 import { dateString } from '@/filters/date.js';
 import { confetti } from '@/scripts/confetti.js';
 import { isFollowingVisibleForMe, isFollowersVisibleForMe } from '@/scripts/isFfVisibleForMe.js';
 import { useRouter } from '@/router/supplier.js';
+import { getStaticImageUrl } from '@/scripts/media-proxy.js';
 
 function calcAge(birthdate: string): number {
 	const date = new Date(birthdate);
@@ -184,7 +186,6 @@ const router = useRouter();
 const user = ref(props.user);
 const narrow = ref<null | boolean>(null);
 const rootEl = ref<null | HTMLElement>(null);
-const bannerEl = ref<null | HTMLElement>(null);
 
 const age = computed(() => {
 	return calcAge(props.user.birthday);
@@ -299,11 +300,12 @@ onMounted(() => {
 
 						> .name {
 							display: block;
-							margin: 0;
+							margin: -10px;
+							padding: 10px;
 							line-height: 32px;
 							font-weight: bold;
 							font-size: 1.8em;
-							text-shadow: 0 0 8px #000;
+							filter: drop-shadow(0 0 4px #000);
 						}
 
 						> .bottom {

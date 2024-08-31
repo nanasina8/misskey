@@ -78,7 +78,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 			>
 				<source :src="videoRef.url">
 			</video>
-			<button v-if="isReady && !isPlaying" class="_button" :class="$style.videoOverlayPlayButton" @click.stop="togglePlayPause"><i class="ti ti-player-play-filled"></i></button>
+			<button
+				v-if="isReady && !isPlaying"
+				:class="['_button', $style.videoOverlayPlayButton]"
+				tabindex="-1"
+				@click.stop="togglePlayPause"
+			>
+				<i class="ti ti-player-play-filled"></i>
+			</button>
 			<div v-else-if="!isActuallyPlaying" :class="$style.videoLoading">
 				<MkLoading/>
 			</div>
@@ -89,23 +96,40 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</div>
 			<div :class="$style.videoControls" @click.stop.self="togglePlayPause">
 				<div :class="[$style.controlsChild, $style.controlsLeft]">
-					<button class="_button" :class="$style.controlButton" @click.stop="togglePlayPause">
+					<button
+						:class="['_button', $style.controlButton]"
+						tabindex="-1"
+						@click.stop="togglePlayPause"
+					>
 						<i v-if="isPlaying" class="ti ti-player-pause-filled"></i>
 						<i v-else class="ti ti-player-play-filled"></i>
 					</button>
 				</div>
 				<div :class="[$style.controlsChild, $style.controlsRight]">
-					<button class="_button" :class="$style.controlButton" @click.stop="showVideoMenu">
+					<button
+						:class="['_button', $style.controlButton]"
+						tabindex="-1"
+						@click.stop="() => {}"
+						@mousedown.prevent.stop="showVideoMenu"
+					>
 						<i class="ti ti-settings"></i>
 					</button>
-					<button class="_button" :class="$style.controlButton" @click.stop="toggleFullscreen">
+					<button
+						:class="['_button', $style.controlButton]"
+						tabindex="-1"
+						@click.stop="toggleFullscreen"
+					>
 						<i v-if="isFullscreen" class="ti ti-arrows-minimize"></i>
 						<i v-else class="ti ti-arrows-maximize"></i>
 					</button>
 				</div>
 				<div :class="[$style.controlsChild, $style.controlsTime]">{{ hms(elapsedTimeMs) }}</div>
 				<div :class="[$style.controlsChild, $style.controlsVolume]">
-					<button class="_button" :class="$style.controlButton" @click.stop="toggleMute">
+					<button
+						:class="['_button', $style.controlButton]"
+						tabindex="-1"
+						@click.stop="toggleMute"
+					>
 						<i v-if="volume === 0" class="ti ti-volume-3"></i>
 						<i v-else class="ti ti-volume"></i>
 					</button>
@@ -130,16 +154,17 @@ SPDX-License-Identifier: AGPL-3.0-only
 <script lang="ts" setup>
 import { computed, inject, onActivated, onDeactivated, onMounted, ref, shallowRef, watch } from 'vue';
 import type * as Misskey from 'misskey-js';
+import type { MenuItem } from '@/types/menu.js';
 import { i18n } from '@/i18n.js';
-import { popupMenu } from '@/os.js';
+import { confirm, popupMenu } from '@/os.js';
 import { defaultStore } from '@/store.js';
 import { isFullscreenNotSupported } from '@/scripts/device-kind.js';
+import { type Keymap } from '@/scripts/hotkey.js';
 import hasAudio from '@/scripts/media-has-audio.js';
 import { getMediaMenu } from '@/scripts/tms/get-media-menu.js';
 import { useReactiveDriveFile } from '@/scripts/tms/use-reactive-drive-file.js';
 import bytes from '@/filters/bytes.js';
 import { hms } from '@/filters/hms.js';
-import type { MenuItem } from '@/types/menu.js';
 import MkMediaRange from '@/components/MkMediaRange.vue';
 
 const props = defineProps<{
@@ -162,8 +187,15 @@ const reactiveColor = computed(() => {
 	return 'rgba(0, 0, 0, 0.02)';
 });
 
-const showVideo = () => {
+const showVideo = async () => {
 	if (!hideRef.value) return;
+	if (sensitiveRef.value && defaultStore.state.confirmWhenRevealingSensitiveMedia) {
+		const { canceled } = await confirm({
+			type: 'question',
+			text: i18n.ts.sensitiveMediaRevealConfirm,
+		});
+		if (canceled) return;
+	}
 	hideRef.value = false;
 };
 
@@ -223,32 +255,44 @@ const showVideoMenu = (ev: MouseEvent) => {
 };
 
 const keymap = {
-	'up': () => {
-		if (hasFocus() && videoEl.value) {
-			volume.value = Math.min(volume.value + 0.1, 1);
-		}
+	'up': {
+		allowRepeat: true,
+		callback: () => {
+			if (hasFocus() && videoEl.value) {
+				volume.value = Math.min(volume.value + 0.1, 1);
+			}
+		},
 	},
-	'down': () => {
-		if (hasFocus() && videoEl.value) {
-			volume.value = Math.max(volume.value - 0.1, 0);
-		}
+	'down': {
+		allowRepeat: true,
+		callback: () => {
+			if (hasFocus() && videoEl.value) {
+				volume.value = Math.max(volume.value - 0.1, 0);
+			}
+		},
 	},
-	'left': () => {
-		if (hasFocus() && videoEl.value) {
-			videoEl.value.currentTime = Math.max(videoEl.value.currentTime - 5, 0);
-		}
+	'left': {
+		allowRepeat: true,
+		callback: () => {
+			if (hasFocus() && videoEl.value) {
+				videoEl.value.currentTime = Math.max(videoEl.value.currentTime - 5, 0);
+			}
+		},
 	},
-	'right': () => {
-		if (hasFocus() && videoEl.value) {
-			videoEl.value.currentTime = Math.min(videoEl.value.currentTime + 5, videoEl.value.duration);
-		}
+	'right': {
+		allowRepeat: true,
+		callback: () => {
+			if (hasFocus() && videoEl.value) {
+				videoEl.value.currentTime = Math.min(videoEl.value.currentTime + 5, videoEl.value.duration);
+			}
+		},
 	},
 	'space': () => {
 		if (hasFocus()) {
 			togglePlayPause();
 		}
 	},
-};
+} as const satisfies Keymap;
 
 // PlayerElもしくはその子要素にフォーカスがあるかどうか
 function hasFocus() {
@@ -396,25 +440,25 @@ function init() {
 
 			videoEl.value.addEventListener('play', () => {
 				isActuallyPlaying.value = true;
-			});
+			}, { passive: true });
 
 			videoEl.value.addEventListener('pause', () => {
 				isActuallyPlaying.value = false;
 				isPlaying.value = false;
-			});
+			}, { passive: true });
 
 			videoEl.value.addEventListener('ended', () => {
 				oncePlayed.value = false;
 				isActuallyPlaying.value = false;
 				isPlaying.value = false;
-			});
+			}, { passive: true });
 
 			durationMs.value = videoEl.value.duration * 1000;
 			videoEl.value.addEventListener('durationchange', () => {
 				if (videoEl.value) {
 					durationMs.value = videoEl.value.duration * 1000;
 				}
-			});
+			}, { passive: true });
 
 			videoEl.value.volume = volume.value;
 			hasAudio(videoEl.value).then(had => {
@@ -487,7 +531,7 @@ onDeactivated(() => {
 	overflow: clip;
 	border-radius: var(--mediaList-radius, 8px);
 
-	&:focus {
+	&:focus-visible {
 		outline: none;
 	}
 }
@@ -621,6 +665,10 @@ onDeactivated(() => {
 	border-radius: 99rem;
 
 	font-size: 1.1rem;
+
+	&:focus-visible {
+		outline: none;
+	}
 }
 
 .videoLoading {
@@ -683,6 +731,10 @@ onDeactivated(() => {
 
 		&:hover {
 			background-color: var(--accent);
+		}
+
+		&:focus-visible {
+			outline: none;
 		}
 	}
 }

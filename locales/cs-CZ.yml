@@ -1099,6 +1099,10 @@ sourceCode: "Zdrojový kód"
 flip: "Otočit"
 lastNDays: "Posledních {n} dnů"
 surrender: "Zrušit"
+_delivery:
+  stop: "Suspendováno"
+  _type:
+    none: "Publikuji"
 _initialAccountSetting:
   accountCreated: "Váš účet byl úspěšně vytvořen!"
   letsStartAccountSetup: "Pro začátek si nastavte svůj profil."
@@ -1641,8 +1645,6 @@ _sfx:
   note: "Poznámky"
   noteMy: "Moje poznámka"
   notification: "Oznámení"
-  antenna: "Antény"
-  channel: "Oznámení kanálu"
 _ago:
   future: "Budoucí"
   justNow: "Teď"
@@ -2008,7 +2010,6 @@ _webhookSettings:
   createWebhook: "Vytvořit Webhook"
   name: "Jméno"
   secret: "Tajné"
-  events: "Události Webhook"
   active: "Zapnuto"
   _events:
     follow: "Při sledování uživatele"
@@ -2018,6 +2019,10 @@ _webhookSettings:
     renote: "Při renotaci poznámky"
     reaction: "Při obdržení reakce"
     mention: "Při zmínce"
+_abuseReport:
+  _notificationRecipient:
+    _recipientType:
+      mail: "Email"
 _moderationLogTypes:
   suspend: "Zmrazit"
   resetPassword: "Resetovat heslo"

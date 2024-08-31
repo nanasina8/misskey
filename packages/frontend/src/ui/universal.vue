@@ -125,13 +125,12 @@ const isRoot = computed(() => mainRouter.currentRoute.value.name === 'index');
 const DESKTOP_THRESHOLD = 1100;
 const MOBILE_THRESHOLD = 500;
 
-
 // デスクトップでウィンドウを狭くしたときモバイルUIが表示されて欲しいことはあるので deviceKind === 'desktop' の判定は行わない
 const isDesktop = ref(window.innerWidth >= DESKTOP_THRESHOLD);
 const isMobile = ref(deviceKind === 'smartphone' || window.innerWidth <= MOBILE_THRESHOLD);
 window.addEventListener('resize', () => {
 	isMobile.value = deviceKind === 'smartphone' || window.innerWidth <= MOBILE_THRESHOLD;
-});
+}, { passive: true });
 
 const pageMetadata = ref<null | PageMetadata>(null);
 const widgetsShowing = ref(false);
@@ -409,7 +408,7 @@ $widgets-hide-threshold: 1090px;
 	padding: 12px 12px max(12px, env(safe-area-inset-bottom, 0px)) 12px;
 	display: grid;
 	grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
-	grid-gap: 8px;
+	gap: 8px;
 	width: 100%;
 	box-sizing: border-box;
 	-webkit-backdrop-filter: var(--blur, blur(24px));

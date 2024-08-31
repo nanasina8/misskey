@@ -60,7 +60,7 @@ import MkInput from '@/components/MkInput.vue';
 import MkSelect from '@/components/MkSelect.vue';
 import MkPagination from '@/components/MkPagination.vue';
 import * as os from '@/os.js';
-import { lookupUser } from '@/scripts/lookup-user.js';
+import { lookupUser } from '@/scripts/admin-lookup.js';
 import { i18n } from '@/i18n.js';
 import { definePageMetadata } from '@/scripts/page-metadata.js';
 import MkUserCardMini from '@/components/MkUserCardMini.vue';
@@ -150,7 +150,7 @@ definePageMetadata(() => ({
 .users {
 	display: grid;
 	grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
-	grid-gap: 12px;
+	gap: 12px;
 
 	> .user:hover {
 		text-decoration: none;

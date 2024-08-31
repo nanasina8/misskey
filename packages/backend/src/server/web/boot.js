@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+/* global window, document, localStorage, navigator, console, LANGS, CLIENT_ENTRY */
+
 /**
  * BOOT LOADER
  * サーバーからレスポンスされるHTMLに埋め込まれるスクリプトで、以下の役割を持ちます。
@@ -29,11 +31,12 @@
 
 	let forceError = localStorage.getItem('forceError');
 	if (forceError != null) {
-		renderError('FORCED_ERROR', 'This error is forced by having forceError in local storage.')
+		renderError('FORCED_ERROR', 'This error is forced by having forceError in local storage.');
+		return;
 	}
 
 	//#region Detect language & fetch translations
-	if (!localStorage.hasOwnProperty('locale')) {
+	if (!localStorage.getItem('locale')) {
 		const supportedLangs = LANGS;
 		let lang = localStorage.getItem('lang');
 		if (lang == null || !supportedLangs.includes(lang)) {
@@ -155,7 +158,12 @@
 		document.head.appendChild(css);
 	}
 
-	function renderError(code, details) {
+	async function renderError(code, details) {
+		// Cannot set property 'innerHTML' of null を回避
+		if (document.readyState === 'loading') {
+			await new Promise(resolve => window.addEventListener('DOMContentLoaded', resolve));
+		}
+
 		let errorsElement = document.getElementById('errors');
 
 		if (!errorsElement) {
@@ -314,6 +322,6 @@
 			#errorInfo {
 				width: 50%;
 			}
-		`)
+		}`);
 	}
 })();

@@ -10,7 +10,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</button>
 	<Suspense>
 		<template #fallback>
-			<MkLoading />
+			<MkLoading/>
 		</template>
 		<XCode v-if="show && lang" :code="code" :lang="lang"/>
 		<pre v-else-if="show" :class="$style.codeBlockFallbackRoot"><code :class="$style.codeBlockFallbackCode">{{ code }}</code></pre>
@@ -47,7 +47,7 @@ function copy() {
 }
 </script>
 
-<style module lang="scss">
+<style lang="scss" module>
 .codeBlockRoot {
 	position: relative;
 }

@@ -6,6 +6,7 @@
 import { defineAsyncComponent, Ref, ShallowRef } from 'vue';
 import * as Misskey from 'misskey-js';
 import { claimAchievement } from './achievements.js';
+import type { MenuItem } from '@/types/menu.js';
 import { $i } from '@/account.js';
 import { i18n } from '@/i18n.js';
 import { instance } from '@/instance.js';
@@ -16,8 +17,7 @@ import { url } from '@/config.js';
 import { defaultStore, noteActions } from '@/store.js';
 import { miLocalStorage } from '@/local-storage.js';
 import { getUserMenu } from '@/scripts/get-user-menu.js';
-import { channelFavoritesCache, clipsCache } from '@/cache.js';
-import { MenuItem } from '@/types/menu.js';
+import { clipsCache, favoritedChannelsCache } from '@/cache.js';
 import MkRippleEffect from '@/components/MkRippleEffect.vue';
 import { isSupportShare } from '@/scripts/navigator.js';
 import { parseErrorMessage } from '@/scripts/tms/error.js';
@@ -136,10 +136,12 @@ export function getAbuseNoteMenu(note: Misskey.entities.Note, text: string): Men
 			let noteInfo = '';
 			if (note.url ?? note.uri != null) noteInfo = `Note: ${note.url ?? note.uri}\n`;
 			noteInfo += `Local Note: ${localUrl}\n`;
-			os.popup(defineAsyncComponent(() => import('@/components/MkAbuseReportWindow.vue')), {
+			const { dispose } = os.popup(defineAsyncComponent(() => import('@/components/MkAbuseReportWindow.vue')), {
 				user: note.user,
 				initialComment: `${noteInfo}-----\n`,
-			}, {}, 'closed');
+			}, {
+				closed: () => dispose(),
+			});
 		},
 	};
 }
@@ -495,7 +497,7 @@ export async function getRenoteMenu(props: {
 }) {
 	const appearNote = getAppearNote(props.note);
 	const canRenote = props.canRenote ?? true;
-	const channelFavorites = (await channelFavoritesCache.fetch()).filter(channel => {
+	const favoritedChannels = (await favoritedChannelsCache.fetch()).filter(channel => {
 		return appearNote.channel == null || channel.id !== appearNote.channel.id;
 	});
 
@@ -505,7 +507,9 @@ export async function getRenoteMenu(props: {
 		const rect = el.getBoundingClientRect();
 		const x = rect.left + (el.offsetWidth / 2);
 		const y = rect.top + (el.offsetHeight / 2);
-		os.popup(MkRippleEffect, { x, y }, {}, 'end');
+		const { dispose } = os.popup(MkRippleEffect, { x, y }, {
+			end: () => dispose(),
+		});
 	};
 
 	const tooltipEffect = (text: string): void => {
@@ -601,12 +605,12 @@ export async function getRenoteMenu(props: {
 			});
 		}
 
-		if (!props.mock && channelFavorites.length > 0) {
+		if (!props.mock && favoritedChannels.length > 0) {
 			normalExternalChannelRenoteItems.push({
 				type: 'parent',
 				text: appearNote.channel == null ? i18n.ts.renoteToChannel : i18n.ts.renoteToOtherChannel,
 				icon: 'ti ti-repeat',
-				children: channelFavorites.map(channel => ({
+				children: favoritedChannels.map(channel => ({
 					text: channel.name,
 					action: () => {
 						rippleEffect();

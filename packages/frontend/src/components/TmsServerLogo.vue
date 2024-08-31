@@ -5,9 +5,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <button
-	v-tooltip.noDelay.right="serverRef.name"
+	v-tooltip.noDelay.right="tooltipRef"
 	:class="['_button', $style.root]"
-	@click.prevent.stop="openInstanceMenu"
+	@mousedown.prevent.stop="openInstanceMenu"
 	@contextmenu.prevent.stop="openInstanceMenu"
 >
 	<img
@@ -38,15 +38,25 @@ import { openInstanceMenu } from '@/ui/_common_/common.js';
 
 const props = defineProps<{
 	iconOnly?: boolean;
+	tooltip?: boolean;
 }>();
 
 const serverRef = computed(() => {
 	return {
+		// eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
 		name: instance.name || host,
+		// eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
 		shortName: instance.shortName || instance.name || host,
+		// eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
 		iconUrl: instance.iconUrl || '/favicon.ico',
+		// eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
 		bannerUrl: instance.bannerUrl || null,
 	} as const;
+});
+
+const tooltipRef = computed(() => {
+	if (!props.tooltip) return null;
+	return serverRef.value.name;
 });
 </script>
 
@@ -57,11 +67,23 @@ const serverRef = computed(() => {
 	display: block;
 	width: 100%;
 	padding: var(--tmsServerLogo-padding, 0);
+
+	&:focus-visible {
+		outline: none;
+
+		> .iconOnly,
+		> .banner {
+			outline: var(--focus) solid 2px;
+			outline-offset: 2px;
+		}
+	}
 }
 
 .iconOnly {
 	display: block;
 	margin: 0 auto;
+	overflow: clip;
+	border-radius: 2px;
 	width: 30px;
 	height: 30px;
 }

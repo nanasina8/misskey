@@ -128,6 +128,16 @@ export const meta = {
 					nullable: false,
 				},
 			},
+			mediaSilencedHosts: {
+				type: 'array',
+				optional: false,
+				nullable: false,
+				items: {
+					type: 'string',
+					optional: false,
+					nullable: false,
+				},
+			},
 			pinnedUsers: {
 				type: 'array',
 				optional: false, nullable: false,
@@ -427,6 +437,10 @@ export const meta = {
 				type: 'string',
 				optional: false, nullable: true,
 			},
+			inquiryUrl: {
+				type: 'string',
+				optional: false, nullable: true,
+			},
 			repositoryUrl: {
 				type: 'string',
 				optional: false, nullable: true,
@@ -519,6 +533,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				feedbackUrl: instance.feedbackUrl,
 				impressumUrl: instance.impressumUrl,
 				privacyPolicyUrl: instance.privacyPolicyUrl,
+				inquiryUrl: instance.inquiryUrl,
 				disableRegistration: instance.disableRegistration,
 				emailRequiredForSignup: instance.emailRequiredForSignup,
 				enableHcaptcha: instance.enableHcaptcha,
@@ -553,6 +568,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				hiddenTags: instance.hiddenTags,
 				blockedHosts: instance.blockedHosts,
 				silencedHosts: instance.silencedHosts,
+				mediaSilencedHosts: instance.mediaSilencedHosts,
 				sensitiveWords: instance.sensitiveWords,
 				prohibitedWords: instance.prohibitedWords,
 				preservedUsernames: instance.preservedUsernames,

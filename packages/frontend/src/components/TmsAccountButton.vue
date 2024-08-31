@@ -6,9 +6,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <button
 	v-if="$i != null"
-	v-tooltip.noDelay.right="`${i18n.ts.account}: @${$i.username}`"
+	v-tooltip.noDelay.right="tooltipRef"
 	:class="['_button', $style.root]"
-	@click.prevent.stop="openAccountMenu"
+	@mousedown.prevent.stop="openAccountMenu"
 	@contextmenu.prevent.stop="openAccountMenu"
 >
 	<MkAvatar
@@ -28,12 +28,20 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
+import { computed } from 'vue';
 import { $i, openAccountMenu as openAccountMenu_ } from '@/account.js';
 import { i18n } from '@/i18n.js';
 
 const props = defineProps<{
 	iconOnly?: boolean;
+	tooltip?: boolean;
 }>();
+
+const tooltipRef = computed(() => {
+	if (!props.tooltip) return;
+	if ($i == null) return i18n.ts.account;
+	return `${i18n.ts.account}: @${$i.username}`;
+});
 
 const openAccountMenu = (ev: MouseEvent) => {
 	openAccountMenu_({
@@ -49,6 +57,16 @@ const openAccountMenu = (ev: MouseEvent) => {
 	display: block;
 	width: 100%;
 	padding: var(--tmsAccountButton-padding, 0);
+
+	&:focus-visible {
+		outline: none;
+
+		> .iconOnly,
+		> .account {
+			outline: var(--focus) solid 2px;
+			outline-offset: 2px;
+		}
+	}
 }
 
 .iconOnly {
@@ -60,6 +78,7 @@ const openAccountMenu = (ev: MouseEvent) => {
 
 .account {
 	overflow: clip;
+	border-radius: 6px;
 	display: flex;
 	align-items: center;
 }

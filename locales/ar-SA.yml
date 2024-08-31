@@ -1016,6 +1016,8 @@ sourceCode: "الشفرة المصدرية"
 flip: "اقلب"
 lastNDays: "آخر {n} أيام"
 surrender: "ألغِ"
+_delivery:
+  stop: "مُعلّق"
 _initialAccountSetting:
   accountCreated: "نجح إنشاء حسابك!"
   letsStartAccountSetup: "إذا كنت جديدًا لنعدّ حسابك الشخصي."
@@ -1260,8 +1262,6 @@ _sfx:
   note: "الملاحظات"
   noteMy: "ملاحظتي"
   notification: "الإشعارات"
-  antenna: "الهوائيات"
-  channel: "إشعارات القنات"
 _ago:
   future: "المستقبَل"
   justNow: "اللحظة"
@@ -1564,6 +1564,10 @@ _webhookSettings:
   active: "مُفعّل"
   _events:
     reaction: "عند التفاعل"
+_abuseReport:
+  _notificationRecipient:
+    _recipientType:
+      mail: "البريد الإلكتروني "
 _moderationLogTypes:
   suspend: "علِق"
   deleteDriveFile: "حُذف الملف"

@@ -869,7 +869,7 @@ function loadImage(url: string) {
 		img.src = url;
 		img.addEventListener('load', () => {
 			res(img);
-		});
+		}, { passive: true });
 	});
 }
 
@@ -1008,8 +1008,21 @@ function attachGameEvents() {
 		const domX = rect.left + (x * viewScale);
 		const domY = rect.top + (y * viewScale);
 		const scoreUnit = getScoreUnit(props.gameMode);
-		os.popup(MkRippleEffect, { x: domX, y: domY }, {}, 'end');
-		os.popup(MkPlusOneEffect, { x: domX, y: domY, value: scoreDelta + (scoreUnit === 'pt' ? '' : scoreUnit) }, {}, 'end');
+
+		const { dispose: disposeRippleEffect } = os.popup(MkRippleEffect, {
+			x: domX,
+			y: domY,
+		}, {
+			end: () => disposeRippleEffect(),
+		});
+
+		const { dispose: disposePlusOneEffect } = os.popup(MkPlusOneEffect, {
+			x: domX,
+			y: domY,
+			value: scoreDelta + (scoreUnit === 'pt' ? '' : scoreUnit),
+		}, {
+			end: () => disposePlusOneEffect(),
+		});
 
 		if (nextMono) {
 			const def = monoDefinitions.value.find(x => x.id === nextMono.id)!;
