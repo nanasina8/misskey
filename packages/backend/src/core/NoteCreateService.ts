@@ -146,6 +146,7 @@ type Option = {
 	uri?: string | null;
 	url?: string | null;
 	app?: MiApp | null;
+	deleteAt?: Date | null;
 };
 
 @Injectable()
@@ -417,6 +418,7 @@ export class NoteCreateService implements OnApplicationShutdown {
 			name: data.name,
 			text: data.text,
 			hasPoll: data.poll != null,
+			deleteAt: data.deleteAt,
 			cw: data.cw ?? null,
 			tags: tags.map(tag => normalizeForSearch(tag)),
 			emojis,
@@ -563,6 +565,15 @@ export class NoteCreateService implements OnApplicationShutdown {
 		if (data.poll && data.poll.expiresAt) {
 			const delay = data.poll.expiresAt.getTime() - Date.now();
 			this.queueService.endedPollNotificationQueue.add(note.id, {
+				noteId: note.id,
+			}, {
+				delay,
+				removeOnComplete: true,
+			});
+		}
+		if (data.deleteAt) {
+			const delay = data.deleteAt.getTime() - Date.now();
+			this.queueService.scheduledNoteDeleteQueue.add(note.id, {
 				noteId: note.id,
 			}, {
 				delay,

@@ -357,6 +357,8 @@ export class NoteEntityService implements OnModuleInit {
 			uri: note.uri ?? undefined,
 			url: note.url ?? undefined,
 			poll: note.hasPoll ? this.populatePoll(note, meId) : undefined,
+			deleteAt: note.deleteAt?.toISOString() ?? undefined,
+
 
 			...(opts.detail ? {
 				clippedCount: note.clippedCount,

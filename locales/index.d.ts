@@ -4991,8 +4991,17 @@ export interface Locale extends ILocale {
     /**
      * {name}のセンシティブなファイルを含む投稿
      */
+
     readonly "userSaysSomethingSensitive": ParameterizedString<"name">;
+		/**
+     * ノートの自己消滅
+     */
+    readonly "scheduledNoteDelete": string;
     /**
+     * このノートは{time}に消滅します
+     */
+    readonly "noteDeletationAt": ParameterizedString<"time">;
+		/**
      * スワイプしてタブを切り替える
      */
     readonly "enableHorizontalSwipe": string;
