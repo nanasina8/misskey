@@ -25,6 +25,7 @@ import { MetaService } from '@/core/MetaService.js';
 import { FanoutTimelineEndpointService } from '@/core/FanoutTimelineEndpointService.js';
 import { FeaturedService } from '@/core/FeaturedService.js';
 import { isUserRelated } from '@/misc/is-user-related.js';
+import { isInstanceMuted } from '@/misc/is-instance-muted.js';
 import { ApiError } from '../../error.js';
 
 export const meta = {
