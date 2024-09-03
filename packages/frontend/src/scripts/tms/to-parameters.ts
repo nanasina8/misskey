@@ -63,9 +63,10 @@ export const toParameters = async (noteEntityOrId: NoteEntityOrId, fromId?: stri
 	const fileIds = await makeFileIds(note, me);
 	const visibleUserIds = makeVisibleUserIds(note, me);
 	const poll = makePoll(note);
+	const scheduledDelete = makeDeleteAt(note);
 	const { visibility, localOnly, replyId, renoteId, channelId, reactionAcceptance } = note;
 
-	const parameters: NoteParameters = { text, cw, fileIds, visibleUserIds, poll, visibility, localOnly, replyId, renoteId, channelId, reactionAcceptance };
+	const parameters: NoteParameters = { text, cw, fileIds, visibleUserIds, poll, visibility, localOnly, replyId, renoteId, channelId, reactionAcceptance, scheduledDelete};
 
 	for (const k in parameters) {
 		if (Object.prototype.hasOwnProperty.call(parameters, k)) {
@@ -186,3 +187,11 @@ const makePoll = ({ poll, createdAt }: NoteEntity): NoteParameters['poll'] => {
 	}
 	return { choices, multiple, expiresAt, expiredAfter };
 };
+
+const makeDeleteAt = (note: NoteEntity): NoteParameters['deleteAt'] => {
+    if (note.deleteAt == null) return null;
+    const date = new Date(note.deleteAt);
+    const unixDeleteAt = date.getTime();
+    return {'deleteAt': unixDeleteAt};
+};
+
