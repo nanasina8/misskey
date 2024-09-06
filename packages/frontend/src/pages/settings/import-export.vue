@@ -49,11 +49,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</FormSection>
 	<FormSection>
 		<template #label><i class="ti ti-users"></i> {{ i18n.ts._exportOrImport.followingList }}</template>
-		<div class="_gaps_s">
 			<MkFolder>
 				<template #label>{{ i18n.ts.export }}</template>
 				<template #icon><i class="ti ti-download"></i></template>
->>>>>>> 15448033b2 (Feat:はなモード / ノートインポート (#23))
 				<div class="_gaps_s">
 					<MkFolder>
 						<template #label>{{ i18n.ts.export }}</template>
@@ -77,6 +75,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 						<MkButton primary :class="$style.button" inline @click="importFollowing($event)"><i class="ti ti-upload"></i> {{ i18n.ts.import }}</MkButton>
 					</MkFolder>
 				</div>
+			</MkFolder>
 			</FormSection>
 			<FormSection>
 				<template #label><i class="ti ti-users"></i> {{ i18n.ts._exportOrImport.userLists }}</template>
@@ -139,8 +138,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 				</div>
 			</FormSection>
 		</div>
-	</MkSpacer>
-</MkStickyContainer>
 </template>
 
 <script lang="ts" setup>

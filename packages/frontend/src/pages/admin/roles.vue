@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div>
+
 	<MkStickyContainer>
 		<template #header><XHeader :actions="headerActions" :tabs="headerTabs"/></template>
 		<MkSpacer :contentMax="700">
@@ -439,7 +439,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 					<MkButton primary rounded @click="updateBaseRole">{{ i18n.ts.save }}</MkButton>
 				</div>
-			</MkFolder>
 			<MkButton primary rounded @click="create"><i class="ti ti-plus"></i> {{ i18n.ts._role.new }}</MkButton>
 			<div class="_gaps_s">
 				<MkFoldableSection>
