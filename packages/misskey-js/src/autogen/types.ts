@@ -2673,14 +2673,7 @@ export type paths = {
      * notes/featured
      * @description No description provided.
      *
-     * **Credential required**: *No*
-     */
-    get: operations['notes___featured'];
-    /**
-     * notes/featured
-     * @description No description provided.
-     *
-     * **Credential required**: *No*
+     * **Credential required**: *Yes* / **Permission**: *read:account*
      */
     post: operations['notes___featured'];
   };
@@ -21553,7 +21546,7 @@ export type operations = {
    * notes/featured
    * @description No description provided.
    *
-   * **Credential required**: *No*
+   * **Credential required**: *Yes* / **Permission**: *read:account*
    */
   notes___featured: {
     requestBody: {
