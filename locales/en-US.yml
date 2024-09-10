@@ -2683,3 +2683,6 @@ _hana:
     hanaRecommend: "For those who want a decentralized SNS experience similar to a private server, while still emphasizing interaction with external servers as well"
     saveConfirmDescription: "There is a limit on how many times you can switch modes within a certain period."
 
+_reactionChecksMuting:
+  title: "Check mutings when get reactions"
+  caption: "Check mutings when get reactions, but cache does not work and may increase traffic"

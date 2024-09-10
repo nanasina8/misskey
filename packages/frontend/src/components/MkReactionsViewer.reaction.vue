@@ -36,12 +36,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 	import { customEmojisMap } from '@/custom-emojis.js';
 	import { getUnicodeEmoji } from '@/scripts/emojilist.js';
 
-	const props = defineProps<{
-		reaction: string;
-		count: number;
-		isInitial: boolean;
-		note: Misskey.entities.Note;
-	}>();
+const reactionChecksMuting = computed(defaultStore.makeGetterSetter('reactionChecksMuting'));
+
+const props = defineProps<{
+	reaction: string;
+	count: number;
+	isInitial: boolean;
+	note: Misskey.entities.Note;
+}>();
 
 	const mock = inject<boolean>('mock', false);
 
@@ -61,25 +63,32 @@ SPDX-License-Identifier: AGPL-3.0-only
 	const emojiName = computed(() => props.reaction.replace(/:/g, '').replace(/@\./, ''));
 	let emoji = computed(() => customEmojisMap.get(emojiName.value) ?? getUnicodeEmoji(props.reaction));
 
-	const canToggle = computed(() => {
-		return !props.reaction.match(/@\w/) && $i && emoji.value && checkReactionPermissions($i, props.note, emoji.value);
-	});
-	const canGetInfo = computed(() => !props.reaction.match(/@\w/) && props.reaction.includes(':'));
+if (!mock) {
+	useTooltip(buttonEl, async (showing) => {
+		const useGet = !reactionChecksMuting.value;
+		const apiCall = useGet ? misskeyApiGet : misskeyApi;
+		const reactions = await apiCall('notes/reactions', {
+			noteId: props.note.id,
+			type: props.reaction,
+			limit: 10,
+			_cacheKey_: props.count,
+		});
 
-	async function toggleReaction(ev?:MouseEvent) {
-		   console.log('MkReactionsViewer.reaction toggleReaction');
-		   if (!canToggle.value) {
-				   chooseAlternative(ev);
-				   return;
-		   }
+		const users = reactions.map(x => x.user);
+		const count = users.length;
 
-		const oldReaction = props.note.myReaction;
-		if (oldReaction) {
-			const confirm = await os.confirm({
-				type: 'warning',
-				text: oldReaction !== props.reaction ? i18n.ts.changeReactionConfirm : i18n.ts.cancelReactionConfirm,
-			});
-			if (confirm.canceled) return;
+		const { dispose } = os.popup(XDetails, {
+			showing,
+			reaction: props.reaction,
+			users,
+			count,
+			targetElement: buttonEl.value,
+		}, {
+			closed: () => dispose(),
+		});
+	}, 100);
+}
+</script>
 
 			if (oldReaction !== props.reaction) {
 				sound.playMisskeySfx('reaction');

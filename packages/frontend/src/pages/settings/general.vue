@@ -50,7 +50,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 			<FormSection>
 				<template #label>{{ i18n.ts.displayOfNote }}</template>
-
+				<MkSwitch v-model="reactionChecksMuting">
+					{{ i18n.ts._reactionChecksMuting.title }}<span class="_beta">{{ i18n.ts.nadesskey }}</span>
+					<template #caption>{{ i18n.ts._reactionChecksMuting.caption }}</template>
+				</MkSwitch>
 				<div class="_gaps_m">
 					<div class="_gaps_s">
 						<MkSwitch v-model="collapseRenotes">
@@ -329,6 +332,7 @@ const useNativeUIForVideoAudioPlayer = computed(defaultStore.makeGetterSetter('u
 const alwaysConfirmFollow = computed(defaultStore.makeGetterSetter('alwaysConfirmFollow'));
 const confirmWhenRevealingSensitiveMedia = computed(defaultStore.makeGetterSetter('confirmWhenRevealingSensitiveMedia'));
 const contextMenu = computed(defaultStore.makeGetterSetter('contextMenu'));
+const reactionChecksMuting = computed(defaultStore.makeGetterSetter('reactionChecksMuting'));
 
 watch(lang, () => {
 	miLocalStorage.setItem('lang', lang.value as string);

@@ -10595,6 +10595,16 @@ export interface Locale extends ILocale {
             "saveConfirmDescription": string;
         };
     };
+    "_reactionChecksMuting": {
+        /**
+         * リアクションでミュートを考慮する
+         */
+        "title": string;
+        /**
+         * リアクションがミュートを考慮しますが、キャッシュが効かず通信量が増えることがあります。
+         */
+        "caption": string;
+    };
 }
 declare const locales: {
     [lang: string]: Locale;
