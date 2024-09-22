@@ -63,6 +63,25 @@ const props = defineProps<{
 	const emojiName = computed(() => props.reaction.replace(/:/g, '').replace(/@\./, ''));
 	let emoji = computed(() => customEmojisMap.get(emojiName.value) ?? getUnicodeEmoji(props.reaction));
 
+	const canToggle = computed(() => {
+		return !props.reaction.match(/@\w/) && $i && emoji.value && checkReactionPermissions($i, props.note, emoji.value);
+	});
+	const canGetInfo = computed(() => !props.reaction.match(/@\w/) && props.reaction.includes(':'));
+
+	async function toggleReaction(ev?:MouseEvent) {
+		   console.log('MkReactionsViewer.reaction toggleReaction');
+		   if (!canToggle.value) {
+				   chooseAlternative(ev);
+				   return;
+		   }
+
+		const oldReaction = props.note.myReaction;
+		if (oldReaction) {
+			const confirm = await os.confirm({
+				type: 'warning',
+				text: oldReaction !== props.reaction ? i18n.ts.changeReactionConfirm : i18n.ts.cancelReactionConfirm,
+			});
+			if (confirm.canceled) return;
 if (!mock) {
 	useTooltip(buttonEl, async (showing) => {
 		const useGet = !reactionChecksMuting.value;
@@ -88,7 +107,7 @@ if (!mock) {
 		});
 	}, 100);
 }
-</script>
+
 
 			if (oldReaction !== props.reaction) {
 				sound.playMisskeySfx('reaction');
