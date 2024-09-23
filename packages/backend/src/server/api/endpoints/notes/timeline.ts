@@ -49,7 +49,7 @@ export const paramDef = {
 		includeLocalRenotes: { type: 'boolean', default: true },
 		withFiles: { type: 'boolean', default: false },
 		withRenotes: { type: 'boolean', default: true },
-		withReplies: { type: 'boolean', default: false },
+		withReplies: { type: 'boolean', default: true },
 	},
 	required: [],
 } as const;
@@ -158,6 +158,14 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		});
 
 		const query = this.queryService.makePaginationQuery(this.notesRepository.createQueryBuilder('note'), ps.sinceId, ps.untilId)
+			.andWhere(new Brackets(qb => {
+				if (followees.length > 0) {
+					const meOrFolloweeIds = [me.id, ...followees.map(f => f.followeeId)];
+					qb.where('note.userId IN (:...meOrFolloweeIds)', { meOrFolloweeIds: meOrFolloweeIds });
+				} else {
+					qb.where('note.userId = :meId', { meId: me.id });
+				}
+			}))
 			.innerJoinAndSelect('note.user', 'user')
 			.leftJoinAndSelect('note.reply', 'reply')
 			.leftJoinAndSelect('note.renote', 'renote')
@@ -175,15 +183,17 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			query.andWhere('note.channelId IS NULL');
 		}
 
-		query.andWhere(new Brackets(qb => {
-			qb
-				.where('note.replyId IS NULL') // 返信ではない
-				.orWhere(new Brackets(qb => {
-					qb // 返信だけど投稿者自身への返信
-						.where('note.replyId IS NOT NULL')
-						.andWhere('note.replyUserId = note.userId');
-				}));
-		}));
+		if (!ps.withReplies) {
+			query.andWhere(new Brackets(qb => {
+				qb
+					.where('note.replyId IS NULL') // 返信ではない
+					.orWhere(new Brackets(qb => {
+						qb // 返信だけど投稿者自身への返信
+							.where('note.replyId IS NOT NULL')
+							.andWhere('note.replyUserId = note.userId');
+					}));
+			}));
+		}
 
 		this.queryService.generateVisibilityQuery(query, me);
 		this.queryService.generateMutedUserQuery(query, me);
