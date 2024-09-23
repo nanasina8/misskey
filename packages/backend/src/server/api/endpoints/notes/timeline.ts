@@ -7,15 +7,15 @@ import { Brackets } from 'typeorm';
 import { Inject, Injectable } from '@nestjs/common';
 import type { NotesRepository, ChannelFollowingsRepository } from '@/models/_.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
-import { QueryService } from '@/core/QueryService.js';
 import ActiveUsersChart from '@/core/chart/charts/active-users.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { DI } from '@/di-symbols.js';
 import { IdService } from '@/core/IdService.js';
 import { CacheService } from '@/core/CacheService.js';
+import { QueryService } from '@/core/QueryService.js';
 import { UserFollowingService } from '@/core/UserFollowingService.js';
-import { MiLocalUser } from '@/models/User.js';
 import { MetaService } from '@/core/MetaService.js';
+import { MiLocalUser } from '@/models/User.js';
 import { FanoutTimelineEndpointService } from '@/core/FanoutTimelineEndpointService.js';
 
 export const meta = {
@@ -49,6 +49,7 @@ export const paramDef = {
 		includeLocalRenotes: { type: 'boolean', default: true },
 		withFiles: { type: 'boolean', default: false },
 		withRenotes: { type: 'boolean', default: true },
+		withReplies: { type: 'boolean', default: false },
 	},
 	required: [],
 } as const;
@@ -66,10 +67,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private activeUsersChart: ActiveUsersChart,
 		private idService: IdService,
 		private cacheService: CacheService,
-		private fanoutTimelineEndpointService: FanoutTimelineEndpointService,
-		private userFollowingService: UserFollowingService,
 		private queryService: QueryService,
+		private userFollowingService: UserFollowingService,
 		private metaService: MetaService,
+		private fanoutTimelineEndpointService: FanoutTimelineEndpointService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			const untilId = ps.untilId ?? (ps.untilDate ? this.idService.gen(ps.untilDate!) : null);
@@ -86,7 +87,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					includeRenotedMyNotes: ps.includeRenotedMyNotes,
 					includeLocalRenotes: ps.includeLocalRenotes,
 					withFiles: ps.withFiles,
-					withRenotes: ps.withRenotes,
+					withReplies: ps.withReplies,
 				}, me);
 
 				process.nextTick(() => {
@@ -127,7 +128,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					includeRenotedMyNotes: ps.includeRenotedMyNotes,
 					includeLocalRenotes: ps.includeLocalRenotes,
 					withFiles: ps.withFiles,
-					withRenotes: ps.withRenotes,
+					withReplies: ps.withReplies,
 				}, me),
 			});
 
@@ -139,7 +140,16 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		});
 	}
 
-	private async getFromDb(ps: { untilId: string | null; sinceId: string | null; limit: number; includeMyRenotes: boolean; includeRenotedMyNotes: boolean; includeLocalRenotes: boolean; withFiles: boolean; withRenotes: boolean; }, me: MiLocalUser) {
+	private async getFromDb(ps: {
+		untilId: string | null,
+		sinceId: string | null,
+		limit: number,
+		includeMyRenotes: boolean,
+		includeRenotedMyNotes: boolean,
+		includeLocalRenotes: boolean,
+		withFiles: boolean,
+		withReplies: boolean,
+	}, me: MiLocalUser) {
 		const followees = await this.userFollowingService.getFollowees(me.id);
 		const followingChannels = await this.channelFollowingsRepository.find({
 			where: {
@@ -147,7 +157,6 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			},
 		});
 
-		//#region Construct query
 		const query = this.queryService.makePaginationQuery(this.notesRepository.createQueryBuilder('note'), ps.sinceId, ps.untilId)
 			.innerJoinAndSelect('note.user', 'user')
 			.leftJoinAndSelect('note.reply', 'reply')
@@ -155,38 +164,15 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			.leftJoinAndSelect('reply.user', 'replyUser')
 			.leftJoinAndSelect('renote.user', 'renoteUser');
 
-		if (followees.length > 0 && followingChannels.length > 0) {
-			// ユーザー・チャンネルともにフォローあり
-			const meOrFolloweeIds = [me.id, ...followees.map(f => f.followeeId)];
+		if (followingChannels.length > 0) {
 			const followingChannelIds = followingChannels.map(x => x.followeeId);
+
 			query.andWhere(new Brackets(qb => {
-				qb
-					.where(new Brackets(qb2 => {
-						qb2
-							.where('note.userId IN (:...meOrFolloweeIds)', { meOrFolloweeIds: meOrFolloweeIds })
-							.andWhere('note.channelId IS NULL');
-					}))
-					.orWhere('note.channelId IN (:...followingChannelIds)', { followingChannelIds });
-			}));
-		} else if (followees.length > 0) {
-			// ユーザーフォローのみ（チャンネルフォローなし）
-			const meOrFolloweeIds = [me.id, ...followees.map(f => f.followeeId)];
-			query
-				.andWhere('note.channelId IS NULL')
-				.andWhere('note.userId IN (:...meOrFolloweeIds)', { meOrFolloweeIds: meOrFolloweeIds });
-		} else if (followingChannels.length > 0) {
-			// チャンネルフォローのみ（ユーザーフォローなし）
-			const followingChannelIds = followingChannels.map(x => x.followeeId);
-			query.andWhere(new Brackets(qb => {
-				qb
-					.where('note.channelId IN (:...followingChannelIds)', { followingChannelIds })
-					.orWhere('note.userId = :meId', { meId: me.id });
+				qb.where('note.channelId IN (:...followingChannelIds)', { followingChannelIds });
+				qb.orWhere('note.channelId IS NULL');
 			}));
 		} else {
-			// フォローなし
-			query
-				.andWhere('note.channelId IS NULL')
-				.andWhere('note.userId = :meId', { meId: me.id });
+			query.andWhere('note.channelId IS NULL');
 		}
 
 		query.andWhere(new Brackets(qb => {
@@ -236,10 +222,6 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 		if (ps.withFiles) {
 			query.andWhere('note.fileIds != \'{}\'');
-		}
-
-		if (ps.withRenotes === false) {
-			query.andWhere('note.renoteId IS NULL');
 		}
 		//#endregion
 
