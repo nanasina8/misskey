@@ -220,7 +220,7 @@ export const defaultStore = markRaw(new Storage('base', {
 	},
 	animatedMfm: {
 		where: 'device',
-		default: !window.matchMedia('(prefers-reduced-motion)').matches,
+		default: true,
 	},
 	advancedMfm: {
 		where: 'device',
@@ -232,7 +232,7 @@ export const defaultStore = markRaw(new Storage('base', {
 	},
 	enableQuickAddMfmFunction: {
 		where: 'device',
-		default: false,
+		default: true,
 	},
 	loadRawImages: {
 		where: 'device',
@@ -284,7 +284,7 @@ export const defaultStore = markRaw(new Storage('base', {
 	},
 	darkMode: {
 		where: 'device',
-		default: false,
+		default: true,
 	},
 	instanceTicker: {
 		where: 'device',
@@ -296,11 +296,11 @@ export const defaultStore = markRaw(new Storage('base', {
 	},
 	emojiPickerWidth: {
 		where: 'device',
-		default: 1,
+		default: 5,
 	},
 	emojiPickerHeight: {
 		where: 'device',
-		default: 2,
+		default: 4,
 	},
 	emojiPickerUseDrawerForMobile: {
 		where: 'device',
@@ -364,7 +364,7 @@ export const defaultStore = markRaw(new Storage('base', {
 	},
 	limitWidthOfReaction: {
 		where: 'device',
-		default: true,
+		default: false,
 	},
 	forceShowAds: {
 		where: 'device',
@@ -404,7 +404,7 @@ export const defaultStore = markRaw(new Storage('base', {
 	},
 	defaultWithReplies: {
 		where: 'account',
-		default: false,
+		default: true,
 	},
 	disableStreamingTimeline: {
 		where: 'device',
@@ -469,7 +469,7 @@ export const defaultStore = markRaw(new Storage('base', {
 	},
 	sound_notUseSound: {
 		where: 'device',
-		default: false,
+		default: true,
 	},
 	sound_useSoundOnlyWhenActive: {
 		where: 'device',

@@ -257,6 +257,11 @@ const menuDef = computed<ISuperMenuDefinitions>(() => [{
 		to: '/settings/migration',
 		active: currentPage.value?.route.name === 'migration',
 	}, {
+		icon: 'ti ti-adjustments',//アイコンどれが使えるかわからなかったから取り敢えず
+		text: `taiyme`,
+		to: '/tms/settings',
+		active: currentPage.value?.route.name === 'taiyme',
+	}, {
 		icon: 'ti ti-dots',
 		text: i18n.ts.other,
 		to: '/settings/other',
