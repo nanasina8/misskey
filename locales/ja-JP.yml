@@ -707,7 +707,7 @@ abuseReports: "通報"
 reportAbuse: "通報"
 reportAbuseRenote: "リノートを通報"
 reportAbuseOf: "{name}を通報する"
-fillAbuseReportDescription: "通報理由の詳細を記入してください。対象のノートがある場合はそのURLも記入してください。"
+fillAbuseReportDescription: "通報理由の詳細を記入してください。対象のノートやページなどがある場合はそのURLも記入してください。"
 abuseReported: "内容が送信されました。ご報告ありがとうございました。"
 reporter: "通報者"
 reporteeOrigin: "通報先"
@@ -2385,6 +2385,7 @@ _pages:
   eyeCatchingImageSet: "アイキャッチ画像を設定"
   eyeCatchingImageRemove: "アイキャッチ画像を削除"
   chooseBlock: "ブロックを追加"
+  enterSectionTitle: "セクションタイトルを入力"
   selectType: "種類を選択"
   contentBlocks: "コンテンツ"
   inputBlocks: "入力"
@@ -2581,6 +2582,10 @@ _moderationLogTypes:
   createAbuseReportNotificationRecipient: "通報の通知先を作成"
   updateAbuseReportNotificationRecipient: "通報の通知先を更新"
   deleteAbuseReportNotificationRecipient: "通報の通知先を削除"
+  deleteAccount: "アカウントを削除"
+  deletePage: "ページを削除"
+  deleteFlash: "Playを削除"
+  deleteGalleryPost: "ギャラリーの投稿を削除"
 
 _fileViewer:
   title: "ファイルの詳細"
@@ -2760,6 +2765,8 @@ _tms:
   notYetProvided: "まだ提供されていません"
   moderationNoteIsSharedAmongModerators: "モデレーションノートはモデレーター間で共有されます。"
   memoIsNotShared: "あなたのメモは他のユーザーと共有されません。"
+  taiymeUpdated: "taiymeが更新されました！"
+  updatedX: "{x}が更新されました！"
   _about:
     title: "taiymeについて"
     description: "taiymeは、Misskeyから派生したオープンソースのソフトウェアです。"
@@ -2852,3 +2859,11 @@ _hana:
 _reactionChecksMuting:
   title: "リアクションでミュートを考慮する"
   caption: "リアクションがミュートを考慮しますが、キャッシュが効かず通信量が増えることがあります。"
+  _search:
+    searchScopeAll: "全て"
+    searchScopeLocal: "ローカル"
+    searchScopeServer: "サーバー指定"
+    searchScopeUser: "ユーザー指定"
+    pleaseEnterServerHost: "サーバーのホストを入力してください"
+    pleaseSelectUser: "ユーザーを選択してください"
+    serverHostPlaceholder: "例: misskey.example.com"

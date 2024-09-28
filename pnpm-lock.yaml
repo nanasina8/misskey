@@ -51,8 +51,8 @@ importers:
         version: 4.4.0
     devDependencies:
       '@misskey-dev/eslint-plugin':
-        specifier: 2.0.2
-        version: 2.0.2(@eslint/compat@1.1.1)(@typescript-eslint/eslint-plugin@7.17.0)(@typescript-eslint/parser@7.17.0)(eslint-plugin-import@2.29.1)(eslint@9.8.0)(globals@15.8.0)
+        specifier: 2.0.3
+        version: 2.0.3(@eslint/compat@1.1.1)(@typescript-eslint/eslint-plugin@7.17.0)(@typescript-eslint/parser@7.17.0)(eslint-plugin-import@2.29.1)(eslint@9.8.0)(globals@15.8.0)
       '@types/node':
         specifier: 20.14.12
         version: 20.14.12
@@ -5228,8 +5228,8 @@ packages:
     resolution: {integrity: sha512-4EnO0zLW5NDtng3Gaz5MuT761uiuoOuplwX18wBqgj8w56LTU5BjLn/vbHwDIIe0j2gwqDYhMb7bDjmr1/Fomg==}
     dev: false
 
-  /@misskey-dev/eslint-plugin@2.0.2(@eslint/compat@1.1.1)(@typescript-eslint/eslint-plugin@7.17.0)(@typescript-eslint/parser@7.17.0)(eslint-plugin-import@2.29.1)(eslint@9.8.0)(globals@15.8.0):
-    resolution: {integrity: sha512-bnTqxCSP0CIN0xSpIGib13bz+K8/3e4h8OlQjuCPlhZF7oFwtn339EZM8yJkHg6gdfciV8KOr3gzlLyG3jiVEQ==}
+  /@misskey-dev/eslint-plugin@2.0.3(@eslint/compat@1.1.1)(@typescript-eslint/eslint-plugin@7.17.0)(@typescript-eslint/parser@7.17.0)(eslint-plugin-import@2.29.1)(eslint@9.8.0)(globals@15.8.0):
+    resolution: {integrity: sha512-Gd7chezh53Gq4BZ+Tw/uRi4t5DocXR+vTFuTSRpwrZjbyTk6tWMHLV0EtaGY/6GT+Q6WH3UMJYExsFyHFK+JPw==}
     peerDependencies:
       '@eslint/compat': '>= 1'
       '@typescript-eslint/eslint-plugin': '>= 7'
@@ -7880,7 +7880,7 @@ packages:
       ts-dedent: 2.2.0
       type-fest: 2.19.0
       vue: 3.4.37(typescript@5.5.4)
-      vue-component-type-helpers: 2.1.4
+      vue-component-type-helpers: 2.1.6
     transitivePeerDependencies:
       - encoding
       - prettier
@@ -7905,7 +7905,7 @@ packages:
       ts-dedent: 2.2.0
       type-fest: 2.19.0
       vue: 3.4.37(typescript@5.5.4)
-      vue-component-type-helpers: 2.1.4
+      vue-component-type-helpers: 2.1.6
     dev: true
 
   /@swc/cli@0.3.12(@swc/core@1.6.6)(chokidar@3.5.3):
@@ -21243,6 +21243,10 @@ packages:
 
   /vue-component-type-helpers@2.1.4:
     resolution: {integrity: sha512-aVqB3KxwpM76cYRkpnezl1J62E/1omzHQfx1yuz7zcbxmzmP/PeSgI20NEmkdeGnjZPVzm0V9fB4ZyRu5BBj4A==}
+    dev: true
+
+  /vue-component-type-helpers@2.1.6:
+    resolution: {integrity: sha512-ng11B8B/ZADUMMOsRbqv0arc442q7lifSubD0v8oDXIFoMg/mXwAPUunrroIDkY+mcD0dHKccdaznSVp8EoX3w==}
     dev: true
 
   /vue-demi@0.14.10(vue@3.4.37):
