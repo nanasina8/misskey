@@ -123,7 +123,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<p v-if="appearNote.repliesCount > 0" :class="$style.noteFooterButtonCount">{{ number(appearNote.repliesCount) }}</p>
 			</button>
 			<button
-				v-if="canRenote"
+				v-if="canRenote || canPakuru"
 				ref="renoteButton"
 				class="_button"
 				:class="$style.noteFooterButton"
@@ -247,6 +247,7 @@ import { isEnabledUrlPreview } from '@/instance.js';
 import { type Keymap } from '@/scripts/hotkey.js';
 import { getAppearNote } from '@/scripts/tms/get-appear-note.js';
 import { isQuote, isRenote } from '@/scripts/tms/is-renote.js';
+import { tmsStore } from '@/tms/store.js';
 
 const props = withDefaults(defineProps<{
 	note: Misskey.entities.Note;
@@ -300,6 +301,7 @@ const showTicker = computed(() => (defaultStore.state.instanceTicker === 'always
 const conversation = ref<Misskey.entities.Note[]>([]);
 const replies = ref<Misskey.entities.Note[]>([]);
 const canRenote = computed(() => ['public', 'home'].includes(appearNote.value.visibility) || appearNote.value.userId === $i?.id);
+const canPakuru = computed(() => tmsStore.reactiveState.enablePakuru.value || tmsStore.reactiveState.enableNumberquote.value);
 
 const pleaseLoginContext = computed(() => ({
 	type: 'lookup',
@@ -409,7 +411,7 @@ async function renote() {
 	pleaseLogin(undefined, pleaseLoginContext.value);
 	showMovedDialog();
 
-	const { menu } = await getRenoteMenu({ note: note.value, renoteButton });
+	const { menu } = await getRenoteMenu({ note: note.value, renoteButton, canRenote: canRenote.value });
 	os.popupMenu(menu, renoteButton.value);
 }
 
