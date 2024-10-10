@@ -210,7 +210,7 @@ export const defaultStore = markRaw(new Storage('base', {
 	},
 	nsfw: {
 		where: 'device',
-		default: 'respect' as 'respect' | 'force' | 'ignore',
+		default: 'force' as 'respect' | 'force' | 'ignore',
 	},
 	highlightSensitiveMedia: {
 		where: 'device',
@@ -218,11 +218,11 @@ export const defaultStore = markRaw(new Storage('base', {
 	},
 	animation: {
 		where: 'device',
-		default: !window.matchMedia('(prefers-reduced-motion)').matches,
+		default: true,
 	},
 	animatedMfm: {
 		where: 'device',
-		default: !window.matchMedia('(prefers-reduced-motion)').matches,
+		default: true,
 	},
 	advancedMfm: {
 		where: 'device',
@@ -234,7 +234,7 @@ export const defaultStore = markRaw(new Storage('base', {
 	},
 	enableQuickAddMfmFunction: {
 		where: 'device',
-		default: false,
+		default: true,
 	},
 	loadRawImages: {
 		where: 'device',
@@ -278,7 +278,7 @@ export const defaultStore = markRaw(new Storage('base', {
 	},
 	useReactionPickerForContextMenu: {
 		where: 'device',
-		default: false,
+		default: true,
 	},
 	showGapBetweenNotesInTimeline: {
 		where: 'device',
@@ -286,7 +286,7 @@ export const defaultStore = markRaw(new Storage('base', {
 	},
 	darkMode: {
 		where: 'device',
-		default: false,
+		default: true,
 	},
 	instanceTicker: {
 		where: 'device',
@@ -294,15 +294,15 @@ export const defaultStore = markRaw(new Storage('base', {
 	},
 	emojiPickerScale: {
 		where: 'device',
-		default: 1,
+		default: 3,
 	},
 	emojiPickerWidth: {
 		where: 'device',
-		default: 1,
+		default: 5,
 	},
 	emojiPickerHeight: {
 		where: 'device',
-		default: 2,
+		default: 4,
 	},
 	emojiPickerStyle: {
 		where: 'device',
@@ -471,7 +471,7 @@ export const defaultStore = markRaw(new Storage('base', {
 	},
 	sound_notUseSound: {
 		where: 'device',
-		default: false,
+		default: true
 	},
 	sound_useSoundOnlyWhenActive: {
 		where: 'device',

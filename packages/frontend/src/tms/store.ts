@@ -20,18 +20,18 @@ export const tmsStore = markRaw(new Storage('tmsMain', {
 	},
 	pullToRefreshSensitivity: {
 		where: 'device',
-		default: 'middle' as 'low' | 'middle' | 'high',
+		default: 'low' as 'low' | 'middle' | 'high',
 	},
 	pullToRefreshAllReload: {
 		where: 'device',
-		default: false,
+		default: true,
 	},
 	enablePakuru: {
 		where: 'device',
-		default: false,
+		default: true,
 	},
 	enableNumberquote: {
 		where: 'device',
-		default: false,
+		default: true,
 	},
 }));
