@@ -51,6 +51,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 						<MkButton @click="refreshMetadata"><i class="ti ti-refresh"></i> Refresh metadata</MkButton>
 						<MkTextarea v-model="moderationNote" manualSave>
 							<template #label>{{ i18n.ts.moderationNote }}</template>
+							<template #caption>{{ i18n.ts._tms.moderationNoteIsSharedAmongModerators }}</template>
 						</MkTextarea>
 					</div>
 				</FormSection>
@@ -118,7 +119,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div v-else-if="tab === 'users'" key="users" class="_gaps_m">
 				<MkPagination v-slot="{items}" :pagination="usersPagination" style="display: grid; grid-template-columns: repeat(auto-fill,minmax(270px,1fr)); gap: 12px;">
 					<MkA v-for="user in items" :key="user.id" v-tooltip.mfm="`Last posted: ${dateString(user.updatedAt)}`" class="user" :to="`/admin/user/${user.id}`">
-						<MkUserCardMini :user="user"/>
+						<MkUserCardMini :user="user" withChart/>
 					</MkA>
 				</MkPagination>
 			</div>

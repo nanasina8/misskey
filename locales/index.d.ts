@@ -49,6 +49,20 @@ export interface Locale extends ILocale {
      */
     readonly "password": string;
     /**
+     * 初期設定開始用パスワード
+     */
+    readonly "initialPasswordForSetup": string;
+    /**
+     * 初期設定開始用のパスワードが違います。
+     */
+    readonly "initialPasswordIsIncorrect": string;
+    /**
+     * Misskeyを自分でインストールした場合は、設定ファイルに入力したパスワードを使用してください。
+     * Misskeyのホスティングサービスなどを使用している場合は、提供されたパスワードを使用してください。
+     * パスワードを設定していない場合は、空欄にしたまま続行してください。
+     */
+    readonly "initialPasswordForSetupDescription": string;
+    /**
      * パスワードを忘れた
      */
     readonly "forgotPassword": string;
@@ -1821,6 +1835,10 @@ export interface Locale extends ILocale {
      */
     readonly "moderationNote": string;
     /**
+     * モデレーター間でだけ共有されるメモを記入することができます。
+     */
+    readonly "moderationNoteDescription": string;
+    /**
      * モデレーションノートを追加する
      */
     readonly "addModerationNote": string;
@@ -2881,21 +2899,9 @@ export interface Locale extends ILocale {
      */
     readonly "reporterOrigin": string;
     /**
-     * リモートサーバーに通報を転送する
-     */
-    readonly "forwardReport": string;
-    /**
-     * リモートサーバーからはあなたの情報は見れず、匿名のシステムアカウントとして表示されます。
-     */
-    readonly "forwardReportIsAnonymous": string;
-    /**
      * 送信
      */
     readonly "send": string;
-    /**
-     * 対応済みにする
-     */
-    readonly "abuseMarkAsResolved": string;
     /**
      * 新しいタブで開く
      */
@@ -3701,6 +3707,10 @@ export interface Locale extends ILocale {
      */
     readonly "incorrectPassword": string;
     /**
+     * ワンタイムパスワードが間違っているか、期限切れになっています。
+     */
+    readonly "incorrectTotp": string;
+    /**
      * 「{choice}」に投票しますか？
      */
     readonly "voteConfirm": ParameterizedString<"choice">;
@@ -4356,6 +4366,10 @@ export interface Locale extends ILocale {
      * リモートサーバーのチャートを生成
      */
     readonly "enableChartsForFederatedInstances": string;
+    /**
+     * リモートサーバーの情報を取得
+     */
+    readonly "enableStatsForFederatedInstances": string;
     /**
      * ノートのアクションにクリップを追加
      */
@@ -5152,6 +5166,57 @@ export interface Locale extends ILocale {
      * フォロワーへのメッセージ
      */
     readonly "messageToFollower": string;
+    /**
+     * 対象
+     */
+    readonly "target": string;
+    /**
+     * CAPTCHAのテストを目的とした機能です。<strong>本番環境で使用しないでください。</strong>
+     */
+    readonly "testCaptchaWarning": string;
+    /**
+     * 禁止ワード（ユーザーの名前）
+     */
+    readonly "prohibitedWordsForNameOfUser": string;
+    /**
+     * このリストに含まれる文字列がユーザーの名前に含まれる場合、ユーザーの名前の変更を拒否します。モデレーター権限を持つユーザーはこの制限の影響を受けません。
+     */
+    readonly "prohibitedWordsForNameOfUserDescription": string;
+    /**
+     * 変更しようとした名前に禁止された文字列が含まれています
+     */
+    readonly "yourNameContainsProhibitedWords": string;
+    /**
+     * 名前に禁止されている文字列が含まれています。この名前を使用したい場合は、サーバー管理者にお問い合わせください。
+     */
+    readonly "yourNameContainsProhibitedWordsDescription": string;
+    readonly "_abuseUserReport": {
+        /**
+         * 転送
+         */
+        readonly "forward": string;
+        /**
+         * 匿名のシステムアカウントとして、リモートサーバーに通報を転送します。
+         */
+        readonly "forwardDescription": string;
+        /**
+         * 解決
+         */
+        readonly "resolve": string;
+        /**
+         * 是認
+         */
+        readonly "accept": string;
+        /**
+         * 否認
+         */
+        readonly "reject": string;
+        /**
+         * 内容が正当である通報に対応した場合は「是認」を選択し、肯定的にケースが解決されたことをマークします。
+         * 内容が正当でない通報の場合は「否認」を選択し、否定的にケースが解決されたことをマークします。
+         */
+        readonly "resolveTutorial": string;
+    };
     readonly "_delivery": {
         /**
          * 配信状態
@@ -5655,6 +5720,10 @@ export interface Locale extends ILocale {
          * サーバー運営者へのお問い合わせフォームのURLや、運営者の連絡先等が記載されたWebページのURLを指定します。
          */
         readonly "inquiryUrlDescription": string;
+        /**
+         * 一定期間モデレーターのアクティビティが検出されなかった場合、スパム防止のためこの設定は自動でオフになります。
+         */
+        readonly "thisSettingWillAutomaticallyOffWhenModeratorsInactive": string;
     };
     readonly "_accountMigration": {
         /**
@@ -7665,10 +7734,6 @@ export interface Locale extends ILocale {
              */
             readonly "inputBorder": string;
             /**
-             * リスト項目の背景 (ホバー)
-             */
-            readonly "listItemHoverBg": string;
-            /**
              * ドライブフォルダーの背景
              */
             readonly "driveFolderBg": string;
@@ -9285,6 +9350,10 @@ export interface Locale extends ILocale {
          * {x}のエクスポートが完了しました
          */
         readonly "exportOfXCompleted": ParameterizedString<"x">;
+        /**
+         * ログインがありました
+         */
+        readonly "login": string;
         readonly "_types": {
             /**
              * すべて
@@ -9342,6 +9411,10 @@ export interface Locale extends ILocale {
              * エクスポートが完了した
              */
             readonly "exportCompleted": string;
+            /**
+             * ログイン
+             */
+            readonly "login": string;
             /**
              * 通知のテスト
              */
@@ -9588,6 +9661,14 @@ export interface Locale extends ILocale {
              * ユーザーが作成されたとき
              */
             readonly "userCreated": string;
+            /**
+             * モデレーターが一定期間非アクティブになったとき
+             */
+            readonly "inactiveModeratorsWarning": string;
+            /**
+             * モデレーターが一定期間非アクティブだったため、システムにより招待制へと変更されたとき
+             */
+            readonly "inactiveModeratorsInvitationOnlyChanged": string;
         };
         /**
          * Webhookを削除しますか？
@@ -9759,6 +9840,14 @@ export interface Locale extends ILocale {
          * 通報を解決
          */
         readonly "resolveAbuseReport": string;
+        /**
+         * 通報を転送
+         */
+        readonly "forwardAbuseReport": string;
+        /**
+         * 通報のモデレーションノート更新
+         */
+        readonly "updateAbuseReportNote": string;
         /**
          * 招待コードを作成
          */
@@ -10714,6 +10803,56 @@ export interface Locale extends ILocale {
              * 例: misskey.example.com
              */
             readonly "serverHostPlaceholder": string;
+        };
+        readonly "_abuseUserReport": {
+            /**
+             * 解決済み
+             */
+            readonly "resolved": string;
+            /**
+             * {user}によって解決済み
+             */
+            readonly "resolvedBy": ParameterizedString<"user">;
+            /**
+             * 是認としてマーク済み
+             */
+            readonly "markedAsAccept": string;
+            /**
+             * 否認としてマーク済み
+             */
+            readonly "markedAsReject": string;
+            /**
+             * 投稿元のサーバーに転送済み
+             */
+            readonly "forwardedReport": string;
+            /**
+             * 是認としてマークして解決
+             */
+            readonly "markAsAcceptedAndResolve": string;
+            /**
+             * 否認としてマークして解決
+             */
+            readonly "markAsRejectedAndResolve": string;
+            /**
+             * その他としてマークして解決
+             */
+            readonly "markAsOtherAndResolve": string;
+            /**
+             * 投稿元のサーバーに通報を転送
+             */
+            readonly "forwardReport": string;
+            /**
+             * 通報メモ
+             */
+            readonly "reportMemo": string;
+            /**
+             * 通報メモを追加
+             */
+            readonly "addReportMemo": string;
+            /**
+             * 通報メモはモデレーター間で共有されます。
+             */
+            readonly "reportMemoIsSharedAmongModerators": string;
         };
     };
 }

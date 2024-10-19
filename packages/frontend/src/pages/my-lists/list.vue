@@ -36,7 +36,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 								<div v-for="item in items" :key="item.id">
 									<div :class="$style.userItem">
 										<MkA :class="$style.userItemBody" :to="`${userPage(item.user)}`">
-											<MkUserCardMini :user="item.user"/>
+											<MkUserCardMini :user="item.user" withChart/>
 										</MkA>
 										<button class="_button" :class="$style.menu" @click="showMembershipMenu(item, $event)"><i class="ti ti-dots"></i></button>
 										<button class="_button" :class="$style.remove" @click="removeUser(item, $event)"><i class="ti ti-x"></i></button>
@@ -199,7 +199,7 @@ definePageMetadata(() => ({
 
 <style lang="scss" module>
 .main {
-	min-height: calc(100cqh - (var(--stickyTop, 0px) + var(--stickyBottom, 0px)));
+	min-height: calc(100cqh - (var(--MI-stickyTop, 0px) + var(--MI-stickyBottom, 0px)));
 }
 
 .userItem {
@@ -234,8 +234,8 @@ definePageMetadata(() => ({
 }
 
 .footer {
-	-webkit-backdrop-filter: var(--blur, blur(15px));
-	backdrop-filter: var(--blur, blur(15px));
-	border-top: solid 0.5px var(--divider);
+	-webkit-backdrop-filter: var(--MI-blur, blur(15px));
+	backdrop-filter: var(--MI-blur, blur(15px));
+	border-top: solid 0.5px var(--MI_THEME-divider);
 }
 </style>

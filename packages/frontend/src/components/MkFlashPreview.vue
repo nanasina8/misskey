@@ -36,7 +36,7 @@ const props = defineProps<{
 
 	&:hover {
 		text-decoration: none;
-		color: var(--accent);
+		color: var(--MI_THEME-accent);
 	}
 
 	&:focus-visible {
@@ -83,7 +83,6 @@ const props = defineProps<{
 			> p {
 				display: inline-block;
 				margin: 0;
-				color: var(--urlPreviewInfo);
 				font-size: 0.8em;
 				line-height: 16px;
 				vertical-align: top;
@@ -92,9 +91,16 @@ const props = defineProps<{
 	}
 
 	&:global(.gray) {
-		--c: var(--bg);
-		background-image: linear-gradient(45deg, var(--c) 16.67%, transparent 16.67%, transparent 50%, var(--c) 50%, var(--c) 66.67%, transparent 66.67%, transparent 100%);
-		background-size: 16px 16px;
+		background-image: repeating-linear-gradient(
+			135deg,
+			transparent 0px 10px,
+			var(--MI_THEME-bg) 6px 16px
+		);
+
+		// NOTE: iOS/iPadOS環境でクラッシュする https://github.com/taiyme/misskey/issues/293
+		html[data-browser-engine=webkit] & {
+			background-image: unset !important;
+		}
 	}
 
 	@media (max-width: 700px) {

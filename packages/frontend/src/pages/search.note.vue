@@ -70,7 +70,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 							<div style="overflow: hidden;">
 								<MkUserCardMini
 									:user="user"
-									:withChart="false"
 									:class="$style.userSelectedCard"
 								/>
 							</div>
@@ -333,7 +332,7 @@ async function search() {
 	width: 100%;
 	height: 100%;
 	padding: 12px;
-	border: 2px dashed var(--fgTransparent);
+	border: 2px dashed var(--MI_THEME-fgTransparent);
 }
 
 .userSelectButtonInner {
