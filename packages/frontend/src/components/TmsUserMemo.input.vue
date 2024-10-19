@@ -12,7 +12,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 			v-model="modelValue"
 			:class="$style.core"
 			rows="1"
-			@input="adjustInputEl"
+			@input.passive="adjustInputEl"
+			@compositionupdate.passive="onCompositionUpdate"
+			@compositionend.passive="onCompositionEnd"
 		/>
 	</div>
 	<div v-if="changed" :class="$style.footer">
@@ -23,7 +25,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, ref, shallowRef } from 'vue';
+import { computed, nextTick, onMounted, ref, shallowRef } from 'vue';
 import { i18n } from '@/i18n.js';
 import MkButton from '@/components/MkButton.vue';
 
@@ -42,7 +44,9 @@ const modelValue = ref(props.modelValue);
 
 const beforeValue = ref(modelValue.value);
 
-const changed = computed(() => modelValue.value !== beforeValue.value);
+const imeText = ref('');
+
+const changed = computed(() => `${modelValue.value}${imeText.value}` !== beforeValue.value);
 
 const update = () => {
 	beforeValue.value = modelValue.value;
@@ -56,9 +60,23 @@ const adjustInputEl = () => {
 	inputEl.value.style.height = `${inputEl.value.scrollHeight}px`;
 };
 
+const onCompositionUpdate = (ev: CompositionEvent) => {
+	imeText.value = ev.data;
+};
+
+const onCompositionEnd = () => {
+	imeText.value = '';
+};
+
 const focus = () => {
 	inputEl.value?.focus();
 };
+
+onMounted(() => {
+	nextTick(() => {
+		adjustInputEl();
+	});
+});
 
 defineExpose({
 	focus,
@@ -68,8 +86,8 @@ defineExpose({
 <style lang="scss" module>
 .textarea {
 	background: transparent;
-	color: var(--fg);
-	border: 1px solid var(--divider);
+	color: var(--MI_THEME-fg);
+	border: 1px solid var(--MI_THEME-divider);
 	border-radius: 8px;
 	padding: 8px;
 	line-height: 0;
@@ -78,7 +96,7 @@ defineExpose({
 
 .heading {
 	text-align: left;
-	color: var(--fgTransparent);
+	color: var(--MI_THEME-fgTransparent);
 	line-height: 1.5;
 	font-size: 85%;
 	pointer-events: none;
@@ -96,7 +114,7 @@ defineExpose({
 	height: auto;
 	min-height: 0;
 	line-height: 1.5;
-	color: var(--fg);
+	color: var(--MI_THEME-fg);
 	overflow: hidden;
 	background: transparent;
 	font-family: inherit;
@@ -113,7 +131,7 @@ defineExpose({
 
 .caption {
 	font-size: 0.85em;
-	color: var(--fgTransparentWeak);
+	color: var(--MI_THEME-fgTransparentWeak);
 
 	&:empty {
 		display: none;

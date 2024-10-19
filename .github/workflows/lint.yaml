@@ -4,23 +4,37 @@ on:
   push:
     branches:
       - taiyme
-    paths:
-      - .github/workflows/lint.yaml
-      - packages/**/*
-  pull_request:
+      - release
     paths:
       - .github/workflows/lint.yaml
       - packages/**/*
 
+  pull_request_target:
+    branches:
+      - taiyme
+      - release
+    paths:
+      - packages/**/*
+
+permissions:
+  contents: read
+
 jobs:
-  run_pnpm_install:
+  pre-checkout:
+    name: Pre checkout
+    uses: ./.github/workflows/pre-checkout.yaml
+
+  run-pnpm-install:
     name: Run pnpm install
     runs-on: ubuntu-22.04
+    needs:
+      - pre-checkout
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.0
+        uses: actions/checkout@v4.2.1
         with:
           persist-credentials: false
+          ref: ${{ needs.pre-checkout.outputs.sha }}
           fetch-depth: 1
           submodules: true
 
@@ -42,9 +56,10 @@ jobs:
     name: Lint
     runs-on: ubuntu-22.04
     needs:
-      - run_pnpm_install
-    continue-on-error: true
+      - pre-checkout
+      - run-pnpm-install
     strategy:
+      fail-fast: false
       matrix:
         workspace:
           - backend
@@ -60,9 +75,10 @@ jobs:
       eslint-cache-path: ${{ github.workspace }}/node_modules/.cache/eslint-${{ matrix.workspace }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.0
+        uses: actions/checkout@v4.2.1
         with:
           persist-credentials: false
+          ref: ${{ needs.pre-checkout.outputs.sha }}
           fetch-depth: 1
           submodules: true
 
@@ -81,10 +97,10 @@ jobs:
           pnpm i --frozen-lockfile
 
       - name: Restore eslint cache
-        uses: actions/cache@v4.0.2
+        uses: actions/cache@v4.1.1
         with:
           path: ${{ env.eslint-cache-path }}
-          key: eslint-${{ env.eslint-cache-version }}-${{ matrix.workspace }}-${{ hashFiles('**/pnpm-lock.yaml') }}-${{ github.ref_name }}-${{ github.sha }}
+          key: eslint-${{ env.eslint-cache-version }}-${{ matrix.workspace }}-${{ hashFiles('**/pnpm-lock.yaml') }}-${{ needs.pre-checkout.outputs.sha }}
           restore-keys: eslint-${{ env.eslint-cache-version }}-${{ matrix.workspace }}-${{ hashFiles('**/pnpm-lock.yaml') }}-
 
       - name: Run eslint
@@ -95,9 +111,10 @@ jobs:
     name: Typecheck
     runs-on: ubuntu-22.04
     needs:
-      - run_pnpm_install
-    continue-on-error: true
+      - pre-checkout
+      - run-pnpm-install
     strategy:
+      fail-fast: false
       matrix:
         workspace:
           - backend
@@ -105,9 +122,10 @@ jobs:
           - sw
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.0
+        uses: actions/checkout@v4.2.1
         with:
           persist-credentials: false
+          ref: ${{ needs.pre-checkout.outputs.sha }}
           fetch-depth: 1
           submodules: true
 
@@ -138,3 +156,22 @@ jobs:
       - name: Run typecheck
         run: |
           pnpm --filter ${{ matrix.workspace }} run typecheck
+
+  status-checks:
+    name: status-checks:lint # required status checks
+    runs-on: ubuntu-22.04
+    if: always()
+    needs:
+      - lint
+      - typecheck
+    steps:
+      - name: Check needs results
+        env:
+          needs_result: ${{ toJSON(needs.*.result) }}
+        run: |
+          results="$(jq -r '.[]' <<< "$needs_result")"
+          echo "$results" | while read -r line; do
+            if [[ "$line" != "success" ]]; then
+              exit 1
+            fi
+          done

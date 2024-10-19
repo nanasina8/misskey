@@ -85,10 +85,28 @@ const cancel = () => {
 .emojiImgWrapper {
 	max-width: 100%;
 	height: 40cqh;
-	background-image: repeating-linear-gradient(45deg, transparent, transparent 8px, var(--X5) 8px, var(--X5) 14px);
-	border-radius: var(--radius);
+	border-radius: var(--MI-radius);
 	margin: auto;
 	overflow-y: hidden;
+	background-image: repeating-linear-gradient(
+		135deg,
+		transparent 0px 10px,
+		var(--c) 6px 16px
+	);
+
+	// NOTE: iOS/iPadOS環境でクラッシュする https://github.com/taiyme/misskey/issues/293
+	html[data-browser-engine=webkit] & {
+		background-image: unset !important;
+	}
+
+	&,
+	html[data-color-scheme=light] & {
+		--c: rgb(0 0 0 / 0.02);
+	}
+
+	html[data-color-scheme=dark] & {
+		--c: rgb(255 255 255 / 0.02);
+	}
 }
 
 .aliases {
@@ -101,8 +119,8 @@ const cancel = () => {
 	display: inline-block;
 	word-break: break-all;
 	padding: 3px 10px;
-	background-color: var(--X5);
-	border: solid 1px var(--divider);
-	border-radius: var(--radius);
+	background-color: var(--MI_THEME-X5);
+	border: solid 1px var(--MI_THEME-divider);
+	border-radius: var(--MI_THEME-radius);
 }
 </style>
