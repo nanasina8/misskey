@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { VNode, h, SetupContext, provide } from 'vue';
+import { VNode, h, SetupContext } from 'vue';
 import * as mfm from 'mfm-js';
 import * as Misskey from 'misskey-js';
 import { host } from '@@/js/config.js';
@@ -33,8 +33,8 @@ const QUOTE_STYLE = `
 display: block;
 margin: 8px;
 padding: 6px 0 6px 12px;
-color: var(--fg);
-border-left: solid 3px var(--fg);
+color: var(--MI_THEME-fg);
+border-left: solid 3px var(--MI_THEME-fg);
 opacity: 0.7;
 `.split('\n').join(' ');
 
@@ -59,8 +59,6 @@ type MfmEvents = {
 
 // eslint-disable-next-line import/no-default-export
 export default function (props: MfmProps, { emit }: { emit: SetupContext<MfmEvents>['emit'] }) {
-	provide('linkNavigationBehavior', props.linkNavigationBehavior);
-
 	const isNote = props.isNote ?? true;
 	const shouldNyaize = props.nyaize ? props.nyaize === 'respect' ? props.author?.isCat : false : false;
 
@@ -287,7 +285,7 @@ export default function (props: MfmProps, { emit }: { emit: SetupContext<MfmEven
 					}
 					case 'border': {
 						let color = validColor(token.props.args.color);
-						color = color ? `#${color}` : 'var(--accent)';
+						color = color ? `#${color}` : 'var(--MI_THEME-accent)';
 						let b_style = token.props.args.style;
 						if (
 							typeof b_style !== 'string' ||
@@ -320,7 +318,7 @@ export default function (props: MfmProps, { emit }: { emit: SetupContext<MfmEven
 						const child = token.children[0];
 						const unixtime = parseInt(child.type === 'text' ? child.props.text : '');
 						return h('span', {
-							style: 'display: inline-block; font-size: 90%; border: solid 1px var(--divider); border-radius: 999px; padding: 4px 10px 4px 6px;',
+							style: 'display: inline-block; font-size: 90%; border: solid 1px var(--MI_THEME-divider); border-radius: 999px; padding: 4px 10px 4px 6px;',
 						}, [
 							h('i', {
 								class: 'ti ti-clock',
@@ -368,6 +366,7 @@ export default function (props: MfmProps, { emit }: { emit: SetupContext<MfmEven
 					key: Math.random(),
 					url: token.props.url,
 					rel: 'nofollow noopener',
+					navigationBehavior: props.linkNavigationBehavior,
 				})];
 			}
 
@@ -376,6 +375,7 @@ export default function (props: MfmProps, { emit }: { emit: SetupContext<MfmEven
 					key: Math.random(),
 					url: token.props.url,
 					rel: 'nofollow noopener',
+					navigationBehavior: props.linkNavigationBehavior,
 				}, genEl(token.children, { scale, disableNyaize: true, disableRjNumber: true }))];
 			}
 
@@ -384,6 +384,7 @@ export default function (props: MfmProps, { emit }: { emit: SetupContext<MfmEven
 					key: Math.random(),
 					host: (token.props.host == null && props.author && props.author.host != null ? props.author.host : token.props.host) ?? host,
 					username: token.props.username,
+					navigationBehavior: props.linkNavigationBehavior,
 				})];
 			}
 
@@ -391,7 +392,8 @@ export default function (props: MfmProps, { emit }: { emit: SetupContext<MfmEven
 				return [h(MkA, {
 					key: Math.random(),
 					to: isNote ? `/tags/${encodeURIComponent(token.props.hashtag)}` : `/user-tags/${encodeURIComponent(token.props.hashtag)}`,
-					style: 'color:var(--hashtag);',
+					style: 'color:var(--MI_THEME-hashtag);',
+					behavior: props.linkNavigationBehavior,
 				}, `#${token.props.hashtag}`)];
 			}
 

@@ -2,6 +2,9 @@ name: Generate release notes
 description: リリースノートを作成します
 
 inputs:
+  token:
+    description: Token
+    required: false
   version:
     description: Version
     required: true
@@ -17,7 +20,7 @@ runs:
     - name: Prepare
       env:
         INPUT_VERSION: ${{ inputs.version }}
-        GH_TOKEN: ${{ github.token }}
+        GH_TOKEN: ${{ inputs.token || github.token }}
       shell: bash
       run: |
         current_version="$INPUT_VERSION"
@@ -43,7 +46,7 @@ runs:
 
     - name: Generate notes
       env:
-        GH_TOKEN: ${{ github.token }}
+        GH_TOKEN: ${{ inputs.token || github.token }}
       shell: bash
       run: |
         delimiter="$(openssl rand -hex 8)"
@@ -53,7 +56,7 @@ runs:
             -f "tag_name=${current_version}" \
             -f "previous_tag_name=${previous_version}" \
             --jq '.body'
-          echo $delimiter
+          echo "$delimiter"
         } >> $GITHUB_ENV
 
     - name: Generate release notes
@@ -73,5 +76,5 @@ runs:
           echo '<details><summary>Click to view</summary>'
           echo "$upstream_changelog"
           echo '</details>'
-          echo $delimiter
+          echo "$delimiter"
         } >> $GITHUB_OUTPUT
