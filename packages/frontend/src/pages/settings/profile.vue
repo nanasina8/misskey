@@ -154,10 +154,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 		<hr>
 
-		<SearchMarker :keywords="['hana', 'welcome', 'card']">
-			<MkButton @click="welcomeCard"><SearchLabel>{{ i18n.ts._hana._welcomeCardGen.title }}</SearchLabel></MkButton>
-		</SearchMarker>
-
 		<SearchMarker :keywords="['qrcode']">
 			<FormLink to="/qr">
 				<template #icon><i class="ti ti-qrcode"></i></template>
@@ -369,14 +365,6 @@ function changeBanner(ev) {
 			});
 		},
 	}], ev.currentTarget ?? ev.target);
-}
-
-function welcomeCard() {
-	const { dispose } = os.popup(defineAsyncComponent(() => import('@/components/HanaWelcomeCardGeneratorDialog.vue')), {}, {
-		closed: () => {
-			dispose();
-		},
-	});
 }
 
 const headerActions = computed(() => []);

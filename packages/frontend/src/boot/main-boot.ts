@@ -66,7 +66,7 @@ export async function mainBoot() {
 	emojiPicker.init();
 
 	if (isClientUpdated && $i) {
-		const { dispose } = popup(defineAsyncComponent(() => import('@/components/HanaUpdated.vue')), {}, {
+		const { dispose } = popup(defineAsyncComponent(() => import('@/components/MkUpdated.vue')), {}, {
 			closed: () => dispose(),
 		});
 
@@ -301,16 +301,6 @@ export async function mainBoot() {
 			});
 		}
 
-		if (
-			!hanaStore.s.neverShowWelcomeCardPopup &&
-			(Date.now() - createdAt.getTime()) < (1000 * 60 * 60 * 24 * 7) &&
-			(Date.now() - hanaStore.s.lastShowWelcomeCardPopup) > (1000 * 60 * 60 * 24)
-		) {
-			const { dispose } = popup(defineAsyncComponent(() => import('@/components/HanaWelcomeCardGeneratorPopup.vue')), {}, {
-				closed: () => dispose(),
-			});
-		}
-
 		if (store.s.realtimeMode) {
 			const stream = useStream();
 
@@ -381,10 +371,6 @@ export async function mainBoot() {
 			// 個人宛てお知らせが発行されたとき
 			main.on('announcementCreated', onAnnouncementCreated);
 		}
-	} else if (window.location.pathname !== '/' && !instance.disableRegistration) {
-		const { dispose } = popup(defineAsyncComponent(() => import('@/components/HanaVisitorLoginPopup.vue')), {}, {
-			closed: () => dispose(),
-		});
 	}
 
 	// shortcut
