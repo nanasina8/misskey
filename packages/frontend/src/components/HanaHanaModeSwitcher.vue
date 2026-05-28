@@ -7,7 +7,7 @@
 				<div :class="$style.tick">
 					<i class="ti ti-check"></i>
 				</div>
-				<div :class="$style.title"><i class="ti ti-hanamisskey-hanamode"></i> {{ i18n.ts._hana.hanaMode }}</div>
+				<div :class="$style.title"><i class="ti ti-flower-filled"></i> {{ i18n.ts._hana.hanaMode }}</div>
 			</div>
 			<ul>
 				<li>{{ i18n.ts._hana._hanaModeSwitcher.hana1 }}</li>

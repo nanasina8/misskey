@@ -11,7 +11,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</div>
 		<button key="public" :disabled="isSilenced || isReplyVisibilitySpecified" class="_button" :class="[$style.item, { [$style.active]: v === 'public' }]" data-index="1" @click="choose('public')">
 			<div :class="$style.icon">
-				<i v-if="$i.isInHanaMode" class="ti ti-hanamisskey-hanamode"></i>
+				<i v-if="$i.isInHanaMode" class="ti ti-flower-filled"></i>
 				<i v-else class="ti ti-world"></i>
 			</div>
 			<div :class="$style.body">

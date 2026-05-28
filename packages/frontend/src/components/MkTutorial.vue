@@ -128,7 +128,7 @@ export const tutorialBodyPagesDef = [{
 	type: 'tutorial',
 	title: i18n.ts._initialTutorial._timeline.title,
 }, {
-	icon: 'ti ti-hanamisskey-hanamode',
+	icon: 'ti ti-flower-filled',
 	type: 'setup',
 	title: i18n.ts._hana.hanaMode,
 }, {

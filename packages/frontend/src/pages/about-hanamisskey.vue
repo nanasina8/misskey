@@ -163,7 +163,7 @@ const headerTabs = computed(() => []);
 
 definePage(() => ({
 	title: i18n.ts._hana.aboutHanaMisskey,
-	icon: 'ti ti-hanamisskey-hanamode',
+	icon: 'ti ti-flower-filled',
 }));
 </script>
 

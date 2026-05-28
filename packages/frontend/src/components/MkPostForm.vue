@@ -21,7 +21,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<div :class="$style.headerRight">
 			<template v-if="!(targetChannel != null && fixed)">
 				<button v-if="targetChannel == null" ref="visibilityButton" v-tooltip="i18n.ts.visibility" :class="['_button', $style.headerRightItem, $style.visibility]" @click="setVisibility">
-					<span v-if="visibility === 'public' && $i.isInHanaMode"><i class="ti ti-hanamisskey-hanamode"></i></span>
+					<span v-if="visibility === 'public' && $i.isInHanaMode"><i class="ti ti-flower-filled"></i></span>
 					<span v-else-if="visibility === 'public'"><i class="ti ti-world"></i></span>
 					<span v-if="visibility === 'home'"><i class="ti ti-home"></i></span>
 					<span v-if="visibility === 'followers'"><i class="ti ti-lock"></i></span>

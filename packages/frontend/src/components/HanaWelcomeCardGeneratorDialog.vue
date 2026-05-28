@@ -8,7 +8,7 @@
 	@close="cancel"
 	@closed="$emit('closed')"
 >
-	<template #header><i class="ti ti-hanamisskey-hanamode"></i> {{ i18n.ts._hana._welcomeCardGen.title }}</template>
+	<template #header><i class="ti ti-flower-filled"></i> {{ i18n.ts._hana._welcomeCardGen.title }}</template>
 
 	<div :class="$style.hanaWelcomeCardGenRoot">
 		<Transition

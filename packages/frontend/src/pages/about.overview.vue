@@ -29,7 +29,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</div>
 			<div class="_gaps_s">
 				<FormLink to="/about-hanamisskey">
-					<template #icon><i class="ti ti-hanamisskey-hanamode"></i></template>
+					<template #icon><i class="ti ti-flower-filled"></i></template>
 					{{ i18n.ts._hana.aboutHanaMisskey }}
 				</FormLink>
 				<FormLink to="/about-misskey">
