@@ -13,10 +13,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 <script lang="ts" setup>
 import { computed, ref } from 'vue';
 import * as Misskey from 'misskey-js';
-import XEntrance from './welcome.entrance.hana.vue';
+import XEntrance from './welcome.entrance.classic.vue';
 import { instanceName } from '@@/js/config.js';
 import XSetup from './welcome.setup.vue';
-// import XEntranceClassic from './welcome.entrance.classic.vue';
+// import XEntranceHana from './welcome.entrance.hana.vue';
 // import XEntranceSimple from './welcome.entrance.simple.vue';
 import { definePage } from '@/page.js';
 import { fetchInstance } from '@/instance.js';
