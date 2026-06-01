@@ -2031,6 +2031,10 @@ declare namespace entities {
         NotesGlobalTimelineResponse,
         NotesHanamiTimelineRequest,
         NotesHanamiTimelineResponse,
+        NotesHanamiTimelineSeenRequest,
+        NotesHanamiTimelineSeenResponse,
+        NotesHanamiTrendsRequest,
+        NotesHanamiTrendsResponse,
         NotesHanamisearchV1Request,
         NotesHanamisearchV1Response,
         NotesHybridTimelineRequest,
@@ -2139,6 +2143,8 @@ declare namespace entities {
         UsersGalleryPostsResponse,
         UsersGetFrequentlyRepliedUsersRequest,
         UsersGetFrequentlyRepliedUsersResponse,
+        UsersHanamiRecommendationsRequest,
+        UsersHanamiRecommendationsResponse,
         UsersListsCreateRequest,
         UsersListsCreateResponse,
         UsersListsCreateFromPublicRequest,
@@ -3147,6 +3153,18 @@ type NotesHanamiTimelineRequest = operations['notes___hanami-timeline']['request
 type NotesHanamiTimelineResponse = operations['notes___hanami-timeline']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type NotesHanamiTimelineSeenRequest = operations['notes___hanami-timeline-seen']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTimelineSeenResponse = operations['notes___hanami-timeline-seen']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTrendsRequest = operations['notes___hanami-trends']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTrendsResponse = operations['notes___hanami-trends']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type NotesHybridTimelineRequest = operations['notes___hybrid-timeline']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -3767,6 +3785,12 @@ type UsersGetFrequentlyRepliedUsersRequest = operations['users___get-frequently-
 
 // @public (undocumented)
 type UsersGetFrequentlyRepliedUsersResponse = operations['users___get-frequently-replied-users']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type UsersHanamiRecommendationsRequest = operations['users___hanami-recommendations']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type UsersHanamiRecommendationsResponse = operations['users___hanami-recommendations']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type UsersListsCreateFromPublicRequest = operations['users___lists___create-from-public']['requestBody']['content']['application/json'];

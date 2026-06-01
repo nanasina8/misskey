@@ -387,6 +387,20 @@ export const meta = {
 				type: 'boolean',
 				optional: false, nullable: false,
 			},
+			hanamiShowRecommendationReason: {
+				type: 'boolean',
+				optional: false, nullable: false,
+			},
+			hanamiRecommendationAxisConfig: {
+				type: 'object',
+				optional: false, nullable: false,
+				properties: {
+					popular: { type: 'object', optional: true, nullable: false, properties: { available: { type: 'boolean', optional: true, nullable: false }, default: { type: 'boolean', optional: true, nullable: false } } },
+					lowExposure: { type: 'object', optional: true, nullable: false, properties: { available: { type: 'boolean', optional: true, nullable: false }, default: { type: 'boolean', optional: true, nullable: false } } },
+					trending: { type: 'object', optional: true, nullable: false, properties: { available: { type: 'boolean', optional: true, nullable: false }, default: { type: 'boolean', optional: true, nullable: false } } },
+					fof: { type: 'object', optional: true, nullable: false, properties: { available: { type: 'boolean', optional: true, nullable: false }, default: { type: 'boolean', optional: true, nullable: false } } },
+				},
+			},
 			perLocalUserUserTimelineCacheMax: {
 				type: 'number',
 				optional: false, nullable: false,
@@ -732,6 +746,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				manifestJsonOverride: instance.manifestJsonOverride,
 				enableFanoutTimeline: instance.enableFanoutTimeline,
 				enableFanoutTimelineDbFallback: instance.enableFanoutTimelineDbFallback,
+				hanamiShowRecommendationReason: instance.hanamiShowRecommendationReason,
+				hanamiRecommendationAxisConfig: instance.hanamiRecommendationAxisConfig,
 				perLocalUserUserTimelineCacheMax: instance.perLocalUserUserTimelineCacheMax,
 				perRemoteUserUserTimelineCacheMax: instance.perRemoteUserUserTimelineCacheMax,
 				perUserHomeTimelineCacheMax: instance.perUserHomeTimelineCacheMax,

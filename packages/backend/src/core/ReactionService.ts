@@ -219,11 +219,10 @@ export class ReactionService {
 					this.featuredService.updateInChannelNotesRanking(note.channelId, note.id, 1);
 				}
 			} else {
-				if (note.visibility === 'public' && note.replyId == null) {
+				// 推薦対象は public + home（はなみTLおすすめ）。home もリアクションでランキングに乗せる。
+				if ((note.visibility === 'public' || note.visibility === 'home') && note.replyId == null) {
 					this.featuredService.updateGlobalNotesRanking(note.id, 1);
-					if (note.userHost == null) {
-						this.featuredService.updatePerUserNotesRanking(note.userId, note.id, 1);
-					}
+					this.featuredService.updatePerUserNotesRanking(note.userId, note.id, 1);
 				}
 			}
 		}
@@ -317,6 +316,23 @@ export class ReactionService {
 				})
 				.where('id = :id', { id: note.id })
 				.execute();
+		}
+
+		// セルフではない、3日以内に投稿されたノートはハイライト用ランキングからも減算（過剰加点を防ぐ）
+		if (
+			note.userId !== user.id &&
+			(Date.now() - this.idService.parse(note.id).date.getTime()) < 1000 * 60 * 60 * 24 * 3
+		) {
+			if (note.channelId != null) {
+				if (note.replyId == null) {
+					this.featuredService.updateInChannelNotesRanking(note.channelId, note.id, -1);
+				}
+			} else {
+				if ((note.visibility === 'public' || note.visibility === 'home') && note.replyId == null) {
+					this.featuredService.updateGlobalNotesRanking(note.id, -1);
+					this.featuredService.updatePerUserNotesRanking(note.userId, note.id, -1);
+				}
+			}
 		}
 
 		this.globalEventService.publishNoteStream(note, 'unreacted', {

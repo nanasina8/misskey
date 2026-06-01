@@ -321,6 +321,16 @@ export const packedMetaDetailedOnlySchema = {
 	type: 'object',
 	optional: false, nullable: false,
 	properties: {
+		hanamiRecommendationAxisConfig: {
+			type: 'object',
+			optional: true, nullable: false,
+			properties: {
+				popular: { type: 'object', optional: true, nullable: false, properties: { available: { type: 'boolean', optional: true, nullable: false }, default: { type: 'boolean', optional: true, nullable: false } } },
+				lowExposure: { type: 'object', optional: true, nullable: false, properties: { available: { type: 'boolean', optional: true, nullable: false }, default: { type: 'boolean', optional: true, nullable: false } } },
+				trending: { type: 'object', optional: true, nullable: false, properties: { available: { type: 'boolean', optional: true, nullable: false }, default: { type: 'boolean', optional: true, nullable: false } } },
+				fof: { type: 'object', optional: true, nullable: false, properties: { available: { type: 'boolean', optional: true, nullable: false }, default: { type: 'boolean', optional: true, nullable: false } } },
+			},
+		},
 		features: {
 			type: 'object',
 			optional: true, nullable: false,

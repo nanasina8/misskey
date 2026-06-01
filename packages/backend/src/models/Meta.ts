@@ -589,6 +589,18 @@ export class MiMeta {
 	})
 	public enableFanoutTimelineDbFallback: boolean;
 
+	@Column('boolean', {
+		default: false,
+		comment: 'はなみTLおすすめに「理由」ラベルを表示するか（鯖管トグル, 既定OFF）',
+	})
+	public hanamiShowRecommendationReason: boolean;
+
+	@Column('jsonb', {
+		default: {},
+		comment: 'はなみTLおすすめ軸のサーバー設定（軸ごとの available と default）',
+	})
+	public hanamiRecommendationAxisConfig: Record<string, { available?: boolean; default?: boolean }>;
+
 	@Column('integer', {
 		default: 300,
 	})

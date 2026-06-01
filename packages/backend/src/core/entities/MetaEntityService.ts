@@ -159,6 +159,7 @@ export class MetaEntityService {
 			cacheRemoteSensitiveFiles: instance.cacheRemoteSensitiveFiles,
 			requireSetup: this.meta.rootUserId == null,
 			proxyAccountName: proxyAccount.username,
+			hanamiRecommendationAxisConfig: instance.hanamiRecommendationAxisConfig,
 			features: {
 				localTimeline: instance.policies.ltlAvailable,
 				hanamiTimeline: instance.policies.hanamiTlAvailable,

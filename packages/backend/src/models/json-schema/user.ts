@@ -479,6 +479,34 @@ export const packedMeDetailedOnlySchema = {
 			type: 'boolean',
 			nullable: false, optional: false,
 		},
+		hanamiRecommendationEnabled: {
+			type: 'boolean',
+			nullable: false, optional: true,
+		},
+		hanamiRecommendationStrength: {
+			type: 'string',
+			enum: ['low', 'normal', 'high', 'veryHigh'],
+			nullable: false, optional: true,
+		},
+		hanamiRecommendationAutoInjectEnabled: {
+			type: 'boolean',
+			nullable: false, optional: true,
+		},
+		hanamiRecommendationAutoInjectStrength: {
+			type: 'string',
+			enum: ['low', 'normal', 'high'],
+			nullable: false, optional: true,
+		},
+		hanamiRecommendationAxes: {
+			type: 'object',
+			nullable: false, optional: true,
+			properties: {
+				popular: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
+				lowExposure: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
+				trending: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
+				fof: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
+			},
+		},
 		receiveAnnouncementEmail: {
 			type: 'boolean',
 			nullable: false, optional: false,

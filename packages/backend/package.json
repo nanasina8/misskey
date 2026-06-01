@@ -135,6 +135,7 @@
 		"jsonld": "8.3.3",
 		"jsrsasign": "11.1.0",
 		"juice": "11.1.0",
+		"lindera-wasm-nodejs-unidic": "2.0.0",
 		"meilisearch": "0.55.0",
 		"mfm-js": "0.25.0",
 		"microformats-parser": "2.0.4",

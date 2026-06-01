@@ -446,4 +446,7 @@ export * as 'v2/admin/emoji/list' from './endpoints/v2/admin/emoji/list.js';
 // Hanamisskey
 export * as 'i/import-notes' from './endpoints/i/import-notes.js';
 export * as 'notes/hanami-timeline' from './endpoints/notes/hanami-timeline.js';
+export * as 'notes/hanami-timeline-seen' from './endpoints/notes/hanami-timeline-seen.js';
+export * as 'notes/hanami-trends' from './endpoints/notes/hanami-trends.js';
 export * as 'notes/hanamisearch-v1' from './endpoints/notes/hanamisearch-v1.js';
+export * as 'users/hanami-recommendations' from './endpoints/users/hanami-recommendations.js';

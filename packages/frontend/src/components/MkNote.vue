@@ -8,11 +8,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 	v-if="!hardMuted && !hideByPlugin && muted === false"
 	ref="rootEl"
 	v-hotkey="keymap"
+	v-appear="hanamiRecommended ? onRecommendationAppear : null"
 	:class="[$style.root, { [$style.showActionsOnlyHover]: prefer.s.showNoteActionsOnlyHover, [$style.skipRender]: prefer.s.skipNoteRender }]"
 	tabindex="0"
 >
 	<MkNoteSub v-if="appearNote.replyId && !renoteCollapsed" :note="appearNote?.reply ?? null" :class="$style.replyTo"/>
 	<div v-if="pinned" :class="$style.tip"><i class="ti ti-pin"></i> {{ i18n.ts.pinnedNote }}</div>
+	<div v-if="hanamiReason" :class="[$style.tip, $style.hanamiReason]"><i :class="hanamiReasonIcon"></i> {{ hanamiReasonLabel }}</div>
 	<div v-if="isRenote" :class="$style.renote">
 		<div v-if="note.channel" :class="$style.colorBar" :style="{ background: note.channel.color }"></div>
 		<MkAvatar :class="$style.renoteAvatar" :user="note.user" link preview/>
@@ -228,6 +230,7 @@ import * as sound from '@/utility/sound.js';
 import { misskeyApi, misskeyApiGet } from '@/utility/misskey-api.js';
 import { reactionPicker } from '@/utility/reaction-picker.js';
 import { extractUrlFromMfm } from '@/utility/extract-url-from-mfm.js';
+import { reportHanamiSeen } from '@/utility/hanami-seen.js';
 import { $i } from '@/i.js';
 import { i18n } from '@/i18n.js';
 import { getAbuseNoteMenu, getCopyNoteLinkMenu, getNoteClipMenu, getNoteMenu, getRenoteMenu } from '@/utility/get-note-menu.js';
@@ -290,6 +293,42 @@ if (noteViewInterruptors.length > 0) {
 
 const isRenote = Misskey.note.isPureRenote(note);
 const appearNote = getAppearNote(note) ?? note;
+
+// はなみTL おすすめの内部マーカーと理由ラベル。
+// _hanamiRecommended は理由表示OFFでも付くため、seen 報告はこの内部マーカーで行う。
+// _hanamiReason は鯖缶トグルON時だけ表示用に付く。
+const hanamiRecommendationMeta = computed(() => props.note as {
+	_hanamiRecommended?: boolean;
+	_hanamiReason?: { reason: string; term?: string };
+});
+const hanamiReason = computed(() => hanamiRecommendationMeta.value._hanamiReason ?? null);
+const hanamiRecommended = computed(() => hanamiRecommendationMeta.value._hanamiRecommended === true || hanamiReason.value != null);
+const hanamiReasonLabel = computed(() => {
+	const r = hanamiReason.value;
+	if (r == null) return '';
+	const reasons = i18n.ts._hana._recommendation._reason;
+	switch (r.reason) {
+		case 'popular': return reasons.popular;
+		case 'lowExposure': return reasons.lowExposure;
+		case 'trending': return r.term ? i18n.tsx._hana._recommendation._reason.trendingTerm({ term: r.term }) : reasons.trending;
+		case 'fof': return reasons.fof;
+		default: return '';
+	}
+});
+const hanamiReasonIcon = computed(() => {
+	switch (hanamiReason.value?.reason) {
+		case 'popular': return 'ti ti-flame';
+		case 'lowExposure': return 'ti ti-seedling';
+		case 'trending': return 'ti ti-trending-up';
+		case 'fof': return 'ti ti-users';
+		default: return 'ti ti-sparkles';
+	}
+});
+
+function onRecommendationAppear() {
+	if (hanamiRecommended.value) reportHanamiSeen(note.id);
+}
+
 const { $note: $appearNote, subscribe: subscribeManuallyToNoteCapture } = useNoteCapture({
 	note: appearNote,
 	parentNote: note,
@@ -792,6 +831,15 @@ function emitUpdReaction(emoji: string, delta: number) {
 }
 
 .tip + .article {
+	padding-top: 8px;
+}
+
+.hanamiReason {
+	color: var(--MI_THEME-accent);
+	gap: 6px;
+}
+
+.hanamiReason + .article {
 	padding-top: 8px;
 }
 

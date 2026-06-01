@@ -13268,6 +13268,154 @@ export interface Locale extends ILocale {
          * 読み込みに時間がかかっています。
          */
         "takingTooLongToLoad": string;
+        "_recommendation": {
+            /**
+             * はなみTL おすすめ
+             */
+            "title": string;
+            /**
+             * Fediverse 全体のおすすめノートを、はなみタイムラインに混ぜて表示します。
+             */
+            "description": string;
+            /**
+             * はなみTLにおすすめを表示する
+             */
+            "enable": string;
+            /**
+             * フォロー中の人のノートの間に、人気の投稿や埋もれた投稿などを混ぜて表示します。
+             */
+            "enableDescription": string;
+            /**
+             * おすすめの量
+             */
+            "amount": string;
+            /**
+             * 少なめ
+             */
+            "amountLow": string;
+            /**
+             * ふつう
+             */
+            "amountNormal": string;
+            /**
+             * 多め
+             */
+            "amountHigh": string;
+            /**
+             * とても多め
+             */
+            "amountVeryHigh": string;
+            /**
+             * 新着にもおすすめを自動挿入する
+             */
+            "autoInject": string;
+            /**
+             * フォロー中のノートが一定数流れた後だけおすすめを追加します。通常の読み込み時の混合量とは別にOFFにできます。
+             */
+            "autoInjectDescription": string;
+            /**
+             * 自動挿入の量
+             */
+            "autoInjectAmount": string;
+            /**
+             * 少なめ
+             */
+            "autoInjectAmountLow": string;
+            /**
+             * ふつう
+             */
+            "autoInjectAmountNormal": string;
+            /**
+             * 多め
+             */
+            "autoInjectAmountHigh": string;
+            /**
+             * 種類ごとの量を調整
+             */
+            "axes": string;
+            /**
+             * おすすめの種類ごとに「切／少なめ／ふつう／多め」を選べます。候補が少ないときは指定どおりに出ないことがあります。サーバーによっては一部が無効化されている場合があります。
+             */
+            "axesDescription": string;
+            /**
+             * おすすめの構成プリセット
+             */
+            "presets": string;
+            /**
+             * バランス
+             */
+            "presetBalanced": string;
+            /**
+             * 人気重視
+             */
+            "presetPopular": string;
+            /**
+             * 発見重視
+             */
+            "presetDiscover": string;
+            /**
+             * 話題重視
+             */
+            "presetTopic": string;
+            /**
+             * 切
+             */
+            "axisLevelOff": string;
+            /**
+             * 少なめ
+             */
+            "axisLevelLow": string;
+            /**
+             * ふつう
+             */
+            "axisLevelNormal": string;
+            /**
+             * 多め
+             */
+            "axisLevelHigh": string;
+            /**
+             * おすすめの種類ごとに、このサーバーで利用可能にするか・ユーザーの既定でONにするかを設定します。
+             */
+            "axisConfigDescription": string;
+            /**
+             * このサーバーで利用可能にする
+             */
+            "axisAvailable": string;
+            /**
+             * 既定でONにする
+             */
+            "axisDefault": string;
+            /**
+             * おすすめの理由ラベルを表示する
+             */
+            "showReason": string;
+            /**
+             * おすすめノートの上に、おすすめされた理由（人気・トレンドなど）を表示します。
+             */
+            "showReasonDescription": string;
+            "_reason": {
+                /**
+                 * 人気の投稿
+                 */
+                "popular": string;
+                /**
+                 * 埋もれた投稿
+                 */
+                "lowExposure": string;
+                /**
+                 * トレンド
+                 */
+                "trending": string;
+                /**
+                 * トレンド: {term}
+                 */
+                "trendingTerm": ParameterizedString<"term">;
+                /**
+                 * おすすめユーザー
+                 */
+                "fof": string;
+            };
+        };
         "_roles": {
             /**
              * 作成日時（タイムスタンプ）が～以前

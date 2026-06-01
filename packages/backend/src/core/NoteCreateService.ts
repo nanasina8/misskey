@@ -47,6 +47,7 @@ import { bindThis } from '@/decorators.js';
 import { DB_MAX_NOTE_TEXT_LENGTH } from '@/const.js';
 import { RoleService } from '@/core/RoleService.js';
 import { HanamiSearchService } from '@/core/hanamisearch/HanamiSearchService.js';
+import { HanamiTrendService } from '@/core/hanami/HanamiTrendService.js';
 import { FeaturedService } from '@/core/FeaturedService.js';
 import { FanoutTimelineNamePrefix, FanoutTimelineService } from '@/core/FanoutTimelineService.js';
 import { UtilityService } from '@/core/UtilityService.js';
@@ -220,6 +221,7 @@ export class NoteCreateService implements OnApplicationShutdown {
 		private roleService: RoleService,
 		private searchService: SearchService,
 		private hanamiSearchService: HanamiSearchService,
+		private hanamiTrendService: HanamiTrendService,
 		private notesChart: NotesChart,
 		private perUserNotesChart: PerUserNotesChart,
 		private activeUsersChart: ActiveUsersChart,
@@ -937,7 +939,9 @@ export class NoteCreateService implements OnApplicationShutdown {
 		}
 
 		if (data.renote && data.renote.userId !== user.id && !user.isBot) {
-			this.incRenoteCount(data.renote);
+			this.incRenoteCount(data.renote, user).catch(err => {
+				console.error('Failed to update renote featured ranking', err);
+			});
 		}
 
 		if (data.poll && data.poll.expiresAt) {
@@ -1098,7 +1102,9 @@ export class NoteCreateService implements OnApplicationShutdown {
 		}
 
 		if (data.renote && data.text == null && data.renote.userId !== user.id && !user.isBot) {
-			this.incRenoteCount(data.renote);
+			this.incRenoteCount(data.renote, user).catch(err => {
+				console.error('Failed to update renote featured ranking', err);
+			});
 		}
 
 		if (data.poll && data.poll.expiresAt) {
@@ -1154,7 +1160,7 @@ export class NoteCreateService implements OnApplicationShutdown {
 	}
 
 	@bindThis
-	private incRenoteCount(renote: MiNote) {
+	private async incRenoteCount(renote: MiNote, renoteUser: { id: MiUser['id']; host: MiUser['host']; }) {
 		this.notesRepository.createQueryBuilder().update()
 			.set({
 				renoteCount: () => '"renoteCount" + 1',
@@ -1162,19 +1168,31 @@ export class NoteCreateService implements OnApplicationShutdown {
 			.where('id = :id', { id: renote.id })
 			.execute();
 
-		// 3日以内に投稿されたノートの場合ハイライト用ランキング更新
-		if ((Date.now() - this.idService.parse(renote.id).date.getTime()) < 1000 * 60 * 60 * 24 * 3) {
-			if (renote.channelId != null) {
-				if (renote.replyId == null) {
-					this.featuredService.updateInChannelNotesRanking(renote.channelId, renote.id, 5);
-				}
-			} else {
-				if (renote.visibility === 'public' && renote.replyId == null) {
-					this.featuredService.updateGlobalNotesRanking(renote.id, 5);
-					if (renote.userHost == null) {
-						this.featuredService.updatePerUserNotesRanking(renote.userId, renote.id, 5);
-					}
-				}
+		// ハイライト用ランキング更新（RN加点は1ユーザー・1ノートにつき1回まで）
+		const shouldBoost = await this.featuredService.tryAddRenoteBoost(renote.id, renoteUser.id);
+		if (!shouldBoost) return;
+
+		// リモート/ローカルで将来分けられるよう分岐は残す
+		const renoteScore = this.userEntityService.isRemoteUser(renoteUser) ? 2 : 2;
+		if (renote.channelId != null) {
+			if (renote.replyId == null) {
+				this.featuredService.updateInChannelNotesRanking(renote.channelId, renote.id, renoteScore);
+			}
+		} else {
+			if ((renote.visibility === 'public' || renote.visibility === 'home') && renote.replyId == null) {
+				this.featuredService.updateGlobalNotesRanking(renote.id, renoteScore);
+				this.featuredService.updatePerUserNotesRanking(renote.userId, renote.id, renoteScore);
+				// パーソナライズ: リノートしたユーザーのローカルフォロワーへファンアウト（fire-and-forget）
+				void this.followingsRepository.find({
+					where: { followeeId: renoteUser.id, followerHost: IsNull(), isFollowerHibernated: false },
+					select: ['followerId'],
+				}).then(localFollowers => {
+					return Promise.all(localFollowers.map(({ followerId }) =>
+						this.featuredService.updatePersonalizedNotesRanking(followerId, renote.id, 6),
+					));
+				}).catch(err => {
+					console.error('Failed to update personalized featured ranking', err);
+				});
 			}
 		}
 	}
@@ -1227,6 +1245,15 @@ export class NoteCreateService implements OnApplicationShutdown {
 
 		this.searchService.indexNote(note);
 		this.hanamiSearchService.indexNote(note);
+
+		// はなみTLおすすめ: 急上昇トレンドのインデックス（本文ありの public/home オリジナル系のみ・非同期 fire-and-forget）
+		// 純粋RNは text==null で自動的に除外される。チャンネル投稿は対象外。
+		if (note.text != null && note.channelId == null && (note.visibility === 'public' || note.visibility === 'home')) {
+			this.hanamiTrendService.indexNote(note).catch(err => {
+				// eslint-disable-next-line no-console
+				console.error('Failed to index note for hanami trend', err);
+			});
+		}
 	}
 
 	@bindThis

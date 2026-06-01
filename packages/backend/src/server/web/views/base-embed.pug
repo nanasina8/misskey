@@ -47,6 +47,7 @@ html(class='embed')
 		script.
 			var VERSION = "#{version}";
 			var CLIENT_ENTRY = !{JSON.stringify(entry.file)};
+			var LANGS = !{JSON.stringify(typeof bootLangs !== 'undefined' ? bootLangs : ['en-US', 'ja-JP'])};
 
 		script(type='application/json' id='misskey_meta' data-generated-at=now)
 			!= metaJson

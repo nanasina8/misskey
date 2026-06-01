@@ -193,6 +193,19 @@ export const paramDef = {
 		isCat: { type: 'boolean' },
 		isInHanaMode: { type: 'boolean' },
 		injectFeaturedNote: { type: 'boolean' },
+		hanamiRecommendationEnabled: { type: 'boolean' },
+		hanamiRecommendationStrength: { type: 'string', enum: ['low', 'normal', 'high', 'veryHigh'] },
+		hanamiRecommendationAutoInjectEnabled: { type: 'boolean' },
+		hanamiRecommendationAutoInjectStrength: { type: 'string', enum: ['low', 'normal', 'high'] },
+		hanamiRecommendationAxes: {
+			type: 'object', nullable: false,
+			properties: {
+				popular: { type: 'string', enum: ['off', 'low', 'normal', 'high'] },
+				lowExposure: { type: 'string', enum: ['off', 'low', 'normal', 'high'] },
+				trending: { type: 'string', enum: ['off', 'low', 'normal', 'high'] },
+				fof: { type: 'string', enum: ['off', 'low', 'normal', 'high'] },
+			},
+		},
 		receiveAnnouncementEmail: { type: 'boolean' },
 		alwaysMarkNsfw: { type: 'boolean' },
 		autoSensitive: { type: 'boolean' },
@@ -386,6 +399,22 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (typeof ps.isCat === 'boolean') updates.isCat = ps.isCat;
 			if (typeof ps.isInHanaMode === 'boolean') updates.isInHanaMode = ps.isInHanaMode;
 			if (typeof ps.injectFeaturedNote === 'boolean') profileUpdates.injectFeaturedNote = ps.injectFeaturedNote;
+			if (typeof ps.hanamiRecommendationEnabled === 'boolean') profileUpdates.hanamiRecommendationEnabled = ps.hanamiRecommendationEnabled;
+			if (ps.hanamiRecommendationStrength !== undefined) profileUpdates.hanamiRecommendationStrength = ps.hanamiRecommendationStrength;
+			if (typeof ps.hanamiRecommendationAutoInjectEnabled === 'boolean') profileUpdates.hanamiRecommendationAutoInjectEnabled = ps.hanamiRecommendationAutoInjectEnabled;
+			if (ps.hanamiRecommendationAutoInjectStrength !== undefined) profileUpdates.hanamiRecommendationAutoInjectStrength = ps.hanamiRecommendationAutoInjectStrength;
+			if (ps.hanamiRecommendationAxes !== undefined) {
+				// 既知の軸キーのみ採用（未知キーは無視）。値は量レベル（off/low/normal/high）に正規化。旧booleanは true=normal / false=off。
+				const allowed = ['popular', 'lowExposure', 'trending', 'fof'];
+				const levels = ['off', 'low', 'normal', 'high'];
+				const axes: Record<string, string> = {};
+				for (const k of allowed) {
+					const v = (ps.hanamiRecommendationAxes as Record<string, unknown>)[k];
+					if (typeof v === 'string' && levels.includes(v)) axes[k] = v;
+					else if (typeof v === 'boolean') axes[k] = v ? 'normal' : 'off';
+				}
+				profileUpdates.hanamiRecommendationAxes = axes;
+			}
 			if (typeof ps.receiveAnnouncementEmail === 'boolean') profileUpdates.receiveAnnouncementEmail = ps.receiveAnnouncementEmail;
 			if (typeof ps.alwaysMarkNsfw === 'boolean') {
 				policies ??= await this.roleService.getUserPolicies(user.id);

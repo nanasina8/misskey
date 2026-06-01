@@ -3102,6 +3102,24 @@ export type paths = {
          */
         post: operations['notes___hanami-timeline'];
     };
+    '/notes/hanami-timeline-seen': {
+        /**
+         * notes/hanami-timeline-seen
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:account*
+         */
+        post: operations['notes___hanami-timeline-seen'];
+    };
+    '/notes/hanami-trends': {
+        /**
+         * notes/hanami-trends
+         * @description No description provided.
+         *
+         *     **Credential required**: *No*
+         */
+        post: operations['notes___hanami-trends'];
+    };
     '/notes/hanamisearch-v1': {
         /**
          * notes/hanamisearch-v1
@@ -3754,6 +3772,15 @@ export type paths = {
          */
         post: operations['users___get-frequently-replied-users'];
     };
+    '/users/hanami-recommendations': {
+        /**
+         * users/hanami-recommendations
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:account*
+         */
+        post: operations['users___hanami-recommendations'];
+    };
     '/users/lists/create': {
         /**
          * users/lists/create
@@ -4117,6 +4144,22 @@ export type components = {
             isModerator: boolean;
             isAdmin: boolean;
             injectFeaturedNote: boolean;
+            hanamiRecommendationEnabled?: boolean;
+            /** @enum {string} */
+            hanamiRecommendationStrength?: 'low' | 'normal' | 'high' | 'veryHigh';
+            hanamiRecommendationAutoInjectEnabled?: boolean;
+            /** @enum {string} */
+            hanamiRecommendationAutoInjectStrength?: 'low' | 'normal' | 'high';
+            hanamiRecommendationAxes?: {
+                /** @enum {string} */
+                popular?: 'off' | 'low' | 'normal' | 'high';
+                /** @enum {string} */
+                lowExposure?: 'off' | 'low' | 'normal' | 'high';
+                /** @enum {string} */
+                trending?: 'off' | 'low' | 'normal' | 'high';
+                /** @enum {string} */
+                fof?: 'off' | 'low' | 'normal' | 'high';
+            };
             receiveAnnouncementEmail: boolean;
             alwaysMarkNsfw: boolean;
             autoSensitive: boolean;
@@ -5524,6 +5567,24 @@ export type components = {
             federation: 'all' | 'specified' | 'none';
         };
         MetaDetailedOnly: {
+            hanamiRecommendationAxisConfig?: {
+                popular?: {
+                    available?: boolean;
+                    default?: boolean;
+                };
+                lowExposure?: {
+                    available?: boolean;
+                    default?: boolean;
+                };
+                trending?: {
+                    available?: boolean;
+                    default?: boolean;
+                };
+                fof?: {
+                    available?: boolean;
+                    default?: boolean;
+                };
+            };
             features?: {
                 registration: boolean;
                 emailRequiredForSignup: boolean;
@@ -9481,6 +9542,25 @@ export interface operations {
                         policies: Record<string, never>;
                         enableFanoutTimeline: boolean;
                         enableFanoutTimelineDbFallback: boolean;
+                        hanamiShowRecommendationReason: boolean;
+                        hanamiRecommendationAxisConfig: {
+                            popular?: {
+                                available?: boolean;
+                                default?: boolean;
+                            };
+                            lowExposure?: {
+                                available?: boolean;
+                                default?: boolean;
+                            };
+                            trending?: {
+                                available?: boolean;
+                                default?: boolean;
+                            };
+                            fof?: {
+                                available?: boolean;
+                                default?: boolean;
+                            };
+                        };
                         perLocalUserUserTimelineCacheMax: number;
                         perRemoteUserUserTimelineCacheMax: number;
                         perUserHomeTimelineCacheMax: number;
@@ -12826,6 +12906,25 @@ export interface operations {
                     manifestJsonOverride?: string;
                     enableFanoutTimeline?: boolean;
                     enableFanoutTimelineDbFallback?: boolean;
+                    hanamiShowRecommendationReason?: boolean;
+                    hanamiRecommendationAxisConfig?: {
+                        popular?: {
+                            available?: boolean;
+                            default?: boolean;
+                        };
+                        lowExposure?: {
+                            available?: boolean;
+                            default?: boolean;
+                        };
+                        trending?: {
+                            available?: boolean;
+                            default?: boolean;
+                        };
+                        fof?: {
+                            available?: boolean;
+                            default?: boolean;
+                        };
+                    };
                     perLocalUserUserTimelineCacheMax?: number;
                     perRemoteUserUserTimelineCacheMax?: number;
                     perUserHomeTimelineCacheMax?: number;
@@ -27611,6 +27710,22 @@ export interface operations {
                     isCat?: boolean;
                     isInHanaMode?: boolean;
                     injectFeaturedNote?: boolean;
+                    hanamiRecommendationEnabled?: boolean;
+                    /** @enum {string} */
+                    hanamiRecommendationStrength?: 'low' | 'normal' | 'high' | 'veryHigh';
+                    hanamiRecommendationAutoInjectEnabled?: boolean;
+                    /** @enum {string} */
+                    hanamiRecommendationAutoInjectStrength?: 'low' | 'normal' | 'high';
+                    hanamiRecommendationAxes?: {
+                        /** @enum {string} */
+                        popular?: 'off' | 'low' | 'normal' | 'high';
+                        /** @enum {string} */
+                        lowExposure?: 'off' | 'low' | 'normal' | 'high';
+                        /** @enum {string} */
+                        trending?: 'off' | 'low' | 'normal' | 'high';
+                        /** @enum {string} */
+                        fof?: 'off' | 'low' | 'normal' | 'high';
+                    };
                     receiveAnnouncementEmail?: boolean;
                     alwaysMarkNsfw?: boolean;
                     autoSensitive?: boolean;
@@ -30197,6 +30312,143 @@ export interface operations {
                 };
                 content: {
                     'application/json': components['schemas']['Note'][];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'notes___hanami-timeline-seen': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    noteIds: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        ok: boolean;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'notes___hanami-trends': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @default 10 */
+                    limit?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        term: string;
+                        score: number;
+                        distinctAuthors: number;
+                    }[];
                 };
             };
             /** @description Client error */
@@ -35295,6 +35547,76 @@ export interface operations {
                     'application/json': {
                         user: components['schemas']['UserDetailed'];
                         weight: number;
+                    }[];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'users___hanami-recommendations': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @default 10 */
+                    limit?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        user: components['schemas']['UserDetailed'];
+                        reason: string;
+                        mutualCount: number;
                     }[];
                 };
             };

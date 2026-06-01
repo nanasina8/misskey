@@ -1,0 +1,778 @@
+/*
+ * SPDX-FileCopyrightText: syuilo and misskey-project
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+import { Brackets } from 'typeorm';
+import { Inject, Injectable } from '@nestjs/common';
+import * as Redis from 'ioredis';
+import { DI } from '@/di-symbols.js';
+import { bindThis } from '@/decorators.js';
+import type { NotesRepository } from '@/models/_.js';
+import type { MiUser, MiLocalUser } from '@/models/User.js';
+import type { MiMeta } from '@/models/Meta.js';
+import type { MiUserProfile } from '@/models/UserProfile.js';
+import type { Packed } from '@/misc/json-schema.js';
+import { FeaturedService } from '@/core/FeaturedService.js';
+import { QueryService } from '@/core/QueryService.js';
+import { CacheService } from '@/core/CacheService.js';
+import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
+import { isUserRelated } from '@/misc/is-user-related.js';
+import { isInstanceMuted } from '@/misc/is-instance-muted.js';
+import { removeMutedUsersReactions } from '@/misc/reactions-mute.js';
+import { HanamiTrendService } from '@/core/hanami/HanamiTrendService.js';
+import { HanamiUserRecommendationService } from '@/core/hanami/HanamiUserRecommendationService.js';
+
+// 既出除外（served）: 注入した時点で短期間だけ再表示を抑制する。
+const SERVED_KEY_PREFIX = 'hanami:rec:served:';
+const SERVED_TTL_SECONDS = 60 * 30; // 30分（仕様: 短TTL, v1）。値はここ一箇所で調整。
+const SERVED_TTL_MS = SERVED_TTL_SECONDS * 1000;
+
+// 既出除外（seen）: フロントが実表示を確認したら記録する長期側。
+const SEEN_KEY_PREFIX = 'hanami:rec:seen:';
+const SEEN_TTL_SECONDS = 60 * 60 * 24 * 7; // 7日
+const SEEN_TTL_MS = SEEN_TTL_SECONDS * 1000;
+
+// 効果測定ログ（仕様7）: Postgres 直書きせず Redis Stream に最小限を残す。集計はバッチで後段。
+const LOG_STREAM_KEY = 'hanami:rec:log';
+const LOG_STREAM_MAXLEN = 50000;
+const LOG_SAMPLE_RATE = 1.0; // 小規模なので全件。負荷が増えたら下げる。
+
+// スロット注入は home N件ごとに推薦を挟む。量そのものは REC_RATIO で決める。
+const HOME_NOTES_PER_REC = 2;
+// 多様性: 1ページに同一作者の推薦は最大何件まで許すか。
+const MAX_REC_PER_AUTHOR = 1;
+
+// 候補プール/オーバーフェッチ。DBの可視性/ミュートで脱落する分を見込んで多めに取る。
+const RANKING_FETCH_SIZE = 200;
+const REC_CANDIDATE_OVERFETCH = 5;
+const LOW_EXPOSURE_POOL = 500;
+const LOW_EXPOSURE_ALREADY_POPULAR_TOP = 30; // 上位は「既に人気」として低露出軸から除外
+const LOW_EXPOSURE_MIN_ENGAGEMENT = 2; // 最小エンゲージメント（min reactions の近似 floor）
+
+// 通常ロード時に、取得 limit のうち推薦として混ぜる目標比率。
+const REC_RATIO = { low: 0.20, normal: 0.35, high: 0.50, veryHigh: 0.70 } as const;
+
+// 新着ストリームへの自動挿入は時間ではなく、実際に流れた home ノート数で制御する。
+const AUTO_INJECT_PRESET = {
+	low: { homeNotesPerInjection: 10, injectCount: 1 },
+	normal: { homeNotesPerInjection: 6, injectCount: 1 },
+	high: { homeNotesPerInjection: 4, injectCount: 2 },
+} as const;
+
+// 軸の混合重み（同一ノートが複数軸に出たら合算、reason は最大寄与の軸）。FoF は過多を避けるため弱めに扱う。
+const AXIS_WEIGHT = {
+	popular: 1.0,
+	trending: 0.9,
+	lowExposure: 0.85,
+	fof: 0.4,
+} as const;
+
+// 1軸だけで埋まり切らないよう、候補選抜時点で上限をかける。
+const AXIS_MAX_SHARE = {
+	popular: 0.55,
+	trending: 0.40,
+	lowExposure: 0.35,
+	fof: 0.15,
+} as const;
+
+const AUTO_AXIS_MAX_SHARE = {
+	popular: 0.50,
+	trending: 0.45,
+	lowExposure: 0.35,
+	fof: 0.10,
+} as const;
+
+// ユーザーが軸ごとに選ぶ量（切/少/普通/多）。base の AXIS_MAX_SHARE にこの倍率を掛けて per-user のスロット上限を作る。
+export type HanamiAxisLevel = 'off' | 'low' | 'normal' | 'high';
+const AXIS_LEVEL_SHARE_MULTIPLIER: Record<Exclude<HanamiAxisLevel, 'off'>, number> = {
+	low: 0.55,
+	normal: 1.0,
+	high: 1.6,
+};
+
+export type RecSource = keyof typeof AXIS_WEIGHT;
+export type RecReasonCode = RecSource;
+
+export const HANAMI_REC_AXES: RecSource[] = ['popular', 'lowExposure', 'trending', 'fof'];
+
+// 鯖管の軸設定: available=サーバーで利用可能か, default=ユーザー未設定時の既定ON/OFF。
+export type HanamiAxisServerConfig = Partial<Record<RecSource, { available?: boolean; default?: boolean }>>;
+// ユーザーの軸オーバーライド（未設定の軸はサーバー既定に従う）。値は量（off/low/normal/high）。旧booleanも許容。
+export type HanamiAxisUserConfig = Partial<Record<RecSource, HanamiAxisLevel | boolean>>;
+
+type ScoredCandidate = {
+	noteId: string;
+	score: number;
+	source: RecSource;
+	reason: RecReasonCode;
+	term?: string; // trending のとき該当用語
+};
+
+export type RecReasonMeta = { source: RecSource; reason: RecReasonCode; term?: string };
+export type HanamiAutoInjectStrength = keyof typeof AUTO_INJECT_PRESET;
+export type HanamiAutoInjectPreset = (typeof AUTO_INJECT_PRESET)[HanamiAutoInjectStrength];
+
+type ResolvedSettings = {
+	enabled: boolean;
+	recRatio: number;
+	axes: Set<RecSource>;
+	axisLevels: Map<RecSource, HanamiAxisLevel>;
+	showReason: boolean;
+	autoInjectEnabled: boolean;
+	autoInjectStrength: HanamiAutoInjectStrength;
+};
+
+export type HanamiRecOptions = {
+	homeNotes: Packed<'Note'>[];
+	untilId: string | null;
+	sinceId: string | null;
+	limit: number;
+	withFiles: boolean;
+};
+
+/**
+ * はなみTL おすすめの中央サービス（[[hanami-tl-osusume-redesign]]）。
+ *
+ * 役割（仕様）:
+ *  - 複数軸（人気 / 低露出×高反応 / 急上昇 / FoF）の候補選定・混合（軸ON/OFF・重み）
+ *  - 軸ごとのON/OFF解決（鯖管の利用可否+既定 × ユーザーのオーバーライド）
+ *  - 既出除外（served 30分 / seen 7日）
+ *  - スロット注入（推薦内はスコア順・連続/上限つき作者多様性・末尾はhome由来=カーソル安定）
+ *  - 理由メタの付与（鯖管トグル）と効果測定ログ（Redis Stream）
+ *
+ * REST（はなみTL）と stream（ChannelsService）はどちらもこのサービスを通り、おすすめの意味を揃える。
+ */
+@Injectable()
+export class HanamiRecommendationService {
+	constructor(
+		@Inject(DI.redis)
+		private redisClient: Redis.Redis,
+
+		@Inject(DI.meta)
+		private meta: MiMeta,
+
+		@Inject(DI.notesRepository)
+		private notesRepository: NotesRepository,
+
+		private featuredService: FeaturedService,
+		private queryService: QueryService,
+		private cacheService: CacheService,
+		private noteEntityService: NoteEntityService,
+		private hanamiTrendService: HanamiTrendService,
+		private hanamiUserRecommendationService: HanamiUserRecommendationService,
+	) {
+	}
+
+	// ───────────────────────── 設定解決（軸ON/OFF・量・理由） ─────────────────────────
+
+	/**
+	 * 鯖管の軸設定（available/default）× ユーザーのオーバーライドから、有効な軸集合を解決する。
+	 * 仕様: 軸ON/OFFは中央サービスの責務。
+	 */
+	// 旧boolean / 新stringレベルの両方を量レベルに正規化する。
+	private normalizeAxisLevel(v: unknown, def: boolean): HanamiAxisLevel {
+		if (v === 'off' || v === 'low' || v === 'normal' || v === 'high') return v;
+		if (v === true) return 'normal';
+		if (v === false) return 'off';
+		return def ? 'normal' : 'off'; // ユーザー未設定はサーバー既定に従う
+	}
+
+	/**
+	 * 鯖管の軸設定（available/default）× ユーザーの量（off/low/normal/high）から、有効な軸と量を解決する。
+	 * 仕様: 軸ON/OFF・量は中央サービスの責務。off の軸は返さない。
+	 */
+	@bindThis
+	private resolveAxisLevels(profile: MiUserProfile): Map<RecSource, HanamiAxisLevel> {
+		const serverCfg = (this.meta.hanamiRecommendationAxisConfig ?? {}) as HanamiAxisServerConfig;
+		const userCfg = (profile.hanamiRecommendationAxes ?? {}) as HanamiAxisUserConfig;
+		const out = new Map<RecSource, HanamiAxisLevel>();
+		for (const ax of HANAMI_REC_AXES) {
+			const s = serverCfg[ax];
+			if (s?.available === false) continue; // 鯖管がサーバー全体で無効化
+			const level = this.normalizeAxisLevel(userCfg[ax], s?.default ?? true);
+			if (level === 'off') continue;
+			out.set(ax, level);
+		}
+		return out;
+	}
+
+	// 軸の量レベルを base のスロット上限に掛けて per-user の axisMaxShare を作る（off は 0）。
+	private buildAxisShare(base: Record<RecSource, number>, levels: Map<RecSource, HanamiAxisLevel>): Record<RecSource, number> {
+		const out = { popular: 0, trending: 0, lowExposure: 0, fof: 0 } as Record<RecSource, number>;
+		for (const [ax, level] of levels) {
+			if (level === 'off') continue;
+			out[ax] = Math.min(0.9, base[ax] * AXIS_LEVEL_SHARE_MULTIPLIER[level]);
+		}
+		return out;
+	}
+
+	private getRecRatio(strength: string): number {
+		return REC_RATIO[strength as keyof typeof REC_RATIO] ?? REC_RATIO.high;
+	}
+
+	private getAutoInjectStrength(strength: string): HanamiAutoInjectStrength {
+		return Object.prototype.hasOwnProperty.call(AUTO_INJECT_PRESET, strength) ? strength as HanamiAutoInjectStrength : 'low';
+	}
+
+	@bindThis
+	private async resolveSettings(meId: MiUser['id']): Promise<ResolvedSettings> {
+		const profile = await this.cacheService.userProfileCache.fetch(meId);
+		const axisLevels = this.resolveAxisLevels(profile);
+		return {
+			enabled: profile.hanamiRecommendationEnabled,
+			recRatio: this.getRecRatio(profile.hanamiRecommendationStrength),
+			axes: new Set(axisLevels.keys()),
+			axisLevels,
+			showReason: this.meta.hanamiShowRecommendationReason,
+			autoInjectEnabled: profile.hanamiRecommendationAutoInjectEnabled,
+			autoInjectStrength: this.getAutoInjectStrength(profile.hanamiRecommendationAutoInjectStrength),
+		};
+	}
+
+	// ───────────────────────── REST: スロット注入 ─────────────────────────
+
+	/**
+	 * ホームTL（パック済み）におすすめをスロット注入して返す。末尾は必ず home 由来にしてページングを壊さない。
+	 * ユーザー設定（ON/OFF・量・軸）と鯖管設定（理由表示・軸利用可否）はサービス内で解決する。
+	 */
+	@bindThis
+	public async mixRecommendations(me: MiLocalUser, opts: HanamiRecOptions): Promise<Packed<'Note'>[]> {
+		const { homeNotes, limit, untilId, sinceId } = opts;
+
+		const settings = await this.resolveSettings(me.id);
+
+		// ユーザーがおすすめOFF / 有効な軸が無いなら素のホームTL
+		if (!settings.enabled || settings.axes.size === 0) return homeNotes.slice(0, limit);
+
+		// 新着取得（sinceId のみ）のときは推薦を混ぜない（昇順フェッチに古い人気が紛れる/カーソル破壊を防ぐ）
+		if (sinceId != null && untilId == null) return homeNotes.slice(0, limit);
+
+		// 推薦目標数: ユーザー設定の比率。home が少ない cold-start は limit に寄せて埋める。
+		const baseTarget = Math.round(limit * Math.max(settings.recRatio, 0));
+		const recTarget = Math.max(baseTarget, limit - homeNotes.length);
+		if (recTarget <= 0) return homeNotes.slice(0, limit);
+
+		const homeIds = new Set(homeNotes.map(n => n.id));
+		const [served, seen] = await Promise.all([
+			this.getZsetMembers(`${SERVED_KEY_PREFIX}${me.id}`, SERVED_TTL_MS),
+			this.getZsetMembers(`${SEEN_KEY_PREFIX}${me.id}`, SEEN_TTL_MS),
+		]);
+
+		const excluded = (id: string) => served.has(id) || seen.has(id) || homeIds.has(id);
+		const newerThan = homeNotes[0]?.id ?? null; // ページ先頭より新しい推薦は割り込ませない
+
+		const candidates = await this.getCandidates(me.id, {
+			limit: recTarget * REC_CANDIDATE_OVERFETCH,
+			capLimit: recTarget,
+			excluded,
+			newerThan,
+			axes: settings.axes,
+			axisMaxShare: this.buildAxisShare(AXIS_MAX_SHARE, settings.axisLevels),
+		});
+		if (candidates.length === 0) return homeNotes.slice(0, limit);
+
+		const { recNotes, reasonOf } = await this.fetchAndPackRecNotes(candidates, me, { withFiles: opts.withFiles });
+		if (recNotes.length === 0) return homeNotes.slice(0, limit);
+
+		const { notes, injectedIds } = this.injectIntoSlots(homeNotes, recNotes, recTarget, limit);
+
+		// 内部推薦マーカーは常に付ける。表示用 reason は鯖管トグルON時のみ。
+		this.markRecommendationMeta(notes, injectedIds, reasonOf, settings.showReason);
+
+		if (injectedIds.length > 0) {
+			this.recordServedWithLog(me.id, injectedIds, reasonOf).catch(err => {
+				// eslint-disable-next-line no-console
+				console.error('hanami rec: recordServed/log failed', err);
+			});
+		}
+
+		return notes;
+	}
+
+	// ───────────────────────── 候補選定（軸の混合） ─────────────────────────
+
+	private markRecommendationMeta(notes: Packed<'Note'>[], noteIds: Iterable<string>, reasonOf: Map<string, RecReasonMeta>, showReason: boolean): void {
+		const idSet = new Set(noteIds);
+		for (const note of notes) {
+			if (!idSet.has(note.id)) continue;
+			const meta = note as Record<string, unknown>;
+			meta._hanamiRecommended = true;
+			const reason = reasonOf.get(note.id);
+			if (showReason && reason) meta._hanamiReason = reason;
+		}
+	}
+
+	private applyAxisCaps(candidates: ScoredCandidate[], opts: {
+		limit: number;
+		capLimit: number;
+		axisMaxShare: Record<RecSource, number>;
+	}): ScoredCandidate[] {
+		const usedByAxis = new Map<RecSource, number>();
+		const deferred: ScoredCandidate[] = [];
+		const out: ScoredCandidate[] = [];
+
+		for (const candidate of candidates) {
+			if (out.length >= opts.limit) break;
+
+			const used = usedByAxis.get(candidate.source) ?? 0;
+			const max = Math.max(1, Math.ceil(opts.capLimit * opts.axisMaxShare[candidate.source]));
+			if (used < max) {
+				out.push(candidate);
+				usedByAxis.set(candidate.source, used + 1);
+			} else {
+				deferred.push(candidate);
+			}
+		}
+
+		for (const candidate of deferred) {
+			if (out.length >= opts.limit) break;
+			out.push(candidate);
+		}
+
+		return out;
+	}
+
+	@bindThis
+	private async getCandidates(meId: MiUser['id'], opts: {
+		limit: number;
+		capLimit: number;
+		excluded: (id: string) => boolean;
+		newerThan: string | null;
+		axes: Set<RecSource>;
+		axisMaxShare: Record<RecSource, number>;
+	}): Promise<ScoredCandidate[]> {
+		// 有効な軸だけ実行する（無効軸はクエリ自体を投げない）。
+		const tasks: Promise<ScoredCandidate[]>[] = [];
+		if (opts.axes.has('popular')) tasks.push(this.getPopularCandidates(meId));
+		if (opts.axes.has('lowExposure')) tasks.push(this.getLowExposureCandidates());
+		if (opts.axes.has('trending')) tasks.push(this.getTrendingCandidates());
+		if (opts.axes.has('fof')) tasks.push(this.getFoFCandidates(meId));
+		const lists = await Promise.all(tasks);
+
+		// 軸を合算。同一ノートは weight 付きスコアを足し、最大寄与の軸を reason にする。
+		const merged = new Map<string, ScoredCandidate>();
+		for (const list of lists) {
+			for (const c of list) {
+				const exist = merged.get(c.noteId);
+				if (exist == null) {
+					merged.set(c.noteId, { ...c });
+				} else {
+					const prevTop = exist.score;
+					exist.score += c.score;
+					if (c.score > prevTop) {
+						exist.source = c.source;
+						exist.reason = c.reason;
+						exist.term = c.term;
+					}
+				}
+			}
+		}
+
+		const filtered: ScoredCandidate[] = [];
+		for (const c of Array.from(merged.values()).sort((a, b) => b.score - a.score)) {
+			if (opts.excluded(c.noteId)) continue;
+			if (opts.newerThan != null && c.noteId >= opts.newerThan) continue;
+			filtered.push(c);
+		}
+		return this.applyAxisCaps(filtered, {
+			limit: opts.limit,
+			capLimit: opts.capLimit,
+			axisMaxShare: opts.axisMaxShare,
+		});
+	}
+
+	/** 人気軸（グローバル人気 + フォロー中ユーザーのインタラクションボーナス）。 */
+	@bindThis
+	private async getPopularCandidates(meId: MiUser['id']): Promise<ScoredCandidate[]> {
+		const ranked = await this.featuredService.getPersonalizedNotesRanking(meId, RANKING_FETCH_SIZE);
+		const n = ranked.length || 1;
+		return ranked.map((noteId, i) => ({
+			noteId,
+			score: ((n - i) / n) * AXIS_WEIGHT.popular,
+			source: 'popular' as const,
+			reason: 'popular' as const,
+		}));
+	}
+
+	/** 低露出×高反応軸: エンゲージメント ÷ f(フォロワー数)。既に人気な上位は除外、floor あり。 */
+	@bindThis
+	private async getLowExposureCandidates(): Promise<ScoredCandidate[]> {
+		const pool = await this.featuredService.getGlobalNotesRankingWithScores(LOW_EXPOSURE_POOL);
+		if (pool.length === 0) return [];
+
+		const popularTop = new Set(pool.slice(0, LOW_EXPOSURE_ALREADY_POPULAR_TOP).map(([id]) => id));
+		const ids = pool.map(([id]) => id);
+
+		const rows = await this.notesRepository.createQueryBuilder('note')
+			.select('note.id', 'id')
+			.addSelect('user.followersCount', 'followersCount')
+			.innerJoin('note.user', 'user')
+			.where('note.id IN (:...ids)', { ids })
+			.getRawMany<{ id: string; followersCount: number }>();
+		const followers = new Map(rows.map(r => [r.id, Number(r.followersCount)]));
+
+		const scored: ScoredCandidate[] = [];
+		for (const [id, eng] of pool) {
+			if (popularTop.has(id)) continue;
+			if (eng < LOW_EXPOSURE_MIN_ENGAGEMENT) continue;
+			const f = followers.get(id);
+			if (f == null) continue;
+			const score = eng / Math.log10(f + 10);
+			scored.push({ noteId: id, score, source: 'lowExposure', reason: 'lowExposure' });
+		}
+		scored.sort((a, b) => b.score - a.score);
+		const top = scored.slice(0, RANKING_FETCH_SIZE);
+		const max = top[0]?.score || 1;
+		return top.map(c => ({ ...c, score: (c.score / max) * AXIS_WEIGHT.lowExposure }));
+	}
+
+	/** 急上昇軸（Lindera/Builtin トレンド）。 */
+	@bindThis
+	private async getTrendingCandidates(): Promise<ScoredCandidate[]> {
+		const trending = await this.hanamiTrendService.getTrendingNoteIds(RANKING_FETCH_SIZE);
+		const n = trending.length || 1;
+		return trending.map(({ noteId, term }, i) => ({
+			noteId,
+			score: ((n - i) / n) * AXIS_WEIGHT.trending,
+			source: 'trending' as const,
+			reason: 'trending' as const,
+			term,
+		}));
+	}
+
+	/** FoF 軸（友達の友達の最近ノート）。 */
+	@bindThis
+	private async getFoFCandidates(meId: MiUser['id']): Promise<ScoredCandidate[]> {
+		const fof = await this.hanamiUserRecommendationService.getFoFNoteIds(meId, RANKING_FETCH_SIZE);
+		const n = fof.length || 1;
+		return fof.map(({ noteId }, i) => ({
+			noteId,
+			score: ((n - i) / n) * AXIS_WEIGHT.fof,
+			source: 'fof' as const,
+			reason: 'fof' as const,
+		}));
+	}
+
+	// ───────────────────────── 取得・パック ─────────────────────────
+
+	/**
+	 * 候補IDを DB から取得し可視性/ミュート/ブロック/インスタンスミュート/suspended/blocked-host/純RN を尊重して pack。
+	 * public/home のみ・チャンネル除外。スコア順（candidates順）を維持。reason マップも返す。
+	 */
+	@bindThis
+	private async fetchAndPackRecNotes(candidates: ScoredCandidate[], me: MiLocalUser, opts: { withFiles: boolean }): Promise<{ recNotes: Packed<'Note'>[]; reasonOf: Map<string, RecReasonMeta> }> {
+		const noteIds = candidates.map(c => c.noteId);
+		const reasonOf = new Map(candidates.map(c => [c.noteId, { source: c.source, reason: c.reason, term: c.term }]));
+		if (noteIds.length === 0) return { recNotes: [], reasonOf };
+
+		const [userIdsWhoMeMuting, userIdsWhoBlockingMe, userIdsWhoMeBlocking, userMutedInstances] = await Promise.all([
+			this.cacheService.userMutingsCache.fetch(me.id),
+			this.cacheService.userBlockedCache.fetch(me.id),
+			this.cacheService.userBlockingCache.fetch(me.id),
+			this.cacheService.userProfileCache.fetch(me.id).then(p => new Set(p.mutedInstances)),
+		]);
+
+		const query = this.notesRepository.createQueryBuilder('note')
+			.where('note.id IN (:...noteIds)', { noteIds })
+			.andWhere('note.channelId IS NULL')
+			.andWhere(new Brackets(qb => {
+				qb.where('note.visibility = \'public\'').orWhere('note.visibility = \'home\'');
+			}))
+			.innerJoinAndSelect('note.user', 'user')
+			.leftJoinAndSelect('note.reply', 'reply')
+			.leftJoinAndSelect('note.renote', 'renote')
+			.leftJoinAndSelect('reply.user', 'replyUser')
+			.leftJoinAndSelect('renote.user', 'renoteUser')
+			.leftJoinAndSelect('note.channel', 'channel');
+
+		// 純粋RN除外（引用RN・本文/メディア/投票つきは元ノートとして許可）
+		query.andWhere(new Brackets(qb => {
+			qb.where('note.renoteId IS NULL')
+				.orWhere('note.text IS NOT NULL')
+				.orWhere('note.fileIds != \'{}\'')
+				.orWhere('0 < (SELECT COUNT(*) FROM poll WHERE poll."noteId" = note.id)');
+		}));
+
+		if (opts.withFiles) query.andWhere('note.fileIds != \'{}\'');
+
+		this.queryService.generateBlockedHostQueryForNote(query);
+		this.queryService.generateSuspendedUserQueryForNote(query);
+
+		const notes = (await query.getMany()).filter(note => {
+			if (isUserRelated(note, userIdsWhoBlockingMe)) return false;
+			if (isUserRelated(note, userIdsWhoMeBlocking)) return false;
+			if (isUserRelated(note, userIdsWhoMeMuting)) return false;
+			if (isInstanceMuted(note, userMutedInstances)) return false;
+			return true;
+		});
+
+		const noteMap = new Map(notes.map(n => [n.id, n]));
+		const ordered = noteIds.flatMap(id => {
+			const n = noteMap.get(id);
+			return n ? [n] : [];
+		});
+
+		const packed = await this.noteEntityService.packMany(ordered, me, { withReactionAndUserPairCache: true });
+		await Promise.all(packed.map(note => removeMutedUsersReactions(note, userIdsWhoMeMuting)));
+		return { recNotes: packed, reasonOf };
+	}
+
+	// ───────────────────────── スロット注入 ─────────────────────────
+
+	/**
+	 * home を主軸に HOME_NOTES_PER_REC 件ごとに推薦を1件挟む。
+	 * - 推薦内はスコア順維持・連続/ページ上限つき作者多様性（MAX_REC_PER_AUTHOR）
+	 * - 末尾アンカーは必ず home 由来（untilId カーソル安定）
+	 * - home が無い cold-start は推薦だけで limit まで埋める
+	 */
+	@bindThis
+	private injectIntoSlots(homeNotes: Packed<'Note'>[], recNotes: Packed<'Note'>[], recTarget: number, limit: number): { notes: Packed<'Note'>[]; injectedIds: string[] } {
+		const authorCount = new Map<string, number>();
+		const recPool = recNotes.slice();
+		const selectRec = (avoidAuthor: string | null): Packed<'Note'> | null => {
+			let fallbackIdx = -1;
+			for (let i = 0; i < recPool.length; i++) {
+				const r = recPool[i];
+				if ((authorCount.get(r.userId) ?? 0) >= MAX_REC_PER_AUTHOR) continue;
+				if (fallbackIdx < 0) fallbackIdx = i;
+				if (avoidAuthor != null && r.userId === avoidAuthor) continue;
+				const rec = recPool.splice(i, 1)[0];
+				authorCount.set(rec.userId, (authorCount.get(rec.userId) ?? 0) + 1);
+				return rec;
+			}
+			if (fallbackIdx < 0) return null;
+			const rec = recPool.splice(fallbackIdx, 1)[0];
+			authorCount.set(rec.userId, (authorCount.get(rec.userId) ?? 0) + 1);
+			return rec;
+		};
+
+		// home が無い（フォロー0/新規）なら推薦のみで埋める（cold-start を楽しくする）
+		if (homeNotes.length === 0) {
+			const notes: Packed<'Note'>[] = [];
+			let last: string | null = null;
+			while (notes.length < limit) {
+				const rec = selectRec(last);
+				if (rec == null) break;
+				notes.push(rec);
+				last = rec.userId;
+			}
+			return { notes, injectedIds: notes.map(n => n.id) };
+		}
+
+		// 先に多様性制御後の実推薦数を確定し、その数に応じて home 枠を戻す。
+		const selectedRecs: Packed<'Note'>[] = [];
+		let lastSelectedAuthor: string | null = null;
+		const maxRecs = Math.min(recTarget, Math.max(0, limit - 1));
+		while (selectedRecs.length < maxRecs) {
+			const rec = selectRec(lastSelectedAuthor);
+			if (rec == null) break;
+			selectedRecs.push(rec);
+			lastSelectedAuthor = rec.userId;
+		}
+
+		// 末尾アンカー用に home を1枠確保する。推薦が多様性で減った場合は home を増やして埋め戻す。
+		const recShown = selectedRecs.length;
+		const homeShown = Math.min(homeNotes.length, limit - recShown);
+		const anchor = homeNotes[homeShown - 1];
+		const homeBody = homeNotes.slice(0, homeShown - 1);
+		const recQueue = selectedRecs.slice();
+
+		const out: Packed<'Note'>[] = [];
+		const injectedIds: string[] = [];
+		let bi = 0;
+		let recsPlaced = 0;
+		let homeSinceRec = 0;
+		let lastAuthor: string | null = null;
+
+		const pullSelectedRec = (avoidAuthor: string | null): Packed<'Note'> | null => {
+			let fallbackIdx = -1;
+			for (let i = 0; i < recQueue.length; i++) {
+				const r = recQueue[i];
+				if (fallbackIdx < 0) fallbackIdx = i;
+				if (avoidAuthor != null && r.userId === avoidAuthor) continue;
+				return recQueue.splice(i, 1)[0];
+			}
+			return fallbackIdx >= 0 ? recQueue.splice(fallbackIdx, 1)[0] : null;
+		};
+
+		while (out.length < limit - 1 && (bi < homeBody.length || recsPlaced < recShown)) {
+			const homeLeft = bi < homeBody.length;
+			const canRec = recsPlaced < recShown && recQueue.length > 0;
+			const shouldRec = canRec && (homeSinceRec >= HOME_NOTES_PER_REC || !homeLeft);
+
+			if (shouldRec) {
+				const rec = pullSelectedRec(lastAuthor);
+				if (rec != null) {
+					out.push(rec);
+					injectedIds.push(rec.id);
+					lastAuthor = rec.userId;
+					recsPlaced++;
+					homeSinceRec = 0;
+					continue;
+				}
+			}
+
+			if (homeLeft) {
+				const h = homeBody[bi++];
+				out.push(h);
+				lastAuthor = h.userId;
+				homeSinceRec++;
+				continue;
+			}
+			break;
+		}
+
+		out.push(anchor);
+		return { notes: out, injectedIds };
+	}
+
+	// ───────────────────────── stream 用 ─────────────────────────
+
+	@bindThis
+	public async getAutoInjectPreset(meId: MiUser['id']): Promise<HanamiAutoInjectPreset | null> {
+		const settings = await this.resolveSettings(meId);
+		if (!settings.enabled || !settings.autoInjectEnabled || settings.axes.size === 0) return null;
+		return AUTO_INJECT_PRESET[settings.autoInjectStrength];
+	}
+
+	@bindThis
+	public async getAutoInjectNotes(me: MiLocalUser, opts: { limit: number; withFiles: boolean; excludedNoteIds?: ReadonlySet<string>; }): Promise<Packed<'Note'>[]> {
+		const settings = await this.resolveSettings(me.id);
+		if (!settings.enabled || !settings.autoInjectEnabled || settings.axes.size === 0 || opts.limit <= 0) return [];
+
+		const [served, seen] = await Promise.all([
+			this.getZsetMembers(`${SERVED_KEY_PREFIX}${me.id}`, SERVED_TTL_MS),
+			this.getZsetMembers(`${SEEN_KEY_PREFIX}${me.id}`, SEEN_TTL_MS),
+		]);
+		const candidates = await this.getCandidates(me.id, {
+			limit: opts.limit * REC_CANDIDATE_OVERFETCH,
+			capLimit: opts.limit,
+			excluded: (id) => served.has(id) || seen.has(id) || opts.excludedNoteIds?.has(id) === true,
+			newerThan: null,
+			axes: settings.axes,
+			axisMaxShare: this.buildAxisShare(AUTO_AXIS_MAX_SHARE, settings.axisLevels),
+		});
+		const { recNotes, reasonOf } = await this.fetchAndPackRecNotes(candidates, me, { withFiles: opts.withFiles });
+		const notes = recNotes.slice(0, opts.limit);
+		this.markRecommendationMeta(notes, notes.map(note => note.id), reasonOf, settings.showReason);
+
+		if (notes.length > 0) {
+			await this.recordServedWithLog(me.id, notes.map(note => note.id), reasonOf);
+		}
+
+		return notes;
+	}
+
+	/**
+	 * 推薦に該当するノートID集合（stream channel 用、step11）。
+	 * REST と「おすすめの意味」を揃えるため、ストリームはこの集合に含まれるノートだけを推薦として流す。
+	 * ユーザー設定（ON/OFF・軸）・served/seen を尊重する。
+	 */
+	@bindThis
+	public async getRecommendationNoteReasons(meId: MiUser['id'], limit: number): Promise<{ reasonOf: Map<string, RecReasonMeta>; showReason: boolean }> {
+		const settings = await this.resolveSettings(meId);
+		if (!settings.enabled || settings.axes.size === 0) return { reasonOf: new Map(), showReason: settings.showReason };
+
+		const [served, seen] = await Promise.all([
+			this.getZsetMembers(`${SERVED_KEY_PREFIX}${meId}`, SERVED_TTL_MS),
+			this.getZsetMembers(`${SEEN_KEY_PREFIX}${meId}`, SEEN_TTL_MS),
+		]);
+		const candidates = await this.getCandidates(meId, {
+			limit,
+			capLimit: limit,
+			excluded: (id) => served.has(id) || seen.has(id),
+			newerThan: null,
+			axes: settings.axes,
+			axisMaxShare: this.buildAxisShare(AUTO_AXIS_MAX_SHARE, settings.axisLevels),
+		});
+		return {
+			reasonOf: new Map(candidates.map(c => [c.noteId, { source: c.source, reason: c.reason, term: c.term }])),
+			showReason: settings.showReason,
+		};
+	}
+
+	@bindThis
+	public async getRecommendationNoteIdSet(meId: MiUser['id'], limit: number): Promise<Set<string>> {
+		const { reasonOf } = await this.getRecommendationNoteReasons(meId, limit);
+		return new Set(reasonOf.keys());
+	}
+
+	// ───────────────────────── served / seen / ログ ─────────────────────────
+
+	@bindThis
+	private async getZsetMembers(key: string, ttlMs: number): Promise<Set<string>> {
+		const cutoff = Date.now() - ttlMs;
+		const ids = await this.redisClient.zrangebyscore(key, cutoff, '+inf');
+		return new Set(ids);
+	}
+
+	@bindThis
+	public async recordServed(userId: MiUser['id'], noteIds: string[]): Promise<void> {
+		await this.recordZset(`${SERVED_KEY_PREFIX}${userId}`, noteIds, SERVED_TTL_SECONDS, SERVED_TTL_MS);
+	}
+
+	@bindThis
+	public async recordServedWithLog(userId: MiUser['id'], noteIds: string[], reasonOf: Map<string, RecReasonMeta>): Promise<void> {
+		await this.recordServed(userId, noteIds);
+		await this.logServed(userId, noteIds, reasonOf);
+	}
+
+	@bindThis
+	public async recordSeen(userId: MiUser['id'], noteIds: string[]): Promise<void> {
+		await this.recordZset(`${SEEN_KEY_PREFIX}${userId}`, noteIds, SEEN_TTL_SECONDS, SEEN_TTL_MS);
+	}
+
+	@bindThis
+	private async recordZset(key: string, noteIds: string[], ttlSeconds: number, ttlMs: number): Promise<void> {
+		if (noteIds.length === 0) return;
+		const now = Date.now();
+		const scoreMembers: (string | number)[] = [];
+		for (const id of noteIds) scoreMembers.push(now, id);
+		await this.redisClient.multi()
+			.zadd(key, ...(scoreMembers as [number, string]))
+			.zremrangebyscore(key, 0, now - ttlMs)
+			.expire(key, ttlSeconds)
+			.exec();
+	}
+
+	/**
+	 * 効果測定ログ（仕様7）: Redis Stream に最小限を残す。集計は後段バッチで Postgres へ。
+	 */
+	@bindThis
+	private async logServed(userId: MiUser['id'], noteIds: string[], reasonOf: Map<string, RecReasonMeta>): Promise<void> {
+		if (LOG_SAMPLE_RATE < 1 && Math.random() > LOG_SAMPLE_RATE) return;
+		const servedAt = Date.now().toString();
+		for (const noteId of noteIds) {
+			const r = reasonOf.get(noteId);
+			await this.redisClient.call(
+				'XADD', LOG_STREAM_KEY, 'MAXLEN', '~', String(LOG_STREAM_MAXLEN), '*',
+				'event', 'served',
+				'userId', userId,
+				'noteId', noteId,
+				'source', r?.source ?? 'unknown',
+				'reasonCode', r?.reason ?? 'unknown',
+				'servedAt', servedAt,
+			);
+		}
+	}
+
+	/**
+	 * フォロー候補（step10）。エンドポイントから呼ぶ薄いラッパ。
+	 */
+	@bindThis
+	public async getFollowCandidates(meId: MiUser['id'], limit: number): Promise<{ userId: string; reason: string; mutualCount: number }[]> {
+		const cands = await this.hanamiUserRecommendationService.getFollowCandidates(meId, limit);
+		return cands.map(c => ({ userId: c.userId, reason: c.reason, mutualCount: c.mutualCount }));
+	}
+
+	/**
+	 * テキストトレンド（急上昇用語）一覧。エンドポイントから呼ぶ薄いラッパ。
+	 * ハッシュタグ集計（hashtags/trend）とは別系統で、本文をトークナイズした汎用トレンド（trending軸の素）。
+	 */
+	@bindThis
+	public async getTrendingTerms(limit: number): Promise<{ term: string; score: number; distinctAuthors: number }[]> {
+		const terms = await this.hanamiTrendService.getTrendingTerms(limit);
+		return terms.map(t => ({ term: t.term, score: t.score, distinctAuthors: t.distinctAuthors }));
+	}
+}

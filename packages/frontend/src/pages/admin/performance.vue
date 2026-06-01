@@ -119,6 +119,43 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</MkFolder>
 				</SearchMarker>
 
+				<SearchMarker :keywords="['hanami', 'recommendation', 'おすすめ']">
+					<MkFolder :defaultOpen="false">
+						<template #icon><SearchIcon><i class="ti ti-flower-filled"></i></SearchIcon></template>
+						<template #label><SearchLabel>{{ i18n.ts._hana._recommendation.title }}</SearchLabel></template>
+						<template v-if="hanamiRecForm.modified.value" #footer>
+							<MkFormFooter :form="hanamiRecForm"/>
+						</template>
+
+						<div class="_gaps">
+							<SearchMarker>
+								<MkSwitch v-model="hanamiRecForm.state.hanamiShowRecommendationReason">
+									<template #label><SearchLabel>{{ i18n.ts._hana._recommendation.showReason }}</SearchLabel><span v-if="hanamiRecForm.modifiedStates.hanamiShowRecommendationReason" class="_modified">{{ i18n.ts.modified }}</span></template>
+									<template #caption><SearchText>{{ i18n.ts._hana._recommendation.showReasonDescription }}</SearchText></template>
+								</MkSwitch>
+							</SearchMarker>
+
+							<MkFolder :defaultOpen="false">
+								<template #icon><i class="ti ti-adjustments"></i></template>
+								<template #label>{{ i18n.ts._hana._recommendation.axes }}</template>
+								<template #caption>{{ i18n.ts._hana._recommendation.axisConfigDescription }}</template>
+
+								<div class="_gaps">
+									<div v-for="ax in axisKeys" :key="ax" class="_gaps_s">
+										<MkInfo>{{ i18n.ts._hana._recommendation._reason[ax] }}</MkInfo>
+										<MkSwitch v-model="hanamiRecForm.state[`${ax}Available`]">
+											<template #label>{{ i18n.ts._hana._recommendation.axisAvailable }}<span v-if="hanamiRecForm.modifiedStates[`${ax}Available`]" class="_modified">{{ i18n.ts.modified }}</span></template>
+										</MkSwitch>
+										<MkSwitch v-model="hanamiRecForm.state[`${ax}Default`]" :disabled="!hanamiRecForm.state[`${ax}Available`]">
+											<template #label>{{ i18n.ts._hana._recommendation.axisDefault }}<span v-if="hanamiRecForm.modifiedStates[`${ax}Default`]" class="_modified">{{ i18n.ts.modified }}</span></template>
+										</MkSwitch>
+									</div>
+								</div>
+							</MkFolder>
+						</div>
+					</MkFolder>
+				</SearchMarker>
+
 				<SearchMarker>
 					<MkFolder :defaultOpen="true">
 						<template #icon><SearchIcon><i class="ti ti-bolt"></i></SearchIcon></template>
@@ -189,6 +226,7 @@ import MkInput from '@/components/MkInput.vue';
 import MkLink from '@/components/MkLink.vue';
 import { useForm } from '@/composables/use-form.js';
 import MkFormFooter from '@/components/MkFormFooter.vue';
+import MkInfo from '@/components/MkInfo.vue';
 
 const meta = await misskeyApi('admin/meta');
 
@@ -262,6 +300,33 @@ const fttForm = useForm({
 		perRemoteUserUserTimelineCacheMax: state.perRemoteUserUserTimelineCacheMax,
 		perUserHomeTimelineCacheMax: state.perUserHomeTimelineCacheMax,
 		perUserListTimelineCacheMax: state.perUserListTimelineCacheMax,
+	});
+	fetchInstance(true);
+});
+
+// はなみTL おすすめ: 理由ラベル表示トグル + 軸ごとの available/default（[[hanami-tl-osusume-redesign]]）。
+const axisKeys = ['popular', 'lowExposure', 'trending', 'fof'] as const;
+const axisCfg = meta.hanamiRecommendationAxisConfig ?? {};
+
+const hanamiRecForm = useForm({
+	hanamiShowRecommendationReason: meta.hanamiShowRecommendationReason,
+	popularAvailable: axisCfg.popular?.available ?? true,
+	popularDefault: axisCfg.popular?.default ?? true,
+	lowExposureAvailable: axisCfg.lowExposure?.available ?? true,
+	lowExposureDefault: axisCfg.lowExposure?.default ?? true,
+	trendingAvailable: axisCfg.trending?.available ?? true,
+	trendingDefault: axisCfg.trending?.default ?? true,
+	fofAvailable: axisCfg.fof?.available ?? true,
+	fofDefault: axisCfg.fof?.default ?? true,
+}, async (state) => {
+	await os.apiWithDialog('admin/update-meta', {
+		hanamiShowRecommendationReason: state.hanamiShowRecommendationReason,
+		hanamiRecommendationAxisConfig: {
+			popular: { available: state.popularAvailable, default: state.popularDefault },
+			lowExposure: { available: state.lowExposureAvailable, default: state.lowExposureDefault },
+			trending: { available: state.trendingAvailable, default: state.trendingDefault },
+			fof: { available: state.fofAvailable, default: state.fofDefault },
+		},
 	});
 	fetchInstance(true);
 });
