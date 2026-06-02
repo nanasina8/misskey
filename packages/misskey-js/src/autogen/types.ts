@@ -3080,7 +3080,7 @@ export type paths = {
          * notes/featured
          * @description No description provided.
          *
-         *     **Credential required**: *Yes* / **Permission**: *read:account*
+         *     **Credential required**: *No*
          */
         post: operations['notes___featured'];
     };

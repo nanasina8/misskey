@@ -21,10 +21,8 @@ const FEATURED_RANKING_SNAPSHOT_TTL_SECONDS = 60 * 5;
 export const meta = {
 	tags: ['notes'],
 
-	requireCredential: true,
-	kind: 'read:account',
-
-	allowGet: false,
+	requireCredential: false,
+	allowGet: true,
 	cacheSec: 180,
 
 	res: {
@@ -75,7 +73,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					// ログイン済み: パーソナライズランキング
 					return this.featuredService.getPersonalizedNotesRanking(me.id, 100);
 				}
-				// 未ログイン（requireCredential のため通常到達しない）: グローバルランキング（3分キャッシュ）
+				// 未ログイン: グローバルランキング（3分キャッシュ）
 				if (this.globalNotesRankingCacheLastFetchedAt !== 0 && (Date.now() - this.globalNotesRankingCacheLastFetchedAt < 1000 * 60 * 3)) {
 					return this.globalNotesRankingCache;
 				}

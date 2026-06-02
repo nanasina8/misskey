@@ -3751,7 +3751,7 @@ declare module '../api.js' {
     /**
      * No description provided.
      * 
-     * **Credential required**: *Yes* / **Permission**: *read:account*
+     * **Credential required**: *No*
      */
     request<E extends 'notes/featured', P extends Endpoints[E]['req']>(
       endpoint: E,
@@ -3794,7 +3794,7 @@ declare module '../api.js' {
 
     /**
      * No description provided.
-     *
+     * 
      * **Credential required**: *No*
      */
     request<E extends 'notes/hanami-trends', P extends Endpoints[E]['req']>(
@@ -3805,7 +3805,7 @@ declare module '../api.js' {
 
     /**
      * No description provided.
-     *
+     * 
      * **Credential required**: *No*
      */
     request<E extends 'notes/hanamisearch-v1', P extends Endpoints[E]['req']>(
@@ -4601,7 +4601,7 @@ declare module '../api.js' {
 
     /**
      * No description provided.
-     *
+     * 
      * **Credential required**: *Yes* / **Permission**: *read:account*
      */
     request<E extends 'users/hanami-recommendations', P extends Endpoints[E]['req']>(
