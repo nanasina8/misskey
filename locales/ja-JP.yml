@@ -890,6 +890,7 @@ ads: "広告"
 expiration: "期限"
 startingperiod: "開始期間"
 memo: "メモ"
+memoIsNotShared: "あなたのメモは他のユーザーと共有されません。"
 priority: "優先度"
 high: "高"
 middle: "中"
@@ -1078,6 +1079,10 @@ thisPostMayBeAnnoyingCancel: "やめる"
 thisPostMayBeAnnoyingIgnore: "このまま投稿"
 collapseRenotes: "リノートのスマート省略"
 collapseRenotesDescription: "リアクションやリノートをしたことがあるノートをたたんで表示します。"
+pakuru: "パクる"
+numberquote: "数字引用する"
+didPakuru: "パクりました。"
+didNumberquote: "数字引用しました。"
 internalServerError: "サーバー内部エラー"
 internalServerErrorDescription: "サーバー内部で予期しないエラーが発生しました。"
 copyErrorInfo: "エラー情報をコピー"
@@ -1553,6 +1558,13 @@ _settings:
   enableSyncThemesBetweenDevices: "デバイス間でインストールしたテーマを同期"
   enablePullToRefresh: "ひっぱって更新"
   enablePullToRefresh_description: "マウスでは、ホイールを押し込みながらドラッグします。"
+  pullToRefreshSensitivity: "「ひっぱって更新」の感度"
+  _pullToRefreshSensitivity:
+    low: "低感度"
+    middle: "中感度 (規定)"
+    high: "高感度"
+  pullToRefreshAllReload: "「ひっぱって更新」でページ全体を再読み込みする"
+  pullToRefreshAllReload_description: "構成しているページ全体を再読み込みする動作に置き換えます。"
   realtimeMode_description: "サーバーと接続を確立し、リアルタイムでコンテンツを更新します。通信量とバッテリーの消費が多くなる場合があります。"
   contentsUpdateFrequency: "コンテンツの取得頻度"
   contentsUpdateFrequency_description: "高いほどリアルタイムにコンテンツが更新されますが、パフォーマンスが低下し、通信量とバッテリーの消費が多くなります。"
@@ -2299,10 +2311,21 @@ _displayOfSensitiveMedia:
   ignore: "センシティブ設定されたメディアを隠さない"
   force: "常にメディアを隠す"
 
+_pakuru:
+  description: "リノートメニューに「パクる」（ノートを自分の投稿として複製）を追加します。"
+  numberquoteDescription: "リノートメニューに「数字引用する」（複製して末尾の数字を+1）を追加します。"
+
 _instanceTicker:
   none: "表示しない"
   remote: "リモートユーザーに表示"
   always: "常に表示"
+  position: "表示位置"
+  _position:
+    default: "デフォルト"
+    leftVerticalBar: "縦 (左端)"
+    rightVerticalBar: "縦 (右端)"
+    leftWatermark: "透かし (左下)"
+    rightWatermark: "透かし (右下)"
 
 _serverDisconnectedBehavior:
   reload: "自動でリロード"
@@ -3189,6 +3212,9 @@ _mediaControls:
   pip: "ピクチャインピクチャ"
   playbackRate: "再生速度"
   loop: "ループ再生"
+
+preventLongPressContextMenu: "長押しによるコンテキストメニューを抑制"
+preventLongPressContextMenu_description: "長押しを含む操作が中断される問題を解消します。"
 
 _contextMenu:
   title: "コンテキストメニュー"

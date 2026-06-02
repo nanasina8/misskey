@@ -167,6 +167,24 @@ SPDX-License-Identifier: AGPL-3.0-only
 								</MkPreferenceContainer>
 							</SearchMarker>
 
+							<SearchMarker :keywords="['pakuru', 'renote', 'copy']">
+								<MkPreferenceContainer k="enablePakuru">
+									<MkSwitch v-model="enablePakuru">
+										<template #label><SearchLabel>{{ i18n.ts.pakuru }}</SearchLabel><span class="_beta">{{ i18n.ts.beta }}</span></template>
+										<template #caption><SearchText>{{ i18n.ts._pakuru.description }}</SearchText></template>
+									</MkSwitch>
+								</MkPreferenceContainer>
+							</SearchMarker>
+
+							<SearchMarker :keywords="['numberquote', 'renote', 'quote', 'number']">
+								<MkPreferenceContainer k="enableNumberquote">
+									<MkSwitch v-model="enableNumberquote">
+										<template #label><SearchLabel>{{ i18n.ts.numberquote }}</SearchLabel><span class="_beta">{{ i18n.ts.beta }}</span></template>
+										<template #caption><SearchText>{{ i18n.ts._pakuru.numberquoteDescription }}</SearchText></template>
+									</MkSwitch>
+								</MkPreferenceContainer>
+							</SearchMarker>
+
 							<SearchMarker :keywords="['pinned', 'list']">
 								<MkFolder>
 									<template #label><SearchLabel>{{ i18n.ts.pinnedList }}</SearchLabel></template>
@@ -289,6 +307,23 @@ SPDX-License-Identifier: AGPL-3.0-only
 										]"
 									>
 										<template #label><SearchLabel>{{ i18n.ts.instanceTicker }}</SearchLabel></template>
+									</MkSelect>
+								</MkPreferenceContainer>
+							</SearchMarker>
+
+							<SearchMarker v-if="instanceTicker !== 'none'" :keywords="['ticker', 'position', 'vertical', 'bar', 'watermark']">
+								<MkPreferenceContainer k="instanceTickerPosition">
+									<MkSelect
+										v-model="instanceTickerPosition"
+										:items="[
+											{ label: i18n.ts._instanceTicker._position.default, value: 'default' },
+											{ label: i18n.ts._instanceTicker._position.leftVerticalBar, value: 'leftVerticalBar' },
+											{ label: i18n.ts._instanceTicker._position.rightVerticalBar, value: 'rightVerticalBar' },
+											{ label: i18n.ts._instanceTicker._position.leftWatermark, value: 'leftWatermark' },
+											{ label: i18n.ts._instanceTicker._position.rightWatermark, value: 'rightWatermark' },
+										]"
+									>
+										<template #label><SearchLabel>{{ i18n.ts._instanceTicker.position }}</SearchLabel><span class="_beta">{{ i18n.ts.beta }}</span></template>
 									</MkSelect>
 								</MkPreferenceContainer>
 							</SearchMarker>
@@ -521,6 +556,28 @@ SPDX-License-Identifier: AGPL-3.0-only
 								</MkPreferenceContainer>
 							</SearchMarker>
 
+							<template v-if="enablePullToRefresh">
+								<SearchMarker :keywords="['swipe', 'pull', 'refresh', 'sensitivity']">
+									<MkPreferenceContainer k="pullToRefreshSensitivity">
+										<MkRadios v-model="pullToRefreshSensitivity">
+											<template #label><SearchLabel>{{ i18n.ts._settings.pullToRefreshSensitivity }}</SearchLabel><span class="_beta">{{ i18n.ts.beta }}</span></template>
+											<option value="low">{{ i18n.ts._settings._pullToRefreshSensitivity.low }}</option>
+											<option value="middle">{{ i18n.ts._settings._pullToRefreshSensitivity.middle }}</option>
+											<option value="high">{{ i18n.ts._settings._pullToRefreshSensitivity.high }}</option>
+										</MkRadios>
+									</MkPreferenceContainer>
+								</SearchMarker>
+
+								<SearchMarker :keywords="['swipe', 'pull', 'refresh', 'reload']">
+									<MkPreferenceContainer k="pullToRefreshAllReload">
+										<MkSwitch v-model="pullToRefreshAllReload">
+											<template #label><SearchLabel>{{ i18n.ts._settings.pullToRefreshAllReload }}</SearchLabel><span class="_beta">{{ i18n.ts.beta }}</span></template>
+											<template #caption><SearchText>{{ i18n.ts._settings.pullToRefreshAllReload_description }}</SearchText></template>
+										</MkSwitch>
+									</MkPreferenceContainer>
+								</SearchMarker>
+							</template>
+
 							<SearchMarker :keywords="['keep', 'screen', 'display', 'on']">
 								<MkPreferenceContainer k="keepScreenOn">
 									<MkSwitch v-model="keepScreenOn">
@@ -574,6 +631,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 								>
 									<template #label><SearchLabel>{{ i18n.ts._contextMenu.title }}</SearchLabel></template>
 								</MkSelect>
+							</MkPreferenceContainer>
+						</SearchMarker>
+
+						<SearchMarker :keywords="['contextmenu', 'longpress', 'long', 'press', 'touch', 'prevent']">
+							<MkPreferenceContainer k="preventLongPressContextMenu">
+								<MkSwitch v-model="preventLongPressContextMenu">
+									<template #label><SearchLabel>{{ i18n.ts.preventLongPressContextMenu }}</SearchLabel><span class="_beta">{{ i18n.ts.beta }}</span></template>
+									<template #caption><SearchText>{{ i18n.ts.preventLongPressContextMenu_description }}</SearchText></template>
+								</MkSwitch>
 							</MkPreferenceContainer>
 						</SearchMarker>
 
@@ -889,6 +955,8 @@ const hemisphere = prefer.model('hemisphere');
 const showNoteActionsOnlyHover = prefer.model('showNoteActionsOnlyHover');
 const showClipButtonInNoteFooter = prefer.model('showClipButtonInNoteFooter');
 const collapseRenotes = prefer.model('collapseRenotes');
+const enablePakuru = prefer.model('enablePakuru');
+const enableNumberquote = prefer.model('enableNumberquote');
 const advancedMfm = prefer.model('advancedMfm');
 const showReactionsCount = prefer.model('showReactionsCount');
 const enableQuickAddMfmFunction = prefer.model('enableQuickAddMfmFunction');
@@ -911,6 +979,7 @@ const rememberNoteVisibility = prefer.model('rememberNoteVisibility');
 const notificationPosition = prefer.model('notificationPosition');
 const notificationStackAxis = prefer.model('notificationStackAxis');
 const instanceTicker = prefer.model('instanceTicker');
+const instanceTickerPosition = prefer.model('instanceTickerPosition');
 const highlightSensitiveMedia = prefer.model('highlightSensitiveMedia');
 const mediaListWithOneImageAppearance = prefer.model('mediaListWithOneImageAppearance');
 const showMediaListByGridInWideArea = prefer.model('showMediaListByGridInWideArea');
@@ -937,8 +1006,11 @@ const keepScreenOn = prefer.model('keepScreenOn');
 const enableHorizontalSwipe = prefer.model('enableHorizontalSwipe');
 const showPageTabBarBottom = prefer.model('showPageTabBarBottom');
 const enablePullToRefresh = prefer.model('enablePullToRefresh');
+const pullToRefreshSensitivity = prefer.model('pullToRefreshSensitivity');
+const pullToRefreshAllReload = prefer.model('pullToRefreshAllReload');
 const useNativeUiForVideoAudioPlayer = prefer.model('useNativeUiForVideoAudioPlayer');
 const contextMenu = prefer.model('contextMenu');
+const preventLongPressContextMenu = prefer.model('preventLongPressContextMenu');
 const menuStyle = prefer.model('menuStyle');
 const makeEveryTextElementsSelectable = prefer.model('makeEveryTextElementsSelectable');
 

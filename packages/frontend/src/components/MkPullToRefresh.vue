@@ -23,15 +23,23 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { onMounted, onUnmounted, ref, useTemplateRef } from 'vue';
+import { computed, onMounted, onUnmounted, ref, useTemplateRef } from 'vue';
 import { getScrollContainer } from '@@/js/scroll.js';
 import { i18n } from '@/i18n.js';
 import { isHorizontalSwipeSwiping } from '@/utility/touch.js';
 import { haptic } from '@/utility/haptic.js';
+import { prefer } from '@/preferences.js';
 
 const SCROLL_STOP = 10;
 const MAX_PULL_DISTANCE = Infinity;
-const FIRE_THRESHOLD = 200;
+// taiyme 由来: 感度設定により発火閾値を変える（低=遠く / 高=近く）
+const fireThreshold = computed(() => {
+	switch (prefer.s.pullToRefreshSensitivity) {
+		case 'low': return 300;
+		case 'high': return 120;
+		default: return 200;
+	}
+});
 const RELEASE_TRANSITION_DURATION = 200;
 const PULL_BRAKE_BASE = 1.5;
 const PULL_BRAKE_FACTOR = 170;
@@ -151,8 +159,8 @@ function moveBySystem(to: number): Promise<void> {
 }
 
 async function fixOverContent() {
-	if (pullDistance.value > FIRE_THRESHOLD) {
-		await moveBySystem(FIRE_THRESHOLD);
+	if (pullDistance.value > fireThreshold.value) {
+		await moveBySystem(fireThreshold.value);
 	}
 }
 
@@ -168,6 +176,11 @@ function onPullRelease() {
 		isPulledEnough.value = false;
 		isRefreshing.value = true;
 		fixOverContent().then(() => {
+			// taiyme 由来: 「ページ全体を再読み込み」
+			if (prefer.s.pullToRefreshAllReload) {
+				window.location.reload();
+				return;
+			}
 			emit('refresh');
 			props.refresher().then(() => {
 				refreshFinished();
@@ -203,7 +216,7 @@ function moving(event: MouseEvent | TouchEvent) {
 	const moveHeight = moveScreenY - startScreenY!;
 	pullDistance.value = Math.min(Math.max(moveHeight, 0), MAX_PULL_DISTANCE);
 
-	isPulledEnough.value = pullDistance.value >= FIRE_THRESHOLD;
+	isPulledEnough.value = pullDistance.value >= fireThreshold.value;
 
 	if (isPulledEnough.value) haptic();
 }

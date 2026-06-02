@@ -25,6 +25,8 @@ import { genEmbedCode } from '@/utility/get-embed-code.js';
 import { prefer } from '@/preferences.js';
 import { getPluginHandlers } from '@/plugin.js';
 import { globalEvents } from '@/events.js';
+import { pakuru } from '@/utility/tms/pakuru.js';
+import { numberquote } from '@/utility/tms/numberquote.js';
 
 const isInBrowserTranslationAvailable = (
 	'LanguageDetector' in window &&
@@ -720,12 +722,48 @@ export function getRenoteMenu(props: {
 		});
 	}
 
+	// taiyme 由来: パクる / 数字引用
+	const pakuruItems: MenuItem[] = [];
+
+	if (prefer.s.enablePakuru) {
+		pakuruItems.push({
+			text: i18n.ts.pakuru,
+			icon: 'ti ti-swipe',
+			action: () => {
+				if (props.mock) return;
+				pakuru(appearNote).then((res) => {
+					os.toast(i18n.ts.didPakuru);
+					globalEvents.emit('notePosted', res.createdNote);
+				}).catch((err) => {
+					os.alert({ type: 'error', text: err instanceof Error ? err.message : String(err) });
+				});
+			},
+		});
+	}
+
+	if (prefer.s.enableNumberquote) {
+		pakuruItems.push({
+			text: i18n.ts.numberquote,
+			icon: 'ti ti-exposure-plus-1',
+			action: () => {
+				if (props.mock) return;
+				numberquote(appearNote).then((res) => {
+					os.toast(i18n.ts.didNumberquote);
+					globalEvents.emit('notePosted', res.createdNote);
+				}).catch((err) => {
+					os.alert({ type: 'error', text: err instanceof Error ? err.message : String(err) });
+				});
+			},
+		});
+	}
+
 	const renoteItems = [
 		...normalRenoteItems,
 		...(channelRenoteItems.length > 0 && normalRenoteItems.length > 0) ? [{ type: 'divider' }] as MenuItem[] : [],
 		...channelRenoteItems,
 		...(normalExternalChannelRenoteItems.length > 0 && (normalRenoteItems.length > 0 || channelRenoteItems.length > 0)) ? [{ type: 'divider' }] as MenuItem[] : [],
 		...normalExternalChannelRenoteItems,
+		...(pakuruItems.length > 0 ? [{ type: 'divider' } as MenuItem, ...pakuruItems] : []),
 	];
 
 	return {

@@ -3579,6 +3579,10 @@ export interface Locale extends ILocale {
      */
     "memo": string;
     /**
+     * あなたのメモは他のユーザーと共有されません。
+     */
+    "memoIsNotShared": string;
+    /**
      * 優先度
      */
     "priority": string;
@@ -4330,6 +4334,22 @@ export interface Locale extends ILocale {
      * リアクションやリノートをしたことがあるノートをたたんで表示します。
      */
     "collapseRenotesDescription": string;
+    /**
+     * パクる
+     */
+    "pakuru": string;
+    /**
+     * 数字引用する
+     */
+    "numberquote": string;
+    /**
+     * パクりました。
+     */
+    "didPakuru": string;
+    /**
+     * 数字引用しました。
+     */
+    "didNumberquote": string;
     /**
      * サーバー内部エラー
      */
@@ -6183,6 +6203,32 @@ export interface Locale extends ILocale {
          * マウスでは、ホイールを押し込みながらドラッグします。
          */
         "enablePullToRefresh_description": string;
+        /**
+         * 「ひっぱって更新」の感度
+         */
+        "pullToRefreshSensitivity": string;
+        "_pullToRefreshSensitivity": {
+            /**
+             * 低感度
+             */
+            "low": string;
+            /**
+             * 中感度 (規定)
+             */
+            "middle": string;
+            /**
+             * 高感度
+             */
+            "high": string;
+        };
+        /**
+         * 「ひっぱって更新」でページ全体を再読み込みする
+         */
+        "pullToRefreshAllReload": string;
+        /**
+         * 構成しているページ全体を再読み込みする動作に置き換えます。
+         */
+        "pullToRefreshAllReload_description": string;
         /**
          * サーバーと接続を確立し、リアルタイムでコンテンツを更新します。通信量とバッテリーの消費が多くなる場合があります。
          */
@@ -8790,6 +8836,16 @@ export interface Locale extends ILocale {
          */
         "force": string;
     };
+    "_pakuru": {
+        /**
+         * リノートメニューに「パクる」（ノートを自分の投稿として複製）を追加します。
+         */
+        "description": string;
+        /**
+         * リノートメニューに「数字引用する」（複製して末尾の数字を+1）を追加します。
+         */
+        "numberquoteDescription": string;
+    };
     "_instanceTicker": {
         /**
          * 表示しない
@@ -8803,6 +8859,32 @@ export interface Locale extends ILocale {
          * 常に表示
          */
         "always": string;
+        /**
+         * 表示位置
+         */
+        "position": string;
+        "_position": {
+            /**
+             * デフォルト
+             */
+            "default": string;
+            /**
+             * 縦 (左端)
+             */
+            "leftVerticalBar": string;
+            /**
+             * 縦 (右端)
+             */
+            "rightVerticalBar": string;
+            /**
+             * 透かし (左下)
+             */
+            "leftWatermark": string;
+            /**
+             * 透かし (右下)
+             */
+            "rightWatermark": string;
+        };
     };
     "_serverDisconnectedBehavior": {
         /**
@@ -11994,6 +12076,14 @@ export interface Locale extends ILocale {
          */
         "loop": string;
     };
+    /**
+     * 長押しによるコンテキストメニューを抑制
+     */
+    "preventLongPressContextMenu": string;
+    /**
+     * 長押しを含む操作が中断される問題を解消します。
+     */
+    "preventLongPressContextMenu_description": string;
     "_contextMenu": {
         /**
          * コンテキストメニュー

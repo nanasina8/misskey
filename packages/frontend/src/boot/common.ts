@@ -33,6 +33,7 @@ import { clearEmojiSearchIndex, initEmojiSearch } from '@/hana/scripts/emoji-sea
 import { prefer } from '@/preferences.js';
 import { iAmModerator, $i } from '@/i.js';
 import { launchPlugins } from '@/plugin.js';
+import { preventLongPressContextMenu } from '@/utility/tms/prevent-longpress-contextmenu.js';
 
 export async function common(createVue: () => Promise<App<Element>>) {
 	console.info(`Misskey v${version}`);
@@ -100,6 +101,11 @@ export async function common(createVue: () => Promise<App<Element>>) {
 
 	// タッチデバイスでCSSの:hoverを機能させる
 	window.document.addEventListener('touchend', () => {}, { passive: true });
+
+	// taiyme 由来: 長押しによる contextmenu イベントの発行を防ぐ
+	if (prefer.s.preventLongPressContextMenu) {
+		preventLongPressContextMenu();
+	}
 
 	// URLに#pswpを含む場合は取り除く
 	if (window.location.hash === '#pswp') {

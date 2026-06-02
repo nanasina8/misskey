@@ -80,6 +80,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 								@blur="updateMemo"
 								@input="adjustMemoTextarea"
 							/>
+							<div class="caption" v-text="i18n.ts.memoIsNotShared"/>
 						</div>
 						<div class="description">
 							<MkOmit>
@@ -548,6 +549,14 @@ onDeactivated(disposeBannerParallaxResizeObserver);
 						color: color(from var(--MI_THEME-fg) srgb r g b / 0.5);
 						line-height: 1.5;
 						font-size: 85%;
+					}
+
+					> .caption {
+						text-align: left;
+						color: color(from var(--MI_THEME-fg) srgb r g b / 0.5);
+						line-height: 1.5;
+						font-size: 85%;
+						margin-top: 4px;
 					}
 
 					textarea {

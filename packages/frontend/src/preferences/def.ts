@@ -185,6 +185,12 @@ export const PREF_DEF = definePreferences({
 	collapseRenotes: {
 		default: true,
 	},
+	enablePakuru: {
+		default: true,
+	},
+	enableNumberquote: {
+		default: true,
+	},
 	menu: {
 		default: [
 			'notifications',
@@ -266,6 +272,9 @@ export const PREF_DEF = definePreferences({
 	},
 	instanceTicker: {
 		default: 'remote' as 'none' | 'remote' | 'always',
+	},
+	instanceTickerPosition: {
+		default: 'default' as 'default' | 'leftVerticalBar' | 'rightVerticalBar' | 'leftWatermark' | 'rightWatermark',
 	},
 	emojiPickerScale: {
 		default: 2,
@@ -357,6 +366,12 @@ export const PREF_DEF = definePreferences({
 	enablePullToRefresh: {
 		default: isTouchUsing,
 	},
+	pullToRefreshSensitivity: {
+		default: 'middle' as 'low' | 'middle' | 'high',
+	},
+	pullToRefreshAllReload: {
+		default: false,
+	},
 	useNativeUiForVideoAudioPlayer: {
 		default: false,
 	},
@@ -371,6 +386,9 @@ export const PREF_DEF = definePreferences({
 	},
 	contextMenu: {
 		default: 'app' as 'app' | 'appWithShift' | 'native',
+	},
+	preventLongPressContextMenu: {
+		default: false,
 	},
 	skipNoteRender: {
 		default: false,
