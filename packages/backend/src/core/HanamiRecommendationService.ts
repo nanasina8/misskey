@@ -441,14 +441,14 @@ export class HanamiRecommendationService {
 		}));
 	}
 
-	/** FoF 軸（友達の友達の最近ノート）。 */
+	/** FoF 軸（友達の友達の最近ノート）。ノートスコア（作者スコア×新鮮さ×可視性×エンゲージ×返信0.5x）を最大値で正規化して使う。 */
 	@bindThis
 	private async getFoFCandidates(meId: MiUser['id']): Promise<ScoredCandidate[]> {
 		const fof = await this.hanamiUserRecommendationService.getFoFNoteIds(meId, RANKING_FETCH_SIZE);
-		const n = fof.length || 1;
-		return fof.map(({ noteId }, i) => ({
+		const max = fof[0]?.score || 1; // getFoFNoteIds はスコア降順で返る
+		return fof.map(({ noteId, score }) => ({
 			noteId,
-			score: ((n - i) / n) * AXIS_WEIGHT.fof,
+			score: (score / max) * AXIS_WEIGHT.fof,
 			source: 'fof' as const,
 			reason: 'fof' as const,
 		}));
