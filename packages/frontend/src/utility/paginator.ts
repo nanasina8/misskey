@@ -107,6 +107,7 @@ export class Paginator<
 	private canFetchDetection: 'safe' | 'limit' | null = null;
 	private aheadQueue: T[] = [];
 	private useShallowRef: SRef;
+	private cursorAnchor: ((item: T) => boolean) | null;
 
 	// 配列内の要素をどのような順序で並べるか
 	// newest: 新しいものが先頭 (default)
@@ -140,6 +141,11 @@ export class Paginator<
 
 		canSearch?: boolean;
 		searchParamName?: keyof E['req'];
+
+		// カーソル(untilId/sinceId)算出に使う要素を絞り込む述語。
+		// 注入されたおすすめなど「ページングの基準にしたくない要素」を除外する用途（はなみTL）。
+		// false を返す要素はカーソル算出の対象外。該当要素が無ければ全要素にフォールバックする。
+		cursorAnchor?: (item: T) => boolean;
 	}) {
 		this.endpoint = endpoint;
 		this.useShallowRef = (props.useShallowRef ?? false) as SRef;
@@ -161,6 +167,7 @@ export class Paginator<
 		this.offsetMode = props.offsetMode ?? false;
 		this.canSearch = props.canSearch ?? false;
 		this.searchParamName = props.searchParamName ?? 'search';
+		this.cursorAnchor = props.cursorAnchor ?? null;
 
 		this.getNewestId = this.getNewestId.bind(this);
 		this.getOldestId = this.getOldestId.bind(this);
@@ -177,17 +184,22 @@ export class Paginator<
 		this.updateItem = this.updateItem.bind(this);
 	}
 
+	// カーソル算出に使う要素。cursorAnchor 指定時はそれで絞り、該当が無ければ全要素にフォールバックする。
+	private anchorItems(items: T[]): T[] {
+		if (this.cursorAnchor == null) return items;
+		const filtered = items.filter(this.cursorAnchor);
+		return filtered.length > 0 ? filtered : items;
+	}
+
 	private getNewestId(): string | null | undefined {
 		// 様々な要因により並び順は保証されないのでソートが必要
-		if (this.aheadQueue.length > 0) {
-			return this.aheadQueue.map(x => x.id).sort().at(-1);
-		}
-		return this.items.value.map(x => x.id).sort().at(-1);
+		const source = this.aheadQueue.length > 0 ? this.aheadQueue : this.items.value;
+		return this.anchorItems(source).map(x => x.id).sort().at(-1);
 	}
 
 	private getOldestId(): string | null | undefined {
 		// 様々な要因により並び順は保証されないのでソートが必要
-		return this.items.value.map(x => x.id).sort().at(0);
+		return this.anchorItems(this.items.value).map(x => x.id).sort().at(0);
 	}
 
 	public async init(): Promise<void> {

@@ -127,6 +127,9 @@ if (props.src === 'antenna') {
 			withFiles: props.onlyFiles ? true : undefined,
 		})),
 		useShallowRef: true,
+		// 注入されたおすすめ（古い人気/急上昇ノート）はカーソル基準にしない。
+		// これが無いと untilId が注入ノートの古いIDに引っ張られ、遡りで過去の通常ノートが出てしまう。
+		cursorAnchor: (note) => !(note as Misskey.entities.Note & { _hanamiRecommended?: boolean })._hanamiRecommended,
 	}));
 } else if (props.src === 'local') {
 	paginator = markRaw(new Paginator('notes/local-timeline', {
