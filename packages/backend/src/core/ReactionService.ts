@@ -210,7 +210,9 @@ export class ReactionService {
 		}
 
 		// セルフではない、3日以内に投稿されたノートの場合ハイライト用ランキング更新
+		// bot のリアクションは人気/おすすめの集計に寄与させない（RN boost 側は NoteCreateService 側で既に bot 除外済み）
 		if (
+			!user.isBot &&
 			note.userId !== user.id &&
 			(Date.now() - this.idService.parse(note.id).date.getTime()) < 1000 * 60 * 60 * 24 * 3
 		) {
@@ -319,7 +321,9 @@ export class ReactionService {
 		}
 
 		// セルフではない、3日以内に投稿されたノートはハイライト用ランキングからも減算（過剰加点を防ぐ）
+		// bot は加点していないので減算もしない（create 側と対称に保つ）
 		if (
+			!user.isBot &&
 			note.userId !== user.id &&
 			(Date.now() - this.idService.parse(note.id).date.getTime()) < 1000 * 60 * 60 * 24 * 3
 		) {
