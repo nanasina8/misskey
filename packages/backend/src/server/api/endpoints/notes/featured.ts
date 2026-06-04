@@ -11,12 +11,15 @@ import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { DI } from '@/di-symbols.js';
 import { FeaturedService } from '@/core/FeaturedService.js';
 import { isUserRelated } from '@/misc/is-user-related.js';
+import { isInstanceMuted } from '@/misc/is-instance-muted.js';
 import { CacheService } from '@/core/CacheService.js';
 import { removeMutedUsersReactions } from '@/misc/reactions-mute.js';
 import { QueryService } from '@/core/QueryService.js';
 
 // スコア順ページングを安定させるスナップショットの保持時間。ここ一箇所で調整。
 const FEATURED_RANKING_SNAPSHOT_TTL_SECONDS = 60 * 5;
+// 1ページ充足のために走査する候補IDの上限（ランキングは最大500件なので十分カバーできる）。
+const FEATURED_FETCH_SCAN_LIMIT = 300;
 
 export const meta = {
 	tags: ['notes'],
@@ -100,32 +103,35 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				ranked = snapshot != null ? JSON.parse(snapshot) as string[] : await computeRanked();
 			}
 
-			let noteIds: string[];
+			// カーソル位置以降の候補（スナップショットなので indexOf は安定）。
+			let candidateIds: string[];
 			if (ps.untilId) {
-				// 固定済みスコア順配列内での位置をカーソルにする（スナップショットなので indexOf は安定）
 				const index = ranked.indexOf(ps.untilId);
-				noteIds = index >= 0 ? ranked.slice(index + 1) : [];
+				candidateIds = index >= 0 ? ranked.slice(index + 1) : [];
 			} else {
-				noteIds = ranked;
+				candidateIds = ranked;
 			}
-			noteIds = noteIds.slice(0, ps.limit);
+			// home がランキングに混ざるため、slice 前に可視性で絞らないと public が少ないページが空になる。
+			// 走査範囲を上限つきで取り、public のみ（リモート含む）を取得してから limit 件に詰める。
+			candidateIds = candidateIds.slice(0, FEATURED_FETCH_SCAN_LIMIT);
 
-			if (noteIds.length === 0) {
+			if (candidateIds.length === 0) {
 				return [];
 			}
 
 			const [
 				userIdsWhoMeMuting,
 				userIdsWhoBlockingMe,
+				userMutedInstances,
 			] = me ? await Promise.all([
 				this.cacheService.userMutingsCache.fetch(me.id),
 				this.cacheService.userBlockedCache.fetch(me.id),
-			]) : [new Set<string>(), new Set<string>()];
+				this.cacheService.userProfileCache.fetch(me.id).then(p => new Set(p.mutedInstances)),
+			]) : [new Set<string>(), new Set<string>(), new Set<string>()];
 
 			const query = this.notesRepository.createQueryBuilder('note')
-				.where('note.id IN (:...noteIds)', { noteIds: noteIds })
-				.andWhere('note.userHost IS NULL')
-				.andWhere('note.visibility = \'public\'') // home はランキングに混ざるが featured/explore には流さない（はなみTL専用）
+				.where('note.id IN (:...noteIds)', { noteIds: candidateIds })
+				.andWhere('note.visibility = \'public\'') // public のみ（リモート含む）。home はランキングに混ざるが explore には流さない（はなみTL専用）
 				.innerJoinAndSelect('note.user', 'user')
 				.leftJoinAndSelect('note.reply', 'reply')
 				.leftJoinAndSelect('note.renote', 'renote')
@@ -139,16 +145,17 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			const fetchedNotes = (await query.getMany()).filter(note => {
 				if (me && isUserRelated(note, userIdsWhoBlockingMe)) return false;
 				if (me && isUserRelated(note, userIdsWhoMeMuting)) return false;
+				if (me && isInstanceMuted(note, userMutedInstances)) return false;
 
 				return true;
 			});
 
-			// スコア順（ranked の順）を維持して返す
+			// スコア順（ranked の順）を維持しつつ limit 件に詰める。
 			const noteMap = new Map(fetchedNotes.map(n => [n.id, n]));
-			const notes = noteIds.flatMap(id => {
+			const notes = candidateIds.flatMap(id => {
 				const n = noteMap.get(id);
 				return n ? [n] : [];
-			});
+			}).slice(0, ps.limit);
 
 			const packedNotes = await this.noteEntityService.packMany(notes, me, { withReactionAndUserPairCache: true });
 			await Promise.all(
