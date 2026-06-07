@@ -5,12 +5,15 @@
 
 import { Brackets } from 'typeorm';
 import { Inject, Injectable } from '@nestjs/common';
+import * as Redis from 'ioredis';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
-import type { FollowingsRepository, NotesRepository, UsersRepository } from '@/models/_.js';
+import type { FollowingsRepository, FollowRequestsRepository, NoteReactionsRepository, NotesRepository, UsersRepository } from '@/models/_.js';
 import type { MiUser } from '@/models/User.js';
 import { CacheService } from '@/core/CacheService.js';
 import { IdService } from '@/core/IdService.js';
+
+const DAY_MS = 1000 * 60 * 60 * 24;
 
 // ───── seed（FoF探索の起点になる自分のフォロイー）の選び方（[[hanami-rec-redesign-v2]] 案1） ─────
 // 全フォロイーは「除外」には全数使うが、FoF 探索 seed は重み上位 MAX_SEED_FOLLOWEES 件に絞る。
@@ -33,6 +36,25 @@ const SEED_WITHREPLIES_BONUS = 0.5; // 返信まで見ている相手（より�
 // 候補スコアの補正（案2）。提案値。
 const FOLLOWBACK_BOOST = 1.3; // 候補が自分をフォロー中（フォロバ候補）
 const LOCKED_PENALTY = 0.5; // 鍵アカウントは低め（除外まではしない）
+const SHOWN_KEY_PREFIX = 'hanami:fof:shown:';
+const SHOWN_TTL_SECONDS = 60 * 60 * 24 * 30; // 表示回数は30日で自然回復
+const SHOWN_PENALTY_PER_VIEW = 0.6; // 1回表示ごとに 1 / (1 + n * 0.6) で減衰
+
+// 最近動いている候補・最近関わったFFを強くする。回数より「何日いた/関わったか」を主に見る。
+const ACTIVITY_LOOKBACK_MS = DAY_MS * 14;
+const ACTIVITY_RECENT_MS = DAY_MS * 7;
+const ACTIVITY_COUNT_CAP = 20;
+const CANDIDATE_ACTIVITY_EVENT_FETCH_LIMIT = 8000;
+const SEED_INTERACTION_EVENT_FETCH_LIMIT = 5000;
+const CANDIDATE_ACTIVITY_MULTIPLIER_MIN = 0.35;
+const CANDIDATE_ACTIVITY_MULTIPLIER_MAX = 1.45;
+const SEED_INTERACTION_BOOST_MAX = 2.0;
+
+// FoFフォロー候補は人気投稿レコメンドと役割を分け、多様性を強めに確保する。
+const DIVERSITY_CORE_SHARE = 0.5;
+const DIVERSITY_DIVERSE_SHARE = 0.4;
+const MAX_PER_SEED = 2;
+const MAX_PER_REMOTE_HOST = 3;
 
 // FoF ノートスコア（案3）。提案値。
 const FOF_NOTE_REPLY_PENALTY = 0.5; // 返信は半分（決定4）
@@ -44,6 +66,28 @@ const FOF_NOTE_RECENCY = [
 
 export type FollowCandidate = { userId: string; score: number; reason: 'fof' | 'similar'; mutualCount: number };
 export type FoFNote = { noteId: string; userId: string; score: number };
+
+type ActivitySignal = {
+	days7: Set<number>;
+	days14: Set<number>;
+	lastAt: number | null;
+	count14: number;
+	passiveLastAt: number | null;
+	passiveCount14: number;
+};
+
+type RawFoFCandidate = {
+	score: number;
+	mutualCount: number;
+	seedIds: Set<string>;
+};
+
+type InternalFollowCandidate = FollowCandidate & {
+	host: string | null;
+	seedIds: string[];
+	shownCount: number;
+	activityMultiplier: number;
+};
 
 /**
  * 仲間内（FoF / フォロー候補）推薦（[[hanami-tl-osusume-redesign]] step9/10、改善は [[hanami-rec-redesign-v2]] 案1-3）。
@@ -58,8 +102,14 @@ export type FoFNote = { noteId: string; userId: string; score: number };
 @Injectable()
 export class HanamiUserRecommendationService {
 	constructor(
+		@Inject(DI.redis)
+		private redisClient: Redis.Redis,
+
 		@Inject(DI.followingsRepository)
 		private followingsRepository: FollowingsRepository,
+
+		@Inject(DI.followRequestsRepository)
+		private followRequestsRepository: FollowRequestsRepository,
 
 		@Inject(DI.usersRepository)
 		private usersRepository: UsersRepository,
@@ -67,9 +117,92 @@ export class HanamiUserRecommendationService {
 		@Inject(DI.notesRepository)
 		private notesRepository: NotesRepository,
 
+		@Inject(DI.noteReactionsRepository)
+		private noteReactionsRepository: NoteReactionsRepository,
+
 		private cacheService: CacheService,
 		private idService: IdService,
 	) {
+	}
+
+	private clamp(v: number, min: number, max: number): number {
+		return Math.max(min, Math.min(max, v));
+	}
+
+	private createActivitySignal(): ActivitySignal {
+		return {
+			days7: new Set(),
+			days14: new Set(),
+			lastAt: null,
+			count14: 0,
+			passiveLastAt: null,
+			passiveCount14: 0,
+		};
+	}
+
+	private getSignal(map: Map<string, ActivitySignal>, userId: string): ActivitySignal {
+		const current = map.get(userId);
+		if (current != null) return current;
+		const created = this.createActivitySignal();
+		map.set(userId, created);
+		return created;
+	}
+
+	private addActivity(map: Map<string, ActivitySignal>, userId: string, id: string, now: number): void {
+		const at = this.idService.parse(id).date.getTime();
+		if (now - at > ACTIVITY_LOOKBACK_MS) return;
+		const signal = this.getSignal(map, userId);
+		const day = Math.floor(at / DAY_MS);
+		signal.days14.add(day);
+		if (now - at <= ACTIVITY_RECENT_MS) signal.days7.add(day);
+		signal.lastAt = Math.max(signal.lastAt ?? 0, at);
+		signal.count14++;
+	}
+
+	// 候補本人が受けたリアクションは「本人の活動」ではないため、弱い補助シグナルとしてだけ使う。
+	private addPassiveActivity(map: Map<string, ActivitySignal>, userId: string, id: string, now: number): void {
+		const at = this.idService.parse(id).date.getTime();
+		if (now - at > ACTIVITY_LOOKBACK_MS) return;
+		const signal = this.getSignal(map, userId);
+		signal.passiveLastAt = Math.max(signal.passiveLastAt ?? 0, at);
+		signal.passiveCount14++;
+	}
+
+	private getLastHours(at: number | null, now: number): number | null {
+		return at == null ? null : (now - at) / (1000 * 60 * 60);
+	}
+
+	private getRecencyScore(lastHours: number | null, strong: boolean): number {
+		if (lastHours == null) return 0;
+		if (lastHours <= 24) return strong ? 0.45 : 0.35;
+		if (lastHours <= 72) return strong ? 0.25 : 0.2;
+		if (lastHours <= 168) return strong ? 0.1 : 0.08;
+		return 0;
+	}
+
+	private getCandidateActivityMultiplier(signal: ActivitySignal | undefined, now: number): number {
+		if (signal == null) return CANDIDATE_ACTIVITY_MULTIPLIER_MIN;
+		const lastHours = this.getLastHours(signal.lastAt, now);
+		const passiveLastHours = this.getLastHours(signal.passiveLastAt, now);
+		const score =
+			(signal.days7.size * 0.12) +
+			(signal.days14.size * 0.04) +
+			this.getRecencyScore(lastHours, false) +
+			(Math.min(signal.count14, ACTIVITY_COUNT_CAP) * 0.015) +
+			(this.getRecencyScore(passiveLastHours, false) * 0.25) +
+			(Math.min(signal.passiveCount14, ACTIVITY_COUNT_CAP) * 0.004);
+		return this.clamp(0.35 + score, CANDIDATE_ACTIVITY_MULTIPLIER_MIN, CANDIDATE_ACTIVITY_MULTIPLIER_MAX);
+	}
+
+	private getSeedInteractionBoost(signal: ActivitySignal | undefined, now: number): number {
+		if (signal == null) return 0;
+		const lastHours = this.getLastHours(signal.lastAt, now);
+		const score =
+			(signal.days7.size * 0.18) +
+			(signal.days14.size * 0.06) +
+			this.getRecencyScore(lastHours, true) +
+			(Math.min(signal.count14, ACTIVITY_COUNT_CAP) * 0.01);
+		return Math.min(score, SEED_INTERACTION_BOOST_MAX);
 	}
 
 	/**
@@ -85,31 +218,174 @@ export class HanamiUserRecommendationService {
 		return new Set(rows.map(r => r.followerId));
 	}
 
+	@bindThis
+	private async getPendingFolloweeIds(meId: MiUser['id']): Promise<Set<string>> {
+		const rows = await this.followRequestsRepository.createQueryBuilder('request')
+			.select('request.followeeId', 'followeeId')
+			.where('request.followerId = :meId', { meId })
+			.getRawMany<{ followeeId: string }>();
+		return new Set(rows.map(r => r.followeeId));
+	}
+
+	@bindThis
+	private async getShownCounts(meId: MiUser['id'], userIds: MiUser['id'][]): Promise<Map<string, number>> {
+		if (userIds.length === 0) return new Map();
+		const values = await this.redisClient.hmget(`${SHOWN_KEY_PREFIX}${meId}`, ...userIds);
+		return new Map(userIds.map((id, i) => [id, Number(values[i] ?? 0)]));
+	}
+
+	@bindThis
+	public async recordShown(meId: MiUser['id'], userIds: MiUser['id'][]): Promise<void> {
+		const uniqueIds = [...new Set(userIds)];
+		if (uniqueIds.length === 0) return;
+		const key = `${SHOWN_KEY_PREFIX}${meId}`;
+		const pipeline = this.redisClient.pipeline();
+		for (const userId of uniqueIds) pipeline.hincrby(key, userId, 1);
+		pipeline.expire(key, SHOWN_TTL_SECONDS);
+		await pipeline.exec();
+	}
+
+	@bindThis
+	private async getSeedInteractionSignals(meId: MiUser['id'], followeeIds: MiUser['id'][]): Promise<Map<string, ActivitySignal>> {
+		if (followeeIds.length === 0) return new Map();
+		const followeeSet = new Set(followeeIds);
+		const sinceId = this.idService.gen(Date.now() - ACTIVITY_LOOKBACK_MS);
+		const now = Date.now();
+		const signals = new Map<string, ActivitySignal>();
+
+		const noteRows = await this.notesRepository.createQueryBuilder('note')
+			.select('note.id', 'id')
+			.addSelect('note.userId', 'userId')
+			.addSelect('note.replyUserId', 'replyUserId')
+			.addSelect('note.renoteUserId', 'renoteUserId')
+			.where('note.id > :sinceId', { sinceId })
+			.andWhere('note.visibility != \'specified\'')
+			.andWhere(new Brackets(qb => {
+				qb.where(new Brackets(qb2 => {
+					qb2.where('note.userId = :meId', { meId })
+						.andWhere(new Brackets(qb3 => {
+							qb3.where('note.replyUserId IS NOT NULL')
+								.orWhere('note.renoteUserId IS NOT NULL');
+						}));
+				}))
+					.orWhere('note.replyUserId = :meId', { meId })
+					.orWhere('note.renoteUserId = :meId', { meId });
+			}))
+			.orderBy('note.id', 'DESC')
+			.limit(SEED_INTERACTION_EVENT_FETCH_LIMIT)
+			.getRawMany<{ id: string; userId: string; replyUserId: string | null; renoteUserId: string | null }>();
+
+		for (const row of noteRows) {
+			const related = new Set<string>();
+			if (row.userId === meId) {
+				if (row.replyUserId != null && followeeSet.has(row.replyUserId)) related.add(row.replyUserId);
+				if (row.renoteUserId != null && followeeSet.has(row.renoteUserId)) related.add(row.renoteUserId);
+			} else if (followeeSet.has(row.userId) && (row.replyUserId === meId || row.renoteUserId === meId)) {
+				related.add(row.userId);
+			}
+			for (const userId of related) this.addActivity(signals, userId, row.id, now);
+		}
+
+		const reactionRows = await this.noteReactionsRepository.createQueryBuilder('reaction')
+			.select('reaction.id', 'id')
+			.addSelect('reaction.userId', 'reactionUserId')
+			.addSelect('note.userId', 'noteUserId')
+			.innerJoin('reaction.note', 'note')
+			.where('reaction.id > :sinceId', { sinceId })
+			.andWhere('note.visibility != \'specified\'')
+			.andWhere(new Brackets(qb => {
+				qb.where('reaction.userId = :meId', { meId })
+					.orWhere('note.userId = :meId', { meId });
+			}))
+			.orderBy('reaction.id', 'DESC')
+			.limit(SEED_INTERACTION_EVENT_FETCH_LIMIT)
+			.getRawMany<{ id: string; reactionUserId: string; noteUserId: string }>();
+
+		for (const row of reactionRows) {
+			if (row.reactionUserId === meId && followeeSet.has(row.noteUserId)) {
+				this.addActivity(signals, row.noteUserId, row.id, now);
+			} else if (row.noteUserId === meId && followeeSet.has(row.reactionUserId)) {
+				this.addActivity(signals, row.reactionUserId, row.id, now);
+			}
+		}
+
+		return signals;
+	}
+
+	@bindThis
+	private async getCandidateActivityMultipliers(userIds: MiUser['id'][]): Promise<Map<string, number>> {
+		if (userIds.length === 0) return new Map();
+		const sinceId = this.idService.gen(Date.now() - ACTIVITY_LOOKBACK_MS);
+		const now = Date.now();
+		const signals = new Map<string, ActivitySignal>();
+
+		const noteRows = await this.notesRepository.createQueryBuilder('note')
+			.select('note.id', 'id')
+			.addSelect('note.userId', 'userId')
+			.where('note.userId IN (:...userIds)', { userIds })
+			.andWhere('note.id > :sinceId', { sinceId })
+			.andWhere('note.visibility IN (:...visibilities)', { visibilities: ['public', 'home', 'followers'] })
+			.orderBy('note.id', 'DESC')
+			.limit(CANDIDATE_ACTIVITY_EVENT_FETCH_LIMIT)
+			.getRawMany<{ id: string; userId: string }>();
+		for (const row of noteRows) this.addActivity(signals, row.userId, row.id, now);
+
+		const reactionRows = await this.noteReactionsRepository.createQueryBuilder('reaction')
+			.select('reaction.id', 'id')
+			.addSelect('reaction.userId', 'userId')
+			.innerJoin('reaction.note', 'note')
+			.where('reaction.userId IN (:...userIds)', { userIds })
+			.andWhere('reaction.id > :sinceId', { sinceId })
+			.andWhere('note.visibility IN (:...visibilities)', { visibilities: ['public', 'home', 'followers'] })
+			.orderBy('reaction.id', 'DESC')
+			.limit(CANDIDATE_ACTIVITY_EVENT_FETCH_LIMIT)
+			.getRawMany<{ id: string; userId: string }>();
+		for (const row of reactionRows) this.addActivity(signals, row.userId, row.id, now);
+
+		const receivedReactionRows = await this.noteReactionsRepository.createQueryBuilder('reaction')
+			.select('reaction.id', 'id')
+			.addSelect('note.userId', 'userId')
+			.innerJoin('reaction.note', 'note')
+			.where('note.userId IN (:...userIds)', { userIds })
+			.andWhere('reaction.id > :sinceId', { sinceId })
+			.andWhere('note.visibility IN (:...visibilities)', { visibilities: ['public', 'home', 'followers'] })
+			.orderBy('reaction.id', 'DESC')
+			.limit(CANDIDATE_ACTIVITY_EVENT_FETCH_LIMIT)
+			.getRawMany<{ id: string; userId: string }>();
+		for (const row of receivedReactionRows) this.addPassiveActivity(signals, row.userId, row.id, now);
+
+		return new Map(userIds.map(id => [id, this.getCandidateActivityMultiplier(signals.get(id), now)]));
+	}
+
 	/**
 	 * FoF ユーザーをスコア付きで返す（案1-2）。
 	 * score = Σ(seed重み for その候補をフォローしている seed) / log10(followers) × フォロバ補正 × 鍵補正。
 	 * 既フォロー・自分・mute/block/被block・インスタンスミュート・bot/suspended/deleted/非explorable は除外。
 	 */
 	@bindThis
-	public async getFoFUserScores(meId: MiUser['id']): Promise<Map<string, FollowCandidate>> {
+	private async getFoFUserCandidates(meId: MiUser['id']): Promise<Map<string, InternalFollowCandidate>> {
 		const followingMap = await this.cacheService.userFollowingsCache.fetch(meId);
 		const allFolloweeIds = Object.keys(followingMap);
 		if (allFolloweeIds.length === 0) return new Map();
 
-		const [muting, blocking, blocked, profile, followerSet] = await Promise.all([
+		const [muting, blocking, blocked, profile, followerSet, pendingFolloweeIds, seedInteractionSignals] = await Promise.all([
 			this.cacheService.userMutingsCache.fetch(meId),
 			this.cacheService.userBlockingCache.fetch(meId),
 			this.cacheService.userBlockedCache.fetch(meId),
 			this.cacheService.userProfileCache.fetch(meId),
 			this.getMyFollowerIds(meId),
+			this.getPendingFolloweeIds(meId),
+			this.getSeedInteractionSignals(meId, allFolloweeIds),
 		]);
 		const mutedInstances = new Set(profile.mutedInstances);
+		const now = Date.now();
 
 		// seed 重み付け → 上位を採用（slice の偏り解消）。
 		const weighted = allFolloweeIds.map(id => {
 			const mutual = followerSet.has(id) ? SEED_MUTUAL_BOOST : 0;
 			const withReplies = followingMap[id]?.withReplies ? SEED_WITHREPLIES_BONUS : 0;
-			return { id, weight: SEED_BASE_WEIGHT + mutual + withReplies };
+			const interaction = this.getSeedInteractionBoost(seedInteractionSignals.get(id), now);
+			return { id, weight: SEED_BASE_WEIGHT + mutual + withReplies + interaction };
 		});
 		weighted.sort((a, b) => b.weight - a.weight);
 		const seeds = weighted.slice(0, MAX_SEED_FOLLOWEES);
@@ -117,7 +393,7 @@ export class HanamiUserRecommendationService {
 		const seedIds = seeds.map(s => s.id);
 
 		// 既フォローは「全数」除外（seed の上限とは独立）。
-		const exclude = new Set<string>([meId, ...allFolloweeIds, ...muting, ...blocking, ...blocked]);
+		const exclude = new Set<string>([meId, ...allFolloweeIds, ...muting, ...blocking, ...blocked, ...pendingFolloweeIds]);
 
 		const rows = await this.followingsRepository.createQueryBuilder('f')
 			.select('f.followerId', 'followerId')
@@ -126,7 +402,7 @@ export class HanamiUserRecommendationService {
 			.limit(MAX_FOF_SCAN)
 			.getRawMany<{ followerId: string; followeeId: string }>();
 
-		const raw = new Map<string, { score: number; mutualCount: number }>();
+		const raw = new Map<string, RawFoFCandidate>();
 		for (const { followerId, followeeId } of rows) {
 			if (exclude.has(followeeId)) continue;
 			const w = seedWeight.get(followerId) ?? SEED_BASE_WEIGHT;
@@ -134,8 +410,9 @@ export class HanamiUserRecommendationService {
 			if (cur) {
 				cur.score += w;
 				cur.mutualCount++;
+				cur.seedIds.add(followerId);
 			} else {
-				raw.set(followeeId, { score: w, mutualCount: 1 });
+				raw.set(followeeId, { score: w, mutualCount: 1, seedIds: new Set([followerId]) });
 			}
 		}
 		if (raw.size === 0) return new Map();
@@ -158,7 +435,11 @@ export class HanamiUserRecommendationService {
 			.andWhere('u.isExplorable = TRUE')
 			.getRawMany<{ id: string; followersCount: number; host: string | null; isLocked: boolean }>();
 
-		const result = new Map<string, FollowCandidate>();
+		const [shownCounts, activityMultipliers] = await Promise.all([
+			this.getShownCounts(meId, userRows.map(u => u.id)),
+			this.getCandidateActivityMultipliers(userRows.map(u => u.id)),
+		]);
+		const result = new Map<string, InternalFollowCandidate>();
 		for (const u of userRows) {
 			if (u.host != null && mutedInstances.has(u.host)) continue;
 			const r = raw.get(u.id);
@@ -167,9 +448,119 @@ export class HanamiUserRecommendationService {
 			const norm = r.score / Math.log10(Number(u.followersCount) + 10);
 			const followback = followerSet.has(u.id) ? FOLLOWBACK_BOOST : 1;
 			const locked = u.isLocked ? LOCKED_PENALTY : 1;
-			result.set(u.id, { userId: u.id, score: norm * followback * locked, reason: 'fof', mutualCount: r.mutualCount });
+			const shownCount = shownCounts.get(u.id) ?? 0;
+			const shownPenalty = 1 / (1 + (shownCount * SHOWN_PENALTY_PER_VIEW));
+			const activityMultiplier = activityMultipliers.get(u.id) ?? CANDIDATE_ACTIVITY_MULTIPLIER_MIN;
+			result.set(u.id, {
+				userId: u.id,
+				score: norm * followback * locked * shownPenalty * activityMultiplier,
+				reason: 'fof',
+				mutualCount: r.mutualCount,
+				host: u.host,
+				seedIds: [...r.seedIds],
+				shownCount,
+				activityMultiplier,
+			});
 		}
 		return result;
+	}
+
+	@bindThis
+	public async getFoFUserScores(meId: MiUser['id']): Promise<Map<string, FollowCandidate>> {
+		const candidates = await this.getFoFUserCandidates(meId);
+		return new Map([...candidates.entries()].map(([id, c]) => [id, this.toFollowCandidate(c)]));
+	}
+
+	private toFollowCandidate(candidate: InternalFollowCandidate): FollowCandidate {
+		return {
+			userId: candidate.userId,
+			score: candidate.score,
+			reason: candidate.reason,
+			mutualCount: candidate.mutualCount,
+		};
+	}
+
+	private rememberPicked(candidate: InternalFollowCandidate, usedSeedCounts: Map<string, number>, usedHostCounts: Map<string, number>): void {
+		for (const seedId of candidate.seedIds) {
+			usedSeedCounts.set(seedId, (usedSeedCounts.get(seedId) ?? 0) + 1);
+		}
+		if (candidate.host != null) {
+			usedHostCounts.set(candidate.host, (usedHostCounts.get(candidate.host) ?? 0) + 1);
+		}
+	}
+
+	private getSeedNovelty(candidate: InternalFollowCandidate, usedSeedCounts: Map<string, number>): number {
+		if (candidate.seedIds.length === 0) return 0;
+		const unused = candidate.seedIds.filter(seedId => (usedSeedCounts.get(seedId) ?? 0) === 0).length;
+		return unused / candidate.seedIds.length;
+	}
+
+	private canPickStrict(candidate: InternalFollowCandidate, usedSeedCounts: Map<string, number>, usedHostCounts: Map<string, number>): boolean {
+		const seedsAvailable = candidate.seedIds.length === 0 || candidate.seedIds.some(seedId => (usedSeedCounts.get(seedId) ?? 0) < MAX_PER_SEED);
+		if (!seedsAvailable) return false;
+		if (candidate.host != null && (usedHostCounts.get(candidate.host) ?? 0) >= MAX_PER_REMOTE_HOST) return false;
+		return true;
+	}
+
+	private scoreForDiversityPick(candidate: InternalFollowCandidate, usedSeedCounts: Map<string, number>, usedHostCounts: Map<string, number>, mode: 'core' | 'diverse' | 'explore'): number {
+		const seedNovelty = this.getSeedNovelty(candidate, usedSeedCounts);
+		const maxSeedUse = candidate.seedIds.length === 0 ? 0 : Math.max(...candidate.seedIds.map(seedId => usedSeedCounts.get(seedId) ?? 0));
+		const hostUse = candidate.host == null ? 0 : (usedHostCounts.get(candidate.host) ?? 0);
+		const hostNovelty = candidate.host == null || hostUse === 0 ? 1 : 0;
+		const shownNovelty = 1 / (1 + candidate.shownCount);
+
+		if (mode === 'explore') {
+			return (candidate.activityMultiplier * 0.55) + (seedNovelty * 0.35) + (hostNovelty * 0.2) + (shownNovelty * 0.25) + (candidate.score * 0.12);
+		}
+
+		const diversityMultiplier = mode === 'diverse'
+			? 0.55 + (seedNovelty * 0.55) + (hostNovelty * 0.18) + (shownNovelty * 0.12)
+			: 1.0 + (seedNovelty * 0.12) + (hostNovelty * 0.06);
+		const overusePenalty = 1 + (maxSeedUse * (mode === 'diverse' ? 0.28 : 0.1)) + (hostUse * (mode === 'diverse' ? 0.18 : 0.06));
+		return (candidate.score * diversityMultiplier) / overusePenalty;
+	}
+
+	private pickCandidates(candidates: InternalFollowCandidate[], count: number, selectedIds: Set<string>, usedSeedCounts: Map<string, number>, usedHostCounts: Map<string, number>, mode: 'core' | 'diverse' | 'explore'): InternalFollowCandidate[] {
+		const picked: InternalFollowCandidate[] = [];
+		for (let i = 0; i < count; i++) {
+			const remaining = candidates.filter(c => !selectedIds.has(c.userId));
+			if (remaining.length === 0) break;
+			const strict = remaining.filter(c => this.canPickStrict(c, usedSeedCounts, usedHostCounts));
+			const pool = strict.length > 0 ? strict : remaining;
+			pool.sort((a, b) => this.scoreForDiversityPick(b, usedSeedCounts, usedHostCounts, mode) - this.scoreForDiversityPick(a, usedSeedCounts, usedHostCounts, mode));
+			const next = pool[0];
+			selectedIds.add(next.userId);
+			this.rememberPicked(next, usedSeedCounts, usedHostCounts);
+			picked.push(next);
+		}
+		return picked;
+	}
+
+	private selectDiverseCandidates(candidates: InternalFollowCandidate[], limit: number): InternalFollowCandidate[] {
+		const sorted = candidates.slice().sort((a, b) => b.score - a.score);
+		const selectedIds = new Set<string>();
+		const usedSeedCounts = new Map<string, number>();
+		const usedHostCounts = new Map<string, number>();
+		const coreCount = Math.min(limit, Math.ceil(limit * DIVERSITY_CORE_SHARE));
+		const diverseCount = Math.min(limit - coreCount, Math.floor(limit * DIVERSITY_DIVERSE_SHARE));
+		const exploreCount = Math.max(0, limit - coreCount - diverseCount);
+
+		const selected = [
+			...this.pickCandidates(sorted, coreCount, selectedIds, usedSeedCounts, usedHostCounts, 'core'),
+			...this.pickCandidates(sorted, diverseCount, selectedIds, usedSeedCounts, usedHostCounts, 'diverse'),
+			...this.pickCandidates(sorted, exploreCount, selectedIds, usedSeedCounts, usedHostCounts, 'explore'),
+		];
+
+		if (selected.length < limit) {
+			for (const candidate of sorted) {
+				if (selected.length >= limit) break;
+				if (selectedIds.has(candidate.userId)) continue;
+				selectedIds.add(candidate.userId);
+				selected.push(candidate);
+			}
+		}
+
+		return selected;
 	}
 
 	/**
@@ -177,10 +568,8 @@ export class HanamiUserRecommendationService {
 	 */
 	@bindThis
 	public async getFollowCandidates(meId: MiUser['id'], limit: number): Promise<FollowCandidate[]> {
-		const scores = await this.getFoFUserScores(meId);
-		return Array.from(scores.values())
-			.sort((a, b) => b.score - a.score)
-			.slice(0, limit);
+		const scores = await this.getFoFUserCandidates(meId);
+		return this.selectDiverseCandidates(Array.from(scores.values()), limit).map(c => this.toFollowCandidate(c));
 	}
 
 	/**

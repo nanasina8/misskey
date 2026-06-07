@@ -56,10 +56,13 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			const packed = await this.userEntityService.packMany(candidates.map(c => c.userId), me, { schema: 'UserDetailed' });
 			const byId = new Map(packed.map(u => [u.id, u]));
 
-			return candidates.flatMap(c => {
+			const result = candidates.flatMap(c => {
 				const user = byId.get(c.userId);
 				return user ? [{ user, reason: c.reason, mutualCount: c.mutualCount }] : [];
 			});
+
+			await this.hanamiRecommendationService.recordFollowCandidatesShown(me.id, result.map(x => x.user.id));
+			return result;
 		});
 	}
 }

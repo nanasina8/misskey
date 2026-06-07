@@ -766,6 +766,11 @@ export class HanamiRecommendationService {
 		return cands.map(c => ({ userId: c.userId, reason: c.reason, mutualCount: c.mutualCount }));
 	}
 
+	@bindThis
+	public async recordFollowCandidatesShown(meId: MiUser['id'], userIds: MiUser['id'][]): Promise<void> {
+		await this.hanamiUserRecommendationService.recordShown(meId, userIds);
+	}
+
 	/**
 	 * テキストトレンド（急上昇用語）一覧。エンドポイントから呼ぶ薄いラッパ。
 	 * ハッシュタグ集計（hashtags/trend）とは別系統で、本文をトークナイズした汎用トレンド（trending軸の素）。
