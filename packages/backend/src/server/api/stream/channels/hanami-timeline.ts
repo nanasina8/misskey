@@ -221,6 +221,7 @@ class HanamiTimelineChannel extends Channel {
 				this.user!.id,
 				[note.id],
 				reason ? new Map([[note.id, reason]]) : new Map(),
+				[reactionMutedNote.userId],
 			).catch(err => {
 				// eslint-disable-next-line no-console
 				console.error('hanami rec stream: recordServed/log failed', err);

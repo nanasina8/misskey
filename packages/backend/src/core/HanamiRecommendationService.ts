@@ -28,6 +28,12 @@ const SERVED_KEY_PREFIX = 'hanami:rec:served:';
 const SERVED_TTL_SECONDS = 60 * 30; // 30分（仕様: 短TTL, v1）。値はここ一箇所で調整。
 const SERVED_TTL_MS = SERVED_TTL_SECONDS * 1000;
 
+// 作者単位の短期ペナルティ: 「もっと読む」で同じ作者の別ノートが続くのを減らす。除外せず30分で通常スコアに戻す。
+const AUTHOR_SERVED_KEY_PREFIX = 'hanami:rec:authorServed:';
+const AUTHOR_SERVED_TTL_SECONDS = 60 * 30;
+const AUTHOR_SERVED_TTL_MS = AUTHOR_SERVED_TTL_SECONDS * 1000;
+const AUTHOR_SERVED_MIN_MULTIPLIER = 0.15;
+
 // 既出除外（seen）: フロントが実表示を確認したら記録する長期側。
 const SEEN_KEY_PREFIX = 'hanami:rec:seen:';
 const SEEN_TTL_SECONDS = 60 * 60 * 24 * 7; // 7日
@@ -281,7 +287,9 @@ export class HanamiRecommendationService {
 		this.markRecommendationMeta(notes, injectedIds, reasonOf, settings.showReason);
 
 		if (injectedIds.length > 0) {
-			this.recordServedWithLog(me.id, injectedIds, reasonOf).catch(err => {
+			const injectedIdSet = new Set(injectedIds);
+			const injectedAuthorIds = notes.filter(note => injectedIdSet.has(note.id)).map(note => note.userId);
+			this.recordServedWithLog(me.id, injectedIds, reasonOf, injectedAuthorIds).catch(err => {
 				// eslint-disable-next-line no-console
 				console.error('hanami rec: recordServed/log failed', err);
 			});
@@ -375,11 +383,52 @@ export class HanamiRecommendationService {
 			if (opts.newerThan != null && c.noteId >= opts.newerThan) continue;
 			filtered.push(c);
 		}
-		return this.applyAxisCaps(filtered, {
+		const authorPenalized = await this.applyRecentAuthorPenalty(meId, filtered);
+		return this.applyAxisCaps(authorPenalized, {
 			limit: opts.limit,
 			capLimit: opts.capLimit,
 			axisMaxShare: opts.axisMaxShare,
 		});
+	}
+
+	private getAuthorPenaltyMultiplier(servedAt: number, now: number): number {
+		const ageMs = now - servedAt;
+		if (ageMs <= 0) return AUTHOR_SERVED_MIN_MULTIPLIER;
+		if (ageMs >= AUTHOR_SERVED_TTL_MS) return 1;
+		return AUTHOR_SERVED_MIN_MULTIPLIER + ((1 - AUTHOR_SERVED_MIN_MULTIPLIER) * (ageMs / AUTHOR_SERVED_TTL_MS));
+	}
+
+	@bindThis
+	private async applyRecentAuthorPenalty(meId: MiUser['id'], candidates: ScoredCandidate[]): Promise<ScoredCandidate[]> {
+		if (candidates.length === 0) return [];
+
+		const noteIds = candidates.map(c => c.noteId);
+		const rows = await this.notesRepository.createQueryBuilder('note')
+			.select('note.id', 'id')
+			.addSelect('note.userId', 'userId')
+			.where('note.id IN (:...noteIds)', { noteIds })
+			.getRawMany<{ id: string; userId: string }>();
+		const authorByNoteId = new Map(rows.map(r => [r.id, r.userId]));
+
+		const now = Date.now();
+		const raw = await this.redisClient.zrangebyscore(`${AUTHOR_SERVED_KEY_PREFIX}${meId}`, now - AUTHOR_SERVED_TTL_MS, '+inf', 'WITHSCORES');
+		const servedAtByAuthor = new Map<string, number>();
+		for (let i = 0; i < raw.length; i += 2) {
+			servedAtByAuthor.set(raw[i], Number(raw[i + 1]));
+		}
+		if (servedAtByAuthor.size === 0) return candidates;
+
+		const out = candidates.map(candidate => {
+			const authorId = authorByNoteId.get(candidate.noteId);
+			const servedAt = authorId == null ? undefined : servedAtByAuthor.get(authorId);
+			if (servedAt == null) return candidate;
+			return {
+				...candidate,
+				score: candidate.score * this.getAuthorPenaltyMultiplier(servedAt, now),
+			};
+		});
+		out.sort((a, b) => b.score - a.score);
+		return out;
 	}
 
 	/** 人気軸（グローバル人気 + フォロー中ユーザーのインタラクションボーナス）。 */
@@ -658,7 +707,7 @@ export class HanamiRecommendationService {
 		this.markRecommendationMeta(notes, notes.map(note => note.id), reasonOf, settings.showReason);
 
 		if (notes.length > 0) {
-			await this.recordServedWithLog(me.id, notes.map(note => note.id), reasonOf);
+			await this.recordServedWithLog(me.id, notes.map(note => note.id), reasonOf, notes.map(note => note.userId));
 		}
 
 		return notes;
@@ -713,8 +762,9 @@ export class HanamiRecommendationService {
 	}
 
 	@bindThis
-	public async recordServedWithLog(userId: MiUser['id'], noteIds: string[], reasonOf: Map<string, RecReasonMeta>): Promise<void> {
+	public async recordServedWithLog(userId: MiUser['id'], noteIds: string[], reasonOf: Map<string, RecReasonMeta>, authorIds: string[] = []): Promise<void> {
 		await this.recordServed(userId, noteIds);
+		await this.recordServedAuthors(userId, authorIds);
 		await this.logServed(userId, noteIds, reasonOf);
 	}
 
@@ -733,6 +783,20 @@ export class HanamiRecommendationService {
 			.zadd(key, ...(scoreMembers as [number, string]))
 			.zremrangebyscore(key, 0, now - ttlMs)
 			.expire(key, ttlSeconds)
+			.exec();
+	}
+
+	@bindThis
+	private async recordServedAuthors(userId: MiUser['id'], authorIds: string[]): Promise<void> {
+		const uniqueAuthorIds = [...new Set(authorIds)];
+		if (uniqueAuthorIds.length === 0) return;
+		const now = Date.now();
+		const scoreMembers: (string | number)[] = [];
+		for (const id of uniqueAuthorIds) scoreMembers.push(now, id);
+		await this.redisClient.multi()
+			.zadd(`${AUTHOR_SERVED_KEY_PREFIX}${userId}`, ...(scoreMembers as [number, string]))
+			.zremrangebyscore(`${AUTHOR_SERVED_KEY_PREFIX}${userId}`, 0, now - AUTHOR_SERVED_TTL_MS)
+			.expire(`${AUTHOR_SERVED_KEY_PREFIX}${userId}`, AUTHOR_SERVED_TTL_SECONDS)
 			.exec();
 	}
 
