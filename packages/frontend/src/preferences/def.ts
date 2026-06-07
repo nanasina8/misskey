@@ -396,6 +396,9 @@ export const PREF_DEF = definePreferences({
 	alwaysUseAbsoluteTime: {
 		default: false,
 	},
+	showHanamiTimelineDateSeparators: {
+		default: false,
+	},
 	showSoftWordMutedWord: {
 		default: false,
 	},

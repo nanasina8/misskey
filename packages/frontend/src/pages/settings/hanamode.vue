@@ -7,6 +7,17 @@
 		</FormSection>
 
 		<FormSection>
+			<template #label>{{ i18n.ts._hana.hanamiTimeline }}</template>
+
+			<MkPreferenceContainer k="showHanamiTimelineDateSeparators">
+				<MkSwitch v-model="showHanamiTimelineDateSeparators">
+					<template #label>{{ i18n.ts._hana.showHanamiTimelineDateSeparators }}</template>
+					<template #caption>{{ i18n.ts._hana.showHanamiTimelineDateSeparatorsDescription }}</template>
+				</MkSwitch>
+			</MkPreferenceContainer>
+		</FormSection>
+
+		<FormSection>
 			<template #label>{{ i18n.ts._hana._recommendation.title }}</template>
 			<template #description>{{ i18n.ts._hana._recommendation.description }}</template>
 
@@ -72,13 +83,16 @@ import MkSwitch from '@/components/MkSwitch.vue';
 import MkRadios from '@/components/MkRadios.vue';
 import MkFolder from '@/components/MkFolder.vue';
 import MkButton from '@/components/MkButton.vue';
+import MkPreferenceContainer from '@/components/MkPreferenceContainer.vue';
 import { ensureSignin } from '@/i.js';
 import { updateCurrentAccountPartial } from '@/accounts.js';
 import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { instance } from '@/instance.js';
+import { prefer } from '@/preferences.js';
 
 const $i = ensureSignin();
+const showHanamiTimelineDateSeparators = prefer.model('showHanamiTimelineDateSeparators');
 
 type AxisKey = 'popular' | 'lowExposure' | 'trending' | 'fof';
 type AxisLevel = 'off' | 'low' | 'normal' | 'high';

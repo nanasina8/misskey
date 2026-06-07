@@ -13343,6 +13343,18 @@ export interface Locale extends ILocale {
          */
         "hanaModeTutorialDescription": string;
         /**
+         * はなみタイムライン
+         */
+        "hanamiTimeline": string;
+        /**
+         * はなみTLでも日付セパレーターを表示する
+         */
+        "showHanamiTimelineDateSeparators": string;
+        /**
+         * はなみTLではおすすめにより時系列が前後することがあるため、既定では日付セパレーターを表示しません。
+         */
+        "showHanamiTimelineDateSeparatorsDescription": string;
+        /**
          * いつでも花びらを降らせる
          */
         "flowerEffect": string;
