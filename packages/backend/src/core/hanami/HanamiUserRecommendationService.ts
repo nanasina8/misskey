@@ -27,6 +27,9 @@ const FOF_NOTES_LOOKBACK_MS = 1000 * 60 * 60 * 24 * 3; // 直近3日
 // ノート取得に使う候補ユーザー数 / 品質落ち分のオーバーフェッチ。
 const FOF_CANDIDATE_POOL = 40;
 const FOF_USER_OVERFETCH = 5;
+// ノート推薦用の候補プール。FoF上位はリモートhub偏重で直近ノートがローカルDBに無いことが多いため、
+// フォロー推薦（表示用40件）より大きく取り、「実際に直近投稿がある人」を取りこぼさない。
+const FOF_NOTE_CANDIDATE_POOL = 300;
 
 // seed 重み（案1）。すべて提案値・ここ一箇所で調整可。
 const SEED_BASE_WEIGHT = 1.0;
@@ -390,7 +393,7 @@ export class HanamiUserRecommendationService {
 	 * 既フォロー・自分・mute/block/被block・インスタンスミュート・bot/suspended/deleted/非explorable は除外。
 	 */
 	@bindThis
-	private async getFoFUserCandidates(meId: MiUser['id']): Promise<Map<string, InternalFollowCandidate>> {
+	private async getFoFUserCandidates(meId: MiUser['id'], enrichLimit: number = FOF_CANDIDATE_POOL * FOF_USER_OVERFETCH): Promise<Map<string, InternalFollowCandidate>> {
 		const followingMap = await this.cacheService.userFollowingsCache.fetch(meId);
 		const allFolloweeIds = Object.keys(followingMap);
 		if (allFolloweeIds.length === 0) return new Map();
@@ -444,10 +447,10 @@ export class HanamiUserRecommendationService {
 		}
 		if (raw.size === 0) return new Map();
 
-		// 上位候補を overfetch して品質フィルタ＋正規化（品質落ち分を見込む）。
+		// 上位候補を overfetch して品質フィルタ＋正規化（品質落ち分を見込む）。プール幅は呼び出し側が指定。
 		const top = Array.from(raw.entries())
 			.sort((a, b) => b[1].score - a[1].score)
-			.slice(0, FOF_CANDIDATE_POOL * FOF_USER_OVERFETCH);
+			.slice(0, enrichLimit);
 		const topIds = top.map(([id]) => id);
 
 		const userRows = await this.usersRepository.createQueryBuilder('u')
@@ -622,11 +625,14 @@ export class HanamiUserRecommendationService {
 	 */
 	@bindThis
 	public async getFoFNoteIds(meId: MiUser['id'], limit: number): Promise<FoFNote[]> {
-		const candidates = await this.getFollowCandidates(meId, FOF_CANDIDATE_POOL);
-		if (candidates.length === 0) return [];
+		// ノート候補はフォロー推薦の多様性選抜（上位40・リモートhub偏重で直近ノートがローカルDBに無いことが多い）を
+		// 通さず、品質フィルタ済みの広いFoF候補プール全体から引く。投稿が無い候補はノートクエリで自然に脱落するので、
+		// 「実際に直近投稿がある人」を取りこぼさない（設計: ノートはrawスコア順を維持）。
+		const candidateMap = await this.getFoFUserCandidates(meId, FOF_NOTE_CANDIDATE_POOL);
+		if (candidateMap.size === 0) return [];
 
-		const candScore = new Map(candidates.map(c => [c.userId, c.score]));
-		const userIds = candidates.map(c => c.userId);
+		const candScore = new Map<string, number>([...candidateMap.values()].map(c => [c.userId, c.score]));
+		const userIds = [...candScore.keys()];
 		const sinceId = this.idService.gen(Date.now() - FOF_NOTES_LOOKBACK_MS);
 
 		const notes = await this.notesRepository.createQueryBuilder('note')
