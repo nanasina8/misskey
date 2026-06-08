@@ -21,7 +21,7 @@ import { isUserRelated } from '@/misc/is-user-related.js';
 import { isInstanceMuted } from '@/misc/is-instance-muted.js';
 import { removeMutedUsersReactions } from '@/misc/reactions-mute.js';
 import { HanamiTrendService } from '@/core/hanami/HanamiTrendService.js';
-import { HanamiUserRecommendationService } from '@/core/hanami/HanamiUserRecommendationService.js';
+import { HanamiUserRecommendationService, type FoFNoteOptions } from '@/core/hanami/HanamiUserRecommendationService.js';
 
 // 既出除外（served）: 注入した時点で短期間だけ再表示を抑制する。
 const SERVED_KEY_PREFIX = 'hanami:rec:served:';
@@ -32,7 +32,7 @@ const SERVED_TTL_MS = SERVED_TTL_SECONDS * 1000;
 const AUTHOR_SERVED_KEY_PREFIX = 'hanami:rec:authorServed:';
 const AUTHOR_SERVED_TTL_SECONDS = 60 * 30;
 const AUTHOR_SERVED_TTL_MS = AUTHOR_SERVED_TTL_SECONDS * 1000;
-const AUTHOR_SERVED_MIN_MULTIPLIER = 0.15;
+const AUTHOR_SERVED_MIN_MULTIPLIER = 0.05;
 
 // 既出除外（seen）: フロントが実表示を確認したら記録する長期側。
 const SEEN_KEY_PREFIX = 'hanami:rec:seen:';
@@ -46,8 +46,7 @@ const LOG_SAMPLE_RATE = 1.0; // 小規模なので全件。負荷が増えたら
 
 // スロット注入は home N件ごとに推薦を挟む。量そのものは REC_RATIO で決める。
 const HOME_NOTES_PER_REC = 2;
-// 多様性: 1ページに同一作者の推薦は最大何件まで許すか。
-const MAX_REC_PER_AUTHOR = 1;
+// 多様性: 同一作者の推薦は削除せず、選択時に強く後回しにする。
 
 // 候補プール/オーバーフェッチ。DBの可視性/ミュートで脱落する分を見込んで多めに取る。
 const RANKING_FETCH_SIZE = 200;
@@ -271,7 +270,8 @@ export class HanamiRecommendationService {
 			this.getZsetMembers(`${SEEN_KEY_PREFIX}${me.id}`, SEEN_TTL_MS),
 		]);
 
-		const excluded = (id: string) => served.has(id) || seen.has(id) || homeIds.has(id);
+		const hardExcludedFoFNoteIds = new Set([...seen, ...homeIds]);
+		const excluded = (candidate: ScoredCandidate) => seen.has(candidate.noteId) || homeIds.has(candidate.noteId) || (candidate.source !== 'fof' && served.has(candidate.noteId));
 		const newerThan = homeNotes[0]?.id ?? null; // ページ先頭より新しい推薦は割り込ませない
 
 		const candidates = await this.getCandidates(me.id, {
@@ -281,11 +281,16 @@ export class HanamiRecommendationService {
 			newerThan,
 			axes: settings.axes,
 			axisMaxShare: this.buildAxisShare(AXIS_MAX_SHARE, settings.axisLevels),
+			fofOptions: {
+				hardExcludedNoteIds: hardExcludedFoFNoteIds,
+				softPenaltyNoteIds: served,
+				newerThan,
+				withFiles: opts.withFiles,
+			},
 		});
 		if (candidates.length === 0) return homeNotes.slice(0, limit);
 
-		const candidatesToFetch = candidates.slice(0, Math.min(candidates.length, (recTarget * REC_DB_FETCH_OVERFETCH) + REC_DB_FETCH_EXTRA));
-		const { recNotes, reasonOf } = await this.fetchAndPackRecNotes(candidatesToFetch, me, { withFiles: opts.withFiles });
+		const { recNotes, reasonOf } = await this.fetchAndPackRecNotesWithBackfill(candidates, recTarget, me, { withFiles: opts.withFiles });
 		if (recNotes.length === 0) return homeNotes.slice(0, limit);
 
 		const { notes, injectedIds } = this.injectIntoSlots(homeNotes, recNotes, recTarget, limit);
@@ -355,17 +360,18 @@ export class HanamiRecommendationService {
 	private async getCandidates(meId: MiUser['id'], opts: {
 		limit: number;
 		capLimit: number;
-		excluded: (id: string) => boolean;
+		excluded: (candidate: ScoredCandidate) => boolean;
 		newerThan: string | null;
 		axes: Set<RecSource>;
 		axisMaxShare: Record<RecSource, number>;
+		fofOptions?: FoFNoteOptions;
 	}): Promise<ScoredCandidate[]> {
 		// 有効な軸だけ実行する（無効軸はクエリ自体を投げない）。
 		const tasks: Promise<ScoredCandidate[]>[] = [];
 		if (opts.axes.has('popular')) tasks.push(this.getPopularCandidates(meId));
 		if (opts.axes.has('lowExposure')) tasks.push(this.getLowExposureCandidates());
 		if (opts.axes.has('trending')) tasks.push(this.getTrendingCandidates());
-		if (opts.axes.has('fof')) tasks.push(this.getFoFCandidates(meId));
+		if (opts.axes.has('fof')) tasks.push(this.getFoFCandidates(meId, opts.fofOptions));
 		const lists = await Promise.all(tasks);
 
 		// 軸を合算。同一ノートは weight 付きスコアを足し、最大寄与の軸を reason にする。
@@ -390,7 +396,7 @@ export class HanamiRecommendationService {
 
 		const filtered: ScoredCandidate[] = [];
 		for (const c of Array.from(merged.values()).sort((a, b) => b.score - a.score)) {
-			if (opts.excluded(c.noteId)) continue;
+			if (opts.excluded(c)) continue;
 			if (opts.newerThan != null && c.noteId >= opts.newerThan) continue;
 			filtered.push(c);
 		}
@@ -525,8 +531,8 @@ export class HanamiRecommendationService {
 
 	/** FoF 軸（友達の友達の最近ノート）。ノートスコア（作者スコア×新鮮さ×可視性×エンゲージ×返信0.5x）を最大値で正規化して使う。 */
 	@bindThis
-	private async getFoFCandidates(meId: MiUser['id']): Promise<ScoredCandidate[]> {
-		const fof = await this.hanamiUserRecommendationService.getFoFNoteIds(meId, RANKING_FETCH_SIZE);
+	private async getFoFCandidates(meId: MiUser['id'], opts?: FoFNoteOptions): Promise<ScoredCandidate[]> {
+		const fof = await this.hanamiUserRecommendationService.getFoFNoteIds(meId, RANKING_FETCH_SIZE, opts);
 		const max = fof[0]?.score || 1; // getFoFNoteIds はスコア降順で返る
 		return fof.map(({ noteId, userId, score }) => ({
 			noteId,
@@ -600,11 +606,33 @@ export class HanamiRecommendationService {
 		return { recNotes: packed, reasonOf };
 	}
 
+	@bindThis
+	private async fetchAndPackRecNotesWithBackfill(candidates: ScoredCandidate[], target: number, me: MiLocalUser, opts: { withFiles: boolean }): Promise<{ recNotes: Packed<'Note'>[]; reasonOf: Map<string, RecReasonMeta> }> {
+		const recNotes: Packed<'Note'>[] = [];
+		const reasonOf = new Map<string, RecReasonMeta>();
+		const packedIds = new Set<string>();
+		const chunkSize = Math.max(target, (target * REC_DB_FETCH_OVERFETCH) + REC_DB_FETCH_EXTRA);
+
+		for (let offset = 0; offset < candidates.length && recNotes.length < target; offset += chunkSize) {
+			const chunk = candidates.slice(offset, offset + chunkSize);
+			const packed = await this.fetchAndPackRecNotes(chunk, me, opts);
+			for (const [noteId, reason] of packed.reasonOf) reasonOf.set(noteId, reason);
+			for (const note of packed.recNotes) {
+				if (packedIds.has(note.id)) continue;
+				packedIds.add(note.id);
+				recNotes.push(note);
+				if (recNotes.length >= target) break;
+			}
+		}
+
+		return { recNotes, reasonOf };
+	}
+
 	// ───────────────────────── スロット注入 ─────────────────────────
 
 	/**
 	 * home を主軸に HOME_NOTES_PER_REC 件ごとに推薦を1件挟む。
-	 * - 推薦内はスコア順維持・連続/ページ上限つき作者多様性（MAX_REC_PER_AUTHOR）
+	 * - 推薦内はスコア順維持・同一作者は強く後回し（候補不足時は表示可）
 	 * - 末尾アンカーは必ず home 由来（untilId カーソル安定）
 	 * - home が無い cold-start は推薦だけで limit まで埋める
 	 */
@@ -613,18 +641,21 @@ export class HanamiRecommendationService {
 		const authorCount = new Map<string, number>();
 		const recPool = recNotes.slice();
 		const selectRec = (avoidAuthor: string | null): Packed<'Note'> | null => {
-			let fallbackIdx = -1;
+			let bestIdx = -1;
+			let bestPenalty = Number.POSITIVE_INFINITY;
 			for (let i = 0; i < recPool.length; i++) {
 				const r = recPool[i];
-				if ((authorCount.get(r.userId) ?? 0) >= MAX_REC_PER_AUTHOR) continue;
-				if (fallbackIdx < 0) fallbackIdx = i;
-				if (avoidAuthor != null && r.userId === avoidAuthor) continue;
-				const rec = recPool.splice(i, 1)[0];
-				authorCount.set(rec.userId, (authorCount.get(rec.userId) ?? 0) + 1);
-				return rec;
+				const sameAsLastPenalty = avoidAuthor != null && r.userId === avoidAuthor ? 100 : 0;
+				const repeatedAuthorPenalty = (authorCount.get(r.userId) ?? 0) * 1000;
+				const penalty = repeatedAuthorPenalty + sameAsLastPenalty;
+				if (penalty < bestPenalty) {
+					bestPenalty = penalty;
+					bestIdx = i;
+					if (penalty === 0) break;
+				}
 			}
-			if (fallbackIdx < 0) return null;
-			const rec = recPool.splice(fallbackIdx, 1)[0];
+			if (bestIdx < 0) return null;
+			const rec = recPool.splice(bestIdx, 1)[0];
 			authorCount.set(rec.userId, (authorCount.get(rec.userId) ?? 0) + 1);
 			return rec;
 		};
@@ -727,15 +758,22 @@ export class HanamiRecommendationService {
 			this.getZsetMembers(`${SERVED_KEY_PREFIX}${me.id}`, SERVED_TTL_MS),
 			this.getZsetMembers(`${SEEN_KEY_PREFIX}${me.id}`, SEEN_TTL_MS),
 		]);
+		const hardExcludedFoFNoteIds = new Set([...seen, ...(opts.excludedNoteIds ?? [])]);
 		const candidates = await this.getCandidates(me.id, {
 			limit: opts.limit * REC_CANDIDATE_OVERFETCH,
 			capLimit: opts.limit,
-			excluded: (id) => served.has(id) || seen.has(id) || opts.excludedNoteIds?.has(id) === true,
+			excluded: (candidate) => seen.has(candidate.noteId) || opts.excludedNoteIds?.has(candidate.noteId) === true || (candidate.source !== 'fof' && served.has(candidate.noteId)),
 			newerThan: null,
 			axes: settings.axes,
 			axisMaxShare: this.buildAxisShare(AUTO_AXIS_MAX_SHARE, settings.axisLevels),
+			fofOptions: {
+				hardExcludedNoteIds: hardExcludedFoFNoteIds,
+				softPenaltyNoteIds: served,
+				newerThan: null,
+				withFiles: opts.withFiles,
+			},
 		});
-		const { recNotes, reasonOf } = await this.fetchAndPackRecNotes(candidates, me, { withFiles: opts.withFiles });
+		const { recNotes, reasonOf } = await this.fetchAndPackRecNotesWithBackfill(candidates, opts.limit, me, { withFiles: opts.withFiles });
 		const notes = recNotes.slice(0, opts.limit);
 		this.markRecommendationMeta(notes, notes.map(note => note.id), reasonOf, settings.showReason);
 
@@ -764,10 +802,15 @@ export class HanamiRecommendationService {
 		const candidates = await this.getCandidates(meId, {
 			limit,
 			capLimit: limit,
-			excluded: (id) => served.has(id) || seen.has(id),
+			excluded: (candidate) => seen.has(candidate.noteId) || (candidate.source !== 'fof' && served.has(candidate.noteId)),
 			newerThan: null,
 			axes: settings.axes,
 			axisMaxShare: this.buildAxisShare(AUTO_AXIS_MAX_SHARE, settings.axisLevels),
+			fofOptions: {
+				hardExcludedNoteIds: seen,
+				softPenaltyNoteIds: served,
+				newerThan: null,
+			},
 		});
 		return {
 			reasonOf: new Map(candidates.map(c => [c.noteId, { source: c.source, reason: c.reason, term: c.term }])),

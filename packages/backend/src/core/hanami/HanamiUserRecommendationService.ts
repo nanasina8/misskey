@@ -28,13 +28,18 @@ const FOF_NOTES_LOOKBACK_MS = 1000 * 60 * 60 * 24 * 3; // 直近3日
 const FOF_CANDIDATE_POOL = 40;
 const FOF_USER_OVERFETCH = 5;
 // ノート推薦用の候補プール。FoF上位はリモートhub偏重で直近ノートがローカルDBに無いことが多いため、
-// フォロー推薦（表示用40件）より大きく取り、「実際に直近投稿がある人」を取りこぼさない。
-const FOF_NOTE_CANDIDATE_POOL = 300;
+// 足りない時だけ段階的に広げ、「実際に投稿がある人」を取りこぼしにくくする。
+const FOF_NOTE_CANDIDATE_POOL_STEPS = [300, 600, 1000] as const;
 // ノートクエリの窓: DBに既にある「過去投稿」も対象に広げる（連合で新規取得はしない。public/home が無ければ諦める）。
 // 新鮮さはスコアで優先するが、古い投稿しか無いリモート人気アカも候補に乗せられるようにする。
-const FOF_NOTE_QUERY_LOOKBACK_MS = 1000 * 60 * 60 * 24 * 90; // 直近90日
+const FOF_NOTE_QUERY_LOOKBACK_MS = DAY_MS * 365; // 直近365日
+const FOF_NOTE_QUERY_LIMIT_MIN = 1200;
+const FOF_NOTE_QUERY_LIMIT_MAX = 5000;
+const FOF_NOTE_QUERY_LIMIT_MULTIPLIER = 20;
 // ノート土台スコアに「人気度（フォロワー数）」を混ぜる割合。リモート人気アカを一定割合出すため。
 const FOF_POPULAR_NOTE_RATIO = 0.3;
+// note単位のservedはFoFではハード除外しない。送っただけのnoteは強く沈め、実表示済み(seen)は呼び出し側で除外する。
+const FOF_NOTE_SERVED_PENALTY = 0.05;
 
 // seed 重み（案1）。すべて提案値・ここ一箇所で調整可。
 const SEED_BASE_WEIGHT = 1.0;
@@ -79,11 +84,19 @@ const FOF_NOTE_RECENCY = [
 	{ withinMs: FOF_NOTES_LOOKBACK_MS, weight: 0.45 }, // 72h以内
 	{ withinMs: DAY_MS * 7, weight: 0.25 }, // 〜7日
 	{ withinMs: DAY_MS * 30, weight: 0.12 }, // 〜30日
-	{ withinMs: FOF_NOTE_QUERY_LOOKBACK_MS, weight: 0.05 }, // 〜90日（過去投稿のフロア。新しいほど上位だが古くても拾える）
+	{ withinMs: DAY_MS * 90, weight: 0.05 }, // 〜90日
+	{ withinMs: DAY_MS * 180, weight: 0.025 }, // 〜180日
+	{ withinMs: FOF_NOTE_QUERY_LOOKBACK_MS, weight: 0.01 }, // 〜365日（古い投稿のフロア。新しいほど上位だが古くても拾える）
 ] as const;
 
 export type FollowCandidate = { userId: string; score: number; reason: 'fof' | 'similar'; mutualCount: number };
 export type FoFNote = { noteId: string; userId: string; score: number };
+export type FoFNoteOptions = {
+	hardExcludedNoteIds?: ReadonlySet<string>;
+	softPenaltyNoteIds?: ReadonlySet<string>;
+	newerThan?: string | null;
+	withFiles?: boolean;
+};
 
 type ActivitySignal = {
 	days7: Set<number>;
@@ -224,6 +237,15 @@ export class HanamiUserRecommendationService {
 			this.getRecencyScore(lastHours, true) +
 			(Math.min(signal.count14, ACTIVITY_COUNT_CAP) * 0.01);
 		return Math.min(score, SEED_INTERACTION_BOOST_MAX);
+	}
+
+	private getAuthorNoteRankPenalty(rank: number): number {
+		if (rank <= 1) return 1;
+		return Math.max(0.02, Math.pow(0.35, rank - 1));
+	}
+
+	private getFoFNoteQueryLimit(limit: number): number {
+		return this.clamp(limit * FOF_NOTE_QUERY_LIMIT_MULTIPLIER, FOF_NOTE_QUERY_LIMIT_MIN, FOF_NOTE_QUERY_LIMIT_MAX);
 	}
 
 	/**
@@ -635,16 +657,17 @@ export class HanamiUserRecommendationService {
 	 * チャンネル投稿・純RNは除外、public/home のみ。
 	 */
 	@bindThis
-	public async getFoFNoteIds(meId: MiUser['id'], limit: number): Promise<FoFNote[]> {
+	public async getFoFNoteIds(meId: MiUser['id'], limit: number, opts: FoFNoteOptions = {}): Promise<FoFNote[]> {
 		// ノート候補はフォロー推薦の多様性選抜（上位40・リモートhub偏重で直近ノートがローカルDBに無いことが多い）を
-		// 通さず、品質フィルタ済みの広いFoF候補プール全体から引く。投稿が無い候補はノートクエリで自然に脱落するので、
-		// 「実際に直近投稿がある人」を取りこぼさない（設計: ノートはrawスコア順を維持）。
-		const candidateMap = await this.getFoFUserCandidates(meId, FOF_NOTE_CANDIDATE_POOL);
+		// 通さず、品質フィルタ済みの広いFoF候補プール全体から引く。足りない時だけ候補ユーザー幅を広げ、
+		// 「実際に投稿がある人」を取りこぼさない（設計: ノートはrawスコア順を維持）。
+		const candidateMap = await this.getFoFUserCandidates(meId, FOF_NOTE_CANDIDATE_POOL_STEPS.at(-1)!);
 		if (candidateMap.size === 0) return [];
 
 		// 土台スコア = 「サークル内親密度(c.score)」と「人気度(フォロワー数)」のブレンド。
 		// 人気枠(FOF_POPULAR_NOTE_RATIO)を混ぜることで、ローカルに投稿があるリモート人気アカも一定割合出す。
-		const cands = [...candidateMap.values()];
+		const allCandidates = [...candidateMap.values()].sort((a, b) => b.score - a.score);
+		const cands = allCandidates;
 		const maxIntimacy = Math.max(1e-9, ...cands.map(c => c.score));
 		const maxPopularity = Math.max(1e-9, ...cands.map(c => Math.log10(c.followersCount + 10)));
 		const candBase = new Map<string, number>(cands.map(c => {
@@ -653,48 +676,74 @@ export class HanamiUserRecommendationService {
 			return [c.userId, ((1 - FOF_POPULAR_NOTE_RATIO) * intimacy) + (FOF_POPULAR_NOTE_RATIO * popularity)];
 		}));
 
-		const userIds = [...candBase.keys()];
 		// 窓を広げてDBにある過去投稿も対象に（無ければ諦める）。新鮮さはスコアで優先する。
 		const sinceId = this.idService.gen(Date.now() - FOF_NOTE_QUERY_LOOKBACK_MS);
-
-		const notes = await this.notesRepository.createQueryBuilder('note')
-			.select('note.id', 'id')
-			.addSelect('note.userId', 'userId')
-			.addSelect('note.visibility', 'visibility')
-			.addSelect('note.replyId', 'replyId')
-			.addSelect('note.renoteCount', 'renoteCount')
-			.addSelect('note.reactions', 'reactions')
-			.where('note.userId IN (:...userIds)', { userIds })
-			.andWhere('note.id > :sinceId', { sinceId })
-			.andWhere('note.channelId IS NULL')
-			.andWhere(new Brackets(qb => {
-				qb.where('note.visibility = \'public\'').orWhere('note.visibility = \'home\'');
-			}))
-			.andWhere(new Brackets(qb => {
-				// 純RN除外（引用RN・本文/メディアつきは許可）
-				qb.where('note.renoteId IS NULL')
-					.orWhere('note.text IS NOT NULL')
-					.orWhere('note.fileIds != \'{}\'');
-			}))
-			// 候補ごとに最新1件だけ拾う。投稿がある人を取りこぼさず（リモート人気の古い投稿も拾える）、多作な人に偏らない。
-			.distinctOn(['note.userId'])
-			.orderBy('note.userId', 'ASC')
-			.addOrderBy('note.id', 'DESC')
-			.getRawMany<{ id: string; userId: string; visibility: string; replyId: string | null; renoteCount: number; reactions: Record<string, number> | null }>();
-
 		const now = Date.now();
-		const scored: FoFNote[] = notes.map(n => {
-			const base = candBase.get(n.userId) ?? 0;
-			const ageMs = now - this.idService.parse(n.id).date.getTime();
-			const recency = FOF_NOTE_RECENCY.find(r => ageMs < r.withinMs)?.weight ?? 0;
-			const vis = n.visibility === 'public' ? 1.0 : 0.8;
-			const reactionsTotal = n.reactions ? Object.values(n.reactions).reduce((a, b) => a + Number(b), 0) : 0;
-			// エンゲージは log で軽く（古い人気に偏らないよう base/recency と掛け合わせ）。bot反応の厳密除去は後続増分。
-			const engagement = 1 + Math.log10(1 + reactionsTotal + 2 * Number(n.renoteCount ?? 0));
-			const replyPenalty = n.replyId != null ? FOF_NOTE_REPLY_PENALTY : 1;
-			return { noteId: n.id, userId: n.userId, score: base * recency * vis * engagement * replyPenalty };
-		});
-		scored.sort((a, b) => b.score - a.score);
+		const queryLimit = this.getFoFNoteQueryLimit(limit);
+		let scored: FoFNote[] = [];
+
+		for (const poolSize of FOF_NOTE_CANDIDATE_POOL_STEPS) {
+			const userIds = allCandidates.slice(0, poolSize).map(c => c.userId);
+			if (userIds.length === 0) break;
+
+			const query = this.notesRepository.createQueryBuilder('note')
+				.select('note.id', 'id')
+				.addSelect('note.userId', 'userId')
+				.addSelect('note.visibility', 'visibility')
+				.addSelect('note.replyId', 'replyId')
+				.addSelect('note.renoteCount', 'renoteCount')
+				.addSelect('note.reactions', 'reactions')
+				.where('note.userId IN (:...userIds)', { userIds })
+				.andWhere('note.id > :sinceId', { sinceId })
+				.andWhere('note.channelId IS NULL')
+				.andWhere(new Brackets(qb => {
+					qb.where('note.visibility = \'public\'').orWhere('note.visibility = \'home\'');
+				}))
+				.andWhere(new Brackets(qb => {
+					// 純RN除外（引用RN・本文/メディア/投票つきは許可）
+					qb.where('note.renoteId IS NULL')
+						.orWhere('note.text IS NOT NULL')
+						.orWhere('note.fileIds != \'{}\'')
+						.orWhere('note.hasPoll = TRUE');
+				}))
+				.orderBy('note.id', 'DESC')
+				.limit(queryLimit);
+
+			if (opts.newerThan != null) query.andWhere('note.id < :newerThan', { newerThan: opts.newerThan });
+			if (opts.withFiles) query.andWhere('note.fileIds != \'{}\'');
+			if (opts.hardExcludedNoteIds != null && opts.hardExcludedNoteIds.size > 0) {
+				query.andWhere('note.id NOT IN (:...hardExcludedNoteIds)', { hardExcludedNoteIds: [...opts.hardExcludedNoteIds] });
+			}
+
+			const notes = await query.getRawMany<{ id: string; userId: string; visibility: string; replyId: string | null; renoteCount: number; reactions: Record<string, number> | null }>();
+			const authorRank = new Map<string, number>();
+			scored = notes.map(n => {
+				const rank = (authorRank.get(n.userId) ?? 0) + 1;
+				authorRank.set(n.userId, rank);
+
+				const base = candBase.get(n.userId) ?? 0;
+				const ageMs = now - this.idService.parse(n.id).date.getTime();
+				const recency = FOF_NOTE_RECENCY.find(r => ageMs < r.withinMs)?.weight ?? 0;
+				const vis = n.visibility === 'public' ? 1.0 : 0.8;
+				const reactionsTotal = n.reactions ? Object.values(n.reactions).reduce((a, b) => a + Number(b), 0) : 0;
+				// エンゲージは log で軽く（古い人気に偏らないよう base/recency と掛け合わせ）。bot反応の厳密除去は後続増分。
+				const engagement = 1 + Math.log10(1 + reactionsTotal + 2 * Number(n.renoteCount ?? 0));
+				const replyPenalty = n.replyId != null ? FOF_NOTE_REPLY_PENALTY : 1;
+				const authorRankPenalty = this.getAuthorNoteRankPenalty(rank);
+				const servedPenalty = opts.softPenaltyNoteIds?.has(n.id) === true ? FOF_NOTE_SERVED_PENALTY : 1;
+				return {
+					noteId: n.id,
+					userId: n.userId,
+					score: base * recency * vis * engagement * replyPenalty * authorRankPenalty * servedPenalty,
+				};
+			});
+			scored.sort((a, b) => b.score - a.score);
+
+			// 作者ごとのハード上限は持たないため、ここでは候補数が十分あれば止める。
+			// 同一作者の偏りは作者内rank減衰と注入側の選択ペナルティで抑える。
+			if (scored.length >= limit * 2) break;
+		}
+
 		return scored.slice(0, limit);
 	}
 }
