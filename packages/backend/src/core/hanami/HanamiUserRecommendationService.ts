@@ -30,6 +30,11 @@ const FOF_USER_OVERFETCH = 5;
 // ノート推薦用の候補プール。FoF上位はリモートhub偏重で直近ノートがローカルDBに無いことが多いため、
 // フォロー推薦（表示用40件）より大きく取り、「実際に直近投稿がある人」を取りこぼさない。
 const FOF_NOTE_CANDIDATE_POOL = 300;
+// ノートクエリの窓: DBに既にある「過去投稿」も対象に広げる（連合で新規取得はしない。public/home が無ければ諦める）。
+// 新鮮さはスコアで優先するが、古い投稿しか無いリモート人気アカも候補に乗せられるようにする。
+const FOF_NOTE_QUERY_LOOKBACK_MS = 1000 * 60 * 60 * 24 * 90; // 直近90日
+// ノート土台スコアに「人気度（フォロワー数）」を混ぜる割合。リモート人気アカを一定割合出すため。
+const FOF_POPULAR_NOTE_RATIO = 0.3;
 
 // seed 重み（案1）。すべて提案値・ここ一箇所で調整可。
 const SEED_BASE_WEIGHT = 1.0;
@@ -72,6 +77,9 @@ const FOF_NOTE_RECENCY = [
 	{ withinMs: 1000 * 60 * 60 * 12, weight: 1.0 }, // 12h以内
 	{ withinMs: 1000 * 60 * 60 * 24, weight: 0.75 }, // 24h以内
 	{ withinMs: FOF_NOTES_LOOKBACK_MS, weight: 0.45 }, // 72h以内
+	{ withinMs: DAY_MS * 7, weight: 0.25 }, // 〜7日
+	{ withinMs: DAY_MS * 30, weight: 0.12 }, // 〜30日
+	{ withinMs: FOF_NOTE_QUERY_LOOKBACK_MS, weight: 0.05 }, // 〜90日（過去投稿のフロア。新しいほど上位だが古くても拾える）
 ] as const;
 
 export type FollowCandidate = { userId: string; score: number; reason: 'fof' | 'similar'; mutualCount: number };
@@ -98,6 +106,8 @@ type InternalFollowCandidate = FollowCandidate & {
 	// 7日窓内での最終表示時刻。null = 7日以内に見せていない（新顔扱い）。3日以内ならハード除外の判定に使う。
 	lastShownAt: number | null;
 	activityMultiplier: number;
+	// グローバルな人気度（フォロワー数）。ノート土台スコアの人気ブレンドに使う。
+	followersCount: number;
 };
 
 /**
@@ -493,6 +503,7 @@ export class HanamiUserRecommendationService {
 				seedIds: [...r.seedIds],
 				lastShownAt: stat?.lastAt ?? null,
 				activityMultiplier,
+				followersCount: Number(u.followersCount),
 			});
 		}
 		return result;
@@ -631,9 +642,20 @@ export class HanamiUserRecommendationService {
 		const candidateMap = await this.getFoFUserCandidates(meId, FOF_NOTE_CANDIDATE_POOL);
 		if (candidateMap.size === 0) return [];
 
-		const candScore = new Map<string, number>([...candidateMap.values()].map(c => [c.userId, c.score]));
-		const userIds = [...candScore.keys()];
-		const sinceId = this.idService.gen(Date.now() - FOF_NOTES_LOOKBACK_MS);
+		// 土台スコア = 「サークル内親密度(c.score)」と「人気度(フォロワー数)」のブレンド。
+		// 人気枠(FOF_POPULAR_NOTE_RATIO)を混ぜることで、ローカルに投稿があるリモート人気アカも一定割合出す。
+		const cands = [...candidateMap.values()];
+		const maxIntimacy = Math.max(1e-9, ...cands.map(c => c.score));
+		const maxPopularity = Math.max(1e-9, ...cands.map(c => Math.log10(c.followersCount + 10)));
+		const candBase = new Map<string, number>(cands.map(c => {
+			const intimacy = c.score / maxIntimacy;
+			const popularity = Math.log10(c.followersCount + 10) / maxPopularity;
+			return [c.userId, ((1 - FOF_POPULAR_NOTE_RATIO) * intimacy) + (FOF_POPULAR_NOTE_RATIO * popularity)];
+		}));
+
+		const userIds = [...candBase.keys()];
+		// 窓を広げてDBにある過去投稿も対象に（無ければ諦める）。新鮮さはスコアで優先する。
+		const sinceId = this.idService.gen(Date.now() - FOF_NOTE_QUERY_LOOKBACK_MS);
 
 		const notes = await this.notesRepository.createQueryBuilder('note')
 			.select('note.id', 'id')
@@ -654,13 +676,15 @@ export class HanamiUserRecommendationService {
 					.orWhere('note.text IS NOT NULL')
 					.orWhere('note.fileIds != \'{}\'');
 			}))
-			.orderBy('note.id', 'DESC')
-			.limit(limit * 5)
+			// 候補ごとに最新1件だけ拾う。投稿がある人を取りこぼさず（リモート人気の古い投稿も拾える）、多作な人に偏らない。
+			.distinctOn(['note.userId'])
+			.orderBy('note.userId', 'ASC')
+			.addOrderBy('note.id', 'DESC')
 			.getRawMany<{ id: string; userId: string; visibility: string; replyId: string | null; renoteCount: number; reactions: Record<string, number> | null }>();
 
 		const now = Date.now();
 		const scored: FoFNote[] = notes.map(n => {
-			const base = candScore.get(n.userId) ?? 0;
+			const base = candBase.get(n.userId) ?? 0;
 			const ageMs = now - this.idService.parse(n.id).date.getTime();
 			const recency = FOF_NOTE_RECENCY.find(r => ageMs < r.withinMs)?.weight ?? 0;
 			const vis = n.visibility === 'public' ? 1.0 : 0.8;
