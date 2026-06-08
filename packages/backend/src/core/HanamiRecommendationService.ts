@@ -52,9 +52,12 @@ const MAX_REC_PER_AUTHOR = 1;
 // 候補プール/オーバーフェッチ。DBの可視性/ミュートで脱落する分を見込んで多めに取る。
 const RANKING_FETCH_SIZE = 200;
 const REC_CANDIDATE_OVERFETCH = 5;
+const REC_DB_FETCH_OVERFETCH = 2;
+const REC_DB_FETCH_EXTRA = 5;
 const LOW_EXPOSURE_POOL = 500;
 const LOW_EXPOSURE_ALREADY_POPULAR_TOP = 30; // 上位は「既に人気」として低露出軸から除外
 const LOW_EXPOSURE_MIN_ENGAGEMENT = 2; // 最小エンゲージメント（min reactions の近似 floor）
+const LOW_EXPOSURE_CANDIDATE_CACHE_TTL_MS = 60 * 1000;
 
 // 通常ロード時に、取得 limit のうち推薦として混ぜる目標比率。
 const REC_RATIO = { low: 0.20, normal: 0.35, high: 0.50, veryHigh: 0.70 } as const;
@@ -109,6 +112,7 @@ export type HanamiAxisUserConfig = Partial<Record<RecSource, HanamiAxisLevel | b
 
 type ScoredCandidate = {
 	noteId: string;
+	userId?: MiUser['id'];
 	score: number;
 	source: RecSource;
 	reason: RecReasonCode;
@@ -151,6 +155,8 @@ export type HanamiRecOptions = {
  */
 @Injectable()
 export class HanamiRecommendationService {
+	private lowExposureCandidatesCache: { expiresAt: number; value: ScoredCandidate[] } | null = null;
+
 	constructor(
 		@Inject(DI.redis)
 		private redisClient: Redis.Redis,
@@ -278,7 +284,8 @@ export class HanamiRecommendationService {
 		});
 		if (candidates.length === 0) return homeNotes.slice(0, limit);
 
-		const { recNotes, reasonOf } = await this.fetchAndPackRecNotes(candidates, me, { withFiles: opts.withFiles });
+		const candidatesToFetch = candidates.slice(0, Math.min(candidates.length, (recTarget * REC_DB_FETCH_OVERFETCH) + REC_DB_FETCH_EXTRA));
+		const { recNotes, reasonOf } = await this.fetchAndPackRecNotes(candidatesToFetch, me, { withFiles: opts.withFiles });
 		if (recNotes.length === 0) return homeNotes.slice(0, limit);
 
 		const { notes, injectedIds } = this.injectIntoSlots(homeNotes, recNotes, recTarget, limit);
@@ -371,6 +378,7 @@ export class HanamiRecommendationService {
 				} else {
 					const prevTop = exist.score;
 					exist.score += c.score;
+					exist.userId ??= c.userId;
 					if (c.score > prevTop) {
 						exist.source = c.source;
 						exist.reason = c.reason;
@@ -405,14 +413,6 @@ export class HanamiRecommendationService {
 	private async applyRecentAuthorPenalty(meId: MiUser['id'], candidates: ScoredCandidate[]): Promise<ScoredCandidate[]> {
 		if (candidates.length === 0) return [];
 
-		const noteIds = candidates.map(c => c.noteId);
-		const rows = await this.notesRepository.createQueryBuilder('note')
-			.select('note.id', 'id')
-			.addSelect('note.userId', 'userId')
-			.where('note.id IN (:...noteIds)', { noteIds })
-			.getRawMany<{ id: string; userId: string }>();
-		const authorByNoteId = new Map(rows.map(r => [r.id, r.userId]));
-
 		const now = Date.now();
 		const raw = await this.redisClient.zrangebyscore(`${AUTHOR_SERVED_KEY_PREFIX}${meId}`, now - AUTHOR_SERVED_TTL_MS, '+inf', 'WITHSCORES');
 		const servedAtByAuthor = new Map<string, number>();
@@ -420,6 +420,25 @@ export class HanamiRecommendationService {
 			servedAtByAuthor.set(raw[i], Number(raw[i + 1]));
 		}
 		if (servedAtByAuthor.size === 0) return candidates;
+
+		const authorByNoteId = new Map<string, MiUser['id']>();
+		const missingAuthorNoteIds: string[] = [];
+		for (const candidate of candidates) {
+			if (candidate.userId != null) {
+				authorByNoteId.set(candidate.noteId, candidate.userId);
+			} else {
+				missingAuthorNoteIds.push(candidate.noteId);
+			}
+		}
+
+		if (missingAuthorNoteIds.length > 0) {
+			const rows = await this.notesRepository.createQueryBuilder('note')
+				.select('note.id', 'id')
+				.addSelect('note.userId', 'userId')
+				.where('note.id IN (:...noteIds)', { noteIds: missingAuthorNoteIds })
+				.getRawMany<{ id: string; userId: string }>();
+			for (const row of rows) authorByNoteId.set(row.id, row.userId);
+		}
 
 		const out = candidates.map(candidate => {
 			const authorId = authorByNoteId.get(candidate.noteId);
@@ -450,33 +469,44 @@ export class HanamiRecommendationService {
 	/** 低露出×高反応軸: エンゲージメント ÷ f(フォロワー数)。既に人気な上位は除外、floor あり。 */
 	@bindThis
 	private async getLowExposureCandidates(): Promise<ScoredCandidate[]> {
+		const cached = this.lowExposureCandidatesCache;
+		if (cached != null && cached.expiresAt > Date.now()) {
+			return cached.value.map(c => ({ ...c }));
+		}
+
 		const pool = await this.featuredService.getGlobalNotesRankingWithScores(LOW_EXPOSURE_POOL);
 		if (pool.length === 0) return [];
 
 		const popularTop = new Set(pool.slice(0, LOW_EXPOSURE_ALREADY_POPULAR_TOP).map(([id]) => id));
-		const ids = pool.map(([id]) => id);
+		const eligiblePool = pool.filter(([id, eng]) => !popularTop.has(id) && eng >= LOW_EXPOSURE_MIN_ENGAGEMENT);
+		if (eligiblePool.length === 0) return [];
+		const ids = eligiblePool.map(([id]) => id);
 
 		const rows = await this.notesRepository.createQueryBuilder('note')
 			.select('note.id', 'id')
+			.addSelect('note.userId', 'userId')
 			.addSelect('user.followersCount', 'followersCount')
 			.innerJoin('note.user', 'user')
 			.where('note.id IN (:...ids)', { ids })
-			.getRawMany<{ id: string; followersCount: number }>();
-		const followers = new Map(rows.map(r => [r.id, Number(r.followersCount)]));
+			.getRawMany<{ id: string; userId: string; followersCount: number }>();
+		const noteInfo = new Map(rows.map(r => [r.id, { userId: r.userId, followersCount: Number(r.followersCount) }]));
 
 		const scored: ScoredCandidate[] = [];
-		for (const [id, eng] of pool) {
-			if (popularTop.has(id)) continue;
-			if (eng < LOW_EXPOSURE_MIN_ENGAGEMENT) continue;
-			const f = followers.get(id);
-			if (f == null) continue;
-			const score = eng / Math.log10(f + 10);
-			scored.push({ noteId: id, score, source: 'lowExposure', reason: 'lowExposure' });
+		for (const [id, eng] of eligiblePool) {
+			const info = noteInfo.get(id);
+			if (info == null) continue;
+			const score = eng / Math.log10(info.followersCount + 10);
+			scored.push({ noteId: id, userId: info.userId, score, source: 'lowExposure', reason: 'lowExposure' });
 		}
 		scored.sort((a, b) => b.score - a.score);
 		const top = scored.slice(0, RANKING_FETCH_SIZE);
 		const max = top[0]?.score || 1;
-		return top.map(c => ({ ...c, score: (c.score / max) * AXIS_WEIGHT.lowExposure }));
+		const result = top.map(c => ({ ...c, score: (c.score / max) * AXIS_WEIGHT.lowExposure }));
+		this.lowExposureCandidatesCache = {
+			expiresAt: Date.now() + LOW_EXPOSURE_CANDIDATE_CACHE_TTL_MS,
+			value: result,
+		};
+		return result.map(c => ({ ...c }));
 	}
 
 	/** 急上昇軸（Lindera/Builtin トレンド）。 */
@@ -498,8 +528,9 @@ export class HanamiRecommendationService {
 	private async getFoFCandidates(meId: MiUser['id']): Promise<ScoredCandidate[]> {
 		const fof = await this.hanamiUserRecommendationService.getFoFNoteIds(meId, RANKING_FETCH_SIZE);
 		const max = fof[0]?.score || 1; // getFoFNoteIds はスコア降順で返る
-		return fof.map(({ noteId, score }) => ({
+		return fof.map(({ noteId, userId, score }) => ({
 			noteId,
+			userId,
 			score: (score / max) * AXIS_WEIGHT.fof,
 			source: 'fof' as const,
 			reason: 'fof' as const,
@@ -535,15 +566,14 @@ export class HanamiRecommendationService {
 			.leftJoinAndSelect('note.reply', 'reply')
 			.leftJoinAndSelect('note.renote', 'renote')
 			.leftJoinAndSelect('reply.user', 'replyUser')
-			.leftJoinAndSelect('renote.user', 'renoteUser')
-			.leftJoinAndSelect('note.channel', 'channel');
+			.leftJoinAndSelect('renote.user', 'renoteUser');
 
 		// 純粋RN除外（引用RN・本文/メディア/投票つきは元ノートとして許可）
 		query.andWhere(new Brackets(qb => {
 			qb.where('note.renoteId IS NULL')
 				.orWhere('note.text IS NOT NULL')
 				.orWhere('note.fileIds != \'{}\'')
-				.orWhere('0 < (SELECT COUNT(*) FROM poll WHERE poll."noteId" = note.id)');
+				.orWhere('note.hasPoll = TRUE');
 		}));
 
 		if (opts.withFiles) query.andWhere('note.fileIds != \'{}\'');

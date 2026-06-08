@@ -127,6 +127,7 @@ if (props.src === 'antenna') {
 		computedParams: computed(() => ({
 			withRenotes: props.withRenotes,
 			withFiles: props.onlyFiles ? true : undefined,
+			allowPartial: true,
 		})),
 		useShallowRef: true,
 		// 注入されたおすすめ（古い人気/急上昇ノート）はカーソル基準にしない。
