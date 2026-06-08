@@ -288,8 +288,11 @@ export class HanamiRecommendationService {
 
 		if (injectedIds.length > 0) {
 			const injectedIdSet = new Set(injectedIds);
-			const injectedAuthorIds = notes.filter(note => injectedIdSet.has(note.id)).map(note => note.userId);
-			this.recordServedWithLog(me.id, injectedIds, reasonOf, injectedAuthorIds).catch(err => {
+			const injectedNotes = notes.filter(note => injectedIdSet.has(note.id));
+			const injectedAuthorIds = injectedNotes.map(note => note.userId);
+			// FoF軸で注入したノートの作者は「見せたFoFユーザー」として記録し、再表示を抑える（フォロー候補UIに依存しない）。
+			const fofUserIds = injectedNotes.filter(note => reasonOf.get(note.id)?.source === 'fof').map(note => note.userId);
+			this.recordServedWithLog(me.id, injectedIds, reasonOf, injectedAuthorIds, fofUserIds).catch(err => {
 				// eslint-disable-next-line no-console
 				console.error('hanami rec: recordServed/log failed', err);
 			});
@@ -707,7 +710,8 @@ export class HanamiRecommendationService {
 		this.markRecommendationMeta(notes, notes.map(note => note.id), reasonOf, settings.showReason);
 
 		if (notes.length > 0) {
-			await this.recordServedWithLog(me.id, notes.map(note => note.id), reasonOf, notes.map(note => note.userId));
+			const fofUserIds = notes.filter(note => reasonOf.get(note.id)?.source === 'fof').map(note => note.userId);
+			await this.recordServedWithLog(me.id, notes.map(note => note.id), reasonOf, notes.map(note => note.userId), fofUserIds);
 		}
 
 		return notes;
@@ -762,9 +766,11 @@ export class HanamiRecommendationService {
 	}
 
 	@bindThis
-	public async recordServedWithLog(userId: MiUser['id'], noteIds: string[], reasonOf: Map<string, RecReasonMeta>, authorIds: string[] = []): Promise<void> {
+	public async recordServedWithLog(userId: MiUser['id'], noteIds: string[], reasonOf: Map<string, RecReasonMeta>, authorIds: string[] = [], fofUserIds: string[] = []): Promise<void> {
 		await this.recordServed(userId, noteIds);
 		await this.recordServedAuthors(userId, authorIds);
+		// FoFユーザー単位の既出記録。はなみTL/ストリーム注入経路でも疲労を効かせる（フォロー候補エンドポイント以外でも記録）。
+		if (fofUserIds.length > 0) await this.hanamiUserRecommendationService.recordShown(userId, fofUserIds);
 		await this.logServed(userId, noteIds, reasonOf);
 	}
 

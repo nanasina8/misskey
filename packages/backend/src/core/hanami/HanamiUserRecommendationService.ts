@@ -36,9 +36,16 @@ const SEED_WITHREPLIES_BONUS = 0.5; // 返信まで見ている相手（より�
 // 候補スコアの補正（案2）。提案値。
 const FOLLOWBACK_BOOST = 1.3; // 候補が自分をフォロー中（フォロバ候補）
 const LOCKED_PENALTY = 0.5; // 鍵アカウントは低め（除外まではしない）
+// 既出FoFユーザーの再表示抑制。1表示=1メンバーの「露出ログ」zset（member=`userId\ttimestamp\tseq`, score=表示時刻ms）で
+// 「最終表示時刻（ハード除外用）」と「窓内の表示回数（ソフト減点用）」の両方を1キーから得る。
 const SHOWN_KEY_PREFIX = 'hanami:fof:shown:';
-const SHOWN_TTL_SECONDS = 60 * 60 * 24 * 30; // 表示回数は30日で自然回復
-const SHOWN_PENALTY_PER_VIEW = 0.6; // 1回表示ごとに 1 / (1 + n * 0.6) で減衰
+// 3日以内に見せた人は完全除外（新顔が足りない時だけ古い順フォールバック）。FOF_NOTES_LOOKBACK_MS と一致。
+const SHOWN_HARD_MS = DAY_MS * 3;
+// 7日窓: この間の表示回数に応じてソフト減点。窓を抜ければ満点に回復（記録の保持上限も兼ねる）。
+const SHOWN_SOFT_MS = DAY_MS * 7;
+const SHOWN_TTL_SECONDS = 60 * 60 * 24 * 7;
+// 7日窓内の表示回数あたりの減衰: score × 1/(1 + K×count)。回数が多いほど強く沈める（要望: 7日単位で強化）。
+const SHOWN_SOFT_K = 0.7;
 
 // 最近動いている候補・最近関わったFFを強くする。回数より「何日いた/関わったか」を主に見る。
 const ACTIVITY_LOOKBACK_MS = DAY_MS * 14;
@@ -85,7 +92,8 @@ type RawFoFCandidate = {
 type InternalFollowCandidate = FollowCandidate & {
 	host: string | null;
 	seedIds: string[];
-	shownCount: number;
+	// 7日窓内での最終表示時刻。null = 7日以内に見せていない（新顔扱い）。3日以内ならハード除外の判定に使う。
+	lastShownAt: number | null;
 	activityMultiplier: number;
 };
 
@@ -227,11 +235,26 @@ export class HanamiUserRecommendationService {
 		return new Set(rows.map(r => r.followeeId));
 	}
 
+	// 直近 SHOWN_SOFT_MS（7日）の露出ログから、ユーザーごとに { 表示回数, 最終表示時刻 } を集計する。
+	// 古いメンバーは ZRANGEBYSCORE の下限で除外＝7日を抜けた人は満点（新顔）に戻る。
 	@bindThis
-	private async getShownCounts(meId: MiUser['id'], userIds: MiUser['id'][]): Promise<Map<string, number>> {
-		if (userIds.length === 0) return new Map();
-		const values = await this.redisClient.hmget(`${SHOWN_KEY_PREFIX}${meId}`, ...userIds);
-		return new Map(userIds.map((id, i) => [id, Number(values[i] ?? 0)]));
+	private async getShownStats(meId: MiUser['id']): Promise<Map<string, { count: number; lastAt: number }>> {
+		const cutoff = Date.now() - SHOWN_SOFT_MS;
+		const raw = await this.redisClient.zrangebyscore(`${SHOWN_KEY_PREFIX}${meId}`, cutoff, '+inf', 'WITHSCORES');
+		const stats = new Map<string, { count: number; lastAt: number }>();
+		for (let i = 0; i < raw.length; i += 2) {
+			const member = raw[i];
+			const at = Number(raw[i + 1]);
+			const userId = member.slice(0, member.indexOf('\t')); // member = `userId\ttimestamp\tseq`
+			const cur = stats.get(userId);
+			if (cur) {
+				cur.count++;
+				if (at > cur.lastAt) cur.lastAt = at;
+			} else {
+				stats.set(userId, { count: 1, lastAt: at });
+			}
+		}
+		return stats;
 	}
 
 	@bindThis
@@ -239,8 +262,12 @@ export class HanamiUserRecommendationService {
 		const uniqueIds = [...new Set(userIds)];
 		if (uniqueIds.length === 0) return;
 		const key = `${SHOWN_KEY_PREFIX}${meId}`;
-		const pipeline = this.redisClient.pipeline();
-		for (const userId of uniqueIds) pipeline.hincrby(key, userId, 1);
+		const now = Date.now();
+		// 1表示=1メンバー（同一ユーザーでも別エントリ）。回数と最終表示時刻の両方を後で復元できる。
+		const pipeline = this.redisClient.multi();
+		let seq = 0;
+		for (const userId of uniqueIds) pipeline.zadd(key, now, `${userId}\t${now}\t${seq++}`);
+		pipeline.zremrangebyscore(key, 0, now - SHOWN_SOFT_MS);
 		pipeline.expire(key, SHOWN_TTL_SECONDS);
 		await pipeline.exec();
 	}
@@ -435,8 +462,8 @@ export class HanamiUserRecommendationService {
 			.andWhere('u.isExplorable = TRUE')
 			.getRawMany<{ id: string; followersCount: number; host: string | null; isLocked: boolean }>();
 
-		const [shownCounts, activityMultipliers] = await Promise.all([
-			this.getShownCounts(meId, userRows.map(u => u.id)),
+		const [shownStats, activityMultipliers] = await Promise.all([
+			this.getShownStats(meId),
 			this.getCandidateActivityMultipliers(userRows.map(u => u.id)),
 		]);
 		const result = new Map<string, InternalFollowCandidate>();
@@ -448,17 +475,20 @@ export class HanamiUserRecommendationService {
 			const norm = r.score / Math.log10(Number(u.followersCount) + 10);
 			const followback = followerSet.has(u.id) ? FOLLOWBACK_BOOST : 1;
 			const locked = u.isLocked ? LOCKED_PENALTY : 1;
-			const shownCount = shownCounts.get(u.id) ?? 0;
-			const shownPenalty = 1 / (1 + (shownCount * SHOWN_PENALTY_PER_VIEW));
 			const activityMultiplier = activityMultipliers.get(u.id) ?? CANDIDATE_ACTIVITY_MULTIPLIER_MIN;
+			// 既出ペナルティ2段構え:
+			//  - ハード除外（3日以内）は選抜側の tier 分けで効かせる → ここでは lastShownAt を持たせるだけ。
+			//  - ソフト減点（7日窓の表示回数）はスコアに乗算 → 3〜7日のユーザーは回数が多いほど沈む。
+			const stat = shownStats.get(u.id);
+			const softPenalty = 1 / (1 + (SHOWN_SOFT_K * (stat?.count ?? 0)));
 			result.set(u.id, {
 				userId: u.id,
-				score: norm * followback * locked * shownPenalty * activityMultiplier,
+				score: norm * followback * locked * activityMultiplier * softPenalty,
 				reason: 'fof',
 				mutualCount: r.mutualCount,
 				host: u.host,
 				seedIds: [...r.seedIds],
-				shownCount,
+				lastShownAt: stat?.lastAt ?? null,
 				activityMultiplier,
 			});
 		}
@@ -507,14 +537,13 @@ export class HanamiUserRecommendationService {
 		const maxSeedUse = candidate.seedIds.length === 0 ? 0 : Math.max(...candidate.seedIds.map(seedId => usedSeedCounts.get(seedId) ?? 0));
 		const hostUse = candidate.host == null ? 0 : (usedHostCounts.get(candidate.host) ?? 0);
 		const hostNovelty = candidate.host == null || hostUse === 0 ? 1 : 0;
-		const shownNovelty = 1 / (1 + candidate.shownCount);
 
 		if (mode === 'explore') {
-			return (candidate.activityMultiplier * 0.55) + (seedNovelty * 0.35) + (hostNovelty * 0.2) + (shownNovelty * 0.25) + (candidate.score * 0.12);
+			return (candidate.activityMultiplier * 0.55) + (seedNovelty * 0.35) + (hostNovelty * 0.2) + (candidate.score * 0.12);
 		}
 
 		const diversityMultiplier = mode === 'diverse'
-			? 0.55 + (seedNovelty * 0.55) + (hostNovelty * 0.18) + (shownNovelty * 0.12)
+			? 0.55 + (seedNovelty * 0.55) + (hostNovelty * 0.18)
 			: 1.0 + (seedNovelty * 0.12) + (hostNovelty * 0.06);
 		const overusePenalty = 1 + (maxSeedUse * (mode === 'diverse' ? 0.28 : 0.1)) + (hostUse * (mode === 'diverse' ? 0.18 : 0.06));
 		return (candidate.score * diversityMultiplier) / overusePenalty;
@@ -537,7 +566,15 @@ export class HanamiUserRecommendationService {
 	}
 
 	private selectDiverseCandidates(candidates: InternalFollowCandidate[], limit: number): InternalFollowCandidate[] {
-		const sorted = candidates.slice().sort((a, b) => b.score - a.score);
+		// 3日以内に見せた人はハード除外。それ以外（新顔＋3〜7日のソフト減点済み）で枠を埋める。
+		// ハード除外組は新顔が尽きた時だけ「見せたのが一番昔の人」から戻す（フォールバック）。
+		const now = Date.now();
+		const isHardExcluded = (c: InternalFollowCandidate): boolean => c.lastShownAt != null && (now - c.lastShownAt) <= SHOWN_HARD_MS;
+		// score にはソフト減点（7日窓の表示回数）が既に乗っているので、3〜7日の人はここで自然に下がる。
+		const eligible = candidates.filter(c => !isHardExcluded(c)).sort((a, b) => b.score - a.score);
+		const hardExcluded = candidates.filter(isHardExcluded)
+			.sort((a, b) => (a.lastShownAt ?? 0) - (b.lastShownAt ?? 0));
+
 		const selectedIds = new Set<string>();
 		const usedSeedCounts = new Map<string, number>();
 		const usedHostCounts = new Map<string, number>();
@@ -546,21 +583,27 @@ export class HanamiUserRecommendationService {
 		const exploreCount = Math.max(0, limit - coreCount - diverseCount);
 
 		const selected = [
-			...this.pickCandidates(sorted, coreCount, selectedIds, usedSeedCounts, usedHostCounts, 'core'),
-			...this.pickCandidates(sorted, diverseCount, selectedIds, usedSeedCounts, usedHostCounts, 'diverse'),
-			...this.pickCandidates(sorted, exploreCount, selectedIds, usedSeedCounts, usedHostCounts, 'explore'),
+			...this.pickCandidates(eligible, coreCount, selectedIds, usedSeedCounts, usedHostCounts, 'core'),
+			...this.pickCandidates(eligible, diverseCount, selectedIds, usedSeedCounts, usedHostCounts, 'diverse'),
+			...this.pickCandidates(eligible, exploreCount, selectedIds, usedSeedCounts, usedHostCounts, 'explore'),
 		];
 
-		if (selected.length < limit) {
-			for (const candidate of sorted) {
-				if (selected.length >= limit) break;
-				if (selectedIds.has(candidate.userId)) continue;
-				selectedIds.add(candidate.userId);
-				selected.push(candidate);
-			}
-		}
+		// まだ非除外の候補が残っていればスコア順で埋める。
+		this.fillRemaining(selected, eligible, selectedIds, limit);
+		// それでも足りなければハード除外組を古い順（見せたのが一番昔）に戻す。
+		this.fillRemaining(selected, hardExcluded, selectedIds, limit);
 
 		return selected;
+	}
+
+	// 与えた順序のまま、未選択の候補で limit まで埋める。
+	private fillRemaining(selected: InternalFollowCandidate[], pool: InternalFollowCandidate[], selectedIds: Set<string>, limit: number): void {
+		for (const candidate of pool) {
+			if (selected.length >= limit) break;
+			if (selectedIds.has(candidate.userId)) continue;
+			selectedIds.add(candidate.userId);
+			selected.push(candidate);
+		}
 	}
 
 	/**
