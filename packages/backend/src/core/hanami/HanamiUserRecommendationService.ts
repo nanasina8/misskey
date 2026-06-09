@@ -40,6 +40,10 @@ const FOF_NOTE_QUERY_LIMIT_MULTIPLIER = 20;
 const FOF_POPULAR_NOTE_RATIO = 0.3;
 // note単位のservedはFoFではハード除外しない。送っただけのnoteは強く沈め、実表示済み(seen)は呼び出し側で除外する。
 const FOF_NOTE_SERVED_PENALTY = 0.05;
+// FoFノート候補IDの短TTLキャッシュ。pack前の候補だけを保存し、可視性/mute/served/seenは呼び出し側で毎回反映する。
+const FOF_NOTE_CACHE_KEY_PREFIX = 'hanami:fof:notes:v1:';
+const FOF_NOTE_CACHE_TTL_SECONDS = 60;
+const FOF_NOTE_EMPTY_CACHE_TTL_SECONDS = 10;
 
 // seed 重み（案1）。すべて提案値・ここ一箇所で調整可。
 const SEED_BASE_WEIGHT = 1.0;
@@ -135,6 +139,8 @@ type InternalFollowCandidate = FollowCandidate & {
  */
 @Injectable()
 export class HanamiUserRecommendationService {
+	private fofNotePoolInflight = new Map<string, Promise<FoFNote[]>>();
+
 	constructor(
 		@Inject(DI.redis)
 		private redisClient: Redis.Redis,
@@ -651,13 +657,76 @@ export class HanamiUserRecommendationService {
 		return this.selectDiverseCandidates(Array.from(scores.values()), limit).map(c => this.toFollowCandidate(c));
 	}
 
+	private getFoFNoteCacheKey(meId: MiUser['id'], limit: number, withFiles: boolean): string {
+		return `${FOF_NOTE_CACHE_KEY_PREFIX}${meId}:${withFiles ? 'files' : 'all'}:${limit}`;
+	}
+
+	private isFoFNoteArray(value: unknown): value is FoFNote[] {
+		return Array.isArray(value) && value.every(item => {
+			if (item == null || typeof item !== 'object') return false;
+			const note = item as Partial<FoFNote>;
+			return typeof note.noteId === 'string' && typeof note.userId === 'string' && typeof note.score === 'number';
+		});
+	}
+
+	@bindThis
+	private applyFoFNoteRequestOptions(notes: FoFNote[], limit: number, opts: FoFNoteOptions): FoFNote[] {
+		const out: FoFNote[] = [];
+		for (const note of notes) {
+			if (opts.newerThan != null && note.noteId >= opts.newerThan) continue;
+			if (opts.hardExcludedNoteIds?.has(note.noteId) === true) continue;
+			out.push({
+				...note,
+				score: opts.softPenaltyNoteIds?.has(note.noteId) === true ? note.score * FOF_NOTE_SERVED_PENALTY : note.score,
+			});
+		}
+		out.sort((a, b) => b.score - a.score);
+		return out.slice(0, limit);
+	}
+
+	@bindThis
+	private async getFoFNotePool(meId: MiUser['id'], limit: number, withFiles: boolean): Promise<FoFNote[]> {
+		const cacheKey = this.getFoFNoteCacheKey(meId, limit, withFiles);
+		const cached = await this.redisClient.get(cacheKey);
+		if (cached != null) {
+			try {
+				const parsed: unknown = JSON.parse(cached);
+				if (this.isFoFNoteArray(parsed)) return parsed;
+			} catch {
+				// 壊れたキャッシュは無視して作り直す。
+			}
+		}
+
+		const existing = this.fofNotePoolInflight.get(cacheKey);
+		if (existing != null) return existing;
+
+		const promise = this.buildFoFNotePool(meId, limit, withFiles);
+		this.fofNotePoolInflight.set(cacheKey, promise);
+
+		try {
+			const notes = await promise;
+			try {
+				await this.redisClient.set(
+					cacheKey,
+					JSON.stringify(notes),
+					'EX',
+					notes.length > 0 ? FOF_NOTE_CACHE_TTL_SECONDS : FOF_NOTE_EMPTY_CACHE_TTL_SECONDS);
+			} catch {
+				// キャッシュ書き込み失敗だけで推薦レスポンスは落とさない。
+			}
+			return notes;
+		} finally {
+			this.fofNotePoolInflight.delete(cacheKey);
+		}
+	}
+
 	/**
-	 * FoF ユーザーの最近ノートを推薦候補として返す（案3）。
+	 * FoF ユーザーの最近ノート候補プールを作る（案3）。
 	 * noteScore = 作者スコア × 新鮮さ × 可視性 × エンゲージ × 返信0.5x。
 	 * チャンネル投稿・純RNは除外、public/home のみ。
 	 */
 	@bindThis
-	public async getFoFNoteIds(meId: MiUser['id'], limit: number, opts: FoFNoteOptions = {}): Promise<FoFNote[]> {
+	private async buildFoFNotePool(meId: MiUser['id'], limit: number, withFiles: boolean): Promise<FoFNote[]> {
 		// ノート候補はフォロー推薦の多様性選抜（上位40・リモートhub偏重で直近ノートがローカルDBに無いことが多い）を
 		// 通さず、品質フィルタ済みの広いFoF候補プール全体から引く。足りない時だけ候補ユーザー幅を広げ、
 		// 「実際に投稿がある人」を取りこぼさない（設計: ノートはrawスコア順を維持）。
@@ -709,11 +778,7 @@ export class HanamiUserRecommendationService {
 				.orderBy('note.id', 'DESC')
 				.limit(queryLimit);
 
-			if (opts.newerThan != null) query.andWhere('note.id < :newerThan', { newerThan: opts.newerThan });
-			if (opts.withFiles) query.andWhere('note.fileIds != \'{}\'');
-			if (opts.hardExcludedNoteIds != null && opts.hardExcludedNoteIds.size > 0) {
-				query.andWhere('note.id NOT IN (:...hardExcludedNoteIds)', { hardExcludedNoteIds: [...opts.hardExcludedNoteIds] });
-			}
+			if (withFiles) query.andWhere('note.fileIds != \'{}\'');
 
 			const notes = await query.getRawMany<{ id: string; userId: string; visibility: string; replyId: string | null; renoteCount: number; reactions: Record<string, number> | null }>();
 			const authorRank = new Map<string, number>();
@@ -730,11 +795,10 @@ export class HanamiUserRecommendationService {
 				const engagement = 1 + Math.log10(1 + reactionsTotal + 2 * Number(n.renoteCount ?? 0));
 				const replyPenalty = n.replyId != null ? FOF_NOTE_REPLY_PENALTY : 1;
 				const authorRankPenalty = this.getAuthorNoteRankPenalty(rank);
-				const servedPenalty = opts.softPenaltyNoteIds?.has(n.id) === true ? FOF_NOTE_SERVED_PENALTY : 1;
 				return {
 					noteId: n.id,
 					userId: n.userId,
-					score: base * recency * vis * engagement * replyPenalty * authorRankPenalty * servedPenalty,
+					score: base * recency * vis * engagement * replyPenalty * authorRankPenalty,
 				};
 			});
 			scored.sort((a, b) => b.score - a.score);
@@ -744,6 +808,16 @@ export class HanamiUserRecommendationService {
 			if (scored.length >= limit * 2) break;
 		}
 
-		return scored.slice(0, limit);
+		return scored.slice(0, limit * 2);
+	}
+
+	/**
+	 * FoF ユーザーの最近ノートを推薦候補として返す。
+	 * 重いFoF探索とノートスコアリングは短TTLキャッシュし、リクエストごとの差分だけ毎回反映する。
+	 */
+	@bindThis
+	public async getFoFNoteIds(meId: MiUser['id'], limit: number, opts: FoFNoteOptions = {}): Promise<FoFNote[]> {
+		const notes = await this.getFoFNotePool(meId, limit, opts.withFiles === true);
+		return this.applyFoFNoteRequestOptions(notes, limit, opts);
 	}
 }
