@@ -36,12 +36,14 @@ const FOF_NOTE_QUERY_LOOKBACK_MS = DAY_MS * 365; // 直近365日
 const FOF_NOTE_QUERY_LIMIT_MIN = 1200;
 const FOF_NOTE_QUERY_LIMIT_MAX = 5000;
 const FOF_NOTE_QUERY_LIMIT_MULTIPLIER = 20;
+// FoFノートは取得段階で作者ごとに上限を切る。後段の並べ替えだけに任せると、高頻度投稿者が候補プールを占有する。
+const FOF_NOTE_PER_AUTHOR_LIMIT = 3;
 // ノート土台スコアに「人気度（フォロワー数）」を混ぜる割合。リモート人気アカを一定割合出すため。
 const FOF_POPULAR_NOTE_RATIO = 0.3;
 // note単位のservedはFoFではハード除外しない。送っただけのnoteは強く沈め、実表示済み(seen)は呼び出し側で除外する。
 const FOF_NOTE_SERVED_PENALTY = 0.05;
 // FoFノート候補IDの短TTLキャッシュ。pack前の候補だけを保存し、可視性/mute/served/seenは呼び出し側で毎回反映する。
-const FOF_NOTE_CACHE_KEY_PREFIX = 'hanami:fof:notes:v1:';
+const FOF_NOTE_CACHE_KEY_PREFIX = 'hanami:fof:notes:v2:';
 const FOF_NOTE_CACHE_TTL_SECONDS = 60;
 const FOF_NOTE_EMPTY_CACHE_TTL_SECONDS = 10;
 
@@ -125,6 +127,16 @@ type InternalFollowCandidate = FollowCandidate & {
 	activityMultiplier: number;
 	// グローバルな人気度（フォロワー数）。ノート土台スコアの人気ブレンドに使う。
 	followersCount: number;
+};
+
+type FoFNoteRow = {
+	id: string;
+	userId: string;
+	visibility: string;
+	replyId: string | null;
+	renoteCount: number | string | null;
+	reactions: Record<string, number> | null;
+	authorNoteRank: number | string;
 };
 
 /**
@@ -729,7 +741,7 @@ export class HanamiUserRecommendationService {
 	private async buildFoFNotePool(meId: MiUser['id'], limit: number, withFiles: boolean): Promise<FoFNote[]> {
 		// ノート候補はフォロー推薦の多様性選抜（上位40・リモートhub偏重で直近ノートがローカルDBに無いことが多い）を
 		// 通さず、品質フィルタ済みの広いFoF候補プール全体から引く。足りない時だけ候補ユーザー幅を広げ、
-		// 「実際に投稿がある人」を取りこぼさない（設計: ノートはrawスコア順を維持）。
+		// 「実際に投稿がある人」を取りこぼさない。
 		const candidateMap = await this.getFoFUserCandidates(meId, FOF_NOTE_CANDIDATE_POOL_STEPS.at(-1)!);
 		if (candidateMap.size === 0) return [];
 
@@ -755,37 +767,55 @@ export class HanamiUserRecommendationService {
 			const userIds = allCandidates.slice(0, poolSize).map(c => c.userId);
 			if (userIds.length === 0) break;
 
-			const query = this.notesRepository.createQueryBuilder('note')
-				.select('note.id', 'id')
-				.addSelect('note.userId', 'userId')
-				.addSelect('note.visibility', 'visibility')
-				.addSelect('note.replyId', 'replyId')
-				.addSelect('note.renoteCount', 'renoteCount')
-				.addSelect('note.reactions', 'reactions')
-				.where('note.userId IN (:...userIds)', { userIds })
-				.andWhere('note.id > :sinceId', { sinceId })
-				.andWhere('note.channelId IS NULL')
-				.andWhere(new Brackets(qb => {
-					qb.where('note.visibility = \'public\'').orWhere('note.visibility = \'home\'');
-				}))
-				.andWhere(new Brackets(qb => {
-					// 純RN除外（引用RN・本文/メディア/投票つきは許可）
-					qb.where('note.renoteId IS NULL')
-						.orWhere('note.text IS NOT NULL')
-						.orWhere('note.fileIds != \'{}\'')
-						.orWhere('note.hasPoll = TRUE');
-				}))
-				.orderBy('note.id', 'DESC')
-				.limit(queryLimit);
+			const withFilesFilter = withFiles ? 'AND note."fileIds" != \'{}\'' : '';
+			const notes = await this.notesRepository.query(`
+				SELECT
+					author_notes.id AS id,
+					author_notes."userId" AS "userId",
+					author_notes.visibility AS visibility,
+					author_notes."replyId" AS "replyId",
+					author_notes."renoteCount" AS "renoteCount",
+					author_notes.reactions AS reactions,
+					author_notes."authorNoteRank" AS "authorNoteRank"
+				FROM unnest($1::varchar[]) AS candidate("userId")
+				JOIN LATERAL (
+					SELECT
+						picked.id,
+						picked."userId",
+						picked.visibility,
+						picked."replyId",
+						picked."renoteCount",
+						picked.reactions,
+						row_number() OVER (ORDER BY picked.id DESC) AS "authorNoteRank"
+					FROM (
+						SELECT
+							note.id,
+							note."userId",
+							note.visibility,
+							note."replyId",
+							note."renoteCount",
+							note.reactions
+						FROM "note" note
+						WHERE note."userId" = candidate."userId"
+							AND note.id > $2
+							AND note."channelId" IS NULL
+							AND (note.visibility = 'public' OR note.visibility = 'home')
+							AND (
+								note."renoteId" IS NULL
+								OR note.text IS NOT NULL
+								OR note."fileIds" != '{}'
+								OR note."hasPoll" = TRUE
+							)
+							${withFilesFilter}
+						ORDER BY note.id DESC
+						LIMIT $3
+					) picked
+				) author_notes ON TRUE
+				ORDER BY author_notes.id DESC
+				LIMIT $4
+			`, [userIds, sinceId, FOF_NOTE_PER_AUTHOR_LIMIT, queryLimit]) as FoFNoteRow[];
 
-			if (withFiles) query.andWhere('note.fileIds != \'{}\'');
-
-			const notes = await query.getRawMany<{ id: string; userId: string; visibility: string; replyId: string | null; renoteCount: number; reactions: Record<string, number> | null }>();
-			const authorRank = new Map<string, number>();
 			scored = notes.map(n => {
-				const rank = (authorRank.get(n.userId) ?? 0) + 1;
-				authorRank.set(n.userId, rank);
-
 				const base = candBase.get(n.userId) ?? 0;
 				const ageMs = now - this.idService.parse(n.id).date.getTime();
 				const recency = FOF_NOTE_RECENCY.find(r => ageMs < r.withinMs)?.weight ?? 0;
@@ -794,7 +824,7 @@ export class HanamiUserRecommendationService {
 				// エンゲージは log で軽く（古い人気に偏らないよう base/recency と掛け合わせ）。bot反応の厳密除去は後続増分。
 				const engagement = 1 + Math.log10(1 + reactionsTotal + 2 * Number(n.renoteCount ?? 0));
 				const replyPenalty = n.replyId != null ? FOF_NOTE_REPLY_PENALTY : 1;
-				const authorRankPenalty = this.getAuthorNoteRankPenalty(rank);
+				const authorRankPenalty = this.getAuthorNoteRankPenalty(Number(n.authorNoteRank));
 				return {
 					noteId: n.id,
 					userId: n.userId,
@@ -803,8 +833,7 @@ export class HanamiUserRecommendationService {
 			});
 			scored.sort((a, b) => b.score - a.score);
 
-			// 作者ごとのハード上限は持たないため、ここでは候補数が十分あれば止める。
-			// 同一作者の偏りは作者内rank減衰と注入側の選択ペナルティで抑える。
+			// 取得段階で作者ごとに上限を切っているので、十分な候補数が集まればプール拡張を止める。
 			if (scored.length >= limit * 2) break;
 		}
 
