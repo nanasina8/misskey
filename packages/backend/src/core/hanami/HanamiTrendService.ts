@@ -10,18 +10,25 @@ import { bindThis } from '@/decorators.js';
 import type { MiNote } from '@/models/Note.js';
 import { HanamiTokenizerService } from './tokenize/HanamiTokenizerService.js';
 
-// トレンド窓: おすすめ(FeaturedService)と同じ 15分グリッド × 288枠(72時間) を線形減衰で合算する。
+// トレンド窓: おすすめ(FeaturedService)と同じ 15分グリッド × 288枠(72時間)。
 // 現窓“単独”だと毎窓境界でトレンドが消える崖が出るため、スライディング窓にする。
 const TREND_WINDOW_MS = 1000 * 60 * 15; // 15分
-const TREND_WINDOW_COUNT = 288; // 72時間分（おすすめと同じ窓数）を線形減衰合算
+const TREND_WINDOW_COUNT = 288; // 72時間分（= baseline を測る全期間）
 const TREND_TTL_EXTRA_WINDOW_COUNT = 8; // バッファ窓（= 2時間）
 const TREND_TTL_SECONDS = Math.ceil((TREND_WINDOW_MS * (TREND_WINDOW_COUNT + TREND_TTL_EXTRA_WINDOW_COUNT)) / 1000);
+// 急上昇(spike)を測る「直近(=今)」の窓数。recent = 直近 R 窓、baseline = 残り窓。R=8 → 2時間。
+// 投稿数が少ない環境では窓ごとのカウントが薄いため、R を広めに取り spike のブレを抑える。
+const TREND_RECENT_WINDOW_COUNT = 8;
+// spike = 直近レート ÷ (普段レート + EPS)。EPS は 0除算防止＋新出の極小語が増加率だけで暴れるのを抑える事前分布。
+const SPIKE_EPS = 0.1;
+// 直近 R 窓での distinct-author 出現延べ数の下限（増加率だけで上位化する極小ノイズ語の足切り）。
+const TREND_RECENT_MIN_COUNT = 3;
 // 1ノートから採用する最大 distinct 用語数（珍語爆発の最小対策）。
 const MAX_TERMS_PER_NOTE = 16;
 // 用語ごとに保持する最近ノート数。
 const NOTES_PER_TERM = 200;
 // トレンド用語として成立する最小 distinct author 数（操作耐性の near-free guard）。
-const MIN_DISTINCT_AUTHORS = 2;
+const MIN_DISTINCT_AUTHORS = 3;
 // getTrendingTerms で distinct author を数える候補上限（合算スコア上位だけ SCARD する）。
 const TREND_CANDIDATE_LIMIT = 200;
 // トレンド結果のうち固有名詞（人名/地名/組織/作品/製品名 等）に確保する最低割合。
@@ -41,7 +48,8 @@ type TrendingTermCandidate = TrendingTerm & { proper: boolean };
  *
  * - 本文のみを HanamiTokenizerService で解析（URL/タグ/絵文字/メディアは見ない）
  * - distinct author 数を窓ごとに数える（同一人物の連投で釣り上がらない）
- * - スコアは直近 TREND_WINDOW_COUNT 窓の線形減衰合算（おすすめと同じ窓数）。境界の崖を解消する
+ * - スコアは spike率（普段比の増加率）。recent=直近 R 窓のレート ÷ baseline=残り窓のレート。
+ *   定番語/毎日同じ自動投稿は baseline が高く spike しない＝上位から消える
  * - 用語ごとの全窓横断 distinct author が MIN_DISTINCT_AUTHORS 未満なら採用しない（1アカウント捏造を弾く）
  *
  * インデックスは専用ワーカー想定の fire-and-forget で呼ぶ（リクエスト経路を遅らせない）。
@@ -115,7 +123,7 @@ export class HanamiTrendService {
 	}
 
 	/**
-	 * 急上昇用語。current/historical の近似スコアで並べ、distinct author floor で足切りする。
+	 * 急上昇用語。spike率（普段比の増加率）で並べ、distinct author floor で足切りする。
 	 */
 	@bindThis
 	private async getTrendingTermCandidatesWithCache(): Promise<TrendingTermCandidate[]> {
@@ -126,28 +134,46 @@ export class HanamiTrendService {
 
 		const cw = this.currentWindow();
 
-		// おすすめ(FeaturedService)と同じく直近 TREND_WINDOW_COUNT 窓を線形減衰で合算する。
-		// 現窓が空でも前の窓が（ほぼ満重みで）効くので、窓境界でトレンドが消えない。
+		// 全 TREND_WINDOW_COUNT 窓の窓別 distinct-author カウントを取得し、
+		// 直近 R 窓(recent=今) と 残り窓(baseline=普段) に分けて spike率を出す。
 		const pipe = this.redisClient.pipeline();
 		for (let i = 0; i < TREND_WINDOW_COUNT; i++) pipe.zrange(this.rankKey(cw - i), 0, 200, 'REV', 'WITHSCORES');
 		const res = await pipe.exec();
 
-		const summed = new Map<string, number>();
+		// term ごとに recent合計 / baseline合計 を貯める（i=0 が現窓、i が大きいほど過去）。
+		const recentSum = new Map<string, number>();
+		const baselineSum = new Map<string, number>();
 		for (let i = 0; i < TREND_WINDOW_COUNT; i++) {
 			const raw = (res?.[i]?.[1] ?? []) as string[];
 			if (raw.length === 0) continue;
-			const weight = (TREND_WINDOW_COUNT - i) / TREND_WINDOW_COUNT; // 線形減衰（新しい窓ほど重い）
+			const target = i < TREND_RECENT_WINDOW_COUNT ? recentSum : baselineSum;
 			for (let j = 0; j < raw.length; j += 2) {
-				summed.set(raw[j], (summed.get(raw[j]) ?? 0) + parseFloat(raw[j + 1]) * weight);
+				target.set(raw[j], (target.get(raw[j]) ?? 0) + parseFloat(raw[j + 1]));
 			}
 		}
-		if (summed.size === 0) {
+		if (recentSum.size === 0) {
+			// 直近に動きが無ければ「急上昇」は存在しない。
 			await this.redisClient.set(TRENDING_TERMS_CACHE_KEY, '[]', 'EX', TRENDING_TERMS_EMPTY_CACHE_TTL_SECONDS);
 			return [];
 		}
 
-		// 合算スコア上位を候補にして、用語ごとの全窓横断 distinct author で足切り（1アカウントの連投を弾く）。
-		const candidates = [...summed.entries()].sort((a, b) => b[1] - a[1]).slice(0, TREND_CANDIDATE_LIMIT);
+		// spike = 直近1窓あたりレート ÷ (普段1窓あたりレート + EPS)。
+		// 定番語は baseline が高く spike≒1、新出/話題化した語ほど spike が大きい。
+		const baselineWindows = TREND_WINDOW_COUNT - TREND_RECENT_WINDOW_COUNT;
+		const spikes: [string, number][] = [];
+		for (const [term, recent] of recentSum) {
+			if (recent < TREND_RECENT_MIN_COUNT) continue; // 直近の出現が薄すぎる極小ノイズ語を除外
+			const recentRate = recent / TREND_RECENT_WINDOW_COUNT;
+			const baselineRate = (baselineSum.get(term) ?? 0) / baselineWindows;
+			spikes.push([term, recentRate / (baselineRate + SPIKE_EPS)]);
+		}
+		if (spikes.length === 0) {
+			await this.redisClient.set(TRENDING_TERMS_CACHE_KEY, '[]', 'EX', TRENDING_TERMS_EMPTY_CACHE_TTL_SECONDS);
+			return [];
+		}
+
+		// spike 上位を候補にして、用語ごとの全窓横断 distinct author で足切り（1アカウントの連投を弾く）。
+		const candidates = spikes.sort((a, b) => b[1] - a[1]).slice(0, TREND_CANDIDATE_LIMIT);
 		const cntPipe = this.redisClient.pipeline();
 		for (const [term] of candidates) cntPipe.scard(this.authorsKey(term));
 		const cntRes = await cntPipe.exec();
@@ -155,7 +181,7 @@ export class HanamiTrendService {
 		const out: TrendingTerm[] = [];
 		for (let i = 0; i < candidates.length; i++) {
 			const distinctAuthors = Number(cntRes?.[i]?.[1] ?? 0);
-			if (distinctAuthors < MIN_DISTINCT_AUTHORS) continue; // floor: 全窓で distinct author < 2 の語は除外
+			if (distinctAuthors < MIN_DISTINCT_AUTHORS) continue; // floor: 全窓で distinct author が少ない語は除外
 			out.push({ term: candidates[i][0], score: candidates[i][1], distinctAuthors });
 		}
 		out.sort((a, b) => b.score - a.score);
@@ -182,7 +208,7 @@ export class HanamiTrendService {
 	}
 
 	/**
-	 * 急上昇用語。current/historical の近似スコアで並べ、distinct author floor で足切りする。
+	 * 急上昇用語。spike率（普段比の増加率）で並べ、distinct author floor で足切りする。
 	 */
 	@bindThis
 	public async getTrendingTerms(limit: number): Promise<TrendingTerm[]> {
