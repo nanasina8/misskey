@@ -1071,7 +1071,7 @@ export class NoteCreateService implements OnApplicationShutdown {
 		}
 
 		// Register to search database
-		this.index(note);
+		this.index(note, user);
 	}
 
 	@bindThis
@@ -1139,7 +1139,7 @@ export class NoteCreateService implements OnApplicationShutdown {
 		}
 
 		// Register to search database
-		this.index(note);
+		this.index(note, user);
 	}
 
 	@bindThis
@@ -1240,7 +1240,7 @@ export class NoteCreateService implements OnApplicationShutdown {
 	}
 
 	@bindThis
-	private index(note: MiNote) {
+	private index(note: MiNote, user: { isBot: MiUser['isBot']; }) {
 		if (note.text == null && note.cw == null) return;
 
 		this.searchService.indexNote(note);
@@ -1248,7 +1248,7 @@ export class NoteCreateService implements OnApplicationShutdown {
 
 		// はなみTLおすすめ: 急上昇トレンドのインデックス（本文ありの public/home オリジナル系のみ・非同期 fire-and-forget）
 		// 純粋RNは text==null で自動的に除外される。チャンネル投稿は対象外。
-		if (note.text != null && note.channelId == null && (note.visibility === 'public' || note.visibility === 'home')) {
+		if (!user.isBot && note.text != null && note.channelId == null && (note.visibility === 'public' || note.visibility === 'home')) {
 			this.hanamiTrendService.indexNote(note).catch(err => {
 				// eslint-disable-next-line no-console
 				console.error('Failed to index note for hanami trend', err);
