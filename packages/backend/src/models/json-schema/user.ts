@@ -502,7 +502,8 @@ export const packedMeDetailedOnlySchema = {
 			nullable: false, optional: true,
 			properties: {
 				popular: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
-				lowExposure: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
+				reactionSimilar: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
+				catchup: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
 				trending: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
 				fof: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
 			},

@@ -201,7 +201,8 @@ export const paramDef = {
 			type: 'object', nullable: false,
 			properties: {
 				popular: { type: 'string', enum: ['off', 'low', 'normal', 'high'] },
-				lowExposure: { type: 'string', enum: ['off', 'low', 'normal', 'high'] },
+				reactionSimilar: { type: 'string', enum: ['off', 'low', 'normal', 'high'] },
+				catchup: { type: 'string', enum: ['off', 'low', 'normal', 'high'] },
 				trending: { type: 'string', enum: ['off', 'low', 'normal', 'high'] },
 				fof: { type: 'string', enum: ['off', 'low', 'normal', 'high'] },
 			},
@@ -404,8 +405,9 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (typeof ps.hanamiRecommendationAutoInjectEnabled === 'boolean') profileUpdates.hanamiRecommendationAutoInjectEnabled = ps.hanamiRecommendationAutoInjectEnabled;
 			if (ps.hanamiRecommendationAutoInjectStrength !== undefined) profileUpdates.hanamiRecommendationAutoInjectStrength = ps.hanamiRecommendationAutoInjectStrength;
 			if (ps.hanamiRecommendationAxes !== undefined) {
-				// 既知の軸キーのみ採用（未知キーは無視）。値は量レベル（off/low/normal/high）に正規化。旧booleanは true=normal / false=off。
-				const allowed = ['popular', 'lowExposure', 'trending', 'fof'];
+				// 既知の軸キーのみ採用（未知キーは無視＝廃止軸 lowExposure の保存値もここで自然に消える）。
+				// 値は量レベル（off/low/normal/high）に正規化。旧booleanは true=normal / false=off。
+				const allowed = ['popular', 'reactionSimilar', 'catchup', 'trending', 'fof'];
 				const levels = ['off', 'low', 'normal', 'high'];
 				const axes: Record<string, string> = {};
 				for (const k of allowed) {

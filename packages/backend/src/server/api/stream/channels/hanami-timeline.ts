@@ -12,20 +12,19 @@ import { bindThis } from '@/decorators.js';
 import { RoleService } from '@/core/RoleService.js';
 import { isRenotePacked, isQuotePacked } from '@/misc/is-renote.js';
 import type { JsonObject } from '@/misc/json-value.js';
-import { HanamiRecommendationService, type HanamiAutoInjectPreset, type RecReasonMeta } from '@/core/HanamiRecommendationService.js';
+import { HanamiRecommendationService, type HanamiAutoInjectPreset } from '@/core/HanamiRecommendationService.js';
 import Channel, { type MiChannelService } from '../channel.js';
 
-// 推薦集合の取得件数とローカルキャッシュ寿命（接続単位）。
-const REC_SET_SIZE = 200;
-const REC_SET_TTL_MS = 1000 * 60 * 5;
+// auto-inject の重複防止に覚えておく直近送信ノート数（接続単位）。
+const RECENT_SENT_NOTES_CAP = 200;
 
 /**
  * はなみTL ストリーム（[[hanami-tl-osusume-redesign]] step11）。
  *
- * REST とおすすめの意味を揃えるため、中央サービス（HanamiRecommendationService）が選んだ
- * 「推薦ノートID集合」に含まれるノートだけを推薦として流す。集合はユーザー設定（ON/OFF・軸）・
- * served/seen・各軸（人気/低露出/急上昇/FoF）を反映済み。
- * 旧実装（featured の純RN を 20% でランダム表示）は廃止。
+ * ストリーム経路のおすすめは auto-inject（homeノートがN件流れるごとに中央サービスへ候補を取りに行く）のみ。
+ * notesStream に流れるのは「いま作成されたノート」だけで、推薦候補（ランキング/トレンド/FoFに載った既存ノート）
+ * と交差することはないため、流れてきたノートを推薦集合と照合してマーキングする方式は機能しない（旧実装の轍）。
+ * 既存ノートのスロット注入は REST（notes/hanami-timeline）の責務。
  */
 class HanamiTimelineChannel extends Channel {
 	public readonly chName = 'hanamiTimeline';
@@ -35,9 +34,6 @@ class HanamiTimelineChannel extends Channel {
 	private withRenotes: boolean;
 	private withFiles: boolean;
 
-	private recNoteReasons: Map<string, RecReasonMeta> = new Map();
-	private showRecommendationReason = false;
-	private recSetFetchedAt = 0;
 	private autoInjectPreset: HanamiAutoInjectPreset | null = null;
 	private homeNotesSinceLastAutoRec = 0;
 	private autoInjecting = false;
@@ -61,23 +57,12 @@ class HanamiTimelineChannel extends Channel {
 		const policies = await this.roleService.getUserPolicies(this.user ? this.user.id : null);
 		if (!policies.hanamiTlAvailable) return;
 
-		await this.refreshRecSet();
 		await this.refreshAutoInjectPreset();
 
 		this.withRenotes = !!(params.withRenotes ?? true);
 		this.withFiles = !!(params.withFiles ?? false);
 
 		this.subscriber.on('notesStream', this.onNote);
-	}
-
-	@bindThis
-	private async refreshRecSet(): Promise<void> {
-		if (this.user == null) return;
-		if (this.recSetFetchedAt !== 0 && (Date.now() - this.recSetFetchedAt < REC_SET_TTL_MS)) return;
-		const { reasonOf, showReason } = await this.hanamiRecommendationService.getRecommendationNoteReasons(this.user.id, REC_SET_SIZE);
-		this.recNoteReasons = reasonOf;
-		this.showRecommendationReason = showReason;
-		this.recSetFetchedAt = Date.now();
 	}
 
 	@bindThis
@@ -93,7 +78,7 @@ class HanamiTimelineChannel extends Channel {
 		if (this.recentSentNoteIdSet.has(noteId)) return;
 		this.recentSentNoteIds.push(noteId);
 		this.recentSentNoteIdSet.add(noteId);
-		while (this.recentSentNoteIds.length > REC_SET_SIZE) {
+		while (this.recentSentNoteIds.length > RECENT_SENT_NOTES_CAP) {
 			const old = this.recentSentNoteIds.shift();
 			if (old) this.recentSentNoteIdSet.delete(old);
 		}
@@ -146,25 +131,15 @@ class HanamiTimelineChannel extends Channel {
 	private async onNote(note: Packed<'Note'>) {
 		const isMe = this.user!.id === note.userId;
 
-		// 推薦集合を期限切れなら更新（接続単位の軽量キャッシュ）
-		await this.refreshRecSet();
-
 		if (this.withFiles && (note.fileIds == null || note.fileIds.length === 0)) return;
 
 		const followingSet = new Set(Object.keys(this.following));
 
-		// このノートが「推薦」に該当するか（中央サービスの集合に含まれる public/home のオリジナル）。
-		const isRecommended = this.recNoteReasons.has(note.id)
-			&& (note.visibility === 'public' || note.visibility === 'home')
-			&& !isMe;
-
-		if (!isRecommended) {
-			// 推薦でなければ通常のフォロー判定
-			if (note.channelId) {
-				if (!this.followingChannels.has(note.channelId)) return;
-			} else {
-				if (!isMe && !followingSet.has(note.userId)) return;
-			}
+		// 通常のフォロー判定（おすすめは auto-inject 経路のみ。新規作成ノートが推薦集合と交差することはない）
+		if (note.channelId) {
+			if (!this.followingChannels.has(note.channelId)) return;
+		} else {
+			if (!isMe && !followingSet.has(note.userId)) return;
 		}
 
 		if (note.visibility === 'followers') {
@@ -210,32 +185,12 @@ class HanamiTimelineChannel extends Channel {
 			}
 		}
 
-		if (isRecommended) {
-			const reason = this.recNoteReasons.get(note.id);
-			const meta = reactionMutedNote as Record<string, unknown>;
-			meta._hanamiRecommended = true;
-			if (this.showRecommendationReason && reason) meta._hanamiReason = reason;
-
-			this.recNoteReasons.delete(note.id);
-			this.hanamiRecommendationService.recordServedWithLog(
-				this.user!.id,
-				[note.id],
-				reason ? new Map([[note.id, reason]]) : new Map(),
-				[reactionMutedNote.userId],
-			).catch(err => {
-				// eslint-disable-next-line no-console
-				console.error('hanami rec stream: recordServed/log failed', err);
-			});
-		}
-
 		this.send('note', reactionMutedNote);
 		this.rememberSentNote(reactionMutedNote.id);
-		if (!isRecommended) {
-			this.maybeAutoInject().catch(err => {
-				// eslint-disable-next-line no-console
-				console.error('hanami rec stream: auto inject failed', err);
-			});
-		}
+		this.maybeAutoInject().catch(err => {
+			// eslint-disable-next-line no-console
+			console.error('hanami rec stream: auto inject failed', err);
+		});
 	}
 
 	@bindThis

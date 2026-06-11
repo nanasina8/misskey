@@ -305,15 +305,17 @@ const fttForm = useForm({
 });
 
 // はなみTL おすすめ: 理由ラベル表示トグル + 軸ごとの available/default（[[hanami-tl-osusume-redesign]]）。
-const axisKeys = ['popular', 'lowExposure', 'trending', 'fof'] as const;
+const axisKeys = ['popular', 'reactionSimilar', 'catchup', 'trending', 'fof'] as const;
 const axisCfg = meta.hanamiRecommendationAxisConfig ?? {};
 
 const hanamiRecForm = useForm({
 	hanamiShowRecommendationReason: meta.hanamiShowRecommendationReason,
 	popularAvailable: axisCfg.popular?.available ?? true,
 	popularDefault: axisCfg.popular?.default ?? true,
-	lowExposureAvailable: axisCfg.lowExposure?.available ?? true,
-	lowExposureDefault: axisCfg.lowExposure?.default ?? true,
+	reactionSimilarAvailable: axisCfg.reactionSimilar?.available ?? true,
+	reactionSimilarDefault: axisCfg.reactionSimilar?.default ?? true,
+	catchupAvailable: axisCfg.catchup?.available ?? true,
+	catchupDefault: axisCfg.catchup?.default ?? true,
 	trendingAvailable: axisCfg.trending?.available ?? true,
 	trendingDefault: axisCfg.trending?.default ?? true,
 	fofAvailable: axisCfg.fof?.available ?? true,
@@ -323,7 +325,8 @@ const hanamiRecForm = useForm({
 		hanamiShowRecommendationReason: state.hanamiShowRecommendationReason,
 		hanamiRecommendationAxisConfig: {
 			popular: { available: state.popularAvailable, default: state.popularDefault },
-			lowExposure: { available: state.lowExposureAvailable, default: state.lowExposureDefault },
+			reactionSimilar: { available: state.reactionSimilarAvailable, default: state.reactionSimilarDefault },
+			catchup: { available: state.catchupAvailable, default: state.catchupDefault },
 			trending: { available: state.trendingAvailable, default: state.trendingDefault },
 			fof: { available: state.fofAvailable, default: state.fofDefault },
 		},

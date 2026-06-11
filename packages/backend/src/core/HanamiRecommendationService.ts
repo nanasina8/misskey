@@ -22,6 +22,8 @@ import { isInstanceMuted } from '@/misc/is-instance-muted.js';
 import { removeMutedUsersReactions } from '@/misc/reactions-mute.js';
 import { HanamiTrendService } from '@/core/hanami/HanamiTrendService.js';
 import { HanamiUserRecommendationService, type FoFNoteOptions } from '@/core/hanami/HanamiUserRecommendationService.js';
+import { HanamiReactionSimilarService } from '@/core/hanami/HanamiReactionSimilarService.js';
+import { HanamiCatchupService, type CatchupOptions } from '@/core/hanami/HanamiCatchupService.js';
 
 // 既出除外（served）: 注入した時点で短期間だけ再表示を抑制する。
 const SERVED_KEY_PREFIX = 'hanami:rec:served:';
@@ -39,6 +41,12 @@ const SEEN_KEY_PREFIX = 'hanami:rec:seen:';
 const SEEN_TTL_SECONDS = 60 * 60 * 24 * 7; // 7日
 const SEEN_TTL_MS = SEEN_TTL_SECONDS * 1000;
 
+// homeSeen: はなみTLに表示された「ホーム由来」のノート（推薦に限らない）。
+// catchup軸の「見逃し」判定の根拠であり、見たものを推薦し直さない一般除外にも使う。
+const HOME_SEEN_KEY_PREFIX = 'hanami:rec:homeSeen:';
+const HOME_SEEN_TTL_SECONDS = 60 * 60 * 24 * 7; // 7日
+const HOME_SEEN_TTL_MS = HOME_SEEN_TTL_SECONDS * 1000;
+
 // 効果測定ログ（仕様7）: Postgres 直書きせず Redis Stream に最小限を残す。集計はバッチで後段。
 const LOG_STREAM_KEY = 'hanami:rec:log';
 const LOG_STREAM_MAXLEN = 50000;
@@ -53,10 +61,6 @@ const RANKING_FETCH_SIZE = 200;
 const REC_CANDIDATE_OVERFETCH = 5;
 const REC_DB_FETCH_OVERFETCH = 2;
 const REC_DB_FETCH_EXTRA = 5;
-const LOW_EXPOSURE_POOL = 500;
-const LOW_EXPOSURE_ALREADY_POPULAR_TOP = 30; // 上位は「既に人気」として低露出軸から除外
-const LOW_EXPOSURE_MIN_ENGAGEMENT = 2; // 最小エンゲージメント（min reactions の近似 floor）
-const LOW_EXPOSURE_CANDIDATE_CACHE_TTL_MS = 60 * 1000;
 
 // 通常ロード時に、取得 limit のうち推薦として混ぜる目標比率。
 const REC_RATIO = { low: 0.20, normal: 0.35, high: 0.50, veryHigh: 0.70 } as const;
@@ -69,25 +73,30 @@ const AUTO_INJECT_PRESET = {
 } as const;
 
 // 軸の混合重み（同一ノートが複数軸に出たら合算、reason は最大寄与の軸）。FoF は過多を避けるため弱めに扱う。
+// trending はノート単体のエンゲージが薄くても乗るため、popular よりやや弱く。
+// reactionSimilar/catchup は個人化軸（popularの「サーバー全体の人気」と役割が被らない）。
 const AXIS_WEIGHT = {
 	popular: 1.0,
 	trending: 0.9,
-	lowExposure: 0.85,
+	reactionSimilar: 0.85,
+	catchup: 0.75,
 	fof: 0.4,
 } as const;
 
 // 1軸だけで埋まり切らないよう、候補選抜時点で上限をかける。
 const AXIS_MAX_SHARE = {
 	popular: 0.55,
-	trending: 0.40,
-	lowExposure: 0.35,
+	trending: 0.25,
+	reactionSimilar: 0.35,
+	catchup: 0.30,
 	fof: 0.15,
 } as const;
 
 const AUTO_AXIS_MAX_SHARE = {
 	popular: 0.50,
-	trending: 0.45,
-	lowExposure: 0.35,
+	trending: 0.25,
+	reactionSimilar: 0.35,
+	catchup: 0.30,
 	fof: 0.10,
 } as const;
 
@@ -102,7 +111,7 @@ const AXIS_LEVEL_SHARE_MULTIPLIER: Record<Exclude<HanamiAxisLevel, 'off'>, numbe
 export type RecSource = keyof typeof AXIS_WEIGHT;
 export type RecReasonCode = RecSource;
 
-export const HANAMI_REC_AXES: RecSource[] = ['popular', 'lowExposure', 'trending', 'fof'];
+export const HANAMI_REC_AXES: RecSource[] = ['popular', 'reactionSimilar', 'catchup', 'trending', 'fof'];
 
 // 鯖管の軸設定: available=サーバーで利用可能か, default=ユーザー未設定時の既定ON/OFF。
 export type HanamiAxisServerConfig = Partial<Record<RecSource, { available?: boolean; default?: boolean }>>;
@@ -116,9 +125,10 @@ type ScoredCandidate = {
 	source: RecSource;
 	reason: RecReasonCode;
 	term?: string; // trending のとき該当用語
+	sources?: RecSource[]; // 寄与した全軸（効果測定ログ用。軸被りの定量化に使う）
 };
 
-export type RecReasonMeta = { source: RecSource; reason: RecReasonCode; term?: string };
+export type RecReasonMeta = { source: RecSource; reason: RecReasonCode; term?: string; sources?: RecSource[] };
 export type HanamiAutoInjectStrength = keyof typeof AUTO_INJECT_PRESET;
 export type HanamiAutoInjectPreset = (typeof AUTO_INJECT_PRESET)[HanamiAutoInjectStrength];
 
@@ -144,7 +154,7 @@ export type HanamiRecOptions = {
  * はなみTL おすすめの中央サービス（[[hanami-tl-osusume-redesign]]）。
  *
  * 役割（仕様）:
- *  - 複数軸（人気 / 低露出×高反応 / 急上昇 / FoF）の候補選定・混合（軸ON/OFF・重み）
+ *  - 複数軸（人気 / リアクション類似 / 見逃し回収 / 急上昇 / FoF）の候補選定・混合（軸ON/OFF・重み）
  *  - 軸ごとのON/OFF解決（鯖管の利用可否+既定 × ユーザーのオーバーライド）
  *  - 既出除外（served 30分 / seen 7日）
  *  - スロット注入（推薦内はスコア順・連続/上限つき作者多様性・末尾はhome由来=カーソル安定）
@@ -154,8 +164,6 @@ export type HanamiRecOptions = {
  */
 @Injectable()
 export class HanamiRecommendationService {
-	private lowExposureCandidatesCache: { expiresAt: number; value: ScoredCandidate[] } | null = null;
-
 	constructor(
 		@Inject(DI.redis)
 		private redisClient: Redis.Redis,
@@ -172,6 +180,8 @@ export class HanamiRecommendationService {
 		private noteEntityService: NoteEntityService,
 		private hanamiTrendService: HanamiTrendService,
 		private hanamiUserRecommendationService: HanamiUserRecommendationService,
+		private hanamiReactionSimilarService: HanamiReactionSimilarService,
+		private hanamiCatchupService: HanamiCatchupService,
 	) {
 	}
 
@@ -210,7 +220,7 @@ export class HanamiRecommendationService {
 
 	// 軸の量レベルを base のスロット上限に掛けて per-user の axisMaxShare を作る（off は 0）。
 	private buildAxisShare(base: Record<RecSource, number>, levels: Map<RecSource, HanamiAxisLevel>): Record<RecSource, number> {
-		const out = { popular: 0, trending: 0, lowExposure: 0, fof: 0 } as Record<RecSource, number>;
+		const out = { popular: 0, trending: 0, reactionSimilar: 0, catchup: 0, fof: 0 } as Record<RecSource, number>;
 		for (const [ax, level] of levels) {
 			if (level === 'off') continue;
 			out[ax] = Math.min(0.9, base[ax] * AXIS_LEVEL_SHARE_MULTIPLIER[level]);
@@ -265,13 +275,15 @@ export class HanamiRecommendationService {
 		if (recTarget <= 0) return homeNotes.slice(0, limit);
 
 		const homeIds = new Set(homeNotes.map(n => n.id));
-		const [served, seen] = await Promise.all([
+		const [served, seen, homeSeen] = await Promise.all([
 			this.getZsetMembers(`${SERVED_KEY_PREFIX}${me.id}`, SERVED_TTL_MS),
 			this.getZsetMembers(`${SEEN_KEY_PREFIX}${me.id}`, SEEN_TTL_MS),
+			this.getZsetMembers(`${HOME_SEEN_KEY_PREFIX}${me.id}`, HOME_SEEN_TTL_MS),
 		]);
 
 		const hardExcludedFoFNoteIds = new Set([...seen, ...homeIds]);
-		const excluded = (candidate: ScoredCandidate) => seen.has(candidate.noteId) || homeIds.has(candidate.noteId) || (candidate.source !== 'fof' && served.has(candidate.noteId));
+		// homeSeen はホームTLで実際に見たノート。どの軸由来でも「見たもの」を推薦し直さない。
+		const excluded = (candidate: ScoredCandidate) => seen.has(candidate.noteId) || homeSeen.has(candidate.noteId) || homeIds.has(candidate.noteId) || (candidate.source !== 'fof' && served.has(candidate.noteId));
 		const newerThan = homeNotes[0]?.id ?? null; // ページ先頭より新しい推薦は割り込ませない
 
 		const candidates = await this.getCandidates(me.id, {
@@ -286,6 +298,9 @@ export class HanamiRecommendationService {
 				softPenaltyNoteIds: served,
 				newerThan,
 				withFiles: opts.withFiles,
+			},
+			catchupOptions: {
+				homeSeenNoteIds: homeSeen,
 			},
 		});
 		if (candidates.length === 0) return homeNotes.slice(0, limit);
@@ -322,7 +337,8 @@ export class HanamiRecommendationService {
 			const meta = note as Record<string, unknown>;
 			meta._hanamiRecommended = true;
 			const reason = reasonOf.get(note.id);
-			if (showReason && reason) meta._hanamiReason = reason;
+			// クライアントに出すのは表示に使う最小限のみ（sources 等の内部メタは効果測定ログ専用）。
+			if (showReason && reason) meta._hanamiReason = { reason: reason.reason, term: reason.term };
 		}
 	}
 
@@ -365,26 +381,30 @@ export class HanamiRecommendationService {
 		axes: Set<RecSource>;
 		axisMaxShare: Record<RecSource, number>;
 		fofOptions?: FoFNoteOptions;
+		catchupOptions?: CatchupOptions;
 	}): Promise<ScoredCandidate[]> {
 		// 有効な軸だけ実行する（無効軸はクエリ自体を投げない）。
 		const tasks: Promise<ScoredCandidate[]>[] = [];
 		if (opts.axes.has('popular')) tasks.push(this.getPopularCandidates(meId));
-		if (opts.axes.has('lowExposure')) tasks.push(this.getLowExposureCandidates());
+		if (opts.axes.has('reactionSimilar')) tasks.push(this.getReactionSimilarCandidates(meId));
+		if (opts.axes.has('catchup')) tasks.push(this.getCatchupCandidates(meId, opts.catchupOptions));
 		if (opts.axes.has('trending')) tasks.push(this.getTrendingCandidates());
 		if (opts.axes.has('fof')) tasks.push(this.getFoFCandidates(meId, opts.fofOptions));
 		const lists = await Promise.all(tasks);
 
 		// 軸を合算。同一ノートは weight 付きスコアを足し、最大寄与の軸を reason にする。
+		// sources には寄与した全軸を残す（効果測定ログで軸被り率を出すため）。
 		const merged = new Map<string, ScoredCandidate>();
 		for (const list of lists) {
 			for (const c of list) {
 				const exist = merged.get(c.noteId);
 				if (exist == null) {
-					merged.set(c.noteId, { ...c });
+					merged.set(c.noteId, { ...c, sources: [c.source] });
 				} else {
 					const prevTop = exist.score;
 					exist.score += c.score;
 					exist.userId ??= c.userId;
+					exist.sources?.push(c.source);
 					if (c.score > prevTop) {
 						exist.source = c.source;
 						exist.reason = c.reason;
@@ -472,47 +492,32 @@ export class HanamiRecommendationService {
 		}));
 	}
 
-	/** 低露出×高反応軸: エンゲージメント ÷ f(フォロワー数)。既に人気な上位は除外、floor あり。 */
+	/** リアクション類似軸（趣味の近い人たちが最近反応したノート）。スコアは最大値で正規化。 */
 	@bindThis
-	private async getLowExposureCandidates(): Promise<ScoredCandidate[]> {
-		const cached = this.lowExposureCandidatesCache;
-		if (cached != null && cached.expiresAt > Date.now()) {
-			return cached.value.map(c => ({ ...c }));
-		}
+	private async getReactionSimilarCandidates(meId: MiUser['id']): Promise<ScoredCandidate[]> {
+		const list = await this.hanamiReactionSimilarService.getReactionSimilarNoteIds(meId, RANKING_FETCH_SIZE);
+		const max = list[0]?.score || 1; // スコア降順で返る
+		return list.map(({ noteId, userId, score }) => ({
+			noteId,
+			userId,
+			score: (score / max) * AXIS_WEIGHT.reactionSimilar,
+			source: 'reactionSimilar' as const,
+			reason: 'reactionSimilar' as const,
+		}));
+	}
 
-		const pool = await this.featuredService.getGlobalNotesRankingWithScores(LOW_EXPOSURE_POOL);
-		if (pool.length === 0) return [];
-
-		const popularTop = new Set(pool.slice(0, LOW_EXPOSURE_ALREADY_POPULAR_TOP).map(([id]) => id));
-		const eligiblePool = pool.filter(([id, eng]) => !popularTop.has(id) && eng >= LOW_EXPOSURE_MIN_ENGAGEMENT);
-		if (eligiblePool.length === 0) return [];
-		const ids = eligiblePool.map(([id]) => id);
-
-		const rows = await this.notesRepository.createQueryBuilder('note')
-			.select('note.id', 'id')
-			.addSelect('note.userId', 'userId')
-			.addSelect('user.followersCount', 'followersCount')
-			.innerJoin('note.user', 'user')
-			.where('note.id IN (:...ids)', { ids })
-			.getRawMany<{ id: string; userId: string; followersCount: number }>();
-		const noteInfo = new Map(rows.map(r => [r.id, { userId: r.userId, followersCount: Number(r.followersCount) }]));
-
-		const scored: ScoredCandidate[] = [];
-		for (const [id, eng] of eligiblePool) {
-			const info = noteInfo.get(id);
-			if (info == null) continue;
-			const score = eng / Math.log10(info.followersCount + 10);
-			scored.push({ noteId: id, userId: info.userId, score, source: 'lowExposure', reason: 'lowExposure' });
-		}
-		scored.sort((a, b) => b.score - a.score);
-		const top = scored.slice(0, RANKING_FETCH_SIZE);
-		const max = top[0]?.score || 1;
-		const result = top.map(c => ({ ...c, score: (c.score / max) * AXIS_WEIGHT.lowExposure }));
-		this.lowExposureCandidatesCache = {
-			expiresAt: Date.now() + LOW_EXPOSURE_CANDIDATE_CACHE_TTL_MS,
-			value: result,
-		};
-		return result.map(c => ({ ...c }));
+	/** 見逃し回収軸（ホームTLに流れたのに見ていない高反応ノート）。スコアは最大値で正規化。 */
+	@bindThis
+	private async getCatchupCandidates(meId: MiUser['id'], opts?: CatchupOptions): Promise<ScoredCandidate[]> {
+		const list = await this.hanamiCatchupService.getCatchupNoteIds(meId, RANKING_FETCH_SIZE, opts);
+		const max = list[0]?.score || 1; // スコア降順で返る
+		return list.map(({ noteId, userId, score }) => ({
+			noteId,
+			userId,
+			score: (score / max) * AXIS_WEIGHT.catchup,
+			source: 'catchup' as const,
+			reason: 'catchup' as const,
+		}));
 	}
 
 	/** 急上昇軸（Lindera/Builtin トレンド）。 */
@@ -552,7 +557,7 @@ export class HanamiRecommendationService {
 	@bindThis
 	private async fetchAndPackRecNotes(candidates: ScoredCandidate[], me: MiLocalUser, opts: { withFiles: boolean }): Promise<{ recNotes: Packed<'Note'>[]; reasonOf: Map<string, RecReasonMeta> }> {
 		const noteIds = candidates.map(c => c.noteId);
-		const reasonOf = new Map(candidates.map(c => [c.noteId, { source: c.source, reason: c.reason, term: c.term }]));
+		const reasonOf = new Map(candidates.map(c => [c.noteId, { source: c.source, reason: c.reason, term: c.term, sources: c.sources }]));
 		if (noteIds.length === 0) return { recNotes: [], reasonOf };
 
 		const [userIdsWhoMeMuting, userIdsWhoBlockingMe, userIdsWhoMeBlocking, userMutedInstances] = await Promise.all([
@@ -754,15 +759,16 @@ export class HanamiRecommendationService {
 		const settings = await this.resolveSettings(me.id);
 		if (!settings.enabled || !settings.autoInjectEnabled || settings.axes.size === 0 || opts.limit <= 0) return [];
 
-		const [served, seen] = await Promise.all([
+		const [served, seen, homeSeen] = await Promise.all([
 			this.getZsetMembers(`${SERVED_KEY_PREFIX}${me.id}`, SERVED_TTL_MS),
 			this.getZsetMembers(`${SEEN_KEY_PREFIX}${me.id}`, SEEN_TTL_MS),
+			this.getZsetMembers(`${HOME_SEEN_KEY_PREFIX}${me.id}`, HOME_SEEN_TTL_MS),
 		]);
 		const hardExcludedFoFNoteIds = new Set([...seen, ...(opts.excludedNoteIds ?? [])]);
 		const candidates = await this.getCandidates(me.id, {
 			limit: opts.limit * REC_CANDIDATE_OVERFETCH,
 			capLimit: opts.limit,
-			excluded: (candidate) => seen.has(candidate.noteId) || opts.excludedNoteIds?.has(candidate.noteId) === true || (candidate.source !== 'fof' && served.has(candidate.noteId)),
+			excluded: (candidate) => seen.has(candidate.noteId) || homeSeen.has(candidate.noteId) || opts.excludedNoteIds?.has(candidate.noteId) === true || (candidate.source !== 'fof' && served.has(candidate.noteId)),
 			newerThan: null,
 			axes: settings.axes,
 			axisMaxShare: this.buildAxisShare(AUTO_AXIS_MAX_SHARE, settings.axisLevels),
@@ -771,6 +777,9 @@ export class HanamiRecommendationService {
 				softPenaltyNoteIds: served,
 				newerThan: null,
 				withFiles: opts.withFiles,
+			},
+			catchupOptions: {
+				homeSeenNoteIds: homeSeen,
 			},
 		});
 		const { recNotes, reasonOf } = await this.fetchAndPackRecNotesWithBackfill(candidates, opts.limit, me, { withFiles: opts.withFiles });
@@ -783,45 +792,6 @@ export class HanamiRecommendationService {
 		}
 
 		return notes;
-	}
-
-	/**
-	 * 推薦に該当するノートID集合（stream channel 用、step11）。
-	 * REST と「おすすめの意味」を揃えるため、ストリームはこの集合に含まれるノートだけを推薦として流す。
-	 * ユーザー設定（ON/OFF・軸）・served/seen を尊重する。
-	 */
-	@bindThis
-	public async getRecommendationNoteReasons(meId: MiUser['id'], limit: number): Promise<{ reasonOf: Map<string, RecReasonMeta>; showReason: boolean }> {
-		const settings = await this.resolveSettings(meId);
-		if (!settings.enabled || settings.axes.size === 0) return { reasonOf: new Map(), showReason: settings.showReason };
-
-		const [served, seen] = await Promise.all([
-			this.getZsetMembers(`${SERVED_KEY_PREFIX}${meId}`, SERVED_TTL_MS),
-			this.getZsetMembers(`${SEEN_KEY_PREFIX}${meId}`, SEEN_TTL_MS),
-		]);
-		const candidates = await this.getCandidates(meId, {
-			limit,
-			capLimit: limit,
-			excluded: (candidate) => seen.has(candidate.noteId) || (candidate.source !== 'fof' && served.has(candidate.noteId)),
-			newerThan: null,
-			axes: settings.axes,
-			axisMaxShare: this.buildAxisShare(AUTO_AXIS_MAX_SHARE, settings.axisLevels),
-			fofOptions: {
-				hardExcludedNoteIds: seen,
-				softPenaltyNoteIds: served,
-				newerThan: null,
-			},
-		});
-		return {
-			reasonOf: new Map(candidates.map(c => [c.noteId, { source: c.source, reason: c.reason, term: c.term }])),
-			showReason: settings.showReason,
-		};
-	}
-
-	@bindThis
-	public async getRecommendationNoteIdSet(meId: MiUser['id'], limit: number): Promise<Set<string>> {
-		const { reasonOf } = await this.getRecommendationNoteReasons(meId, limit);
-		return new Set(reasonOf.keys());
 	}
 
 	// ───────────────────────── served / seen / ログ ─────────────────────────
@@ -850,6 +820,17 @@ export class HanamiRecommendationService {
 	@bindThis
 	public async recordSeen(userId: MiUser['id'], noteIds: string[]): Promise<void> {
 		await this.recordZset(`${SEEN_KEY_PREFIX}${userId}`, noteIds, SEEN_TTL_SECONDS, SEEN_TTL_MS);
+		// 軸別 served→seen 率を後段バッチで出せるよう、seen もストリームに残す（served と userId/noteId で突き合わせる）。
+		await this.logEvents('seen', userId, noteIds.map(noteId => ({ noteId })));
+	}
+
+	/**
+	 * はなみTLに表示されたホーム由来ノートの記録（推薦ではない通常表示分）。
+	 * catchup軸の「見逃し」判定と、見たものを推薦し直さない一般除外に使う。
+	 */
+	@bindThis
+	public async recordHomeSeen(userId: MiUser['id'], noteIds: string[]): Promise<void> {
+		await this.recordZset(`${HOME_SEEN_KEY_PREFIX}${userId}`, noteIds, HOME_SEEN_TTL_SECONDS, HOME_SEEN_TTL_MS);
 	}
 
 	@bindThis
@@ -858,11 +839,17 @@ export class HanamiRecommendationService {
 		const now = Date.now();
 		const scoreMembers: (string | number)[] = [];
 		for (const id of noteIds) scoreMembers.push(now, id);
-		await this.redisClient.multi()
+		const results = await this.redisClient.multi()
 			.zadd(key, ...(scoreMembers as [number, string]))
 			.zremrangebyscore(key, 0, now - ttlMs)
 			.expire(key, ttlSeconds)
 			.exec();
+		// 既出除外は best-effort（失敗しても致命ではない）が、黙って欠けると再表示バグに見えるのでログは残す。
+		const err = results?.find(r => r[0] != null)?.[0];
+		if (results == null || err != null) {
+			// eslint-disable-next-line no-console
+			console.error(`hanami rec: zset record failed (${key})`, err);
+		}
 	}
 
 	@bindThis
@@ -881,23 +868,40 @@ export class HanamiRecommendationService {
 
 	/**
 	 * 効果測定ログ（仕様7）: Redis Stream に最小限を残す。集計は後段バッチで Postgres へ。
+	 * sources は寄与した全軸（カンマ区切り）。served∩複数軸の被り率を後から定量化できる。
 	 */
 	@bindThis
 	private async logServed(userId: MiUser['id'], noteIds: string[], reasonOf: Map<string, RecReasonMeta>): Promise<void> {
 		if (LOG_SAMPLE_RATE < 1 && Math.random() > LOG_SAMPLE_RATE) return;
-		const servedAt = Date.now().toString();
-		for (const noteId of noteIds) {
+		await this.logEvents('served', userId, noteIds.map(noteId => {
 			const r = reasonOf.get(noteId);
-			await this.redisClient.call(
-				'XADD', LOG_STREAM_KEY, 'MAXLEN', '~', String(LOG_STREAM_MAXLEN), '*',
-				'event', 'served',
+			return {
+				noteId,
+				source: r?.source ?? 'unknown',
+				reasonCode: r?.reason ?? 'unknown',
+				sources: r?.sources != null && r.sources.length > 0 ? r.sources.join(',') : undefined,
+			};
+		}));
+	}
+
+	@bindThis
+	private async logEvents(event: 'served' | 'seen', userId: MiUser['id'], entries: { noteId: string; source?: string; reasonCode?: string; sources?: string }[]): Promise<void> {
+		if (entries.length === 0) return;
+		const at = Date.now().toString();
+		const pipeline = this.redisClient.pipeline();
+		for (const entry of entries) {
+			const fields: string[] = [
+				'event', event,
 				'userId', userId,
-				'noteId', noteId,
-				'source', r?.source ?? 'unknown',
-				'reasonCode', r?.reason ?? 'unknown',
-				'servedAt', servedAt,
-			);
+				'noteId', entry.noteId,
+				'at', at,
+			];
+			if (entry.source != null) fields.push('source', entry.source);
+			if (entry.reasonCode != null) fields.push('reasonCode', entry.reasonCode);
+			if (entry.sources != null) fields.push('sources', entry.sources);
+			pipeline.call('XADD', LOG_STREAM_KEY, 'MAXLEN', '~', String(LOG_STREAM_MAXLEN), '*', ...fields);
 		}
+		await pipeline.exec();
 	}
 
 	/**

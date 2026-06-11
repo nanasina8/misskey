@@ -8,7 +8,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	v-if="!hardMuted && !hideByPlugin && muted === false"
 	ref="rootEl"
 	v-hotkey="keymap"
-	v-appear="hanamiRecommended ? onRecommendationAppear : null"
+	v-appear="(hanamiRecommended || inHanamiTimeline) ? onNoteAppear : null"
 	:class="[$style.root, { [$style.showActionsOnlyHover]: prefer.s.showNoteActionsOnlyHover, [$style.skipRender]: prefer.s.skipNoteRender }]"
 	tabindex="0"
 >
@@ -268,6 +268,8 @@ const emit = defineEmits<{
 const inTimeline = inject<boolean>('inTimeline', false);
 const tl_withSensitive = inject<Ref<boolean>>('tl_withSensitive', ref(true));
 const inChannel = inject('inChannel', null);
+// はなみTL内では全ノートの表示を homeSeen として報告する（catchup軸の「見逃し」判定の根拠）。
+const inHanamiTimeline = inject<Ref<boolean> | boolean>('hanamiTimeline', false);
 const currentClip = inject<Ref<Misskey.entities.Clip> | null>('currentClip', null);
 
 let note = deepClone(props.note);
@@ -309,7 +311,8 @@ const hanamiReasonLabel = computed(() => {
 	const reasons = i18n.ts._hana._recommendation._reason;
 	switch (r.reason) {
 		case 'popular': return reasons.popular;
-		case 'lowExposure': return reasons.lowExposure;
+		case 'reactionSimilar': return reasons.reactionSimilar;
+		case 'catchup': return reasons.catchup;
 		case 'trending': return r.term ? i18n.tsx._hana._recommendation._reason.trendingTerm({ term: r.term }) : reasons.trending;
 		case 'fof': return reasons.fof;
 		default: return '';
@@ -318,15 +321,20 @@ const hanamiReasonLabel = computed(() => {
 const hanamiReasonIcon = computed(() => {
 	switch (hanamiReason.value?.reason) {
 		case 'popular': return 'ti ti-flame';
-		case 'lowExposure': return 'ti ti-seedling';
+		case 'reactionSimilar': return 'ti ti-heart-handshake';
+		case 'catchup': return 'ti ti-history';
 		case 'trending': return 'ti ti-trending-up';
 		case 'fof': return 'ti ti-users';
 		default: return 'ti ti-sparkles';
 	}
 });
 
-function onRecommendationAppear() {
-	if (hanamiRecommended.value) reportHanamiSeen(note.id);
+function onNoteAppear() {
+	if (hanamiRecommended.value) {
+		reportHanamiSeen(note.id, 'rec');
+	} else if (typeof inHanamiTimeline === 'boolean' ? inHanamiTimeline : inHanamiTimeline.value) {
+		reportHanamiSeen(note.id, 'home');
+	}
 }
 
 const { $note: $appearNote, subscribe: subscribeToNoteCapture, unsubscribe: unsubscribeFromNoteCapture } = useNoteCapture({
@@ -341,14 +349,6 @@ const renoteTime = useTemplateRef('renoteTime');
 const reactButton = useTemplateRef('reactButton');
 const clipButton = useTemplateRef('clipButton');
 const galleryEl = useTemplateRef('galleryEl');
-const isMyRenote = $i && ($i.id === note.userId);
-const showContent = ref(false);
-const parsed = computed(() => appearNote.text ? mfm.parse(appearNote.text) : null);
-const urls = computed(() => parsed.value ? extractUrlFromMfm(parsed.value).filter((url) => appearNote.renote?.url !== url && appearNote.renote?.uri !== url) : null);
-const isLong = shouldCollapsed(appearNote, urls.value ?? []);
-const collapsed = ref(appearNote.cw == null && isLong);
-const muted = ref(checkMute(appearNote, $i?.mutedWords));
-const hardMuted = ref(props.withHardMute && checkMute(appearNote, $i?.hardMutedWords, true));
 
 // ビューポート内に表示されている間だけノートを購読する
 // (画面外のノートまで購読すると同時購読数が膨らむため)
@@ -377,6 +377,14 @@ if (!props.mock) {
 	});
 }
 
+const isMyRenote = $i && ($i.id === note.userId);
+const showContent = ref(false);
+const parsed = computed(() => appearNote.text ? mfm.parse(appearNote.text) : null);
+const urls = computed(() => parsed.value ? extractUrlFromMfm(parsed.value).filter((url) => appearNote.renote?.url !== url && appearNote.renote?.uri !== url) : null);
+const isLong = shouldCollapsed(appearNote, urls.value ?? []);
+const collapsed = ref(appearNote.cw == null && isLong);
+const muted = ref(checkMute(appearNote, $i?.mutedWords));
+const hardMuted = ref(props.withHardMute && checkMute(appearNote, $i?.hardMutedWords, true));
 const showSoftWordMutedWord = computed(() => prefer.s.showSoftWordMutedWord);
 const translation = ref<Misskey.entities.NotesTranslateResponse | null>(null);
 const translating = ref(false);
@@ -584,6 +592,8 @@ async function react() {
 				userId: $i!.id,
 				reaction: '❤️',
 			});
+			// リアクション後は他の反応が来る可能性があるので購読する
+			subscribeToNoteCapture();
 		});
 		const el = reactButton.value;
 		if (el && prefer.s.animation) {
@@ -592,8 +602,6 @@ async function react() {
 			const y = rect.top + (el.offsetHeight / 2);
 			const { dispose } = os.popup(MkRippleEffect, { x, y }, {
 				end: () => dispose(),
-			// リアクション後は他の反応が来る可能性があるので購読する
-			subscribeToNoteCapture();
 			});
 		}
 	} else {
@@ -626,6 +634,7 @@ async function react() {
 					userId: $i!.id,
 					reaction: reaction,
 				});
+				subscribeToNoteCapture();
 			});
 
 			if (appearNote.text && appearNote.text.length > 100 && (Date.now() - new Date(appearNote.createdAt).getTime() < 1000 * 3)) {
@@ -634,7 +643,6 @@ async function react() {
 		}, () => {
 			focus();
 		});
-				subscribeToNoteCapture();
 	}
 }
 
@@ -654,6 +662,7 @@ function undoReact(): void {
 			userId: $i!.id,
 			reaction: oldReaction,
 		});
+		subscribeToNoteCapture();
 	});
 }
 
@@ -662,7 +671,6 @@ function toggleReact() {
 		react();
 	} else {
 		undoReact();
-		subscribeToNoteCapture();
 	}
 }
 

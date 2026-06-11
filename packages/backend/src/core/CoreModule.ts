@@ -79,6 +79,8 @@ import { HanamiRecommendationService } from './HanamiRecommendationService.js';
 import { HanamiTrendService } from './hanami/HanamiTrendService.js';
 import { HanamiTokenizerService } from './hanami/tokenize/HanamiTokenizerService.js';
 import { HanamiUserRecommendationService } from './hanami/HanamiUserRecommendationService.js';
+import { HanamiReactionSimilarService } from './hanami/HanamiReactionSimilarService.js';
+import { HanamiCatchupService } from './hanami/HanamiCatchupService.js';
 import { FanoutTimelineService } from './FanoutTimelineService.js';
 import { ChannelFollowingService } from './ChannelFollowingService.js';
 import { ChatService } from './ChatService.js';
@@ -233,6 +235,8 @@ const $HanamiRecommendationService: Provider = { provide: 'HanamiRecommendationS
 const $HanamiTrendService: Provider = { provide: 'HanamiTrendService', useExisting: HanamiTrendService };
 const $HanamiTokenizerService: Provider = { provide: 'HanamiTokenizerService', useExisting: HanamiTokenizerService };
 const $HanamiUserRecommendationService: Provider = { provide: 'HanamiUserRecommendationService', useExisting: HanamiUserRecommendationService };
+const $HanamiReactionSimilarService: Provider = { provide: 'HanamiReactionSimilarService', useExisting: HanamiReactionSimilarService };
+const $HanamiCatchupService: Provider = { provide: 'HanamiCatchupService', useExisting: HanamiCatchupService };
 const $FanoutTimelineService: Provider = { provide: 'FanoutTimelineService', useExisting: FanoutTimelineService };
 const $FanoutTimelineEndpointService: Provider = { provide: 'FanoutTimelineEndpointService', useExisting: FanoutTimelineEndpointService };
 const $ChannelFollowingService: Provider = { provide: 'ChannelFollowingService', useExisting: ChannelFollowingService };
@@ -392,6 +396,8 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		HanamiTrendService,
 		HanamiTokenizerService,
 		HanamiUserRecommendationService,
+		HanamiReactionSimilarService,
+		HanamiCatchupService,
 		FanoutTimelineService,
 		FanoutTimelineEndpointService,
 		ChannelFollowingService,
@@ -547,6 +553,8 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		$HanamiTrendService,
 		$HanamiTokenizerService,
 		$HanamiUserRecommendationService,
+		$HanamiReactionSimilarService,
+		$HanamiCatchupService,
 		$FanoutTimelineService,
 		$FanoutTimelineEndpointService,
 		$ChannelFollowingService,
@@ -703,6 +711,8 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		HanamiTrendService,
 		HanamiTokenizerService,
 		HanamiUserRecommendationService,
+		HanamiReactionSimilarService,
+		HanamiCatchupService,
 		FanoutTimelineService,
 		FanoutTimelineEndpointService,
 		ChannelFollowingService,
@@ -856,6 +866,8 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		$HanamiTrendService,
 		$HanamiTokenizerService,
 		$HanamiUserRecommendationService,
+		$HanamiReactionSimilarService,
+		$HanamiCatchupService,
 		$FanoutTimelineService,
 		$FanoutTimelineEndpointService,
 		$ChannelFollowingService,

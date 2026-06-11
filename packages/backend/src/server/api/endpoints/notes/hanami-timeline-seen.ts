@@ -7,8 +7,9 @@ import { Injectable } from '@nestjs/common';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { HanamiRecommendationService } from '@/core/HanamiRecommendationService.js';
 
-// フロントが「実際に表示確認した」おすすめノートを seen として記録する（長TTL側の既出除外）。
-// served（返した時点・短TTL）に対し、seen は本当に見られたものだけを長く抑制する（仕様5の2段階）。
+// フロントが「実際に表示確認した」ノートを記録する。
+// kind=rec: おすすめノートの seen（served の長TTL側・仕様5の2段階）。
+// kind=home: はなみTLに表示されたホーム由来ノート（catchup軸の「見逃し」判定と一般の再推薦除外に使う）。
 export const meta = {
 	tags: ['notes'],
 
@@ -32,6 +33,7 @@ export const paramDef = {
 			items: { type: 'string', format: 'misskey:id' },
 			maxItems: 100,
 		},
+		kind: { type: 'string', enum: ['rec', 'home'], default: 'rec' },
 	},
 	required: ['noteIds'],
 } as const;
@@ -42,7 +44,11 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private hanamiRecommendationService: HanamiRecommendationService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
-			await this.hanamiRecommendationService.recordSeen(me.id, ps.noteIds);
+			if (ps.kind === 'home') {
+				await this.hanamiRecommendationService.recordHomeSeen(me.id, ps.noteIds);
+			} else {
+				await this.hanamiRecommendationService.recordSeen(me.id, ps.noteIds);
+			}
 			return { ok: true };
 		});
 	}

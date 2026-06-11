@@ -4154,7 +4154,9 @@ export type components = {
                 /** @enum {string} */
                 popular?: 'off' | 'low' | 'normal' | 'high';
                 /** @enum {string} */
-                lowExposure?: 'off' | 'low' | 'normal' | 'high';
+                reactionSimilar?: 'off' | 'low' | 'normal' | 'high';
+                /** @enum {string} */
+                catchup?: 'off' | 'low' | 'normal' | 'high';
                 /** @enum {string} */
                 trending?: 'off' | 'low' | 'normal' | 'high';
                 /** @enum {string} */
@@ -5572,7 +5574,11 @@ export type components = {
                     available?: boolean;
                     default?: boolean;
                 };
-                lowExposure?: {
+                reactionSimilar?: {
+                    available?: boolean;
+                    default?: boolean;
+                };
+                catchup?: {
                     available?: boolean;
                     default?: boolean;
                 };
@@ -9548,7 +9554,11 @@ export interface operations {
                                 available?: boolean;
                                 default?: boolean;
                             };
-                            lowExposure?: {
+                            reactionSimilar?: {
+                                available?: boolean;
+                                default?: boolean;
+                            };
+                            catchup?: {
                                 available?: boolean;
                                 default?: boolean;
                             };
@@ -12912,7 +12922,11 @@ export interface operations {
                             available?: boolean;
                             default?: boolean;
                         };
-                        lowExposure?: {
+                        reactionSimilar?: {
+                            available?: boolean;
+                            default?: boolean;
+                        };
+                        catchup?: {
                             available?: boolean;
                             default?: boolean;
                         };
@@ -27720,7 +27734,9 @@ export interface operations {
                         /** @enum {string} */
                         popular?: 'off' | 'low' | 'normal' | 'high';
                         /** @enum {string} */
-                        lowExposure?: 'off' | 'low' | 'normal' | 'high';
+                        reactionSimilar?: 'off' | 'low' | 'normal' | 'high';
+                        /** @enum {string} */
+                        catchup?: 'off' | 'low' | 'normal' | 'high';
                         /** @enum {string} */
                         trending?: 'off' | 'low' | 'normal' | 'high';
                         /** @enum {string} */
@@ -30366,6 +30382,11 @@ export interface operations {
             content: {
                 'application/json': {
                     noteIds: string[];
+                    /**
+                     * @default rec
+                     * @enum {string}
+                     */
+                    kind?: 'rec' | 'home';
                 };
             };
         };

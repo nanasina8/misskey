@@ -94,7 +94,7 @@ import { prefer } from '@/preferences.js';
 const $i = ensureSignin();
 const showHanamiTimelineDateSeparators = prefer.model('showHanamiTimelineDateSeparators');
 
-type AxisKey = 'popular' | 'lowExposure' | 'trending' | 'fof';
+type AxisKey = 'popular' | 'reactionSimilar' | 'catchup' | 'trending' | 'fof';
 type AxisLevel = 'off' | 'low' | 'normal' | 'high';
 type RecommendationStrength = 'low' | 'normal' | 'high' | 'veryHigh';
 type RecommendationAutoInjectStrength = 'low' | 'normal' | 'high';
@@ -128,16 +128,16 @@ type RecommendationI18n = typeof i18n.ts._hana._recommendation & {
 const account = $i as RecommendationAccount;
 const recommendationI18n = i18n.ts._hana._recommendation as RecommendationI18n;
 
-const AXES: AxisKey[] = ['popular', 'lowExposure', 'trending', 'fof'];
-const AXIS_ICON: Record<AxisKey, string> = { popular: 'ti-flame', lowExposure: 'ti-seedling', trending: 'ti-trending-up', fof: 'ti-users' };
+const AXES: AxisKey[] = ['popular', 'reactionSimilar', 'catchup', 'trending', 'fof'];
+const AXIS_ICON: Record<AxisKey, string> = { popular: 'ti-flame', reactionSimilar: 'ti-heart-handshake', catchup: 'ti-history', trending: 'ti-trending-up', fof: 'ti-users' };
 const PRESET_KEYS: PresetKey[] = ['balanced', 'popular', 'discover', 'topic'];
 const PRESET_I18N = { balanced: 'presetBalanced', popular: 'presetPopular', discover: 'presetDiscover', topic: 'presetTopic' } as const;
 // 各プリセットが軸ごとに設定する量。候補が無くても破綻しない「多め/少なめ」の指定。
 const PRESETS: Record<PresetKey, Record<AxisKey, AxisLevel>> = {
-	balanced: { popular: 'normal', lowExposure: 'normal', trending: 'normal', fof: 'normal' },
-	popular: { popular: 'high', lowExposure: 'low', trending: 'normal', fof: 'low' },
-	discover: { popular: 'low', lowExposure: 'high', trending: 'high', fof: 'normal' },
-	topic: { popular: 'normal', lowExposure: 'normal', trending: 'high', fof: 'low' },
+	balanced: { popular: 'normal', reactionSimilar: 'normal', catchup: 'normal', trending: 'normal', fof: 'normal' },
+	popular: { popular: 'high', reactionSimilar: 'low', catchup: 'normal', trending: 'normal', fof: 'low' },
+	discover: { popular: 'low', reactionSimilar: 'high', catchup: 'low', trending: 'high', fof: 'normal' },
+	topic: { popular: 'normal', reactionSimilar: 'low', catchup: 'low', trending: 'high', fof: 'low' },
 };
 
 // 軸オーバーライド: 未設定（undefined）はサーバー既定に従う。鯖管が available=false にした軸はOFF固定。
@@ -145,7 +145,8 @@ const storedAxes = account.hanamiRecommendationAxes ?? {};
 const serverAxes = (instance as { hanamiRecommendationAxisConfig?: Partial<Record<AxisKey, { available?: boolean; default?: boolean }>> }).hanamiRecommendationAxisConfig ?? {};
 const axisAvailable = {
 	popular: serverAxes.popular?.available !== false,
-	lowExposure: serverAxes.lowExposure?.available !== false,
+	reactionSimilar: serverAxes.reactionSimilar?.available !== false,
+	catchup: serverAxes.catchup?.available !== false,
 	trending: serverAxes.trending?.available !== false,
 	fof: serverAxes.fof?.available !== false,
 };
@@ -162,11 +163,12 @@ function axisInitial(axis: AxisKey): AxisLevel {
 
 const enabled = ref<boolean>(account.hanamiRecommendationEnabled ?? true);
 const strength = ref<RecommendationStrength>(account.hanamiRecommendationStrength ?? 'high');
-const autoInjectEnabled = ref<boolean>(account.hanamiRecommendationAutoInjectEnabled ?? false);
+const autoInjectEnabled = ref<boolean>(account.hanamiRecommendationAutoInjectEnabled ?? true);
 const autoInjectStrength = ref<RecommendationAutoInjectStrength>(account.hanamiRecommendationAutoInjectStrength ?? 'low');
 const axisLevels = reactive<Record<AxisKey, AxisLevel>>({
 	popular: axisInitial('popular'),
-	lowExposure: axisInitial('lowExposure'),
+	reactionSimilar: axisInitial('reactionSimilar'),
+	catchup: axisInitial('catchup'),
 	trending: axisInitial('trending'),
 	fof: axisInitial('fof'),
 });
@@ -188,7 +190,8 @@ function buildAccountPatch() {
 		hanamiRecommendationAutoInjectStrength: autoInjectStrength.value,
 		hanamiRecommendationAxes: {
 			popular: axisLevels.popular,
-			lowExposure: axisLevels.lowExposure,
+			reactionSimilar: axisLevels.reactionSimilar,
+			catchup: axisLevels.catchup,
 			trending: axisLevels.trending,
 			fof: axisLevels.fof,
 		},

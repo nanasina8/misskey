@@ -13501,9 +13501,13 @@ export interface Locale extends ILocale {
                  */
                 "popular": string;
                 /**
-                 * 埋もれた投稿
+                 * 好みが近い人に人気
                  */
-                "lowExposure": string;
+                "reactionSimilar": string;
+                /**
+                 * 見ていない間に伸びた投稿
+                 */
+                "catchup": string;
                 /**
                  * トレンド
                  */

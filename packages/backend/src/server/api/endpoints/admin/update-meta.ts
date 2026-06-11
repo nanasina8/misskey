@@ -152,7 +152,8 @@ export const paramDef = {
 			type: 'object', nullable: false,
 			properties: {
 				popular: { type: 'object', properties: { available: { type: 'boolean' }, default: { type: 'boolean' } } },
-				lowExposure: { type: 'object', properties: { available: { type: 'boolean' }, default: { type: 'boolean' } } },
+				reactionSimilar: { type: 'object', properties: { available: { type: 'boolean' }, default: { type: 'boolean' } } },
+				catchup: { type: 'object', properties: { available: { type: 'boolean' }, default: { type: 'boolean' } } },
 				trending: { type: 'object', properties: { available: { type: 'boolean' }, default: { type: 'boolean' } } },
 				fof: { type: 'object', properties: { available: { type: 'boolean' }, default: { type: 'boolean' } } },
 			},

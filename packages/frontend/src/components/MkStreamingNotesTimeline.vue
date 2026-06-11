@@ -102,6 +102,8 @@ const props = withDefaults(defineProps<{
 provide('inTimeline', true);
 provide('tl_withSensitive', computed(() => props.withSensitive));
 provide('inChannel', computed(() => props.src === 'channel'));
+// はなみTLでは表示された全ノートを homeSeen 報告する（catchup軸の「見逃し」判定用。MkNote が参照）。
+provide('hanamiTimeline', computed(() => props.src === 'hanami'));
 
 const showDateSeparators = computed(() => props.src !== 'hanami' || prefer.r.showHanamiTimelineDateSeparators.value);
 

@@ -3477,7 +3477,8 @@ _hana:
     showReasonDescription: "Displays why a note was recommended (popular, trending, etc.) above recommended notes."
     _reason:
       popular: "Popular"
-      lowExposure: "Hidden gem"
+      reactionSimilar: "Popular with like-minded users"
+      catchup: "Trended while you were away"
       trending: "Trending"
       trendingTerm: "Trending: {term}"
       fof: "Recommended users"

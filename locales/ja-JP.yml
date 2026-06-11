@@ -3614,7 +3614,8 @@ _hana:
     showReasonDescription: "おすすめノートの上に、おすすめされた理由（人気・トレンドなど）を表示します。"
     _reason:
       popular: "人気の投稿"
-      lowExposure: "埋もれた投稿"
+      reactionSimilar: "好みが近い人に人気"
+      catchup: "見ていない間に伸びた投稿"
       trending: "トレンド"
       trendingTerm: "トレンド: {term}"
       fof: "おすすめユーザー"
