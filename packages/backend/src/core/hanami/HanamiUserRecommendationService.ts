@@ -72,6 +72,10 @@ const ACTIVITY_RECENT_MS = DAY_MS * 7;
 const ACTIVITY_COUNT_CAP = 20;
 const CANDIDATE_ACTIVITY_EVENT_FETCH_LIMIT = 8000;
 const SEED_INTERACTION_EVENT_FETCH_LIMIT = 5000;
+// シード相互作用シグナルのキャッシュ。14日窓の集計なので変化は遅く、
+// FoFプール構築（60秒キャッシュ切れ）のたびにDB5クエリを回す価値はない。
+const SEED_SIGNALS_CACHE_KEY_PREFIX = 'hanami:fof:seedsig:';
+const SEED_SIGNALS_CACHE_TTL_SECONDS = 60 * 15;
 const CANDIDATE_ACTIVITY_MULTIPLIER_MIN = 0.35;
 const CANDIDATE_ACTIVITY_MULTIPLIER_MAX = 1.45;
 const SEED_INTERACTION_BOOST_MAX = 2.0;
@@ -325,37 +329,62 @@ export class HanamiUserRecommendationService {
 		await pipeline.exec();
 	}
 
+	private serializeSeedSignals(signals: Map<string, ActivitySignal>): string {
+		return JSON.stringify(Array.from(signals, ([userId, s]) => [userId, { ...s, days7: [...s.days7], days14: [...s.days14] }]));
+	}
+
+	private reviveSeedSignals(json: string): Map<string, ActivitySignal> {
+		type Serialized = Omit<ActivitySignal, 'days7' | 'days14'> & { days7: number[]; days14: number[] };
+		const entries = JSON.parse(json) as [string, Serialized][];
+		return new Map(entries.map(([userId, s]) => [userId, { ...s, days7: new Set(s.days7), days14: new Set(s.days14) }]));
+	}
+
 	@bindThis
 	private async getSeedInteractionSignals(meId: MiUser['id'], followeeIds: MiUser['id'][]): Promise<Map<string, ActivitySignal>> {
 		if (followeeIds.length === 0) return new Map();
+
+		const cacheKey = `${SEED_SIGNALS_CACHE_KEY_PREFIX}${meId}`;
+		const cached = await this.redisClient.get(cacheKey);
+		if (cached != null) return this.reviveSeedSignals(cached);
+
 		const followeeSet = new Set(followeeIds);
 		const sinceId = this.idService.gen(Date.now() - ACTIVITY_LOOKBACK_MS);
 		const now = Date.now();
 		const signals = new Map<string, ActivitySignal>();
 
-		const noteRows = await this.notesRepository.createQueryBuilder('note')
+		// userId/replyUserId/renoteUserId をORで跨ぐとどのインデックスも効かず直近14日の全ノートを
+		// PK範囲スキャンするため、インデックスが効く3クエリに分割する
+		// （userId=me は (userId,id) 複合、replyUserId/renoteUserId=me は専用の部分インデックス）。
+		const noteSelect = () => this.notesRepository.createQueryBuilder('note')
 			.select('note.id', 'id')
 			.addSelect('note.userId', 'userId')
 			.addSelect('note.replyUserId', 'replyUserId')
 			.addSelect('note.renoteUserId', 'renoteUserId')
-			.where('note.id > :sinceId', { sinceId })
+			.andWhere('note.id > :sinceId', { sinceId })
 			.andWhere('note.visibility != \'specified\'')
-			.andWhere(new Brackets(qb => {
-				qb.where(new Brackets(qb2 => {
-					qb2.where('note.userId = :meId', { meId })
-						.andWhere(new Brackets(qb3 => {
-							qb3.where('note.replyUserId IS NOT NULL')
-								.orWhere('note.renoteUserId IS NOT NULL');
-						}));
-				}))
-					.orWhere('note.replyUserId = :meId', { meId })
-					.orWhere('note.renoteUserId = :meId', { meId });
-			}))
 			.orderBy('note.id', 'DESC')
-			.limit(SEED_INTERACTION_EVENT_FETCH_LIMIT)
-			.getRawMany<{ id: string; userId: string; replyUserId: string | null; renoteUserId: string | null }>();
+			.limit(SEED_INTERACTION_EVENT_FETCH_LIMIT);
 
-		for (const row of noteRows) {
+		const [myEngagementRows, replyToMeRows, renoteOfMeRows] = await Promise.all([
+			noteSelect()
+				.andWhere('note.userId = :meId', { meId })
+				.andWhere(new Brackets(qb => {
+					qb.where('note.replyUserId IS NOT NULL').orWhere('note.renoteUserId IS NOT NULL');
+				}))
+				.getRawMany<{ id: string; userId: string; replyUserId: string | null; renoteUserId: string | null }>(),
+			noteSelect()
+				.andWhere('note.replyUserId = :meId', { meId })
+				.getRawMany<{ id: string; userId: string; replyUserId: string | null; renoteUserId: string | null }>(),
+			noteSelect()
+				.andWhere('note.renoteUserId = :meId', { meId })
+				.getRawMany<{ id: string; userId: string; replyUserId: string | null; renoteUserId: string | null }>(),
+		]);
+
+		// 同一ノートが複数クエリに該当し得る（自分への返信かつ自分のノートの引用RN等）ため id で重複排除。
+		const seenNoteIds = new Set<string>();
+		for (const row of [...myEngagementRows, ...replyToMeRows, ...renoteOfMeRows]) {
+			if (seenNoteIds.has(row.id)) continue;
+			seenNoteIds.add(row.id);
 			const related = new Set<string>();
 			if (row.userId === meId) {
 				if (row.replyUserId != null && followeeSet.has(row.replyUserId)) related.add(row.replyUserId);
@@ -366,22 +395,31 @@ export class HanamiUserRecommendationService {
 			for (const userId of related) this.addActivity(signals, userId, row.id, now);
 		}
 
-		const reactionRows = await this.noteReactionsRepository.createQueryBuilder('reaction')
+		// リアクションも reaction.userId / note.userId のORを分割
+		// （自分が付けた分は note_reaction(userId,id) 複合、自分のノートに付いた分は note(userId,id)→noteId で引ける）。
+		const reactionSelect = () => this.noteReactionsRepository.createQueryBuilder('reaction')
 			.select('reaction.id', 'id')
 			.addSelect('reaction.userId', 'reactionUserId')
 			.addSelect('note.userId', 'noteUserId')
 			.innerJoin('reaction.note', 'note')
-			.where('reaction.id > :sinceId', { sinceId })
+			.andWhere('reaction.id > :sinceId', { sinceId })
 			.andWhere('note.visibility != \'specified\'')
-			.andWhere(new Brackets(qb => {
-				qb.where('reaction.userId = :meId', { meId })
-					.orWhere('note.userId = :meId', { meId });
-			}))
 			.orderBy('reaction.id', 'DESC')
-			.limit(SEED_INTERACTION_EVENT_FETCH_LIMIT)
-			.getRawMany<{ id: string; reactionUserId: string; noteUserId: string }>();
+			.limit(SEED_INTERACTION_EVENT_FETCH_LIMIT);
 
-		for (const row of reactionRows) {
+		const [myReactionRows, receivedReactionRows] = await Promise.all([
+			reactionSelect()
+				.andWhere('reaction.userId = :meId', { meId })
+				.getRawMany<{ id: string; reactionUserId: string; noteUserId: string }>(),
+			reactionSelect()
+				.andWhere('note.userId = :meId', { meId })
+				.getRawMany<{ id: string; reactionUserId: string; noteUserId: string }>(),
+		]);
+
+		const seenReactionIds = new Set<string>();
+		for (const row of [...myReactionRows, ...receivedReactionRows]) {
+			if (seenReactionIds.has(row.id)) continue;
+			seenReactionIds.add(row.id);
 			if (row.reactionUserId === meId && followeeSet.has(row.noteUserId)) {
 				this.addActivity(signals, row.noteUserId, row.id, now);
 			} else if (row.noteUserId === meId && followeeSet.has(row.reactionUserId)) {
@@ -389,6 +427,7 @@ export class HanamiUserRecommendationService {
 			}
 		}
 
+		await this.redisClient.set(cacheKey, this.serializeSeedSignals(signals), 'EX', SEED_SIGNALS_CACHE_TTL_SECONDS);
 		return signals;
 	}
 

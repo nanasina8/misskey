@@ -227,6 +227,8 @@ export class MiNote {
 	})
 	public userHost: string | null;
 
+	// はなみFoF: 自分宛て返信の抽出用（getSeedInteractionSignals）。NULLが大半なので部分インデックス。
+	@Index('IDX_hanami_note_replyUserId', { where: '"replyUserId" IS NOT NULL' })
 	@Column({
 		...id(),
 		nullable: true,
@@ -240,6 +242,8 @@ export class MiNote {
 	})
 	public replyUserHost: string | null;
 
+	// はなみFoF: 自分のノートをRNした人の抽出用（getSeedInteractionSignals）。NULLが大半なので部分インデックス。
+	@Index('IDX_hanami_note_renoteUserId', { where: '"renoteUserId" IS NOT NULL' })
 	@Column({
 		...id(),
 		nullable: true,

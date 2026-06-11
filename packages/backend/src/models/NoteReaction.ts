@@ -10,6 +10,8 @@ import { MiNote } from './Note.js';
 
 @Entity('note_reaction')
 @Index(['userId', 'noteId'], { unique: true })
+// はなみ: 「ユーザーXの直近リアクション」を時系列範囲で引くための複合（FoFシグナル・リアクション類似軸）。
+@Index('IDX_hanami_note_reaction_userId_id', ['userId', 'id'])
 export class MiNoteReaction {
 	@PrimaryColumn(id())
 	public id: string;
