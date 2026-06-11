@@ -22,6 +22,10 @@ import type Channel from './channel.js';
 
 const MAX_CHANNELS_PER_CONNECTION = 32;
 
+// クライアントの自己申告を信頼せず、接続ごとに同時購読できるノート数を制限する
+// (フロントエンドの上限より十分大きい値にすること)
+const MAX_SUBSCRIBING_NOTES_PER_CONNECTION = 128;
+
 /**
  * Main stream connection
  */
@@ -157,6 +161,8 @@ export default class Connection {
 		if (!payload.id || typeof payload.id !== 'string') return;
 
 		const current = this.subscribingNotes[payload.id] ?? 0;
+		if (current === 0 && Object.keys(this.subscribingNotes).length >= MAX_SUBSCRIBING_NOTES_PER_CONNECTION) return;
+
 		const updated = current + 1;
 		this.subscribingNotes[payload.id] = updated;
 
