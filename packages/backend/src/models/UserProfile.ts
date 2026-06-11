@@ -217,7 +217,7 @@ export class MiUserProfile {
 	public hanamiRecommendationStrength: string;
 
 	@Column('boolean', {
-		default: false,
+		default: true,
 		comment: 'はなみTLの新着ストリームにおすすめノートを自動挿入するか（ユーザー設定）',
 	})
 	public hanamiRecommendationAutoInjectEnabled: boolean;
