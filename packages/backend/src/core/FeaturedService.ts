@@ -119,8 +119,9 @@ export class FeaturedService {
 			.map(([id]) => id);
 	}
 
+	// はなみTL（trending軸のエンゲージ加重・catchup軸）が任意ノートIDのスコア参照に使うため public。
 	@bindThis
-	private async getGlobalNotesScoresWithCache(): Promise<Map<string, number>> {
+	public async getGlobalNotesScoresWithCache(): Promise<Map<string, number>> {
 		const cached = await this.redisClient.get(GLOBAL_NOTES_SCORES_CACHE_KEY);
 		if (cached != null) {
 			return new Map(JSON.parse(cached) as [string, number][]);
