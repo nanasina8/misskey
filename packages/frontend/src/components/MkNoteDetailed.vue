@@ -314,10 +314,12 @@ if (noteViewInterruptors.length > 0) {
 
 const isRenote = Misskey.note.isPureRenote(note);
 const appearNote = getAppearNote(note) ?? note;
-const { $note: $appearNote, subscribe: subscribeManuallyToNoteCapture } = useNoteCapture({
+const { $note: $appearNote, subscribe: subscribeToNoteCapture } = useNoteCapture({
 	note: appearNote,
-	parentNote: note,
 });
+
+// 詳細ページでは表示中ノートの反応を常に最新へ保ちたいため、無条件で購読する
+subscribeToNoteCapture();
 
 const rootEl = useTemplateRef('rootEl');
 const menuButton = useTemplateRef('menuButton');
@@ -457,9 +459,6 @@ async function renote() {
 
 	const { menu } = getRenoteMenu({ note: note, renoteButton });
 	os.popupMenu(menu, renoteButton.value);
-
-	// リノート後は反応が来る可能性があるので手動で購読する
-	subscribeManuallyToNoteCapture();
 }
 
 async function reply() {

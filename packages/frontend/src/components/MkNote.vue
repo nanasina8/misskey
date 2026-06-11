@@ -199,7 +199,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, inject, onMounted, ref, useTemplateRef, provide } from 'vue';
+import { computed, inject, onUnmounted, ref, useTemplateRef, provide, watch } from 'vue';
 import * as mfm from 'mfm-js';
 import * as Misskey from 'misskey-js';
 import { isLink } from '@@/js/is-link.js';
@@ -329,9 +329,8 @@ function onRecommendationAppear() {
 	if (hanamiRecommended.value) reportHanamiSeen(note.id);
 }
 
-const { $note: $appearNote, subscribe: subscribeManuallyToNoteCapture } = useNoteCapture({
+const { $note: $appearNote, subscribe: subscribeToNoteCapture, unsubscribe: unsubscribeFromNoteCapture } = useNoteCapture({
 	note: appearNote,
-	parentNote: note,
 	mock: props.mock,
 });
 
@@ -350,6 +349,34 @@ const isLong = shouldCollapsed(appearNote, urls.value ?? []);
 const collapsed = ref(appearNote.cw == null && isLong);
 const muted = ref(checkMute(appearNote, $i?.mutedWords));
 const hardMuted = ref(props.withHardMute && checkMute(appearNote, $i?.hardMutedWords, true));
+
+// ビューポート内に表示されている間だけノートを購読する
+// (画面外のノートまで購読すると同時購読数が膨らむため)
+if (!props.mock) {
+	const captureObserver = new IntersectionObserver((entries) => {
+		for (const entry of entries) {
+			if (entry.isIntersecting) {
+				subscribeToNoteCapture();
+			} else {
+				unsubscribeFromNoteCapture();
+			}
+		}
+	}, { rootMargin: '150px 0px 150px 0px' });
+
+	watch(rootEl, (el, oldEl) => {
+		if (oldEl) captureObserver.unobserve(oldEl);
+		if (el) {
+			captureObserver.observe(el);
+		} else {
+			unsubscribeFromNoteCapture();
+		}
+	}, { immediate: true });
+
+	onUnmounted(() => {
+		captureObserver.disconnect();
+	});
+}
+
 const showSoftWordMutedWord = computed(() => prefer.s.showSoftWordMutedWord);
 const translation = ref<Misskey.entities.NotesTranslateResponse | null>(null);
 const translating = ref(false);
@@ -519,7 +546,8 @@ async function renote() {
 	const { menu } = getRenoteMenu({ note: note, renoteButton, mock: props.mock });
 	os.popupMenu(menu, renoteButton.value);
 
-	subscribeManuallyToNoteCapture();
+	// リノート後は反応が来る可能性があるので購読する
+	subscribeToNoteCapture();
 }
 
 async function reply() {
@@ -564,6 +592,8 @@ async function react() {
 			const y = rect.top + (el.offsetHeight / 2);
 			const { dispose } = os.popup(MkRippleEffect, { x, y }, {
 				end: () => dispose(),
+			// リアクション後は他の反応が来る可能性があるので購読する
+			subscribeToNoteCapture();
 			});
 		}
 	} else {
@@ -604,6 +634,7 @@ async function react() {
 		}, () => {
 			focus();
 		});
+				subscribeToNoteCapture();
 	}
 }
 
@@ -631,6 +662,7 @@ function toggleReact() {
 		react();
 	} else {
 		undoReact();
+		subscribeToNoteCapture();
 	}
 }
 

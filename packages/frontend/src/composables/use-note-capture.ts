@@ -26,26 +26,23 @@ const fetchEvent = new EventEmitter<{
 
 const pollingQueue = new Map<string, {
 	referenceCount: number;
-	lastAddedAt: number;
 }>();
 
-function pollingEnqueue(note: Pick<Misskey.entities.Note, 'id' | 'createdAt'>) {
+function pollingEnqueue(note: Pick<Misskey.entities.Note, 'id'>) {
 	if (pollingQueue.has(note.id)) {
 		const data = pollingQueue.get(note.id)!;
 		pollingQueue.set(note.id, {
 			...data,
 			referenceCount: data.referenceCount + 1,
-			lastAddedAt: Date.now(),
 		});
 	} else {
 		pollingQueue.set(note.id, {
 			referenceCount: 1,
-			lastAddedAt: Date.now(),
 		});
 	}
 }
 
-function pollingDequeue(note: Pick<Misskey.entities.Note, 'id' | 'createdAt'>) {
+function pollingDequeue(note: Pick<Misskey.entities.Note, 'id'>) {
 	const data = pollingQueue.get(note.id);
 	if (data == null) return;
 
@@ -68,9 +65,7 @@ const POLLING_INTERVAL =
 	MIN_POLLING_INTERVAL;
 
 window.setInterval(() => {
-	const ids = [...pollingQueue.entries()]
-		.filter(([k, v]) => Date.now() - v.lastAddedAt < 1000 * 60 * 5) // 追加されてから一定時間経過したものは省く
-		.map(([k, v]) => k)
+	const ids = [...pollingQueue.keys()]
 		.sort((a, b) => (a > b ? -1 : 1)) // 新しいものを優先するためにIDで降順ソート
 		.slice(0, CAPTURE_MAX);
 
@@ -91,9 +86,9 @@ window.setInterval(() => {
 }, POLLING_INTERVAL);
 
 function pollingSubscribe(props: {
-	note: Pick<Misskey.entities.Note, 'id' | 'createdAt'>;
+	note: Pick<Misskey.entities.Note, 'id'>;
 	$note: ReactiveNoteData;
-}) {
+}): () => void {
 	const { note, $note } = props;
 
 	function onFetched(data: Pick<Misskey.entities.Note, 'reactions' | 'reactionEmojis'>): void {
@@ -105,15 +100,20 @@ function pollingSubscribe(props: {
 	pollingEnqueue(note);
 	fetchEvent.on(note.id, onFetched);
 
-	onUnmounted(() => {
+	return () => {
 		pollingDequeue(note);
 		fetchEvent.off(note.id, onFetched);
-	});
+	};
 }
 
+// 同時にリアルタイム購読するノート数の上限(超過分はポーリングにフォールバック)
+// バックエンド側にも接続ごとの購読数上限があるため、それを超えない値にすること
+const REALTIME_CAPTURE_MAX = 50;
+let realtimeCaptureCount = 0;
+
 function realtimeSubscribe(props: {
-	note: Pick<Misskey.entities.Note, 'id' | 'createdAt'>;
-}): void {
+	note: Pick<Misskey.entities.Note, 'id'>;
+}): () => void {
 	const note = props.note;
 	const connection = useStream();
 
@@ -172,11 +172,13 @@ function realtimeSubscribe(props: {
 
 	capture(true);
 	connection.on('_connected_', onStreamConnected);
+	realtimeCaptureCount++;
 
-	onUnmounted(() => {
+	return () => {
 		decapture(true);
 		connection.off('_connected_', onStreamConnected);
-	});
+		realtimeCaptureCount--;
+	};
 }
 
 export type ReactiveNoteData = {
@@ -189,15 +191,23 @@ export type ReactiveNoteData = {
 
 const noReaction = Symbol();
 
+/**
+ * ノートのリアクション等の更新イベントを購読する。
+ * 購読の開始・解除のタイミングは呼び出し側が制御する:
+ * - MkNote(タイムライン等)はビューポート内に表示されている間だけ購読する
+ * - MkNoteDetailed(詳細ページ)は表示中ずっと購読する
+ * subscribe/unsubscribeは冪等で、何度呼んでも多重購読にはならない。
+ * アンマウント時には自動で購読解除される。
+ */
 export function useNoteCapture(props: {
 	note: Misskey.entities.Note;
-	parentNote: Misskey.entities.Note | null;
 	mock?: boolean;
 }): {
 		$note: Reactive<ReactiveNoteData>;
 		subscribe: () => void;
+		unsubscribe: () => void;
 	} {
-	const { note, parentNote, mock } = props;
+	const { note, mock } = props;
 
 	const $note = reactive<ReactiveNoteData>({
 		reactions: Object.entries(note.reactions).reduce((acc, [name, count]) => {
@@ -280,61 +290,39 @@ export function useNoteCapture(props: {
 		$note.pollChoices = choices;
 	}
 
+	let unsubscriber: (() => void) | null = null;
+
 	function subscribe() {
 		if (mock) {
 			// モックモードでは購読しない
 			return;
 		}
 
-		if ($i && store.s.realtimeMode) {
-			realtimeSubscribe({
-				note,
-			});
+		if (unsubscriber != null) return; // すでに購読している
+
+		if ($i && store.s.realtimeMode && realtimeCaptureCount < REALTIME_CAPTURE_MAX) {
+			unsubscriber = realtimeSubscribe({ note });
 		} else {
-			pollingSubscribe({
-				note,
-				$note,
-			});
+			unsubscriber = pollingSubscribe({ note, $note });
 		}
+	}
+
+	function unsubscribe() {
+		if (unsubscriber == null) return;
+		unsubscriber();
+		unsubscriber = null;
 	}
 
 	onUnmounted(() => {
 		noteEvents.off(`reacted:${note.id}`, onReacted);
 		noteEvents.off(`unreacted:${note.id}`, onUnreacted);
 		noteEvents.off(`pollVoted:${note.id}`, onPollVoted);
+		unsubscribe();
 	});
-
-	// 投稿からある程度経過している(=タイムラインを遡って表示した)ノートは、イベントが発生する可能性が低いためそもそも購読しない
-	// ただし「リノートされたばかりの過去のノート」(= parentNoteが存在し、かつparentNoteの投稿日時が最近)はイベント発生が考えられるため購読する
-	// TODO: デバイスとサーバーの時計がズレていると不具合の元になるため、ズレを検知して警告を表示するなどのケアが必要かもしれない
-	if (parentNote == null) {
-		if ((Date.now() - new Date(note.createdAt).getTime()) > 1000 * 60 * 5) { // 5min
-			// リノートで表示されているノートでもないし、投稿からある程度経過しているので自動で購読しない
-			return {
-				$note,
-				subscribe: () => {
-					subscribe();
-				},
-			};
-		}
-	} else {
-		if ((Date.now() - new Date(parentNote.createdAt).getTime()) > 1000 * 60 * 5) { // 5min
-			// リノートで表示されているノートだが、リノートされてからある程度経過しているので自動で購読しない
-			return {
-				$note,
-				subscribe: () => {
-					subscribe();
-				},
-			};
-		}
-	}
-
-	subscribe();
 
 	return {
 		$note,
-		subscribe: () => {
-			// すでに購読しているので何もしない
-		},
+		subscribe,
+		unsubscribe,
 	};
 }
