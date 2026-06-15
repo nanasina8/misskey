@@ -194,6 +194,21 @@ const mfmParams = ref<string[]>([]);
 const select = ref(-1);
 const zIndex = os.claimZIndex('high');
 
+// ユーザー検索(メンション補完)のデバウンス用。キー入力ごとにAPIを叩くのを抑制する。
+const USER_SEARCH_DEBOUNCE_MS = 200;
+let userSearchTimer: number | null = null;
+// 発火したリクエストの世代番号。新しい入力が来たら古いリクエストの結果を破棄するために使う。
+let userSearchSeq = 0;
+
+function cancelPendingUserSearch() {
+	if (userSearchTimer !== null) {
+		window.clearTimeout(userSearchTimer);
+		userSearchTimer = null;
+	}
+	// 進行中のリクエストの結果を無効化する(世代を進める)
+	userSearchSeq++;
+}
+
 function completeMfmParam(param: string) {
 	if (props.type !== 'mfmParam') throw new Error('Invalid type');
 	complete('mfmParam', props.q.params.toSpliced(-1, 1, param).join(','));
@@ -235,31 +250,46 @@ function exec() {
 	}
 	if (props.type === 'user') {
 		if (!props.q) {
+			cancelPendingUserSearch();
 			users.value = [];
 			fetching.value = false;
 			return;
 		}
 
-		const cacheKey = `autocomplete:user:${props.q}`;
+		const q = props.q;
+		const cacheKey = `autocomplete:user:${q}`;
 		const cache = sessionStorage.getItem(cacheKey);
 
 		if (cache) {
+			// キャッシュヒットはデバウンスせず即時反映(同一プレフィックスの再入力は軽い)
+			cancelPendingUserSearch();
 			users.value = JSON.parse(cache);
 			fetching.value = false;
-		} else {
-			const [username, host] = props.q.toString().split('@');
+			return;
+		}
+
+		// キャッシュミスはデバウンスしてからAPIを叩く。
+		// 1キーストロークごとの無駄打ちと、巨大なユーザーテーブルへの検索連打を抑える。
+		cancelPendingUserSearch();
+		fetching.value = true;
+		const reqSeq = userSearchSeq;
+		userSearchTimer = window.setTimeout(() => {
+			userSearchTimer = null;
+			const [username, host] = q.toString().split('@');
 			misskeyApi('users/search-by-username-and-host', {
 				username: username,
 				host: host,
 				limit: 10,
 				detail: false,
 			}).then(searchedUsers => {
+				// 発火後により新しい入力があった場合は結果を破棄(順序逆転・チラつき防止)
+				if (reqSeq !== userSearchSeq) return;
 				users.value = searchedUsers as any[];
 				fetching.value = false;
 				// キャッシュ
 				sessionStorage.setItem(cacheKey, JSON.stringify(searchedUsers));
 			});
-		}
+		}, USER_SEARCH_DEBOUNCE_MS);
 	} else if (props.type === 'hashtag') {
 		if (!props.q || props.q === '') {
 			hashtags.value = JSON.parse(miLocalStorage.getItem('hashtags') ?? '[]');
@@ -423,6 +453,9 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+	// 破棄後にAPIが走ったり、その結果でstateを触ったりしないようにする
+	cancelPendingUserSearch();
+
 	props.textarea.removeEventListener('keydown', onKeydown);
 
 	window.document.body.removeEventListener('mousedown', onMousedown);
