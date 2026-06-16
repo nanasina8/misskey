@@ -3619,6 +3619,12 @@ _hana:
       trending: "トレンド"
       trendingTerm: "トレンド: {term}"
       fof: "おすすめユーザー"
+  _explore:
+    mediaFilter: "みつけるの画像・動画の表示"
+    mediaFilterDescription: "みつける（人気の投稿）に表示するメディアを選びます。この設定はみつけるにのみ適用されます。"
+    mediaFilterAll: "すべて表示"
+    mediaFilterHideSensitive: "センシティブな画像・動画を表示しない"
+    mediaFilterHideMedia: "画像・動画があるものを表示しない"
   _roles:
     createdBefore: "作成日時（タイムスタンプ）が～以前"
     durationBasedLockdownAvailable: "期間ベースのロックダウンの利用を許可"

@@ -71,6 +71,17 @@
 				</MkFolder>
 			</div>
 		</FormSection>
+
+		<FormSection>
+			<template #label>{{ exploreI18n.mediaFilter }}</template>
+			<template #description>{{ exploreI18n.mediaFilterDescription }}</template>
+
+			<MkRadios v-model="exploreMediaFilter" @update:modelValue="saveExploreMediaFilter">
+				<option value="all">{{ exploreI18n.mediaFilterAll }}</option>
+				<option value="hideSensitive">{{ exploreI18n.mediaFilterHideSensitive }}</option>
+				<option value="hideMedia">{{ exploreI18n.mediaFilterHideMedia }}</option>
+			</MkRadios>
+		</FormSection>
 	</div>
 </SearchMarker>
 </template>
@@ -99,7 +110,9 @@ type AxisLevel = 'off' | 'low' | 'normal' | 'high';
 type RecommendationStrength = 'low' | 'normal' | 'high' | 'veryHigh';
 type RecommendationAutoInjectStrength = 'low' | 'normal' | 'high';
 type PresetKey = 'balanced' | 'popular' | 'discover' | 'topic';
+type ExploreMediaFilter = 'all' | 'hideSensitive' | 'hideMedia';
 type RecommendationAccount = typeof $i & {
+	exploreMediaFilter?: ExploreMediaFilter;
 	hanamiRecommendationEnabled?: boolean;
 	hanamiRecommendationStrength?: RecommendationStrength;
 	hanamiRecommendationAutoInjectEnabled?: boolean;
@@ -127,6 +140,7 @@ type RecommendationI18n = typeof i18n.ts._hana._recommendation & {
 
 const account = $i as RecommendationAccount;
 const recommendationI18n = i18n.ts._hana._recommendation as RecommendationI18n;
+const exploreI18n = (i18n.ts._hana as typeof i18n.ts._hana & { _explore: { mediaFilter: string; mediaFilterDescription: string; mediaFilterAll: string; mediaFilterHideSensitive: string; mediaFilterHideMedia: string } })._explore;
 
 const AXES: AxisKey[] = ['popular', 'reactionSimilar', 'catchup', 'trending', 'fof'];
 const AXIS_ICON: Record<AxisKey, string> = { popular: 'ti-flame', reactionSimilar: 'ti-heart-handshake', catchup: 'ti-history', trending: 'ti-trending-up', fof: 'ti-users' };
@@ -165,6 +179,7 @@ const enabled = ref<boolean>(account.hanamiRecommendationEnabled ?? true);
 const strength = ref<RecommendationStrength>(account.hanamiRecommendationStrength ?? 'high');
 const autoInjectEnabled = ref<boolean>(account.hanamiRecommendationAutoInjectEnabled ?? true);
 const autoInjectStrength = ref<RecommendationAutoInjectStrength>(account.hanamiRecommendationAutoInjectStrength ?? 'low');
+const exploreMediaFilter = ref<ExploreMediaFilter>(account.exploreMediaFilter ?? 'all');
 const axisLevels = reactive<Record<AxisKey, AxisLevel>>({
 	popular: axisInitial('popular'),
 	reactionSimilar: axisInitial('reactionSimilar'),
@@ -202,6 +217,12 @@ async function saveCurrentState() {
 	const accountPatch = buildAccountPatch();
 	await misskeyApi('i/update', accountPatch as never);
 	updateCurrentAccountPartial(accountPatch as unknown as Parameters<typeof updateCurrentAccountPartial>[0]);
+}
+
+async function saveExploreMediaFilter() {
+	const patch = { exploreMediaFilter: exploreMediaFilter.value };
+	await misskeyApi('i/update', patch as never);
+	updateCurrentAccountPartial(patch as unknown as Parameters<typeof updateCurrentAccountPartial>[0]);
 }
 
 async function save() {

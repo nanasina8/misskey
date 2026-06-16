@@ -27,7 +27,7 @@ import { i18n } from '@/i18n.js';
 import { Paginator } from '@/utility/paginator.js';
 
 const paginatorForNotes = markRaw(new Paginator('notes/featured', {
-	limit: 10,
+	limit: 20,
 }));
 
 const paginatorForPolls = markRaw(new Paginator('notes/polls/recommendation', {
