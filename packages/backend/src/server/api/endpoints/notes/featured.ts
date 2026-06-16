@@ -72,11 +72,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				if (ps.channelId) {
 					return this.featuredService.getInChannelNotesRanking(ps.channelId, 50);
 				}
-				if (me) {
-					// ログイン済み: パーソナライズランキング
-					return this.featuredService.getPersonalizedNotesRanking(me.id, 100);
-				}
-				// 未ログイン: グローバルランキング（3分キャッシュ）
+				// みつけるは完全グローバル: ログイン有無に関わらず全員同じ母集団・順位（差分はNSFW/ミュートのみ）。
 				if (this.globalNotesRankingCacheLastFetchedAt !== 0 && (Date.now() - this.globalNotesRankingCacheLastFetchedAt < 1000 * 60 * 3)) {
 					return this.globalNotesRankingCache;
 				}
@@ -89,7 +85,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			// スナップショットカーソル: 先頭ページ（untilId なし）でランキングを固定し、
 			// 続きページはその固定列から続きを返す。スコア順表示を保ちつつ、60秒ランキングキャッシュの
 			// 変動による重複/飛び/途中終了を防ぐ。
-			const snapshotKey = me ? `featuredNotesRankingSnapshot:${me.id}:${ps.channelId ?? 'global'}` : null;
+			const snapshotKey = me ? `featuredNotesRankingSnapshot:${ps.channelId ?? 'global'}` : null;
 
 			let ranked: string[];
 			if (!ps.untilId) {
@@ -122,12 +118,14 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			const [
 				userIdsWhoMeMuting,
 				userIdsWhoBlockingMe,
-				userMutedInstances,
 			] = me ? await Promise.all([
 				this.cacheService.userMutingsCache.fetch(me.id),
 				this.cacheService.userBlockedCache.fetch(me.id),
-				this.cacheService.userProfileCache.fetch(me.id).then(p => new Set(p.mutedInstances)),
-			]) : [new Set<string>(), new Set<string>(), new Set<string>()];
+			]) : [new Set<string>(), new Set<string>()];
+
+			const myProfile = me ? await this.cacheService.userProfileCache.fetch(me.id) : null;
+			const userMutedInstances = myProfile ? new Set(myProfile.mutedInstances) : new Set<string>();
+			const mediaFilter = myProfile ? myProfile.exploreMediaFilter : 'all';
 
 			const query = this.notesRepository.createQueryBuilder('note')
 				.where('note.id IN (:...noteIds)', { noteIds: candidateIds })
@@ -141,6 +139,15 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			this.queryService.generateBlockedHostQueryForNote(query);
 			this.queryService.generateSuspendedUserQueryForNote(query);
+
+			// みつけるのメディアフィルタ（ユーザー設定）。候補は最大300件に限定済みなので drive_file 参照でも安い。
+			if (mediaFilter === 'hideMedia') {
+				query.andWhere('NOT EXISTS (SELECT 1 FROM "drive_file" df WHERE df.id = ANY(note."fileIds") AND (df."type" LIKE \'image/%\' OR df."type" LIKE \'video/%\'))');
+			} else if (mediaFilter === 'hideSensitive') {
+				query
+					.andWhere('NOT EXISTS (SELECT 1 FROM "drive_file" df WHERE df.id = ANY(note."fileIds") AND df."isSensitive" = true)')
+					.andWhere('(channel."isSensitive" IS NULL OR channel."isSensitive" = false)');
+			}
 
 			const fetchedNotes = (await query.getMany()).filter(note => {
 				if (me && isUserRelated(note, userIdsWhoBlockingMe)) return false;

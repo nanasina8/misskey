@@ -479,6 +479,11 @@ export const packedMeDetailedOnlySchema = {
 			type: 'boolean',
 			nullable: false, optional: false,
 		},
+		exploreMediaFilter: {
+			type: 'string',
+			enum: ['all', 'hideSensitive', 'hideMedia'],
+			nullable: false, optional: false,
+		},
 		hanamiRecommendationEnabled: {
 			type: 'boolean',
 			nullable: false, optional: true,

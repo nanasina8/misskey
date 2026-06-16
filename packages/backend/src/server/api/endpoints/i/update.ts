@@ -193,6 +193,7 @@ export const paramDef = {
 		isCat: { type: 'boolean' },
 		isInHanaMode: { type: 'boolean' },
 		injectFeaturedNote: { type: 'boolean' },
+		exploreMediaFilter: { type: 'string', enum: ['all', 'hideSensitive', 'hideMedia'] },
 		hanamiRecommendationEnabled: { type: 'boolean' },
 		hanamiRecommendationStrength: { type: 'string', enum: ['low', 'normal', 'high', 'veryHigh'] },
 		hanamiRecommendationAutoInjectEnabled: { type: 'boolean' },
@@ -400,6 +401,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (typeof ps.isCat === 'boolean') updates.isCat = ps.isCat;
 			if (typeof ps.isInHanaMode === 'boolean') updates.isInHanaMode = ps.isInHanaMode;
 			if (typeof ps.injectFeaturedNote === 'boolean') profileUpdates.injectFeaturedNote = ps.injectFeaturedNote;
+			if (ps.exploreMediaFilter !== undefined) profileUpdates.exploreMediaFilter = ps.exploreMediaFilter;
 			if (typeof ps.hanamiRecommendationEnabled === 'boolean') profileUpdates.hanamiRecommendationEnabled = ps.hanamiRecommendationEnabled;
 			if (ps.hanamiRecommendationStrength !== undefined) profileUpdates.hanamiRecommendationStrength = ps.hanamiRecommendationStrength;
 			if (typeof ps.hanamiRecommendationAutoInjectEnabled === 'boolean') profileUpdates.hanamiRecommendationAutoInjectEnabled = ps.hanamiRecommendationAutoInjectEnabled;

@@ -204,6 +204,12 @@ export class MiUserProfile {
 	})
 	public injectFeaturedNote: boolean;
 
+	@Column('varchar', {
+		length: 32, default: 'all',
+		comment: 'みつける(featured)のメディア表示フィルタ: all | hideSensitive | hideMedia(画像/動画)',
+	})
+	public exploreMediaFilter: string;
+
 	@Column('boolean', {
 		default: true,
 		comment: 'はなみTLにおすすめノートを注入するか（ユーザー設定）',
