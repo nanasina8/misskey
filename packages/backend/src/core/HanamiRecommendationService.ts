@@ -122,6 +122,7 @@ type ScoredCandidate = {
 	noteId: string;
 	userId?: MiUser['id'];
 	score: number;
+	topContribution?: number; // 同一ノートを複数軸で合算するときの最大単独寄与
 	source: RecSource;
 	reason: RecReasonCode;
 	term?: string; // trending のとき該当用語
@@ -129,6 +130,7 @@ type ScoredCandidate = {
 };
 
 export type RecReasonMeta = { source: RecSource; reason: RecReasonCode; term?: string; sources?: RecSource[] };
+export type HanamiAutoInjectItem = { note: Packed<'Note'>; reason: RecReasonMeta };
 export type HanamiAutoInjectStrength = keyof typeof AUTO_INJECT_PRESET;
 export type HanamiAutoInjectPreset = (typeof AUTO_INJECT_PRESET)[HanamiAutoInjectStrength];
 
@@ -245,7 +247,7 @@ export class HanamiRecommendationService {
 			recRatio: this.getRecRatio(profile.hanamiRecommendationStrength),
 			axes: new Set(axisLevels.keys()),
 			axisLevels,
-			showReason: this.meta.hanamiShowRecommendationReason,
+			showReason: profile.hanamiShowRecommendationReason,
 			autoInjectEnabled: profile.hanamiRecommendationAutoInjectEnabled,
 			autoInjectStrength: this.getAutoInjectStrength(profile.hanamiRecommendationAutoInjectStrength),
 		};
@@ -305,7 +307,7 @@ export class HanamiRecommendationService {
 		});
 		if (candidates.length === 0) return homeNotes.slice(0, limit);
 
-		const { recNotes, reasonOf } = await this.fetchAndPackRecNotesWithBackfill(candidates, recTarget, me, { withFiles: opts.withFiles });
+		const { recNotes, reasonOf } = await this.fetchAndPackSafeRecNotesWithBackfill(candidates, recTarget, me, { withFiles: opts.withFiles });
 		if (recNotes.length === 0) return homeNotes.slice(0, limit);
 
 		const { notes, injectedIds } = this.injectIntoSlots(homeNotes, recNotes, recTarget, limit);
@@ -348,7 +350,6 @@ export class HanamiRecommendationService {
 		axisMaxShare: Record<RecSource, number>;
 	}): ScoredCandidate[] {
 		const usedByAxis = new Map<RecSource, number>();
-		const deferred: ScoredCandidate[] = [];
 		const out: ScoredCandidate[] = [];
 
 		for (const candidate of candidates) {
@@ -359,17 +360,33 @@ export class HanamiRecommendationService {
 			if (used < max) {
 				out.push(candidate);
 				usedByAxis.set(candidate.source, used + 1);
-			} else {
-				deferred.push(candidate);
 			}
 		}
 
-		for (const candidate of deferred) {
-			if (out.length >= opts.limit) break;
-			out.push(candidate);
-		}
-
 		return out;
+	}
+
+	private mergeCandidates(lists: ScoredCandidate[][]): ScoredCandidate[] {
+		const merged = new Map<string, ScoredCandidate>();
+		for (const list of lists) {
+			for (const c of list) {
+				const exist = merged.get(c.noteId);
+				if (exist == null) {
+					merged.set(c.noteId, { ...c, topContribution: c.score, sources: [c.source] });
+				} else {
+					exist.score += c.score;
+					exist.userId ??= c.userId;
+					exist.sources?.push(c.source);
+					if (c.score > (exist.topContribution ?? 0)) {
+						exist.topContribution = c.score;
+						exist.source = c.source;
+						exist.reason = c.reason;
+						exist.term = c.term;
+					}
+				}
+			}
+		}
+		return [...merged.values()];
 	}
 
 	@bindThis
@@ -394,28 +411,8 @@ export class HanamiRecommendationService {
 
 		// 軸を合算。同一ノートは weight 付きスコアを足し、最大寄与の軸を reason にする。
 		// sources には寄与した全軸を残す（効果測定ログで軸被り率を出すため）。
-		const merged = new Map<string, ScoredCandidate>();
-		for (const list of lists) {
-			for (const c of list) {
-				const exist = merged.get(c.noteId);
-				if (exist == null) {
-					merged.set(c.noteId, { ...c, sources: [c.source] });
-				} else {
-					const prevTop = exist.score;
-					exist.score += c.score;
-					exist.userId ??= c.userId;
-					exist.sources?.push(c.source);
-					if (c.score > prevTop) {
-						exist.source = c.source;
-						exist.reason = c.reason;
-						exist.term = c.term;
-					}
-				}
-			}
-		}
-
 		const filtered: ScoredCandidate[] = [];
-		for (const c of Array.from(merged.values()).sort((a, b) => b.score - a.score)) {
+		for (const c of this.mergeCandidates(lists).sort((a, b) => b.score - a.score)) {
 			if (opts.excluded(c)) continue;
 			if (opts.newerThan != null && c.noteId >= opts.newerThan) continue;
 			filtered.push(c);
@@ -555,7 +552,7 @@ export class HanamiRecommendationService {
 	 * public/home のみ・チャンネル除外。スコア順（candidates順）を維持。reason マップも返す。
 	 */
 	@bindThis
-	private async fetchAndPackRecNotes(candidates: ScoredCandidate[], me: MiLocalUser, opts: { withFiles: boolean }): Promise<{ recNotes: Packed<'Note'>[]; reasonOf: Map<string, RecReasonMeta> }> {
+	private async fetchAndPackSafeRecNotes(candidates: ScoredCandidate[], me: MiLocalUser, opts: { withFiles: boolean }): Promise<{ recNotes: Packed<'Note'>[]; reasonOf: Map<string, RecReasonMeta> }> {
 		const noteIds = candidates.map(c => c.noteId);
 		const reasonOf = new Map(candidates.map(c => [c.noteId, { source: c.source, reason: c.reason, term: c.term, sources: c.sources }]));
 		if (noteIds.length === 0) return { recNotes: [], reasonOf };
@@ -612,7 +609,7 @@ export class HanamiRecommendationService {
 	}
 
 	@bindThis
-	private async fetchAndPackRecNotesWithBackfill(candidates: ScoredCandidate[], target: number, me: MiLocalUser, opts: { withFiles: boolean }): Promise<{ recNotes: Packed<'Note'>[]; reasonOf: Map<string, RecReasonMeta> }> {
+	private async fetchAndPackSafeRecNotesWithBackfill(candidates: ScoredCandidate[], target: number, me: MiLocalUser, opts: { withFiles: boolean }): Promise<{ recNotes: Packed<'Note'>[]; reasonOf: Map<string, RecReasonMeta> }> {
 		const recNotes: Packed<'Note'>[] = [];
 		const reasonOf = new Map<string, RecReasonMeta>();
 		const packedIds = new Set<string>();
@@ -620,7 +617,7 @@ export class HanamiRecommendationService {
 
 		for (let offset = 0; offset < candidates.length && recNotes.length < target; offset += chunkSize) {
 			const chunk = candidates.slice(offset, offset + chunkSize);
-			const packed = await this.fetchAndPackRecNotes(chunk, me, opts);
+			const packed = await this.fetchAndPackSafeRecNotes(chunk, me, opts);
 			for (const [noteId, reason] of packed.reasonOf) reasonOf.set(noteId, reason);
 			for (const note of packed.recNotes) {
 				if (packedIds.has(note.id)) continue;
@@ -755,7 +752,7 @@ export class HanamiRecommendationService {
 	}
 
 	@bindThis
-	public async getAutoInjectNotes(me: MiLocalUser, opts: { limit: number; withFiles: boolean; excludedNoteIds?: ReadonlySet<string>; }): Promise<Packed<'Note'>[]> {
+	public async getAutoInjectNotes(me: MiLocalUser, opts: { limit: number; withFiles: boolean; excludedNoteIds?: ReadonlySet<string>; }): Promise<HanamiAutoInjectItem[]> {
 		const settings = await this.resolveSettings(me.id);
 		if (!settings.enabled || !settings.autoInjectEnabled || settings.axes.size === 0 || opts.limit <= 0) return [];
 
@@ -782,16 +779,15 @@ export class HanamiRecommendationService {
 				homeSeenNoteIds: homeSeen,
 			},
 		});
-		const { recNotes, reasonOf } = await this.fetchAndPackRecNotesWithBackfill(candidates, opts.limit, me, { withFiles: opts.withFiles });
+		// RESTとstreamで同じ安全境界を通す。ここから返るノートにchannel固有の推薦フィルターを重ねない。
+		const { recNotes, reasonOf } = await this.fetchAndPackSafeRecNotesWithBackfill(candidates, opts.limit, me, { withFiles: opts.withFiles });
 		const notes = recNotes.slice(0, opts.limit);
 		this.markRecommendationMeta(notes, notes.map(note => note.id), reasonOf, settings.showReason);
 
-		if (notes.length > 0) {
-			const fofUserIds = notes.filter(note => reasonOf.get(note.id)?.source === 'fof').map(note => note.userId);
-			await this.recordServedWithLog(me.id, notes.map(note => note.id), reasonOf, notes.map(note => note.userId), fofUserIds);
-		}
-
-		return notes;
+		return notes.flatMap(note => {
+			const reason = reasonOf.get(note.id);
+			return reason == null ? [] : [{ note, reason }];
+		});
 	}
 
 	// ───────────────────────── served / seen / ログ ─────────────────────────
@@ -815,6 +811,20 @@ export class HanamiRecommendationService {
 		// FoFユーザー単位の既出記録。はなみTL/ストリーム注入経路でも疲労を効かせる（フォロー候補エンドポイント以外でも記録）。
 		if (fofUserIds.length > 0) await this.hanamiUserRecommendationService.recordShown(userId, fofUserIds);
 		await this.logServed(userId, noteIds, reasonOf);
+	}
+
+	@bindThis
+	public async recordAutoInjectedServed(userId: MiUser['id'], items: HanamiAutoInjectItem[]): Promise<void> {
+		if (items.length === 0) return;
+		const reasonOf = new Map(items.map(item => [item.note.id, item.reason]));
+		const fofUserIds = items.filter(item => item.reason.source === 'fof').map(item => item.note.userId);
+		await this.recordServedWithLog(
+			userId,
+			items.map(item => item.note.id),
+			reasonOf,
+			items.map(item => item.note.userId),
+			fofUserIds,
+		);
 	}
 
 	@bindThis

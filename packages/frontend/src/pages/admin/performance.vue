@@ -128,13 +128,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 						</template>
 
 						<div class="_gaps">
-							<SearchMarker>
-								<MkSwitch v-model="hanamiRecForm.state.hanamiShowRecommendationReason">
-									<template #label><SearchLabel>{{ i18n.ts._hana._recommendation.showReason }}</SearchLabel><span v-if="hanamiRecForm.modifiedStates.hanamiShowRecommendationReason" class="_modified">{{ i18n.ts.modified }}</span></template>
-									<template #caption><SearchText>{{ i18n.ts._hana._recommendation.showReasonDescription }}</SearchText></template>
-								</MkSwitch>
-							</SearchMarker>
-
 							<MkFolder :defaultOpen="false">
 								<template #icon><i class="ti ti-adjustments"></i></template>
 								<template #label>{{ i18n.ts._hana._recommendation.axes }}</template>
@@ -304,12 +297,11 @@ const fttForm = useForm({
 	fetchInstance(true);
 });
 
-// はなみTL おすすめ: 理由ラベル表示トグル + 軸ごとの available/default（[[hanami-tl-osusume-redesign]]）。
+// はなみTL おすすめ: 軸ごとの available/default（[[hanami-tl-osusume-redesign]]）。
 const axisKeys = ['popular', 'reactionSimilar', 'catchup', 'trending', 'fof'] as const;
 const axisCfg = meta.hanamiRecommendationAxisConfig ?? {};
 
 const hanamiRecForm = useForm({
-	hanamiShowRecommendationReason: meta.hanamiShowRecommendationReason,
 	popularAvailable: axisCfg.popular?.available ?? true,
 	popularDefault: axisCfg.popular?.default ?? true,
 	reactionSimilarAvailable: axisCfg.reactionSimilar?.available ?? true,
@@ -322,7 +314,6 @@ const hanamiRecForm = useForm({
 	fofDefault: axisCfg.fof?.default ?? true,
 }, async (state) => {
 	await os.apiWithDialog('admin/update-meta', {
-		hanamiShowRecommendationReason: state.hanamiShowRecommendationReason,
 		hanamiRecommendationAxisConfig: {
 			popular: { available: state.popularAvailable, default: state.popularDefault },
 			reactionSimilar: { available: state.reactionSimilarAvailable, default: state.reactionSimilarDefault },

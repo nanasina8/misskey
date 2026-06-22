@@ -241,6 +241,12 @@ export class MiUserProfile {
 	public hanamiRecommendationAxes: Record<string, string>;
 
 	@Column('boolean', {
+		default: false,
+		comment: 'はなみTLおすすめに理由ラベルを表示するか（ユーザー設定）',
+	})
+	public hanamiShowRecommendationReason: boolean;
+
+	@Column('boolean', {
 		default: true,
 	})
 	public receiveAnnouncementEmail: boolean;

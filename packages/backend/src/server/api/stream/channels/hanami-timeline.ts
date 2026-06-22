@@ -12,7 +12,7 @@ import { bindThis } from '@/decorators.js';
 import { RoleService } from '@/core/RoleService.js';
 import { isRenotePacked, isQuotePacked } from '@/misc/is-renote.js';
 import type { JsonObject } from '@/misc/json-value.js';
-import { HanamiRecommendationService, type HanamiAutoInjectPreset } from '@/core/HanamiRecommendationService.js';
+import { HanamiRecommendationService, type HanamiAutoInjectItem, type HanamiAutoInjectPreset } from '@/core/HanamiRecommendationService.js';
 import Channel, { type MiChannelService } from '../channel.js';
 
 // auto-inject の重複防止に覚えておく直近送信ノート数（接続単位）。
@@ -87,44 +87,46 @@ class HanamiTimelineChannel extends Channel {
 	@bindThis
 	private async maybeAutoInject(): Promise<void> {
 		await this.refreshAutoInjectPreset();
-		if (this.user == null || this.autoInjectPreset == null) return;
+		const user = this.user;
+		if (user == null || this.autoInjectPreset == null) return;
 
 		this.homeNotesSinceLastAutoRec++;
 		if (this.homeNotesSinceLastAutoRec < this.autoInjectPreset.homeNotesPerInjection || this.autoInjecting) return;
 
 		this.homeNotesSinceLastAutoRec = 0;
 		this.autoInjecting = true;
+		const sentItems: HanamiAutoInjectItem[] = [];
 		try {
-			const notes = await this.hanamiRecommendationService.getAutoInjectNotes(this.user as MiLocalUser, {
+			const items = await this.hanamiRecommendationService.getAutoInjectNotes(user as MiLocalUser, {
 				limit: this.autoInjectPreset.injectCount,
 				withFiles: this.withFiles,
 				excludedNoteIds: this.recentSentNoteIdSet,
 			});
-			for (const note of notes) {
-				await this.sendAutoInjectedNote(note);
+			for (const item of items) {
+				if (this.sendAutoInjectedNote(item.note)) sentItems.push(item);
 			}
 		} catch (err) {
 			// eslint-disable-next-line no-console
 			console.error('hanami rec stream: auto inject failed', err);
 		} finally {
+			if (sentItems.length > 0) {
+				try {
+					await this.hanamiRecommendationService.recordAutoInjectedServed(user.id, sentItems);
+				} catch (err) {
+					// eslint-disable-next-line no-console
+					console.error('hanami rec stream: record served failed', err);
+				}
+			}
 			this.autoInjecting = false;
 		}
 	}
 
 	@bindThis
-	private async sendAutoInjectedNote(note: Packed<'Note'>): Promise<void> {
-		if (this.withFiles && (note.fileIds == null || note.fileIds.length === 0)) return;
-		if (this.recentSentNoteIdSet.has(note.id)) return;
-		if (this.isNoteMutedOrBlocked(note)) return;
-
-		let reactionMutedNote = await this.removeMutedReactions(note);
-		const filtered = await this.noteStreamingHidingService.filter(reactionMutedNote, this.user?.id ?? null);
-		if (!filtered) return;
-		// eslint-disable-next-line no-param-reassign -- 通常ノートと同じく filter 後の Note だけを送る
-		reactionMutedNote = filtered;
-
-		this.send('note', reactionMutedNote);
-		this.rememberSentNote(reactionMutedNote.id);
+	private sendAutoInjectedNote(note: Packed<'Note'>): boolean {
+		if (this.recentSentNoteIdSet.has(note.id)) return false;
+		this.send('note', note);
+		this.rememberSentNote(note.id);
+		return true;
 	}
 
 	@bindThis

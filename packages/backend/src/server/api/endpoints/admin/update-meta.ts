@@ -147,7 +147,6 @@ export const paramDef = {
 		manifestJsonOverride: { type: 'string' },
 		enableFanoutTimeline: { type: 'boolean' },
 		enableFanoutTimelineDbFallback: { type: 'boolean' },
-		hanamiShowRecommendationReason: { type: 'boolean' },
 		hanamiRecommendationAxisConfig: {
 			type: 'object', nullable: false,
 			properties: {
@@ -656,10 +655,6 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			if (ps.enableFanoutTimelineDbFallback !== undefined) {
 				set.enableFanoutTimelineDbFallback = ps.enableFanoutTimelineDbFallback;
-			}
-
-			if (ps.hanamiShowRecommendationReason !== undefined) {
-				set.hanamiShowRecommendationReason = ps.hanamiShowRecommendationReason;
 			}
 
 			if (ps.hanamiRecommendationAxisConfig !== undefined) {

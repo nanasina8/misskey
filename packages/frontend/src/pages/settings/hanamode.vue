@@ -27,6 +27,11 @@
 					<template #caption>{{ i18n.ts._hana._recommendation.enableDescription }}</template>
 				</MkSwitch>
 
+				<MkSwitch v-model="showReason" :disabled="!enabled" @update:modelValue="save">
+					<template #label>{{ i18n.ts._hana._recommendation.showReason }}</template>
+					<template #caption>{{ i18n.ts._hana._recommendation.showReasonDescription }}</template>
+				</MkSwitch>
+
 				<MkRadios v-model="strength" :disabled="!enabled" @update:modelValue="save">
 					<template #label>{{ i18n.ts._hana._recommendation.amount }}</template>
 					<option value="low">{{ i18n.ts._hana._recommendation.amountLow }}</option>
@@ -118,6 +123,7 @@ type RecommendationAccount = typeof $i & {
 	hanamiRecommendationAutoInjectEnabled?: boolean;
 	hanamiRecommendationAutoInjectStrength?: RecommendationAutoInjectStrength;
 	hanamiRecommendationAxes?: Partial<Record<AxisKey, AxisLevel | boolean>>;
+	hanamiShowRecommendationReason?: boolean;
 };
 type RecommendationI18n = typeof i18n.ts._hana._recommendation & {
 	amountVeryHigh: string;
@@ -179,6 +185,7 @@ const enabled = ref<boolean>(account.hanamiRecommendationEnabled ?? true);
 const strength = ref<RecommendationStrength>(account.hanamiRecommendationStrength ?? 'high');
 const autoInjectEnabled = ref<boolean>(account.hanamiRecommendationAutoInjectEnabled ?? true);
 const autoInjectStrength = ref<RecommendationAutoInjectStrength>(account.hanamiRecommendationAutoInjectStrength ?? 'low');
+const showReason = ref<boolean>(account.hanamiShowRecommendationReason ?? false);
 const exploreMediaFilter = ref<ExploreMediaFilter>(account.exploreMediaFilter ?? 'all');
 const axisLevels = reactive<Record<AxisKey, AxisLevel>>({
 	popular: axisInitial('popular'),
@@ -203,6 +210,7 @@ function buildAccountPatch() {
 		hanamiRecommendationStrength: strength.value,
 		hanamiRecommendationAutoInjectEnabled: autoInjectEnabled.value,
 		hanamiRecommendationAutoInjectStrength: autoInjectStrength.value,
+		hanamiShowRecommendationReason: showReason.value,
 		hanamiRecommendationAxes: {
 			popular: axisLevels.popular,
 			reactionSimilar: axisLevels.reactionSimilar,

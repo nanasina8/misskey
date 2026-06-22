@@ -387,10 +387,6 @@ export const meta = {
 				type: 'boolean',
 				optional: false, nullable: false,
 			},
-			hanamiShowRecommendationReason: {
-				type: 'boolean',
-				optional: false, nullable: false,
-			},
 			hanamiRecommendationAxisConfig: {
 				type: 'object',
 				optional: false, nullable: false,
@@ -747,7 +743,6 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				manifestJsonOverride: instance.manifestJsonOverride,
 				enableFanoutTimeline: instance.enableFanoutTimeline,
 				enableFanoutTimelineDbFallback: instance.enableFanoutTimelineDbFallback,
-				hanamiShowRecommendationReason: instance.hanamiShowRecommendationReason,
 				hanamiRecommendationAxisConfig: instance.hanamiRecommendationAxisConfig,
 				perLocalUserUserTimelineCacheMax: instance.perLocalUserUserTimelineCacheMax,
 				perRemoteUserUserTimelineCacheMax: instance.perRemoteUserUserTimelineCacheMax,

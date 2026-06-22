@@ -513,6 +513,10 @@ export const packedMeDetailedOnlySchema = {
 				fof: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
 			},
 		},
+		hanamiShowRecommendationReason: {
+			type: 'boolean',
+			nullable: false, optional: true,
+		},
 		receiveAnnouncementEmail: {
 			type: 'boolean',
 			nullable: false, optional: false,

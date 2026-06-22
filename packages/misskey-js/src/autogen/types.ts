@@ -4162,6 +4162,7 @@ export type components = {
                 /** @enum {string} */
                 fof?: 'off' | 'low' | 'normal' | 'high';
             };
+            hanamiShowRecommendationReason?: boolean;
             receiveAnnouncementEmail: boolean;
             alwaysMarkNsfw: boolean;
             autoSensitive: boolean;
@@ -9548,7 +9549,6 @@ export interface operations {
                         policies: Record<string, never>;
                         enableFanoutTimeline: boolean;
                         enableFanoutTimelineDbFallback: boolean;
-                        hanamiShowRecommendationReason: boolean;
                         hanamiRecommendationAxisConfig: {
                             popular?: {
                                 available?: boolean;
@@ -12916,7 +12916,6 @@ export interface operations {
                     manifestJsonOverride?: string;
                     enableFanoutTimeline?: boolean;
                     enableFanoutTimelineDbFallback?: boolean;
-                    hanamiShowRecommendationReason?: boolean;
                     hanamiRecommendationAxisConfig?: {
                         popular?: {
                             available?: boolean;
@@ -27730,6 +27729,7 @@ export interface operations {
                     hanamiRecommendationAutoInjectEnabled?: boolean;
                     /** @enum {string} */
                     hanamiRecommendationAutoInjectStrength?: 'low' | 'normal' | 'high';
+                    hanamiShowRecommendationReason?: boolean;
                     hanamiRecommendationAxes?: {
                         /** @enum {string} */
                         popular?: 'off' | 'low' | 'normal' | 'high';

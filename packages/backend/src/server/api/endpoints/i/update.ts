@@ -198,6 +198,7 @@ export const paramDef = {
 		hanamiRecommendationStrength: { type: 'string', enum: ['low', 'normal', 'high', 'veryHigh'] },
 		hanamiRecommendationAutoInjectEnabled: { type: 'boolean' },
 		hanamiRecommendationAutoInjectStrength: { type: 'string', enum: ['low', 'normal', 'high'] },
+		hanamiShowRecommendationReason: { type: 'boolean' },
 		hanamiRecommendationAxes: {
 			type: 'object', nullable: false,
 			properties: {
@@ -406,6 +407,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (ps.hanamiRecommendationStrength !== undefined) profileUpdates.hanamiRecommendationStrength = ps.hanamiRecommendationStrength;
 			if (typeof ps.hanamiRecommendationAutoInjectEnabled === 'boolean') profileUpdates.hanamiRecommendationAutoInjectEnabled = ps.hanamiRecommendationAutoInjectEnabled;
 			if (ps.hanamiRecommendationAutoInjectStrength !== undefined) profileUpdates.hanamiRecommendationAutoInjectStrength = ps.hanamiRecommendationAutoInjectStrength;
+			if (typeof ps.hanamiShowRecommendationReason === 'boolean') profileUpdates.hanamiShowRecommendationReason = ps.hanamiShowRecommendationReason;
 			if (ps.hanamiRecommendationAxes !== undefined) {
 				// 既知の軸キーのみ採用（未知キーは無視＝廃止軸 lowExposure の保存値もここで自然に消える）。
 				// 値は量レベル（off/low/normal/high）に正規化。旧booleanは true=normal / false=off。
