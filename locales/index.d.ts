@@ -13444,19 +13444,23 @@ export interface Locale extends ILocale {
              */
             "presets": string;
             /**
-             * バランス
+             * For You標準
              */
             "presetBalanced": string;
             /**
-             * 人気重視
+             * 好みの人気
              */
             "presetPopular": string;
             /**
-             * 発見重視
+             * 近い人多め
+             */
+            "presetClose": string;
+            /**
+             * 新しい発見
              */
             "presetDiscover": string;
             /**
-             * 話題重視
+             * いま話題
              */
             "presetTopic": string;
             /**
@@ -13475,6 +13479,30 @@ export interface Locale extends ILocale {
              * 多め
              */
             "axisLevelHigh": string;
+            /**
+             * 倍率
+             */
+            "axisMultiplier": string;
+            /**
+             * 最大枠の目安
+             */
+            "axisSharePreview": string;
+            /**
+             * 高
+             */
+            "axisConfidenceHigh": string;
+            /**
+             * 低
+             */
+            "axisConfidenceLow": string;
+            /**
+             * なし
+             */
+            "axisConfidenceNone": string;
+            /**
+             * サーバーで無効
+             */
+            "axisDisabledByServer": string;
             /**
              * おすすめの種類ごとに、このサーバーで利用可能にするか・ユーザーの既定でONにするかを設定します。
              */
@@ -13501,7 +13529,19 @@ export interface Locale extends ILocale {
                  */
                 "popular": string;
                 /**
-                 * 好みが近い人に人気
+                 * 全体で人気の投稿
+                 */
+                "globalPopular": string;
+                /**
+                 * 発見枠
+                 */
+                "exploration": string;
+                /**
+                 * 好みが近い人が反応中
+                 */
+                "neighborTrending": string;
+                /**
+                 * 好みに近い作者の投稿
                  */
                 "reactionSimilar": string;
                 /**
@@ -13517,7 +13557,7 @@ export interface Locale extends ILocale {
                  */
                 "trendingTerm": ParameterizedString<"term">;
                 /**
-                 * おすすめユーザー
+                 * おすすめユーザーの投稿
                  */
                 "fof": string;
             };
