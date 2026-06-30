@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 // はなみTL = For You-only ページ（canonical spec §1/§9）。ホームTLは混ぜない（home は notes/timeline の責務）。
-// 6軸＋quota interleave。sinceId/sinceDate は空配列（For You は時系列でない＝§9/§14-D4。上から引っ張る追加挿入は stream channel が担う）。
+// 7軸＋quota interleave。sinceId/sinceDate は空配列（For You は時系列でない＝§9/§14-D4。上から引っ張る追加挿入は stream channel が担う）。
 // untilId は互換入力（次ページ要求トリガ）としてのみ扱い、重複排除は served/seen で行う。
 
 import { Injectable } from '@nestjs/common';

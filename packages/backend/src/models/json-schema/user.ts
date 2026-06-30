@@ -506,11 +506,14 @@ export const packedMeDetailedOnlySchema = {
 			type: 'object',
 			nullable: false, optional: true,
 			properties: {
+				globalPopular: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
+				neighborTrending: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
 				popular: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
 				reactionSimilar: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
 				catchup: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
 				trending: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
 				fof: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
+				exploration: { type: 'string', enum: ['off', 'low', 'normal', 'high'], nullable: false, optional: true },
 			},
 		},
 		hanamiShowRecommendationReason: {

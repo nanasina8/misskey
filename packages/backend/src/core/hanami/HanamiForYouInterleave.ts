@@ -6,16 +6,20 @@
 // はなみ For You の軸・confidence・quota interleave の確定アルゴリズム（canonical spec §6.1/§10）。
 // スコア混合はしない。各軸 top をラウンドロビン＋作者dedup＋上限cap で併合する（実証：スコア混合は人気に占領され破綻）。
 
-export type HanamiAxis =
-	| 'globalPopular'
-	| 'neighborTrending'
-	| 'reactionSimilar'
-	| 'catchup'
-	| 'trending'
-	| 'fof'
-	| 'exploration';
+export const HANAMI_FOR_YOU_AXES = [
+	'globalPopular',
+	'neighborTrending',
+	'reactionSimilar',
+	'catchup',
+	'trending',
+	'fof',
+	'exploration',
+] as const;
+
+export type HanamiAxis = (typeof HANAMI_FOR_YOU_AXES)[number];
 
 export type HanamiConfidence = 'high' | 'low' | 'none';
+export type HanamiAxisLevel = 'off' | 'low' | 'normal' | 'high';
 
 // 軸内候補（score は軸内順位専用。軸をまたいで比較しない＝§6.1-1）。
 export type ForYouCandidate = {
@@ -33,24 +37,33 @@ export type InterleavedCandidate = {
 	sources: HanamiAxis[];
 	term?: string;
 	fallbackOverflow?: boolean;
+	demoted?: boolean; // served/seen のソフト除外で「下方に再表示」した既出（§6.1-5）。
 };
 
 // confidence ごとの軸順（§10）。exploration は専用枠として末尾に足す（§6.1-9/§14-D1）。
 const AXIS_ORDER: Record<HanamiConfidence, HanamiAxis[]> = {
-	high: ['catchup', 'neighborTrending', 'reactionSimilar', 'fof', 'trending', 'globalPopular'],
-	low: ['globalPopular', 'trending', 'fof', 'neighborTrending', 'catchup', 'reactionSimilar'],
+	high: ['globalPopular', 'neighborTrending', 'reactionSimilar', 'trending', 'catchup', 'fof'],
+	low: ['globalPopular', 'neighborTrending', 'trending', 'reactionSimilar', 'catchup', 'fof'],
 	none: ['globalPopular', 'trending', 'fof'],
 };
 
-// AXIS_MAX_SHARE（§10）。cap は上限であり予約枠ではない（§6.1-3/-10。high の合計>1 は正常）。
+// AXIS_MAX_SHARE（§10）。cap は上限であり予約枠ではない（§6.1-3/-10。ceil と候補不足で実表示は揺れる）。
 const AXIS_MAX_SHARE: Record<HanamiConfidence, Partial<Record<HanamiAxis, number>>> = {
-	high: { globalPopular: 0.15, neighborTrending: 0.25, reactionSimilar: 0.25, catchup: 0.30, trending: 0.15, fof: 0.15 },
-	low: { globalPopular: 0.45, neighborTrending: 0.20, reactionSimilar: 0.10, catchup: 0.15, trending: 0.25, fof: 0.20 },
-	none: { globalPopular: 0.70, neighborTrending: 0.00, reactionSimilar: 0.00, catchup: 0.00, trending: 0.25, fof: 0.10 },
+	high: { globalPopular: 0.30, neighborTrending: 0.25, reactionSimilar: 0.15, catchup: 0.07, trending: 0.12, fof: 0.03 },
+	low: { globalPopular: 0.55, neighborTrending: 0.12, reactionSimilar: 0.08, catchup: 0.03, trending: 0.12, fof: 0.02 },
+	none: { globalPopular: 0.75, neighborTrending: 0.00, reactionSimilar: 0.00, catchup: 0.00, trending: 0.12, fof: 0.03 },
 };
 
 // exploration の専用 quota（§10/§14-D1。score には混ぜない独立枠）。
-const EXPLORATION_SHARE: Record<HanamiConfidence, number> = { high: 0.05, low: 0.10, none: 0.10 };
+const EXPLORATION_SHARE: Record<HanamiConfidence, number> = { high: 0.08, low: 0.08, none: 0.10 };
+
+// ユーザーが軸ごとに選ぶ量（切/少/普通/多）の重み。base share に掛けて軸の生重みを作る。
+const AXIS_LEVEL_WEIGHT: Record<HanamiAxisLevel, number> = {
+	off: 0,
+	low: 0.55,
+	normal: 1.0,
+	high: 1.6,
+};
 
 // 作者は原則1ページ AUTHOR_PER_PAGE_CAP 件まで（§6.1-5）。
 const AUTHOR_PER_PAGE_CAP = 2;
@@ -59,10 +72,43 @@ export function hanamiAxisOrder(confidence: HanamiConfidence): HanamiAxis[] {
 	return [...AXIS_ORDER[confidence], 'exploration'];
 }
 
-function axisCap(axis: HanamiAxis, confidence: HanamiConfidence, limit: number): number {
-	const share = axis === 'exploration' ? EXPLORATION_SHARE[confidence] : (AXIS_MAX_SHARE[confidence][axis] ?? 0);
-	if (share <= 0) return 0;
-	return Math.max(1, Math.ceil(limit * share));
+/**
+ * 軸ごとの cap を「有効軸での比率再配分」で決める。
+ *
+ * 生重み w(axis) = base share(confidence) × 量レベル倍率（off=0）。
+ * budget = limit × (軸順の base share 合計)。各 confidence で base 合計は ≈1.0 に調整済なので budget ≈ limit。
+ * cap(axis) = ceil(budget × w / Σw)（w=0 は 0）。
+ *
+ * これにより:
+ *  - 全軸ON/normal → Σw = budget/limit なので cap = ceil(limit×base)＝従来の固定cap と一致（既存挙動を維持）。
+ *  - 軸OFF → w=0 で cap=0、空いた分は有効軸へ比率で回る（page が埋まる）。
+ *  - 1軸だけON → その軸が budget をほぼ総取り（≒ページ全部）。
+ *  - globalPopular / exploration を「多」にすると Σw 内の比率が上がり、実際に増える（§Q1）。
+ * cap はあくまで上限（候補不足/作者cap/ceil で実数は揺れる。§6.1-3/-10）。
+ * axisLevels 未指定時は全軸 normal 扱い（呼び出し側が常に渡す。テスト互換用）。
+ */
+function computeCaps(confidence: HanamiConfidence, limit: number, order: readonly HanamiAxis[], axisLevels?: ReadonlyMap<HanamiAxis, HanamiAxisLevel>): Map<HanamiAxis, number> {
+	const baseOf = (axis: HanamiAxis): number => axis === 'exploration' ? EXPLORATION_SHARE[confidence] : (AXIS_MAX_SHARE[confidence][axis] ?? 0);
+	const weights = new Map<HanamiAxis, number>();
+	let naturalTotal = 0;
+	let totalWeight = 0;
+	for (const axis of order) {
+		const base = baseOf(axis);
+		naturalTotal += base;
+		// axisLevels 未指定＝全軸 normal（従来挙動）。指定時に map に無い軸は OFF 扱い＝有効軸だけで配分する。
+		const level: HanamiAxisLevel = axisLevels == null ? 'normal' : (axisLevels.get(axis) ?? 'off');
+		const w = base > 0 ? base * AXIS_LEVEL_WEIGHT[level] : 0;
+		weights.set(axis, w);
+		totalWeight += w;
+	}
+	const caps = new Map<HanamiAxis, number>(order.map(a => [a, 0]));
+	if (totalWeight <= 0 || naturalTotal <= 0) return caps;
+	const budget = limit * naturalTotal;
+	for (const axis of order) {
+		const w = weights.get(axis) ?? 0;
+		if (w > 0) caps.set(axis, Math.max(1, Math.ceil(budget * w / totalWeight)));
+	}
+	return caps;
 }
 
 /**
@@ -70,20 +116,25 @@ function axisCap(axis: HanamiAxis, confidence: HanamiConfidence, limit: number):
  *
  * - 各軸 candidates は score desc（呼び出し側責務）。同一 note は1件に統合し sources に全軸を残す。
  * - confidence ごとに軸順固定。1巡ごとに各軸から最大1件 round-robin。
- * - 既出/除外/作者上限超過はスキップ。直前作者と同じ作者は round0 では後回し（候補不足の later round で許可）。
- * - cap は上限。軸が枯れたら他軸へ流れるが cap は超えない。
- * - 全体が limit の半分未満なら globalPopular だけ fallback overflow を許可（fallbackOverflow=true）。
- * - 出力は cap 内の最大件数（≈ limit*1.35）。safety filter で落ちた分の backfill 余裕を含む。最終 global sort はしない（§6.1-8）。
+ * - served/seen は **ソフト除外（降格）**: まず新規(tier0)だけで quota を満たし、足りなければ
+ *   seen(tier1)→served(tier2) の順で下方に再表示する（候補が在る限り空にしない＝Twitter式に「下に行けば再会」）。§6.1-5/§6/§9
+ * - 作者上限超過はスキップ。直前作者と同じ作者は round0 では後回し（候補不足の later round で許可）。
+ * - cap は computeCaps で「有効軸での比率再配分」（§Q1）。off軸=0、有効軸だけで budget を量レベル比で分配。
+ *   軸が枯れたら他軸へ流れるが cap は超えない（level=off / share=0 の軸は再表示でも拾わない）。
+ * - 全体が limit の半分未満なら globalPopular(新規) だけ fallback overflow を許可（fallbackOverflow=true）。
+ * - 出力は cap 合計（headroom）まで。safety filter で落ちた分の backfill 余裕を含む。最終 global sort はしない（§6.1-8）。
  */
 export function hanamiInterleave(opts: {
 	confidence: HanamiConfidence;
 	limit: number;
 	axisCandidates: Map<HanamiAxis, ForYouCandidate[]>;
-	isExcluded?: (noteId: string) => boolean;
+	// served/seen の降格層。0=新規 / 1=seen(再表示可) / 2=served(直近・最後の手段)。未指定なら全て新規（=除外なし）。
+	demote?: (noteId: string) => number;
+	axisLevels?: ReadonlyMap<HanamiAxis, HanamiAxisLevel>;
 }): InterleavedCandidate[] {
 	const { confidence, limit } = opts;
 	const order = hanamiAxisOrder(confidence);
-	const isExcluded = opts.isExcluded ?? (() => false);
+	const demote = opts.demote ?? (() => 0);
 
 	// 同一 note の sources / userId / term を統合（§6.1-2）。
 	const merged = new Map<string, { sources: HanamiAxis[]; userId: string | null; term?: string }>();
@@ -97,7 +148,8 @@ export function hanamiInterleave(opts: {
 		}
 	}
 
-	const cap = new Map<HanamiAxis, number>(order.map(a => [a, axisCap(a, confidence, limit)]));
+	const cap = computeCaps(confidence, limit, order, opts.axisLevels); // 有効軸で比率再配分（§Q1）
+	const headroom = [...cap.values()].reduce((a, b) => a + b, 0); // safety backfill 余裕込みの上限
 	const used = new Map<HanamiAxis, number>(order.map(a => [a, 0]));
 	const consumed = new Map<HanamiAxis, Set<number>>(order.map(a => [a, new Set<number>()]));
 	const authorCount = new Map<string, number>();
@@ -105,60 +157,76 @@ export function hanamiInterleave(opts: {
 	const out: InterleavedCandidate[] = [];
 	let lastAuthor: string | null = null;
 
-	const pushPick = (axis: HanamiAxis, c: ForYouCandidate, fallbackOverflow = false): void => {
+	const pushPick = (axis: HanamiAxis, c: ForYouCandidate, flags: { fallbackOverflow?: boolean; demoted?: boolean } = {}): void => {
 		const m = merged.get(c.noteId)!;
 		selected.add(c.noteId);
 		used.set(axis, (used.get(axis) ?? 0) + 1);
 		if (m.userId != null) authorCount.set(m.userId, (authorCount.get(m.userId) ?? 0) + 1);
 		lastAuthor = m.userId ?? null;
-		out.push({ noteId: c.noteId, userId: m.userId, source: axis, sources: [...m.sources], term: m.term, ...(fallbackOverflow ? { fallbackOverflow: true } : {}) });
+		out.push({
+			noteId: c.noteId, userId: m.userId, source: axis, sources: [...m.sources], term: m.term,
+			...(flags.fallbackOverflow ? { fallbackOverflow: true } : {}),
+			...(flags.demoted ? { demoted: true } : {}),
+		});
 	};
 
-	// round-robin。round0 は直前作者制約あり、later round で緩める（mute/filter は緩めない）。§6.1-5
-	let round = 0;
-	for (;;) {
-		let pickedThisRound = false;
-		for (const axis of order) {
-			if ((used.get(axis) ?? 0) >= (cap.get(axis) ?? 0)) continue;
-			const list = opts.axisCandidates.get(axis) ?? [];
-			const done = consumed.get(axis)!;
-			let chosenIdx = -1;
-			let fallbackIdx = -1;
-			for (let i = 0; i < list.length; i++) {
-				if (done.has(i)) continue;
-				const c = list[i];
-				// 既出/除外 は恒久スキップ。
-				if (selected.has(c.noteId) || isExcluded(c.noteId)) { done.add(i); continue; }
-				const author = merged.get(c.noteId)?.userId ?? null;
-				// 作者上限超過 は恒久スキップ（authorCount は増加のみ）。
-				if (author != null && (authorCount.get(author) ?? 0) >= AUTHOR_PER_PAGE_CAP) { done.add(i); continue; }
-				if (fallbackIdx < 0) fallbackIdx = i;
-				if (author == null || author !== lastAuthor) { chosenIdx = i; break; }
+	// round-robin で out を target まで埋める。maxTier 以下の降格層だけ拾う（tier>maxTier は done にせず後段に残す）。
+	// cap は上限（level=off / share=0 の軸は cap=0 で常にスキップ）。round0 は直前作者制約あり、later round で緩める（作者上限は緩めない）。§6.1-5
+	const fill = (maxTier: number, target: number): void => {
+		let round = 0;
+		for (;;) {
+			if (out.length >= target) break;
+			let pickedThisRound = false;
+			for (const axis of order) {
+				if (out.length >= target) break;
+				if ((used.get(axis) ?? 0) >= (cap.get(axis) ?? 0)) continue;
+				const list = opts.axisCandidates.get(axis) ?? [];
+				const done = consumed.get(axis)!;
+				let chosenIdx = -1;
+				let fallbackIdx = -1;
+				for (let i = 0; i < list.length; i++) {
+					if (done.has(i)) continue;
+					const c = list[i];
+					if (selected.has(c.noteId)) { done.add(i); continue; } // 他軸で採用済 → 恒久スキップ
+					if (demote(c.noteId) > maxTier) continue; // この層では見送り（done にしない＝後段で拾う）
+					const author = merged.get(c.noteId)?.userId ?? null;
+					// 作者上限超過 は恒久スキップ（authorCount は増加のみ）。
+					if (author != null && (authorCount.get(author) ?? 0) >= AUTHOR_PER_PAGE_CAP) { done.add(i); continue; }
+					if (fallbackIdx < 0) fallbackIdx = i;
+					if (author == null || author !== lastAuthor) { chosenIdx = i; break; }
+				}
+				const pickIdx = chosenIdx >= 0 ? chosenIdx : (round > 0 ? fallbackIdx : -1);
+				if (pickIdx >= 0) {
+					done.add(pickIdx);
+					pushPick(axis, list[pickIdx], { demoted: demote(list[pickIdx].noteId) > 0 });
+					pickedThisRound = true;
+				}
 			}
-			// round0 は直前作者違いを優先し、同作者しか無ければ今回は見送り（他軸に回す）。later round は fallback 許可。
-			const pickIdx = chosenIdx >= 0 ? chosenIdx : (round > 0 ? fallbackIdx : -1);
-			if (pickIdx >= 0) {
-				done.add(pickIdx);
-				pushPick(axis, list[pickIdx]);
-				pickedThisRound = true;
-			}
+			round++;
+			if (!pickedThisRound) break;
 		}
-		round++;
-		if (!pickedThisRound) break;
-	}
+	};
 
-	// fallback overflow（§6.1-6）: 全体が limit の半分未満なら globalPopular だけ cap を超えて足す。
-	if (out.length < Math.floor(limit / 2)) {
+	// 1) 新規(tier0)だけで quota を満たす（cap が上限。＝従来挙動）。
+	fill(0, Infinity);
+
+	// 2) fallback overflow（§6.1-6）: 全体が limit の半分未満なら globalPopular の新規だけ cap を超えて足す。
+	if ((cap.get('globalPopular') ?? 0) > 0 && out.length < Math.floor(limit / 2)) {
 		const list = opts.axisCandidates.get('globalPopular') ?? [];
 		const done = consumed.get('globalPopular')!;
 		for (let i = 0; i < list.length && out.length < limit; i++) {
 			if (done.has(i)) continue;
 			const c = list[i];
-			if (selected.has(c.noteId) || isExcluded(c.noteId)) continue;
+			if (selected.has(c.noteId) || demote(c.noteId) > 0) continue;
 			done.add(i);
-			pushPick('globalPopular', c, true);
+			pushPick('globalPopular', c, { fallbackOverflow: true });
 		}
 	}
+
+	// 3) ソフト除外 backfill: 新規が1ページに満たなければ seen(tier1)→served(tier2) の順で下方に再表示（§6/§9）。
+	//    cap/level=off は維持（無効軸や share=0 は最後まで拾わない）。これだけで cold-start のリロード空を防げる。
+	if (out.length < limit) fill(1, headroom);
+	if (out.length < limit) fill(2, headroom);
 
 	return out;
 }

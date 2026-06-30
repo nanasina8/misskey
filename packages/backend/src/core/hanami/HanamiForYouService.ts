@@ -9,6 +9,8 @@ import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import type { NotesRepository } from '@/models/_.js';
 import type { MiUser, MiLocalUser } from '@/models/User.js';
+import type { MiMeta } from '@/models/Meta.js';
+import type { MiUserProfile } from '@/models/UserProfile.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { FeaturedService } from '@/core/FeaturedService.js';
 import { CacheService } from '@/core/CacheService.js';
@@ -22,7 +24,9 @@ import { HanamiRecommendationService } from '@/core/HanamiRecommendationService.
 import {
 	hanamiInterleave,
 	hanamiAxisOrder,
+	HANAMI_FOR_YOU_AXES,
 	type HanamiAxis,
+	type HanamiAxisLevel,
 	type HanamiConfidence,
 	type ForYouCandidate,
 } from '@/core/hanami/HanamiForYouInterleave.js';
@@ -52,8 +56,11 @@ const ALS_RUN_KIND = 'als';
 
 // MiniLM taste 再ランク＋aux boost（§5/§6/§14-D7。弱め＝タイブレーク程度）。
 const FORYOU_EMBEDDING_MODEL = 'paraphrase-multilingual-MiniLM-L12-v2';
-const TASTE_RERANK_WEIGHT = 0.3;
-const TASTE_RERANK_AXES = new Set<HanamiAxis>(['globalPopular', 'trending', 'fof']);
+const TASTE_RERANK_WEIGHT_BY_AXIS: Partial<Record<HanamiAxis, number>> = {
+	globalPopular: 0.3,
+	trending: 0.3,
+	fof: 0.45,
+};
 const AUX_PEAK_HOURS = 6; // active_hour_hist 上位 N 時間を「夜型ピーク」とみなす
 const AUX_HOUR_BOOST = 0.1;
 const AUX_MEDIA_DISCOUNT = 0.15;
@@ -61,15 +68,28 @@ const AUX_TEXT_HEAVY_THRESHOLD = 0.2; // mediaReactionRate がこれ未満 = tex
 
 type ReasonMeta = { source: HanamiAxis; sources: HanamiAxis[]; term?: string };
 
-// UI 表示用の理由ラベル。provenance(軸=source) と分離し、意味が重なる軸は同じ表示に寄せて種類を絞る。
-// globalPopular/exploration→人気, reactionSimilar/neighborTrending→好みが近い に統合（frontend は旧5語彙のまま）。
-// provenance(recordServedEvents) は生の軸を保持するのでここでの統合は計測に影響しない。
+type LegacyHanamiAxis = 'popular';
+type HanamiAxisServerConfig = Partial<Record<HanamiAxis | LegacyHanamiAxis, { available?: boolean; default?: boolean }>>;
+type HanamiAxisUserConfig = Partial<Record<HanamiAxis | LegacyHanamiAxis, HanamiAxisLevel | boolean>>;
+
+// 旧5軸設定からの互換解決。新キーがあれば新キーを優先し、無ければ旧キーを既定値として読む。
+const AXIS_CONFIG_KEYS: Record<HanamiAxis, readonly (HanamiAxis | LegacyHanamiAxis)[]> = {
+	globalPopular: ['globalPopular', 'popular'],
+	exploration: ['exploration', 'popular'],
+	neighborTrending: ['neighborTrending', 'reactionSimilar'],
+	reactionSimilar: ['reactionSimilar'],
+	catchup: ['catchup'],
+	trending: ['trending'],
+	fof: ['fof'],
+};
+
+// UI 表示用の理由ラベル。provenance と同じ7軸名を返し、設定画面と表示理由を一致させる。
 const AXIS_TO_UI_REASON: Record<HanamiAxis, string> = {
-	globalPopular: 'popular',
-	exploration: 'popular',
+	globalPopular: 'globalPopular',
+	exploration: 'exploration',
 	trending: 'trending',
 	reactionSimilar: 'reactionSimilar',
-	neighborTrending: 'reactionSimilar',
+	neighborTrending: 'neighborTrending',
 	catchup: 'catchup',
 	fof: 'fof',
 };
@@ -77,7 +97,7 @@ const AXIS_TO_UI_REASON: Record<HanamiAxis, string> = {
 /**
  * はなみTL For You-only サービング（canonical spec §3–§6/§9）。
  *
- * confidence(§10) → 6軸＋exploration 候補生成(§4/§5) → quota interleave(§6.1) → safety pack → served/provenance 記録。
+ * confidence(§10) → 7軸候補生成(§4/§5) → quota interleave(§6.1) → safety pack → served/provenance 記録。
  * ホームTLは混ぜない（§9。home は notes/timeline の責務）。学習・重い計算はバッチ。サーブは事前計算の取り出し＋quota併合のみ。
  *
  * バッチ出力（ALS factor/rec/neighbor・relation）が未生成でも confidence=none で globalPopular/trending/fof/exploration が動く（cold-start）。
@@ -87,6 +107,9 @@ export class HanamiForYouService {
 	constructor(
 		@Inject(DI.db)
 		private db: DataSource,
+
+		@Inject(DI.meta)
+		private meta: MiMeta,
 
 		@Inject(DI.notesRepository)
 		private notesRepository: NotesRepository,
@@ -115,32 +138,36 @@ export class HanamiForYouService {
 		const profile = await this.cacheService.userProfileCache.fetch(me.id);
 		if (!profile.hanamiRecommendationEnabled) return [];
 		const showReason = profile.hanamiShowRecommendationReason;
+		const axisLevels = this.resolveAxisLevels(profile);
+		if (axisLevels.size === 0) return [];
 
-			const followings = await this.cacheService.userFollowingsCache.fetch(me.id);
-			const followeeIds = Object.keys(followings);
+		const followings = await this.cacheService.userFollowingsCache.fetch(me.id);
+		const followeeIds = Object.keys(followings);
 
-			const alsRunId = await this.hanamiForYouBatchService.getLatestReadyRunId(ALS_RUN_KIND);
-			const confidence = await this.computeConfidence(me.id, followeeIds.length, alsRunId);
+		const alsRunId = await this.hanamiForYouBatchService.getLatestReadyRunId(ALS_RUN_KIND);
+		const confidence = await this.computeConfidence(me.id, followeeIds.length, alsRunId);
 
+		// served/seen はソフト除外（降格）。0=新規 / 1=seen(再表示可) / 2=served(直近・最後の手段)。
+		// 新規優先で並べ、新規が尽きたら下方に再表示する（空にしない＝§6/§9）。served は seen より直近なので深く降格。
 		const { served, seen } = await this.hanamiRecommendationService.getServedSeenForExclusion(me.id);
-		const isExcluded = (noteId: string) => served.has(noteId) || seen.has(noteId);
+		const demote = (noteId: string) => (served.has(noteId) ? 2 : seen.has(noteId) ? 1 : 0);
 
-			const axisCandidates = await this.gatherCandidates(me.id, confidence, alsRunId, followeeIds, opts.withFiles);
-			await this.resolveAuthors(axisCandidates);
-			// MiniLM taste 再ランク＋aux 弱 boost（§5/§6/§14-D7）。データ（centroid/aux）が無ければ no-op（cold-start）。
-			await this.applyTasteAndBoost(me.id, axisCandidates);
+		const axisCandidates = await this.gatherCandidates(me.id, confidence, alsRunId, followeeIds, opts.withFiles, axisLevels);
+		await this.resolveAuthors(axisCandidates);
+		// MiniLM taste 再ランク＋aux 弱 boost（§5/§6/§14-D7）。データ（centroid/aux）が無ければ no-op（cold-start）。
+		await this.applyTasteAndBoost(me.id, axisCandidates);
 
-		const interleaved = hanamiInterleave({ confidence, limit: opts.limit, axisCandidates, isExcluded });
+		const interleaved = hanamiInterleave({ confidence, limit: opts.limit, axisCandidates, demote, axisLevels });
 		if (interleaved.length === 0) return [];
 
 		// source=枠を消費した軸 / sources=全寄与軸（§6.1-2）。
 		const reasonOf = new Map<string, ReasonMeta>(interleaved.map(c => [c.noteId, { source: c.source, sources: c.sources, term: c.term }]));
 		// safety filter（§8 中央化）。interleave 順で取得・安全化し limit まで backfill。
 		const notes = await this.hanamiForYouSafetyService.filterAndPack(interleaved.map(c => c.noteId), opts.limit, me, opts.withFiles);
-			if (notes.length === 0) return [];
+		if (notes.length === 0) return [];
 
-			this.markMeta(notes, reasonOf, showReason);
-			await this.recordServed(me.id, notes, reasonOf);
+		this.markMeta(notes, reasonOf, showReason);
+		await this.recordServed(me.id, notes, reasonOf);
 
 		return notes;
 	}
@@ -182,11 +209,48 @@ export class HanamiForYouService {
 		return rows.length > 0;
 	}
 
+	// ───────────────────────── ユーザー別軸量（7軸） ─────────────────────────
+
+	private normalizeAxisLevel(v: unknown, def: boolean): HanamiAxisLevel {
+		if (v === 'off' || v === 'low' || v === 'normal' || v === 'high') return v;
+		if (v === true) return 'normal';
+		if (v === false) return 'off';
+		return def ? 'normal' : 'off';
+	}
+
+	private axisServerConfig(axis: HanamiAxis, serverCfg: HanamiAxisServerConfig): { available: boolean; default: boolean } {
+		const keys = AXIS_CONFIG_KEYS[axis];
+		const available = keys.map(k => serverCfg[k]?.available).find(v => v !== undefined) ?? true;
+		const def = keys.map(k => serverCfg[k]?.default).find(v => v !== undefined) ?? true;
+		return { available, default: def };
+	}
+
+	private axisUserValue(axis: HanamiAxis, userCfg: HanamiAxisUserConfig): HanamiAxisLevel | boolean | undefined {
+		for (const key of AXIS_CONFIG_KEYS[axis]) {
+			const v = userCfg[key];
+			if (v !== undefined) return v;
+		}
+		return undefined;
+	}
+
+	private resolveAxisLevels(profile: MiUserProfile): Map<HanamiAxis, HanamiAxisLevel> {
+		const serverCfg = (this.meta.hanamiRecommendationAxisConfig ?? {}) as HanamiAxisServerConfig;
+		const userCfg = (profile.hanamiRecommendationAxes ?? {}) as HanamiAxisUserConfig;
+		const out = new Map<HanamiAxis, HanamiAxisLevel>();
+		for (const axis of HANAMI_FOR_YOU_AXES) {
+			const server = this.axisServerConfig(axis, serverCfg);
+			if (!server.available) continue;
+			const level = this.normalizeAxisLevel(this.axisUserValue(axis, userCfg), server.default);
+			if (level !== 'off') out.set(axis, level);
+		}
+		return out;
+	}
+
 	// ───────────────────────── 候補生成（§4/§5） ─────────────────────────
 
 	@bindThis
-	private async gatherCandidates(meId: MiUser['id'], confidence: HanamiConfidence, alsRunId: string | null, followeeIds: string[], withFiles: boolean): Promise<Map<HanamiAxis, ForYouCandidate[]>> {
-		const order = hanamiAxisOrder(confidence); // exploration を含む
+	private async gatherCandidates(meId: MiUser['id'], confidence: HanamiConfidence, alsRunId: string | null, followeeIds: string[], withFiles: boolean, axisLevels: ReadonlyMap<HanamiAxis, HanamiAxisLevel>): Promise<Map<HanamiAxis, ForYouCandidate[]>> {
+		const order = hanamiAxisOrder(confidence).filter(axis => axisLevels.has(axis)); // exploration を含む
 		const map = new Map<HanamiAxis, ForYouCandidate[]>();
 		await Promise.all(order.map(async axis => {
 			try {
@@ -303,19 +367,26 @@ export class HanamiForYouService {
 		const maxRel = Math.max(1, ...relScore.values());
 		const sinceId = this.idService.gen(Date.now() - CATCHUP_WINDOW_MS);
 		const rows = await this.db.query(
-			`SELECT n.id AS "noteId", n."userId" AS "userId"
+			`SELECT n.id AS "noteId", n."userId" AS "userId", count(r.id)::int AS "reactionCount"
 			 FROM note n
+			 JOIN note_reaction r ON r."noteId" = n.id AND r.id >= $2
 			 WHERE n."userId" = ANY($1) AND n.id >= $2
 			   AND n.visibility IN ('public','home') AND n."channelId" IS NULL AND n."userId" <> $3
 			   AND (n."replyId" IS NULL OR n."replyUserId" = n."userId")
 			   AND (n."renoteId" IS NULL OR n.text IS NOT NULL OR n."hasPoll" = TRUE OR n."fileIds" <> '{}')
-			 ORDER BY n.id DESC
+			 GROUP BY n.id, n."userId"
+			 ORDER BY count(r.id) DESC, n.id DESC
 			 LIMIT $4`,
 			[sourceIds, sinceId, meId, CATCHUP_NOTE_POOL],
-		) as { noteId: string; userId: string }[];
-		// 近い人ほど優先（relScore）。フォロイーは中庸。recency をタイブレーク。
+		) as { noteId: string; userId: string; reactionCount: number }[];
+		const maxReaction = Math.max(1, ...rows.map(r => Number(r.reactionCount)));
+		// 近い人ほど優先（relScore）しつつ、7日以内に実際に反応が伸びた量も見る。
 		return rows
-			.map(r => ({ noteId: r.noteId, userId: r.userId, w: (relScore.get(r.userId) ?? 0) / maxRel + 0.3 }))
+			.map(r => {
+				const relation = (relScore.get(r.userId) ?? 0) / maxRel + 0.3;
+				const growth = Number(r.reactionCount) / maxReaction;
+				return { noteId: r.noteId, userId: r.userId, w: relation * (0.5 + growth) };
+			})
 			.sort((a, b) => b.w - a.w || (a.noteId < b.noteId ? 1 : -1))
 			.map(r => ({ noteId: r.noteId, userId: r.userId, score: r.w }));
 	}
@@ -388,9 +459,10 @@ export class HanamiForYouService {
 			if (axis === 'exploration') continue; // 多様性枠は補正しない
 			for (const c of list) {
 				let mult = 1;
-				if (centroid != null && TASTE_RERANK_AXES.has(axis)) {
+				const tasteWeight = TASTE_RERANK_WEIGHT_BY_AXIS[axis] ?? 0;
+				if (centroid != null && tasteWeight > 0) {
 					const emb = embMap.get(c.noteId);
-					if (emb != null) mult *= 1 + (TASTE_RERANK_WEIGHT * Math.max(0, this.dot(centroid, emb)));
+					if (emb != null) mult *= 1 + (tasteWeight * Math.max(0, this.dot(centroid, emb)));
 				}
 				if (aux != null) {
 					const m = noteMeta.get(c.noteId);

@@ -37,14 +37,16 @@ const FOF_NOTE_QUERY_LOOKBACK_MS = DAY_MS * 365; // 直近365日
 const FOF_NOTE_QUERY_LIMIT_MIN = 1200;
 const FOF_NOTE_QUERY_LIMIT_MAX = 5000;
 const FOF_NOTE_QUERY_LIMIT_MULTIPLIER = 20;
-// FoFノートは取得段階で作者ごとに上限を切る。後段の並べ替えだけに任せると、高頻度投稿者が候補プールを占有する。
-const FOF_NOTE_PER_AUTHOR_LIMIT = 3;
+// FoFノートは作者ごとに直近候補を少し広めに見て、そこから人気投稿を選ぶ。
+// 最新3件だけだと「新着だが無反応」の投稿に寄るため、人気判定前の候補幅を持たせる。
+const FOF_NOTE_PER_AUTHOR_LIMIT = 8;
+const FOF_NOTE_MIN_ENGAGEMENT = 1;
 // ノート土台スコアに「人気度（フォロワー数）」を混ぜる割合。リモート人気アカを一定割合出すため。
 const FOF_POPULAR_NOTE_RATIO = 0.3;
 // note単位のservedはFoFではハード除外しない。送っただけのnoteは強く沈め、実表示済み(seen)は呼び出し側で除外する。
 const FOF_NOTE_SERVED_PENALTY = 0.05;
 // FoFノート候補IDの短TTLキャッシュ。pack前の候補だけを保存し、可視性/mute/served/seenは呼び出し側で毎回反映する。
-const FOF_NOTE_CACHE_KEY_PREFIX = 'hanami:fof:notes:v2:';
+const FOF_NOTE_CACHE_KEY_PREFIX = 'hanami:fof:notes:v3:';
 const FOF_NOTE_CACHE_TTL_SECONDS = 60;
 const FOF_NOTE_EMPTY_CACHE_TTL_SECONDS = 10;
 
@@ -264,7 +266,7 @@ export class HanamiUserRecommendationService {
 
 	private getAuthorNoteRankPenalty(rank: number): number {
 		if (rank <= 1) return 1;
-		return Math.max(0.02, Math.pow(0.35, rank - 1));
+		return Math.max(0.25, Math.pow(0.75, rank - 1));
 	}
 
 	private getFoFNoteQueryLimit(limit: number): number {
@@ -773,8 +775,9 @@ export class HanamiUserRecommendationService {
 	}
 
 	/**
-	 * FoF ユーザーの最近ノート候補プールを作る（案3）。
-	 * noteScore = 作者スコア × 新鮮さ × 可視性 × エンゲージ × 返信0.5x。
+	 * FoF ユーザーの直近人気ノート候補プールを作る（案3）。
+	 * noteScore = 作者スコア × 新鮮さ × 可視性 × popularity × 返信0.5x。
+	 * 反応/リノートが無い新着は FoF では出さない。FoF はユーザー提案由来なので、TLでは「人気投稿」だけに絞る。
 	 * チャンネル投稿・純RNは除外、public/home のみ。
 	 */
 	@bindThis
@@ -855,21 +858,23 @@ export class HanamiUserRecommendationService {
 				LIMIT $4
 			`, [userIds, sinceId, FOF_NOTE_PER_AUTHOR_LIMIT, queryLimit]) as FoFNoteRow[];
 
-			scored = notes.map(n => {
+			scored = notes.flatMap(n => {
 				const base = candBase.get(n.userId) ?? 0;
 				const ageMs = now - this.idService.parse(n.id).date.getTime();
 				const recency = FOF_NOTE_RECENCY.find(r => ageMs < r.withinMs)?.weight ?? 0;
 				const vis = n.visibility === 'public' ? 1.0 : 0.8;
 				const reactionsTotal = n.reactions ? Object.values(n.reactions).reduce((a, b) => a + Number(b), 0) : 0;
-				// エンゲージは log で軽く（古い人気に偏らないよう base/recency と掛け合わせ）。bot反応の厳密除去は後続増分。
-				const engagement = 1 + Math.log10(1 + reactionsTotal + 2 * Number(n.renoteCount ?? 0));
+				const engagementCount = reactionsTotal + 2 * Number(n.renoteCount ?? 0);
+				if (engagementCount < FOF_NOTE_MIN_ENGAGEMENT) return [];
+				// 人気は log で圧縮しつつ、直近性も残す。0反応新着は上の閾値で候補外。
+				const popularity = Math.log10(1 + engagementCount);
 				const replyPenalty = n.replyId != null ? FOF_NOTE_REPLY_PENALTY : 1;
 				const authorRankPenalty = this.getAuthorNoteRankPenalty(Number(n.authorNoteRank));
-				return {
+				return [{
 					noteId: n.id,
 					userId: n.userId,
-					score: base * recency * vis * engagement * replyPenalty * authorRankPenalty,
-				};
+					score: base * (0.25 + recency) * vis * popularity * replyPenalty * authorRankPenalty,
+				}];
 			});
 			scored.sort((a, b) => b.score - a.score);
 
@@ -881,7 +886,7 @@ export class HanamiUserRecommendationService {
 	}
 
 	/**
-	 * FoF ユーザーの最近ノートを推薦候補として返す。
+	 * FoF ユーザーの直近人気ノートを推薦候補として返す。
 	 * 重いFoF探索とノートスコアリングは短TTLキャッシュし、リクエストごとの差分だけ毎回反映する。
 	 */
 	@bindThis

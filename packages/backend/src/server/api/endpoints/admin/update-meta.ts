@@ -150,11 +150,14 @@ export const paramDef = {
 		hanamiRecommendationAxisConfig: {
 			type: 'object', nullable: false,
 			properties: {
+				globalPopular: { type: 'object', properties: { available: { type: 'boolean' }, default: { type: 'boolean' } } },
+				neighborTrending: { type: 'object', properties: { available: { type: 'boolean' }, default: { type: 'boolean' } } },
 				popular: { type: 'object', properties: { available: { type: 'boolean' }, default: { type: 'boolean' } } },
 				reactionSimilar: { type: 'object', properties: { available: { type: 'boolean' }, default: { type: 'boolean' } } },
 				catchup: { type: 'object', properties: { available: { type: 'boolean' }, default: { type: 'boolean' } } },
 				trending: { type: 'object', properties: { available: { type: 'boolean' }, default: { type: 'boolean' } } },
 				fof: { type: 'object', properties: { available: { type: 'boolean' }, default: { type: 'boolean' } } },
+				exploration: { type: 'object', properties: { available: { type: 'boolean' }, default: { type: 'boolean' } } },
 			},
 		},
 		perLocalUserUserTimelineCacheMax: { type: 'integer' },

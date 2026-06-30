@@ -43,7 +43,7 @@ export type HanamiAutoInjectPreset = (typeof AUTO_INJECT_PRESET)[HanamiAutoInjec
  * はなみTL の周辺ユーティリティ（canonical spec）。
  *
  * For You-only 化に伴い、旧 score 混合・home 注入・候補生成・スロット注入は **廃止**（§6）。
- * 配信本体は HanamiForYouService（6軸＋quota interleave＋safety）に移管済。本サービスに残すのは:
+ * 配信本体は HanamiForYouService（7軸＋quota interleave＋safety）に移管済。本サービスに残すのは:
  *  - served/seen/homeSeen の Redis 記録（HanamiForYouService と seen endpoint が使う。seen は PG provenance も二重書き）
  *  - auto-inject プリセット解決（stream channel が使う）
  *  - フォロー候補・テキストトレンドの薄いラッパ（各 endpoint が使う）
