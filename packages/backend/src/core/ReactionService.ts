@@ -26,6 +26,7 @@ import { UserBlockingService } from '@/core/UserBlockingService.js';
 import { CustomEmojiService } from '@/core/CustomEmojiService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { FeaturedService } from '@/core/FeaturedService.js';
+import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
 import { trackPromise } from '@/misc/promise-tracker.js';
 import { isQuote, isRenote } from '@/misc/is-renote.js';
 import { ReactionsBufferingService } from '@/core/ReactionsBufferingService.js';
@@ -99,6 +100,7 @@ export class ReactionService {
 		private apDeliverManagerService: ApDeliverManagerService,
 		private notificationService: NotificationService,
 		private perUserReactionsChart: PerUserReactionsChart,
+		private hanamiForYouProvenanceService: HanamiForYouProvenanceService,
 	) {
 	}
 
@@ -231,6 +233,12 @@ export class ReactionService {
 
 		if (this.meta.enableChartsForRemoteUser || (user.host == null)) {
 			this.perUserReactionsChart.update(user, note);
+		}
+
+		// For You provenance（§7.2）: ローカルユーザーの反応を 14日 served lookup で rec/normal 判定して記録。
+		// best-effort。hot path を塞がないよう await しない。
+		if (user.host == null) {
+			void this.hanamiForYouProvenanceService.recordEngagement(user.id, note.id, 'reaction');
 		}
 
 		// カスタム絵文字リアクションだったら絵文字情報も送る

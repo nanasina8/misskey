@@ -87,6 +87,16 @@ import { MiBubbleGameRecord } from '@/models/BubbleGameRecord.js';
 import { MiReversiGame } from '@/models/ReversiGame.js';
 import { MiChatApproval } from '@/models/ChatApproval.js';
 import { MiSystemAccount } from '@/models/SystemAccount.js';
+import { MiHanamiForYouModelRun } from '@/models/HanamiForYouModelRun.js';
+import { MiHanamiForYouUserFactor } from '@/models/HanamiForYouUserFactor.js';
+import { MiHanamiForYouAuthorFactor } from '@/models/HanamiForYouAuthorFactor.js';
+import { MiHanamiForYouAuthorRec } from '@/models/HanamiForYouAuthorRec.js';
+import { MiHanamiForYouNeighborUser } from '@/models/HanamiForYouNeighborUser.js';
+import { MiHanamiForYouRelation } from '@/models/HanamiForYouRelation.js';
+import { MiHanamiNoteEmbedding } from '@/models/HanamiNoteEmbedding.js';
+import { MiHanamiForYouUserCentroid } from '@/models/HanamiForYouUserCentroid.js';
+import { MiHanamiForYouUserAux } from '@/models/HanamiForYouUserAux.js';
+import { MiHanamiRecommendationEvent } from '@/models/HanamiRecommendationEvent.js';
 
 pg.types.setTypeParser(20, Number);
 
@@ -254,6 +264,16 @@ export const entities = [
 	MiChatApproval,
 	MiBubbleGameRecord,
 	MiReversiGame,
+	MiHanamiForYouModelRun,
+	MiHanamiForYouUserFactor,
+	MiHanamiForYouAuthorFactor,
+	MiHanamiForYouAuthorRec,
+	MiHanamiForYouNeighborUser,
+	MiHanamiForYouRelation,
+	MiHanamiNoteEmbedding,
+	MiHanamiForYouUserCentroid,
+	MiHanamiForYouUserAux,
+	MiHanamiRecommendationEvent,
 	...charts,
 ];
 

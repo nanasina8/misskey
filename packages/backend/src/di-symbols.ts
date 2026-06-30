@@ -92,5 +92,18 @@ export const DI = {
 	bubbleGameRecordsRepository: Symbol('bubbleGameRecordsRepository'),
 	reversiGamesRepository: Symbol('reversiGamesRepository'),
 	noteDraftsRepository: Symbol('noteDraftsRepository'),
+
+	//#region Hanami For You (canonical spec §7.4)
+	hanamiForYouModelRunsRepository: Symbol('hanamiForYouModelRunsRepository'),
+	hanamiForYouUserFactorsRepository: Symbol('hanamiForYouUserFactorsRepository'),
+	hanamiForYouAuthorFactorsRepository: Symbol('hanamiForYouAuthorFactorsRepository'),
+	hanamiForYouAuthorRecsRepository: Symbol('hanamiForYouAuthorRecsRepository'),
+	hanamiForYouNeighborUsersRepository: Symbol('hanamiForYouNeighborUsersRepository'),
+	hanamiForYouRelationsRepository: Symbol('hanamiForYouRelationsRepository'),
+	hanamiNoteEmbeddingsRepository: Symbol('hanamiNoteEmbeddingsRepository'),
+		hanamiForYouUserCentroidsRepository: Symbol('hanamiForYouUserCentroidsRepository'),
+		hanamiForYouUserAuxRepository: Symbol('hanamiForYouUserAuxRepository'),
+		hanamiRecommendationEventsRepository: Symbol('hanamiRecommendationEventsRepository'),
+		//#endregion
 	//#endregion
 };

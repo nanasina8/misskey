@@ -12,6 +12,7 @@ import type { FollowingsRepository, FollowRequestsRepository, NoteReactionsRepos
 import type { MiUser } from '@/models/User.js';
 import { CacheService } from '@/core/CacheService.js';
 import { IdService } from '@/core/IdService.js';
+import { HANAMI_FOF_SHOWN_KEY_PREFIX as SHOWN_KEY_PREFIX } from '@/core/hanami/HanamiForYouKeys.js';
 
 const DAY_MS = 1000 * 60 * 60 * 24;
 
@@ -57,7 +58,7 @@ const FOLLOWBACK_BOOST = 1.3; // 候補が自分をフォロー中（フォロ�
 const LOCKED_PENALTY = 0.5; // 鍵アカウントは低め（除外まではしない）
 // 既出FoFユーザーの再表示抑制。1表示=1メンバーの「露出ログ」zset（member=`userId\ttimestamp\tseq`, score=表示時刻ms）で
 // 「最終表示時刻（ハード除外用）」と「窓内の表示回数（ソフト減点用）」の両方を1キーから得る。
-const SHOWN_KEY_PREFIX = 'hanami:fof:shown:';
+	// キー前缀は HanamiForYouKeys に集約。
 // 3日以内に見せた人は完全除外（新顔が足りない時だけ古い順フォールバック）。FOF_NOTES_LOOKBACK_MS と一致。
 const SHOWN_HARD_MS = DAY_MS * 3;
 // 7日窓: この間の表示回数に応じてソフト減点。窓を抜ければ満点に回復（記録の保持上限も兼ねる）。

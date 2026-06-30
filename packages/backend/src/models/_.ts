@@ -84,6 +84,16 @@ import { MiUserProfile } from '@/models/UserProfile.js';
 import { MiUserPublickey } from '@/models/UserPublickey.js';
 import { MiUserSecurityKey } from '@/models/UserSecurityKey.js';
 import { MiWebhook } from '@/models/Webhook.js';
+import { MiHanamiForYouModelRun } from '@/models/HanamiForYouModelRun.js';
+import { MiHanamiForYouUserFactor } from '@/models/HanamiForYouUserFactor.js';
+import { MiHanamiForYouAuthorFactor } from '@/models/HanamiForYouAuthorFactor.js';
+import { MiHanamiForYouAuthorRec } from '@/models/HanamiForYouAuthorRec.js';
+import { MiHanamiForYouNeighborUser } from '@/models/HanamiForYouNeighborUser.js';
+import { MiHanamiForYouRelation } from '@/models/HanamiForYouRelation.js';
+import { MiHanamiNoteEmbedding } from '@/models/HanamiNoteEmbedding.js';
+import { MiHanamiForYouUserCentroid } from '@/models/HanamiForYouUserCentroid.js';
+import { MiHanamiForYouUserAux } from '@/models/HanamiForYouUserAux.js';
+import { MiHanamiRecommendationEvent } from '@/models/HanamiRecommendationEvent.js';
 import type { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity.js';
 
 export interface MiRepository<T extends ObjectLiteral> {
@@ -173,6 +183,16 @@ export {
 	MiChatApproval,
 	MiBubbleGameRecord,
 	MiReversiGame,
+	MiHanamiForYouModelRun,
+	MiHanamiForYouUserFactor,
+	MiHanamiForYouAuthorFactor,
+	MiHanamiForYouAuthorRec,
+	MiHanamiForYouNeighborUser,
+	MiHanamiForYouRelation,
+	MiHanamiNoteEmbedding,
+	MiHanamiForYouUserCentroid,
+	MiHanamiForYouUserAux,
+	MiHanamiRecommendationEvent,
 };
 
 export type AbuseUserReportsRepository = Repository<MiAbuseUserReport> & MiRepository<MiAbuseUserReport>;
@@ -253,3 +273,15 @@ export type ChatRoomInvitationsRepository = Repository<MiChatRoomInvitation> & M
 export type ChatApprovalsRepository = Repository<MiChatApproval> & MiRepository<MiChatApproval>;
 export type BubbleGameRecordsRepository = Repository<MiBubbleGameRecord> & MiRepository<MiBubbleGameRecord>;
 export type ReversiGamesRepository = Repository<MiReversiGame> & MiRepository<MiReversiGame>;
+
+// Hanami For You (canonical spec §7.3)
+export type HanamiForYouModelRunsRepository = Repository<MiHanamiForYouModelRun> & MiRepository<MiHanamiForYouModelRun>;
+export type HanamiForYouUserFactorsRepository = Repository<MiHanamiForYouUserFactor> & MiRepository<MiHanamiForYouUserFactor>;
+export type HanamiForYouAuthorFactorsRepository = Repository<MiHanamiForYouAuthorFactor> & MiRepository<MiHanamiForYouAuthorFactor>;
+export type HanamiForYouAuthorRecsRepository = Repository<MiHanamiForYouAuthorRec> & MiRepository<MiHanamiForYouAuthorRec>;
+export type HanamiForYouNeighborUsersRepository = Repository<MiHanamiForYouNeighborUser> & MiRepository<MiHanamiForYouNeighborUser>;
+export type HanamiForYouRelationsRepository = Repository<MiHanamiForYouRelation> & MiRepository<MiHanamiForYouRelation>;
+export type HanamiNoteEmbeddingsRepository = Repository<MiHanamiNoteEmbedding> & MiRepository<MiHanamiNoteEmbedding>;
+export type HanamiForYouUserCentroidsRepository = Repository<MiHanamiForYouUserCentroid> & MiRepository<MiHanamiForYouUserCentroid>;
+export type HanamiForYouUserAuxRepository = Repository<MiHanamiForYouUserAux> & MiRepository<MiHanamiForYouUserAux>;
+export type HanamiRecommendationEventsRepository = Repository<MiHanamiRecommendationEvent> & MiRepository<MiHanamiRecommendationEvent>;

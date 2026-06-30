@@ -48,6 +48,7 @@ import { DB_MAX_NOTE_TEXT_LENGTH } from '@/const.js';
 import { RoleService } from '@/core/RoleService.js';
 import { HanamiSearchService } from '@/core/hanamisearch/HanamiSearchService.js';
 import { HanamiTrendService } from '@/core/hanami/HanamiTrendService.js';
+import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
 import { FeaturedService } from '@/core/FeaturedService.js';
 import { FanoutTimelineNamePrefix, FanoutTimelineService } from '@/core/FanoutTimelineService.js';
 import { UtilityService } from '@/core/UtilityService.js';
@@ -229,6 +230,7 @@ export class NoteCreateService implements OnApplicationShutdown {
 		private utilityService: UtilityService,
 		private userBlockingService: UserBlockingService,
 		private cacheService: CacheService,
+		private hanamiForYouProvenanceService: HanamiForYouProvenanceService,
 	) {
 		this.updateNotesCountQueue = new CollapsedQueue(process.env.NODE_ENV !== 'test' ? 60 * 1000 * 5 : 0, this.collapseNotesCount, this.performUpdateNotesCount);
 	}
@@ -576,6 +578,13 @@ export class NoteCreateService implements OnApplicationShutdown {
 			() => this.postNoteCreated(note, user, data, silent, tags!, mentionedUsers!),
 			() => { /* aborted, ignore this */ },
 		);
+
+		// For You provenance（§7.2）: ローカルユーザーの返信/リノートを 14日 served lookup で rec/normal 判定して記録。
+		// best-effort。hot path を塞がないよう await しない。
+		if (user.host == null) {
+			if (data.reply != null) void this.hanamiForYouProvenanceService.recordEngagement(user.id, data.reply.id, 'reply');
+			if (data.renote != null) void this.hanamiForYouProvenanceService.recordEngagement(user.id, data.renote.id, 'renote');
+		}
 
 		return note;
 	}

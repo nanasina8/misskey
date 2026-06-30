@@ -84,6 +84,16 @@ import {
 	MiChatRoomMembership,
 	MiChatRoomInvitation,
 	MiChatApproval,
+	MiHanamiForYouModelRun,
+	MiHanamiForYouUserFactor,
+	MiHanamiForYouAuthorFactor,
+	MiHanamiForYouAuthorRec,
+	MiHanamiForYouNeighborUser,
+	MiHanamiForYouRelation,
+	MiHanamiNoteEmbedding,
+	MiHanamiForYouUserCentroid,
+	MiHanamiForYouUserAux,
+	MiHanamiRecommendationEvent,
 } from './_.js';
 import type { Provider } from '@nestjs/common';
 import type { DataSource } from 'typeorm';
@@ -544,6 +554,67 @@ const $reversiGamesRepository: Provider = {
 	inject: [DI.db],
 };
 
+// Hanami For You (canonical spec §7.3)
+const $hanamiForYouModelRunsRepository: Provider = {
+	provide: DI.hanamiForYouModelRunsRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiHanamiForYouModelRun).extend(miRepository as MiRepository<MiHanamiForYouModelRun>),
+	inject: [DI.db],
+};
+
+const $hanamiForYouUserFactorsRepository: Provider = {
+	provide: DI.hanamiForYouUserFactorsRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiHanamiForYouUserFactor).extend(miRepository as MiRepository<MiHanamiForYouUserFactor>),
+	inject: [DI.db],
+};
+
+const $hanamiForYouAuthorFactorsRepository: Provider = {
+	provide: DI.hanamiForYouAuthorFactorsRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiHanamiForYouAuthorFactor).extend(miRepository as MiRepository<MiHanamiForYouAuthorFactor>),
+	inject: [DI.db],
+};
+
+const $hanamiForYouAuthorRecsRepository: Provider = {
+	provide: DI.hanamiForYouAuthorRecsRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiHanamiForYouAuthorRec).extend(miRepository as MiRepository<MiHanamiForYouAuthorRec>),
+	inject: [DI.db],
+};
+
+const $hanamiForYouNeighborUsersRepository: Provider = {
+	provide: DI.hanamiForYouNeighborUsersRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiHanamiForYouNeighborUser).extend(miRepository as MiRepository<MiHanamiForYouNeighborUser>),
+	inject: [DI.db],
+};
+
+const $hanamiForYouRelationsRepository: Provider = {
+	provide: DI.hanamiForYouRelationsRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiHanamiForYouRelation).extend(miRepository as MiRepository<MiHanamiForYouRelation>),
+	inject: [DI.db],
+};
+
+const $hanamiNoteEmbeddingsRepository: Provider = {
+	provide: DI.hanamiNoteEmbeddingsRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiHanamiNoteEmbedding).extend(miRepository as MiRepository<MiHanamiNoteEmbedding>),
+	inject: [DI.db],
+};
+
+const $hanamiForYouUserCentroidsRepository: Provider = {
+	provide: DI.hanamiForYouUserCentroidsRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiHanamiForYouUserCentroid).extend(miRepository as MiRepository<MiHanamiForYouUserCentroid>),
+	inject: [DI.db],
+};
+
+const $hanamiForYouUserAuxRepository: Provider = {
+	provide: DI.hanamiForYouUserAuxRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiHanamiForYouUserAux).extend(miRepository as MiRepository<MiHanamiForYouUserAux>),
+	inject: [DI.db],
+};
+
+const $hanamiRecommendationEventsRepository: Provider = {
+	provide: DI.hanamiRecommendationEventsRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiHanamiRecommendationEvent).extend(miRepository as MiRepository<MiHanamiRecommendationEvent>),
+	inject: [DI.db],
+};
+
 @Module({
 	imports: [],
 	providers: [
@@ -623,7 +694,17 @@ const $reversiGamesRepository: Provider = {
 		$chatApprovalsRepository,
 		$bubbleGameRecordsRepository,
 		$reversiGamesRepository,
-	],
+		$hanamiForYouModelRunsRepository,
+		$hanamiForYouUserFactorsRepository,
+		$hanamiForYouAuthorFactorsRepository,
+		$hanamiForYouAuthorRecsRepository,
+		$hanamiForYouNeighborUsersRepository,
+		$hanamiForYouRelationsRepository,
+		$hanamiNoteEmbeddingsRepository,
+			$hanamiForYouUserCentroidsRepository,
+			$hanamiForYouUserAuxRepository,
+			$hanamiRecommendationEventsRepository,
+		],
 	exports: [
 		$usersRepository,
 		$notesRepository,
@@ -701,7 +782,17 @@ const $reversiGamesRepository: Provider = {
 		$chatApprovalsRepository,
 		$bubbleGameRecordsRepository,
 		$reversiGamesRepository,
-	],
+		$hanamiForYouModelRunsRepository,
+		$hanamiForYouUserFactorsRepository,
+		$hanamiForYouAuthorFactorsRepository,
+		$hanamiForYouAuthorRecsRepository,
+		$hanamiForYouNeighborUsersRepository,
+		$hanamiForYouRelationsRepository,
+		$hanamiNoteEmbeddingsRepository,
+			$hanamiForYouUserCentroidsRepository,
+			$hanamiForYouUserAuxRepository,
+			$hanamiRecommendationEventsRepository,
+		],
 })
 export class RepositoryModule {
 }

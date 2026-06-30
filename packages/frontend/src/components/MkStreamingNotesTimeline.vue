@@ -132,9 +132,8 @@ if (props.src === 'antenna') {
 			allowPartial: true,
 		})),
 		useShallowRef: true,
-		// 注入されたおすすめ（古い人気/急上昇ノート）はカーソル基準にしない。
-		// これが無いと untilId が注入ノートの古いIDに引っ張られ、遡りで過去の通常ノートが出てしまう。
-		cursorAnchor: (note) => !(note as Misskey.entities.Note & { _hanamiRecommended?: boolean })._hanamiRecommended,
+		// はなみTL = For You-only（canonical spec §9）。時系列でなく ranked ページのため home anchor は無い。
+		// untilId は次ページ要求トリガとしてのみ送られ、重複排除はサーバ側の served/seen が担う（cursorAnchor 不要）。
 	}));
 } else if (props.src === 'local') {
 	paginator = markRaw(new Paginator('notes/local-timeline', {

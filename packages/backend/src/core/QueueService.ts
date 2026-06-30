@@ -85,6 +85,10 @@ const REPEATABLE_SYSTEM_JOB_DEF = [{
 	name: 'cleanRemoteNotes',
 	// 毎日午前4時に起動(最も人の少ない時間帯)
 	pattern: '0 4 * * *',
+}, {
+	name: 'hanamiForYouBatch',
+	// はなみ For You オフラインバッチ（ALS/関係値/MiniLM/aux）。canonical spec §3/§10 = 既定1時間ごと。
+	pattern: '7 * * * *',
 }];
 
 @Injectable()
