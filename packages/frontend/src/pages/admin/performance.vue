@@ -135,7 +135,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 								<div class="_gaps">
 									<div v-for="ax in axisKeys" :key="ax" class="_gaps_s">
-										<MkInfo>{{ i18n.ts._hana._recommendation._reason[ax] }}</MkInfo>
+										<MkInfo>{{ hanamiReasonLabels[ax] }}</MkInfo>
 										<MkSwitch v-model="hanamiRecForm.state[`${ax}Available`]">
 											<template #label>{{ i18n.ts._hana._recommendation.axisAvailable }}<span v-if="hanamiRecForm.modifiedStates[`${ax}Available`]" class="_modified">{{ i18n.ts.modified }}</span></template>
 										</MkSwitch>
@@ -297,31 +297,53 @@ const fttForm = useForm({
 	fetchInstance(true);
 });
 
-// はなみTL おすすめ: 軸ごとの available/default（[[hanami-tl-osusume-redesign]]）。
-const axisKeys = ['popular', 'reactionSimilar', 'catchup', 'trending', 'fof'] as const;
-const axisCfg = meta.hanamiRecommendationAxisConfig ?? {};
+// はなみTL おすすめ: 軸ごとの available/default（For You 7軸）。
+const axisKeys = ['globalPopular', 'exploration', 'trending', 'neighborTrending', 'reactionSimilar', 'catchup', 'fof'] as const;
+type AxisKey = typeof axisKeys[number];
+type LegacyAxisKey = 'popular';
+const axisCfg = (meta.hanamiRecommendationAxisConfig ?? {}) as Partial<Record<AxisKey | LegacyAxisKey, { available?: boolean; default?: boolean }>>;
+const axisConfigKeys: Record<AxisKey, readonly (AxisKey | LegacyAxisKey)[]> = {
+	globalPopular: ['globalPopular', 'popular'],
+	exploration: ['exploration', 'popular'],
+	neighborTrending: ['neighborTrending', 'reactionSimilar'],
+	reactionSimilar: ['reactionSimilar'],
+	catchup: ['catchup'],
+	trending: ['trending'],
+	fof: ['fof'],
+};
+const hanamiReasonLabels = i18n.ts._hana._recommendation._reason as unknown as Record<AxisKey, string>;
+
+function axisCfgValue(axis: AxisKey, key: 'available' | 'default'): boolean {
+	return axisConfigKeys[axis].map(k => axisCfg[k]?.[key]).find(v => v !== undefined) ?? true;
+}
 
 const hanamiRecForm = useForm({
-	popularAvailable: axisCfg.popular?.available ?? true,
-	popularDefault: axisCfg.popular?.default ?? true,
-	reactionSimilarAvailable: axisCfg.reactionSimilar?.available ?? true,
-	reactionSimilarDefault: axisCfg.reactionSimilar?.default ?? true,
-	catchupAvailable: axisCfg.catchup?.available ?? true,
-	catchupDefault: axisCfg.catchup?.default ?? true,
-	trendingAvailable: axisCfg.trending?.available ?? true,
-	trendingDefault: axisCfg.trending?.default ?? true,
-	fofAvailable: axisCfg.fof?.available ?? true,
-	fofDefault: axisCfg.fof?.default ?? true,
+	globalPopularAvailable: axisCfgValue('globalPopular', 'available'),
+	globalPopularDefault: axisCfgValue('globalPopular', 'default'),
+	explorationAvailable: axisCfgValue('exploration', 'available'),
+	explorationDefault: axisCfgValue('exploration', 'default'),
+	trendingAvailable: axisCfgValue('trending', 'available'),
+	trendingDefault: axisCfgValue('trending', 'default'),
+	neighborTrendingAvailable: axisCfgValue('neighborTrending', 'available'),
+	neighborTrendingDefault: axisCfgValue('neighborTrending', 'default'),
+	reactionSimilarAvailable: axisCfgValue('reactionSimilar', 'available'),
+	reactionSimilarDefault: axisCfgValue('reactionSimilar', 'default'),
+	catchupAvailable: axisCfgValue('catchup', 'available'),
+	catchupDefault: axisCfgValue('catchup', 'default'),
+	fofAvailable: axisCfgValue('fof', 'available'),
+	fofDefault: axisCfgValue('fof', 'default'),
 }, async (state) => {
 	await os.apiWithDialog('admin/update-meta', {
 		hanamiRecommendationAxisConfig: {
-			popular: { available: state.popularAvailable, default: state.popularDefault },
+			globalPopular: { available: state.globalPopularAvailable, default: state.globalPopularDefault },
+			exploration: { available: state.explorationAvailable, default: state.explorationDefault },
+			trending: { available: state.trendingAvailable, default: state.trendingDefault },
+			neighborTrending: { available: state.neighborTrendingAvailable, default: state.neighborTrendingDefault },
 			reactionSimilar: { available: state.reactionSimilarAvailable, default: state.reactionSimilarDefault },
 			catchup: { available: state.catchupAvailable, default: state.catchupDefault },
-			trending: { available: state.trendingAvailable, default: state.trendingDefault },
 			fof: { available: state.fofAvailable, default: state.fofDefault },
 		},
-	});
+	} as never);
 	fetchInstance(true);
 });
 

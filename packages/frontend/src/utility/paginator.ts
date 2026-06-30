@@ -389,8 +389,11 @@ export class Paginator<
 	}
 
 	public pushItems(oldItems: T[]): void {
-		if (oldItems.length === 0) return; // これやらないと余計なre-renderが走る
-		this.items.value.push(...oldItems);
+		// 重複除去: はなみTLのソフト除外(降格再表示)やストリーミング/ポーリングの重なりで、
+		// 既に表示中の note が後続ページに再登場し得るため（unshiftItems と同様）。
+		const items = oldItems.filter(x => !this.items.value.some(y => y.id === x.id));
+		if (items.length === 0) return; // これやらないと余計なre-renderが走る
+		this.items.value.push(...items);
 		if (this.useShallowRef) triggerRef(this.items);
 	}
 

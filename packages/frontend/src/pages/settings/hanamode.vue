@@ -61,7 +61,6 @@
 							<div>{{ i18n.ts.type }}</div>
 							<div>{{ i18n.ts._hana._recommendation.amount }}</div>
 							<div>{{ recommendationI18n.axisMultiplier }}</div>
-							<div>{{ recommendationI18n.axisSharePreview }}</div>
 						</div>
 						<div v-for="ax in AXES" :key="ax" :class="$style.axisRow">
 							<div :class="$style.axisName">
@@ -83,11 +82,6 @@
 								</button>
 							</div>
 							<div :class="$style.axisMultiplier">{{ axisLevelMultiplierLabel(recommendationForm.state[ax]) }}</div>
-							<div :class="$style.axisShares">
-								<span>{{ recommendationI18n.axisConfidenceHigh }} {{ axisShareLabel(ax, 'high') }}</span>
-								<span>{{ recommendationI18n.axisConfidenceLow }} {{ axisShareLabel(ax, 'low') }}</span>
-								<span>{{ recommendationI18n.axisConfidenceNone }} {{ axisShareLabel(ax, 'none') }}</span>
-							</div>
 						</div>
 					</div>
 				</MkFolder>
@@ -185,11 +179,6 @@ const reasonLabels = i18n.ts._hana._recommendation._reason as unknown as Record<
 const AXES: AxisKey[] = ['globalPopular', 'exploration', 'trending', 'neighborTrending', 'reactionSimilar', 'catchup', 'fof'];
 const AXIS_LEVELS: AxisLevel[] = ['off', 'low', 'normal', 'high'];
 const AXIS_LEVEL_MULTIPLIER: Record<AxisLevel, number> = { off: 0, low: 0.55, normal: 1, high: 1.6 };
-const BASE_AXIS_SHARE: Record<'high' | 'low' | 'none', Record<AxisKey, number>> = {
-	high: { globalPopular: 0.15, exploration: 0.05, trending: 0.15, neighborTrending: 0.25, reactionSimilar: 0.25, catchup: 0.30, fof: 0.15 },
-	low: { globalPopular: 0.45, exploration: 0.10, trending: 0.25, neighborTrending: 0.20, reactionSimilar: 0.10, catchup: 0.15, fof: 0.20 },
-	none: { globalPopular: 0.70, exploration: 0.10, trending: 0.25, neighborTrending: 0, reactionSimilar: 0, catchup: 0, fof: 0.10 },
-};
 const AXIS_ICON: Record<AxisKey, string> = {
 	globalPopular: 'ti-flame',
 	exploration: 'ti-compass',
@@ -281,11 +270,6 @@ function axisLevelMultiplierLabel(level: AxisLevel): string {
 	return `${AXIS_LEVEL_MULTIPLIER[level]}x`;
 }
 
-function axisShareLabel(axis: AxisKey, confidence: 'high' | 'low' | 'none'): string {
-	const share = Math.min(1, BASE_AXIS_SHARE[confidence][axis] * AXIS_LEVEL_MULTIPLIER[recommendationForm.state[axis]]);
-	return `${Math.round(share * 1000) / 10}%`;
-}
-
 function setAxisLevel(axis: AxisKey, level: AxisLevel) {
 	if (!recommendationForm.state.enabled || !axisAvailable[axis]) return;
 	recommendationForm.state[axis] = level;
@@ -342,7 +326,7 @@ async function saveExploreMediaFilter() {
 
 .axisRow {
 	display: grid;
-	grid-template-columns: minmax(160px, 1.05fr) minmax(248px, 1.35fr) minmax(64px, 0.4fr) minmax(210px, 1fr);
+	grid-template-columns: minmax(160px, 1.05fr) minmax(248px, 1.35fr) minmax(64px, 0.4fr);
 	gap: 12px;
 	align-items: center;
 	padding: 12px;
@@ -413,19 +397,6 @@ async function saveExploreMediaFilter() {
 .axisMultiplier {
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
-}
-
-.axisShares {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 4px 8px;
-	min-width: 0;
-	color: color(from var(--MI_THEME-fg) srgb r g b / 0.72);
-	font-size: 0.82em;
-
-	> span {
-		white-space: nowrap;
-	}
 }
 
 @media (max-width: 800px) {

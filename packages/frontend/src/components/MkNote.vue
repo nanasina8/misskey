@@ -298,7 +298,7 @@ const appearNote = getAppearNote(note) ?? note;
 
 // はなみTL おすすめの内部マーカーと理由ラベル。
 // _hanamiRecommended は理由表示OFFでも付くため、seen 報告はこの内部マーカーで行う。
-// _hanamiReason は鯖缶トグルON時だけ表示用に付く。
+// _hanamiReason はユーザー設定ON時だけ表示用に付く。
 const hanamiRecommendationMeta = computed(() => props.note as {
 	_hanamiRecommended?: boolean;
 	_hanamiReason?: { reason: string; term?: string };
@@ -309,8 +309,12 @@ const hanamiReasonLabel = computed(() => {
 	const r = hanamiReason.value;
 	if (r == null) return '';
 	const reasons = i18n.ts._hana._recommendation._reason;
+	const reasonText = reasons as Record<string, string>;
 	switch (r.reason) {
 		case 'popular': return reasons.popular;
+		case 'globalPopular': return reasonText.globalPopular;
+		case 'exploration': return reasonText.exploration;
+		case 'neighborTrending': return reasonText.neighborTrending;
 		case 'reactionSimilar': return reasons.reactionSimilar;
 		case 'catchup': return reasons.catchup;
 		case 'trending': return r.term ? i18n.tsx._hana._recommendation._reason.trendingTerm({ term: r.term }) : reasons.trending;
@@ -321,6 +325,9 @@ const hanamiReasonLabel = computed(() => {
 const hanamiReasonIcon = computed(() => {
 	switch (hanamiReason.value?.reason) {
 		case 'popular': return 'ti ti-flame';
+		case 'globalPopular': return 'ti ti-flame';
+		case 'exploration': return 'ti ti-compass';
+		case 'neighborTrending': return 'ti ti-users-group';
 		case 'reactionSimilar': return 'ti ti-heart-handshake';
 		case 'catchup': return 'ti ti-history';
 		case 'trending': return 'ti ti-trending-up';

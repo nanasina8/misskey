@@ -4152,6 +4152,10 @@ export type components = {
             hanamiRecommendationAutoInjectStrength?: 'low' | 'normal' | 'high';
             hanamiRecommendationAxes?: {
                 /** @enum {string} */
+                globalPopular?: 'off' | 'low' | 'normal' | 'high';
+                /** @enum {string} */
+                neighborTrending?: 'off' | 'low' | 'normal' | 'high';
+                /** @enum {string} */
                 popular?: 'off' | 'low' | 'normal' | 'high';
                 /** @enum {string} */
                 reactionSimilar?: 'off' | 'low' | 'normal' | 'high';
@@ -4161,6 +4165,8 @@ export type components = {
                 trending?: 'off' | 'low' | 'normal' | 'high';
                 /** @enum {string} */
                 fof?: 'off' | 'low' | 'normal' | 'high';
+                /** @enum {string} */
+                exploration?: 'off' | 'low' | 'normal' | 'high';
             };
             hanamiShowRecommendationReason?: boolean;
             receiveAnnouncementEmail: boolean;
@@ -5571,6 +5577,14 @@ export type components = {
         };
         MetaDetailedOnly: {
             hanamiRecommendationAxisConfig?: {
+                globalPopular?: {
+                    available?: boolean;
+                    default?: boolean;
+                };
+                neighborTrending?: {
+                    available?: boolean;
+                    default?: boolean;
+                };
                 popular?: {
                     available?: boolean;
                     default?: boolean;
@@ -5588,6 +5602,10 @@ export type components = {
                     default?: boolean;
                 };
                 fof?: {
+                    available?: boolean;
+                    default?: boolean;
+                };
+                exploration?: {
                     available?: boolean;
                     default?: boolean;
                 };
@@ -9550,6 +9568,14 @@ export interface operations {
                         enableFanoutTimeline: boolean;
                         enableFanoutTimelineDbFallback: boolean;
                         hanamiRecommendationAxisConfig: {
+                            globalPopular?: {
+                                available?: boolean;
+                                default?: boolean;
+                            };
+                            neighborTrending?: {
+                                available?: boolean;
+                                default?: boolean;
+                            };
                             popular?: {
                                 available?: boolean;
                                 default?: boolean;
@@ -9567,6 +9593,10 @@ export interface operations {
                                 default?: boolean;
                             };
                             fof?: {
+                                available?: boolean;
+                                default?: boolean;
+                            };
+                            exploration?: {
                                 available?: boolean;
                                 default?: boolean;
                             };
@@ -12917,6 +12947,14 @@ export interface operations {
                     enableFanoutTimeline?: boolean;
                     enableFanoutTimelineDbFallback?: boolean;
                     hanamiRecommendationAxisConfig?: {
+                        globalPopular?: {
+                            available?: boolean;
+                            default?: boolean;
+                        };
+                        neighborTrending?: {
+                            available?: boolean;
+                            default?: boolean;
+                        };
                         popular?: {
                             available?: boolean;
                             default?: boolean;
@@ -12934,6 +12972,10 @@ export interface operations {
                             default?: boolean;
                         };
                         fof?: {
+                            available?: boolean;
+                            default?: boolean;
+                        };
+                        exploration?: {
                             available?: boolean;
                             default?: boolean;
                         };
@@ -27732,6 +27774,10 @@ export interface operations {
                     hanamiShowRecommendationReason?: boolean;
                     hanamiRecommendationAxes?: {
                         /** @enum {string} */
+                        globalPopular?: 'off' | 'low' | 'normal' | 'high';
+                        /** @enum {string} */
+                        neighborTrending?: 'off' | 'low' | 'normal' | 'high';
+                        /** @enum {string} */
                         popular?: 'off' | 'low' | 'normal' | 'high';
                         /** @enum {string} */
                         reactionSimilar?: 'off' | 'low' | 'normal' | 'high';
@@ -27741,6 +27787,8 @@ export interface operations {
                         trending?: 'off' | 'low' | 'normal' | 'high';
                         /** @enum {string} */
                         fof?: 'off' | 'low' | 'normal' | 'high';
+                        /** @enum {string} */
+                        exploration?: 'off' | 'low' | 'normal' | 'high';
                     };
                     receiveAnnouncementEmail?: boolean;
                     alwaysMarkNsfw?: boolean;
@@ -37409,4 +37457,3 @@ export interface operations {
         };
     };
 }
-
