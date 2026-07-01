@@ -127,35 +127,28 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		expect(out.filter(o => !o.fallbackOverflow).length).toBe(3);
 	});
 
-	it('served/seen はソフト除外: 新規を上に出し、既出は降格して下に再表示する（§6.1-5）', () => {
+	it('interleave はハード除外しない: 与えた候補を軸内 score 順に全部返す（既出減点は呼び出し側・§6.1-5）', () => {
 		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>([
 			['globalPopular', uniqueCands('gp', 5)],
 			['trending', []],
 			['fof', []],
 			['exploration', []],
 		]);
-		const seen = new Set(['gp-note-1', 'gp-note-3']);
-		const out = hanamiInterleave({ confidence: 'none', limit: 10, axisCandidates, demote: id => (seen.has(id) ? 1 : 0) });
-		// ハード除外しない: 5件すべて出る（空にしない）。
+		const out = hanamiInterleave({ confidence: 'none', limit: 10, axisCandidates });
+		// 5件すべて出る（除外しない・空にしない）。軸内 score 順（=入力順）を保つ。
 		expect(out.length).toBe(5);
-		// 既出2件は demoted フラグ付きで、新規3件より後ろに再表示される。
-		const demoted = out.filter(o => o.demoted);
-		expect(demoted.map(o => o.noteId).sort()).toEqual(['gp-note-1', 'gp-note-3']);
-		expect(out.slice(0, 3).every(o => !o.demoted)).toBe(true); // 先頭は新規
-		expect(out.slice(3).every(o => o.demoted)).toBe(true); // 既出は末尾に降格
+		expect(out.map(o => o.noteId)).toEqual(['gp-note-0', 'gp-note-1', 'gp-note-2', 'gp-note-3', 'gp-note-4']);
 	});
 
-	it('全候補が served/seen でもソフト除外なら空にしない（リロードで消えない・§9）', () => {
+	it('interleave は与えた候補を必ず返す（呼び出し側の既出減点に関わらず空にしない・§9）', () => {
 		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>([
 			['globalPopular', uniqueCands('gp', 6)],
 			['trending', []],
 			['fof', []],
 			['exploration', []],
 		]);
-		// 全件 served（直近に配信済）扱い → ハード除外なら空。ソフトなら降格して再表示する。
-		const out = hanamiInterleave({ confidence: 'none', limit: 10, axisCandidates, demote: () => 2 });
-		expect(out.length).toBeGreaterThan(0);
-		expect(out.every(o => o.demoted)).toBe(true);
+		const out = hanamiInterleave({ confidence: 'none', limit: 10, axisCandidates });
+		expect(out.length).toBe(6);
 	});
 
 	it('cap 合計が limit を超えても interleave は pre-safety 上限だけを返す（§6.1-10）', () => {

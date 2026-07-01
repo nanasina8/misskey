@@ -66,6 +66,10 @@ const AUX_HOUR_BOOST = 0.1;
 const AUX_MEDIA_DISCOUNT = 0.15;
 const AUX_TEXT_HEAVY_THRESHOLD = 0.2; // mediaReactionRate がこれ未満 = text 偏重
 
+// 既出のソフト減点（軸内スコアへ乗算）。除外ではないので必ず再登場する。served=直近ほど深く沈める。
+const SERVED_SCORE_PENALTY = 0.5;
+const SEEN_SCORE_PENALTY = 0.7;
+
 type ReasonMeta = { source: HanamiAxis; sources: HanamiAxis[]; term?: string };
 
 type LegacyHanamiAxis = 'popular';
@@ -130,7 +134,7 @@ export class HanamiForYouService {
 
 	/**
 	 * For You ページ（ranked, home を混ぜない）。limit 件返す。
-	 * untilId は互換入力（次ページ要求トリガ）としてのみ扱い、重複排除は served/seen で行う（§9）。
+	 * 既出（served/seen）は除外せず軸内スコアを弱く減点（沈むが再登場）。§9
 	 */
 	@bindThis
 	public async getForYouPage(me: MiLocalUser, opts: { limit: number; withFiles: boolean }): Promise<Packed<'Note'>[]> {
@@ -147,17 +151,20 @@ export class HanamiForYouService {
 		const alsRunId = await this.hanamiForYouBatchService.getLatestReadyRunId(ALS_RUN_KIND);
 		const confidence = await this.computeConfidence(me.id, followeeIds.length, alsRunId);
 
-		// served/seen はソフト除外（降格）。0=新規 / 1=seen(再表示可) / 2=served(直近・最後の手段)。
-		// 新規優先で並べ、新規が尽きたら下方に再表示する（空にしない＝§6/§9）。served は seen より直近なので深く降格。
+		// 既出（served/seen）は「除外」ではなく軸内スコアの弱い減点＝沈むが再登場（人気は再キュー）。§6/§9
 		const { served, seen } = await this.hanamiRecommendationService.getServedSeenForExclusion(me.id);
-		const demote = (noteId: string) => (served.has(noteId) ? 2 : seen.has(noteId) ? 1 : 0);
 
 		const axisCandidates = await this.gatherCandidates(me.id, confidence, alsRunId, followeeIds, opts.withFiles, axisLevels);
 		await this.resolveAuthors(axisCandidates);
+		// 前段除外: noteベースのグローバル安全＋ユーザーのメディア設定を interleave の前で候補から除く。
+		// 除外で空いた枠は interleave が他候補で埋め直す＝hideSensitive でもページが痩せない。
+		await this.pruneGloballyUnsafe(me, axisCandidates, opts.withFiles);
 		// MiniLM taste 再ランク＋aux 弱 boost（§5/§6/§14-D7）。データ（centroid/aux）が無ければ no-op（cold-start）。
 		await this.applyTasteAndBoost(me.id, axisCandidates);
+		// 既出のソフト減点を軸内スコアへ乗算（tier ゲートは廃止＝決定論・痩せない）。
+		this.applyRecencyPenalty(axisCandidates, served, seen);
 
-		const interleaved = hanamiInterleave({ confidence, limit: opts.limit, axisCandidates, demote, axisLevels });
+		const interleaved = hanamiInterleave({ confidence, limit: opts.limit, axisCandidates, axisLevels });
 		if (interleaved.length === 0) return [];
 
 		// source=枠を消費した軸 / sources=全寄与軸（§6.1-2）。
@@ -403,6 +410,34 @@ export class HanamiForYouService {
 			.getRawMany<{ id: string; userId: string }>();
 		const authorOf = new Map(rows.map(r => [r.id, r.userId]));
 		for (const list of map.values()) for (const c of list) if (c.userId == null) c.userId = authorOf.get(c.noteId) ?? null;
+	}
+
+	/**
+	 * 前段除外（interleave の前）: noteベースのグローバル安全＋ユーザーのメディア設定で候補を絞る。
+	 * 除外で空いた枠は interleave が残り候補で埋め直す＝hideSensitive/hideMedia でも痩せない。
+	 * 失敗時は絞らない（後段 filterAndPack が安全を担保する）。
+	 */
+	private async pruneGloballyUnsafe(me: MiLocalUser, map: Map<HanamiAxis, ForYouCandidate[]>, withFiles: boolean): Promise<void> {
+		const ids = new Set<string>();
+		for (const list of map.values()) for (const c of list) ids.add(c.noteId);
+		if (ids.size === 0) return;
+		try {
+			const safe = await this.hanamiForYouSafetyService.filterGloballySafeIds([...ids], me, withFiles);
+			for (const [axis, list] of map) map.set(axis, list.filter(c => safe.has(c.noteId)));
+		} catch {
+			// 絞らない（後段 safety が担保）。
+		}
+	}
+
+	/** 既出（served/seen）を軸内スコアの弱い減点として反映し再ソートする（除外・tier ゲートは廃止＝決定論）。 */
+	private applyRecencyPenalty(map: Map<HanamiAxis, ForYouCandidate[]>, served: Set<string>, seen: Set<string>): void {
+		for (const list of map.values()) {
+			for (const c of list) {
+				if (served.has(c.noteId)) c.score *= SERVED_SCORE_PENALTY;
+				else if (seen.has(c.noteId)) c.score *= SEEN_SCORE_PENALTY;
+			}
+			list.sort((a, b) => b.score - a.score);
+		}
 	}
 
 	// ───────────────────────── MiniLM taste 再ランク＋aux boost（§5/§6/§14-D7） ─────────────────────────

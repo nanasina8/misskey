@@ -3,16 +3,16 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { Brackets } from 'typeorm';
+import { Brackets, type SelectQueryBuilder } from 'typeorm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import type { NotesRepository } from '@/models/_.js';
+import type { MiNote } from '@/models/Note.js';
 import type { MiLocalUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { QueryService } from '@/core/QueryService.js';
 import { CacheService } from '@/core/CacheService.js';
-import { RoleService } from '@/core/RoleService.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { isUserRelated } from '@/misc/is-user-related.js';
 import { isInstanceMuted } from '@/misc/is-instance-muted.js';
@@ -22,18 +22,16 @@ import { checkWordMute } from '@/misc/check-word-mute.js';
 /**
  * はなみ For You の safety filter 中央化（canonical spec §8）。
  *
- * 候補 noteId を interleave 順で DB 取得→ §8 全項目を通す→ pack。落ちた分は順に backfill して limit まで埋める（§6.1-7）。
+ * 2段構え:
+ *  - filterGloballySafeIds: interleave の【前】に候補を noteベースのグローバル安全＋ユーザーのメディア設定で絞る。
+ *    除外で空いた枠は interleave が他候補で埋め直す＝hideSensitive/hideMedia でもページが痩せない。
+ *  - filterAndPack: interleave の【後】に個別ユーザー項目(mute/block/word/instance)＋pack。
  *
- * §8 全項目:
- *  - visibility public/home 限定（followers-only・specified・private 除外）
- *  - reply・renote 元の可視性（public/home のみ）
- *  - block（双方向）/ mute / instance mute
- *  - muted word（mutedWords＋hardMutedWords）
- *  - CW 除外 / sensitive media 除外
-	 *  - pure renote 除外 / channel note 除外
-	 *  - suspended 除外 / silenced 除外（= role policy canPublicNote=false）
-	 *  - seen 除外（interleave 側で served/seen を除外済）
-	 */
+ * 落とす: visibility public/home 限定 / reply・renote 元の可視性 / block(双方向)・mute・instance mute /
+ *   muted word / pure renote / channel note / suspended / blocked host /
+ *   メディア（ユーザーの exploreMediaFilter: all=表示 / hideSensitive / hideMedia）。
+ * 落とさない: CW（クライアント折りたたみ）・silenced（拡散抑制はするが For You では除外しない＝運用方針）。
+ */
 @Injectable()
 export class HanamiForYouSafetyService {
 	constructor(
@@ -42,9 +40,67 @@ export class HanamiForYouSafetyService {
 
 		private queryService: QueryService,
 		private cacheService: CacheService,
-		private roleService: RoleService,
 		private noteEntityService: NoteEntityService,
 	) {
+	}
+
+	// メディアフィルタ（ユーザー設定 exploreMediaFilter）。For You 候補は channelId IS NULL 前提なので channel.isSensitive は見ない。
+	// 引用RNは元ノートの添付も画面に出るため、wrapper(note) と元(renote) の両方を見る。
+	private applyMediaFilter(query: SelectQueryBuilder<MiNote>, mediaFilter: string): void {
+		if (mediaFilter === 'hideMedia') {
+			query
+				.andWhere('NOT EXISTS (SELECT 1 FROM "drive_file" df WHERE df.id = ANY(note."fileIds") AND (df."type" LIKE \'image/%\' OR df."type" LIKE \'video/%\'))')
+				.andWhere('NOT EXISTS (SELECT 1 FROM "drive_file" df WHERE df.id = ANY(renote."fileIds") AND (df."type" LIKE \'image/%\' OR df."type" LIKE \'video/%\'))');
+		} else if (mediaFilter === 'hideSensitive') {
+			query
+				.andWhere('NOT EXISTS (SELECT 1 FROM "drive_file" df WHERE df.id = ANY(note."fileIds") AND df."isSensitive" = true)')
+				.andWhere('NOT EXISTS (SELECT 1 FROM "drive_file" df WHERE df.id = ANY(renote."fileIds") AND df."isSensitive" = true)');
+		}
+	}
+
+	/**
+	 * interleave の【前段】: noteベースのグローバル安全＋ユーザーのメディア設定を通る候補 id の Set を返す。
+	 * 個別ユーザー項目(mute/block/word/instance)は含めない（後段 filterAndPack の責務）。
+	 * これで除外された枠を interleave が他候補で埋め直すため、hideSensitive/hideMedia でもページが痩せない。
+	 */
+	@bindThis
+	public async filterGloballySafeIds(noteIds: string[], me: MiLocalUser, withFiles: boolean): Promise<Set<string>> {
+		if (noteIds.length === 0) return new Set();
+		const profile = await this.cacheService.userProfileCache.fetch(me.id);
+
+		const query = this.notesRepository.createQueryBuilder('note')
+			.select('note.id', 'id')
+			.where('note.id IN (:...noteIds)', { noteIds })
+			.andWhere('note.channelId IS NULL')
+			.andWhere(new Brackets(qb => {
+				qb.where('note.visibility = \'public\'').orWhere('note.visibility = \'home\'');
+			}))
+			.innerJoin('note.user', 'user')
+			.leftJoin('note.reply', 'reply')
+			.leftJoin('note.renote', 'renote')
+			.leftJoin('reply.user', 'replyUser')
+			.leftJoin('renote.user', 'renoteUser');
+
+		query.andWhere(new Brackets(qb => {
+			qb.where('note.replyId IS NULL').orWhere('reply.id IS NULL').orWhere('reply.visibility IN (\'public\', \'home\')');
+		}));
+		query.andWhere(new Brackets(qb => {
+			qb.where('note.renoteId IS NULL').orWhere('renote.id IS NULL').orWhere('renote.visibility IN (\'public\', \'home\')');
+		}));
+		query.andWhere(new Brackets(qb => {
+			qb.where('note.renoteId IS NULL')
+				.orWhere('note.text IS NOT NULL')
+				.orWhere('note.fileIds != \'{}\'')
+				.orWhere('note.hasPoll = TRUE');
+		}));
+		if (withFiles) query.andWhere('note.fileIds != \'{}\'');
+
+		this.applyMediaFilter(query, profile.exploreMediaFilter);
+		this.queryService.generateBlockedHostQueryForNote(query);
+		this.queryService.generateSuspendedUserQueryForNote(query);
+
+		const rows = await query.getRawMany<{ id: string }>();
+		return new Set(rows.map(r => r.id));
 	}
 
 	/**
@@ -66,7 +122,6 @@ export class HanamiForYouSafetyService {
 		const query = this.notesRepository.createQueryBuilder('note')
 			.where('note.id IN (:...noteIds)', { noteIds: orderedNoteIds })
 			.andWhere('note.channelId IS NULL')
-			.andWhere('note.cw IS NULL') // CW 除外（§8）
 			.andWhere(new Brackets(qb => {
 				qb.where('note.visibility = \'public\'').orWhere('note.visibility = \'home\'');
 			}))
@@ -92,6 +147,7 @@ export class HanamiForYouSafetyService {
 				.orWhere('note.hasPoll = TRUE');
 		}));
 		if (withFiles) query.andWhere('note.fileIds != \'{}\'');
+		this.applyMediaFilter(query, profile.exploreMediaFilter); // メディアはユーザー設定に従う。CW は落とさない（クライアント折りたたみ）。
 
 		this.queryService.generateBlockedHostQueryForNote(query);
 		this.queryService.generateSuspendedUserQueryForNote(query);
@@ -106,16 +162,6 @@ export class HanamiForYouSafetyService {
 			if (isInstanceMuted(note, userMutedInstances)) return false;
 			return true;
 		});
-
-		// silenced 除外（= role policy canPublicNote=false。§8。現状未実装だったので追加）。
-		// 引用RN/返信の元作者が silenced のケースも除外する（wrapper だけでなく元も見る）。
-		const authorIds = [...new Set(candidates.flatMap(n => [n.userId, n.renote?.userId, n.reply?.userId].filter((x): x is string => x != null)))];
-		const silenced = new Set<string>();
-		await Promise.all(authorIds.map(async id => {
-			const policies = await this.roleService.getUserPolicies(id);
-			if (!policies.canPublicNote) silenced.add(id);
-		}));
-		candidates = candidates.filter(n => !silenced.has(n.userId) && !(n.renote != null && silenced.has(n.renote.userId)) && !(n.reply != null && silenced.has(n.reply.userId)));
 
 		// muted word（mutedWords＋hardMutedWords。§8）。引用RN/返信の元テキストも見る。
 		if (mutedWords.length > 0) {
@@ -135,11 +181,9 @@ export class HanamiForYouSafetyService {
 		});
 
 		const packed = await this.noteEntityService.packMany(ordered, me, { withReactionAndUserPairCache: true });
+		// メディア除外は query 側(applyMediaFilter)でユーザー設定に従い適用済。CW/センシティブは既定表示（クライアントがぼかし/折りたたみ）。
 
-		// sensitive media 除外（§8）。pack 後の files で判定（添付に sensitive があれば丸ごと落とす）。引用RN元の添付も見る。
-		const safe = packed.filter(note => !(note.files ?? []).some(f => f.isSensitive) && !(note.renote?.files ?? []).some(f => f.isSensitive));
-
-		await Promise.all(safe.map(note => removeMutedUsersReactions(note, userIdsWhoMeMuting)));
-		return safe.slice(0, limit);
+		await Promise.all(packed.map(note => removeMutedUsersReactions(note, userIdsWhoMeMuting)));
+		return packed.slice(0, limit);
 	}
 }
