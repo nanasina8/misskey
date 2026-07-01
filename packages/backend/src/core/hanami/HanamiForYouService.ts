@@ -51,6 +51,8 @@ const NEIGHBOR_NOTE_POOL = 250;
 const REACTION_SIMILAR_NOTE_POOL = 250;
 const CATCHUP_NOTE_POOL = 250;
 const TOP_RELATION_OTHERS = 100;
+const DB_GLOBAL_FALLBACK_WINDOW_MS = 30 * DAY_MS;
+const DB_GLOBAL_FALLBACK_SAMPLE = 5000;
 
 const ALS_RUN_KIND = 'als';
 
@@ -285,14 +287,56 @@ export class HanamiForYouService {
 	/** globalPopular: グローバル人気（公共圏の発見・§4）。engagement 順。 */
 	private async globalPopularCandidates(): Promise<ForYouCandidate[]> {
 		const ranked = await this.featuredService.getGlobalNotesRankingWithScores(GLOBAL_POPULAR_POOL);
+		if (ranked.length === 0) return this.dbGlobalPopularFallbackCandidates(GLOBAL_POPULAR_POOL);
 		return ranked.map(([noteId, score]) => ({ noteId, score }));
 	}
 
 	/** exploration: globalPopular 母集団からの新鮮候補（§4/§14-D1）。recency 順にして top と差別化、bubble化防止。 */
 	private async explorationCandidates(): Promise<ForYouCandidate[]> {
 		const ranked = await this.featuredService.getGlobalNotesRankingWithScores(EXPLORATION_POOL);
+		if (ranked.length === 0) return this.dbRecentExplorationFallbackCandidates(EXPLORATION_POOL);
 		// 新鮮さ重視: noteId（=時刻）降順。interleave の作者dedup と既出統合で多様性を確保する。
 		return ranked.map(([noteId]) => noteId).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0)).map((noteId, i) => ({ noteId, score: 1 - i / EXPLORATION_POOL }));
+	}
+
+	private async dbGlobalPopularFallbackCandidates(limit: number): Promise<ForYouCandidate[]> {
+		const sinceId = this.idService.gen(Date.now() - DB_GLOBAL_FALLBACK_WINDOW_MS);
+		const rows = await this.db.query(
+			`WITH recent AS (
+			   SELECT n.id, n."userId"
+			   FROM note n
+			   WHERE n.id >= $1
+			     AND n.visibility IN ('public','home') AND n."channelId" IS NULL
+			     AND (n."renoteId" IS NULL OR n.text IS NOT NULL OR n."hasPoll" = TRUE OR n."fileIds" <> '{}')
+			   ORDER BY n.id DESC
+			   LIMIT $2
+			 )
+			 SELECT recent.id AS "noteId", recent."userId" AS "userId", count(r.id)::int AS "reactionCount"
+			 FROM recent
+			 LEFT JOIN note_reaction r ON r."noteId" = recent.id
+			 GROUP BY recent.id, recent."userId"
+			 ORDER BY count(r.id) DESC, recent.id DESC
+			 LIMIT $3`,
+			[sinceId, DB_GLOBAL_FALLBACK_SAMPLE, limit],
+		) as { noteId: string; userId: string; reactionCount: number }[];
+		const max = Math.max(1, ...rows.map(r => Number(r.reactionCount)));
+		return rows.map(r => ({ noteId: r.noteId, userId: r.userId, score: (Number(r.reactionCount) || 0) / max }));
+	}
+
+	private async dbRecentExplorationFallbackCandidates(limit: number): Promise<ForYouCandidate[]> {
+		const sinceId = this.idService.gen(Date.now() - DB_GLOBAL_FALLBACK_WINDOW_MS);
+		const rows = await this.db.query(
+			`SELECT n.id AS "noteId", n."userId" AS "userId"
+			 FROM note n
+			 WHERE n.id >= $1
+			   AND n.visibility IN ('public','home') AND n."channelId" IS NULL
+			   AND (n."renoteId" IS NULL OR n.text IS NOT NULL OR n."hasPoll" = TRUE OR n."fileIds" <> '{}')
+			 ORDER BY n.id DESC
+			 LIMIT $2`,
+			[sinceId, limit],
+		) as { noteId: string; userId: string }[];
+		const n = rows.length || 1;
+		return rows.map((r, i) => ({ noteId: r.noteId, userId: r.userId, score: (n - i) / n }));
 	}
 
 	/** trending: global trend 候補（§4）。taste 再ランクは MiniLM 後段（task #9）で接続。 */
@@ -479,12 +523,15 @@ export class HanamiForYouService {
 		let textHeavy = false;
 		if (aux != null) {
 			const metaRows = await this.db.query(
-				`SELECT n.id AS id, EXTRACT(HOUR FROM (n."createdAt" AT TIME ZONE 'Asia/Tokyo'))::int AS hr,
+				`SELECT n.id AS id,
 				        (n."fileIds" <> '{}') AS "hasMedia", (n.text IS NOT NULL) AS "hasText"
 				 FROM note n WHERE n.id = ANY($1)`,
 				[idList],
-			) as { id: string; hr: number; hasMedia: boolean; hasText: boolean }[];
-			for (const r of metaRows) noteMeta.set(r.id, { hr: Number(r.hr), hasMedia: r.hasMedia, hasText: r.hasText });
+			) as { id: string; hasMedia: boolean; hasText: boolean }[];
+			for (const r of metaRows) {
+				const hr = (this.idService.parse(r.id).date.getUTCHours() + 9) % 24;
+				noteMeta.set(r.id, { hr, hasMedia: r.hasMedia, hasText: r.hasText });
+			}
 			const hist = aux.hist ?? {};
 			peakHours = new Set(Object.entries(hist).map(([h, c]) => [Number(h), Number(c)] as [number, number]).sort((a, b) => b[1] - a[1]).slice(0, AUX_PEAK_HOURS).map(e => e[0]));
 			textHeavy = Number(aux.media) < AUX_TEXT_HEAVY_THRESHOLD;

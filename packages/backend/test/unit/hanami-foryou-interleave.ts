@@ -115,8 +115,8 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		expect(out.every(o => o.userId === 'A')).toBe(true);
 	});
 
-	it('全体が limit の半分未満なら globalPopular だけ fallback overflow（§6.1-6）', () => {
-		// high は gp cap=ceil(10*0.30)=3。gp のみ候補→ normal で3件→ <5 なので残りを overflow で埋める。
+	it('全体が limit 未満なら有効軸から fallback overflow（§6.1-6）', () => {
+		// high は gp cap=ceil(10*0.30)=3。gp のみ候補→ normal で3件→ limit 未満なので残りを overflow で埋める。
 		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>([
 			['globalPopular', uniqueCands('gp', 10)],
 		]);
@@ -125,6 +125,86 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		expect(out.every(o => o.source === 'globalPopular')).toBe(true);
 		expect(out.filter(o => o.fallbackOverflow === true).length).toBe(7); // cap3 を超えた7件
 		expect(out.filter(o => !o.fallbackOverflow).length).toBe(3);
+	});
+
+	it('一部の軸が空でも候補が残る有効軸から headroom まで補充する', () => {
+		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>([
+			['globalPopular', []],
+			['neighborTrending', uniqueCands('nb', 10)],
+			['reactionSimilar', uniqueCands('rs', 10)],
+			['trending', []],
+			['catchup', uniqueCands('cu', 10)],
+			['fof', uniqueCands('fof', 10)],
+			['exploration', []],
+		]);
+		const out = hanamiInterleave({ confidence: 'high', limit: 10, axisCandidates });
+		// cap 合計（headroom）は13。後段 safety filter の脱落に備えて limit より厚く渡す。
+		expect(out.length).toBe(13);
+		expect(out.some(o => o.fallbackOverflow)).toBe(true);
+		expect(countBySource(out)).toEqual(expect.objectContaining({
+			neighborTrending: expect.any(Number),
+			reactionSimilar: expect.any(Number),
+			catchup: expect.any(Number),
+			fof: expect.any(Number),
+		}));
+	});
+
+	it('fallback overflow でもユーザーが off にした軸は拾わない', () => {
+		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>([
+			['globalPopular', uniqueCands('gp', 20)],
+			['trending', uniqueCands('tr', 20)],
+			['fof', uniqueCands('fof', 20)],
+			['exploration', uniqueCands('ex', 20)],
+		]);
+		const axisLevels = new Map<HanamiAxis, HanamiAxisLevel>([
+			['globalPopular', 'off'],
+			['trending', 'normal'],
+			['fof', 'off'],
+			['exploration', 'off'],
+		]);
+		const out = hanamiInterleave({ confidence: 'none', limit: 10, axisCandidates, axisLevels });
+		expect(out.length).toBe(10);
+		expect(out.every(o => o.source === 'trending')).toBe(true);
+	});
+
+	it('fallback overflow の追加分も少なめ/多め由来の cap 比率に寄せる', () => {
+		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>([
+			['globalPopular', []],
+			['neighborTrending', uniqueCands('nb', 30)],
+			['reactionSimilar', uniqueCands('rs', 30)],
+			['trending', []],
+			['catchup', uniqueCands('cu', 30)],
+			['fof', uniqueCands('fof', 30)],
+			['exploration', []],
+		]);
+		const axisLevels = new Map<HanamiAxis, HanamiAxisLevel>([
+			['globalPopular', 'high'],
+			['neighborTrending', 'high'],
+			['reactionSimilar', 'low'],
+			['trending', 'high'],
+			['catchup', 'normal'],
+			['fof', 'low'],
+			['exploration', 'high'],
+		]);
+		const out = hanamiInterleave({ confidence: 'high', limit: 20, axisCandidates, axisLevels });
+		expect(countBySource(out)).toEqual({
+			neighborTrending: 13,
+			reactionSimilar: 5,
+			catchup: 4,
+			fof: 2,
+		});
+	});
+
+	it('FoF だけ候補が残る実データでも fallback overflow でページを埋める', () => {
+		// high は fof cap=ceil(10*0.03)=1。FoF だけ候補がある場合でも1件で止めない。
+		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>([
+			['fof', uniqueCands('fof', 10)],
+		]);
+		const out = hanamiInterleave({ confidence: 'high', limit: 10, axisCandidates });
+		expect(out.length).toBe(10);
+		expect(out.every(o => o.source === 'fof')).toBe(true);
+		expect(out.filter(o => o.fallbackOverflow === true).length).toBe(9);
+		expect(out.filter(o => !o.fallbackOverflow).length).toBe(1);
 	});
 
 	it('interleave はハード除外しない: 与えた候補を軸内 score 順に全部返す（既出減点は呼び出し側・§6.1-5）', () => {
@@ -159,7 +239,7 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		// cap 合計（high）= ceil(10*0.30)+ceil(0.25)+ceil(0.15)+ceil(0.12)+ceil(0.07)+ceil(0.03)+ceil(0.08[exp])
 		//             = 3+3+2+2+1+1+1 = 13（>limit）だが、これは pre-safety の上限。limit ページ取得は呼び出し側。
 		expect(out.length).toBe(13);
-		// fallback overflow は発生しない（out.length >= limit/2）。
+		// fallback overflow は発生しない（通常capだけで limit 以上）。
 		expect(out.some(o => o.fallbackOverflow)).toBe(false);
 	});
 });

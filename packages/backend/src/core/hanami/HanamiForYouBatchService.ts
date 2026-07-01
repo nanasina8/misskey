@@ -116,7 +116,7 @@ export class HanamiForYouBatchService {
 			logger.error('hanami foryou: ALS batch failed', { e: err });
 		}
 
-		// aux 集計（活動リズム・メディア嗜好。純SQL）。
+		// aux 集計（活動リズム・メディア嗜好）。
 		try {
 			const n = await this.runAuxBatch();
 			logger.succ(`hanami foryou: aux batch wrote ${n} rows`);
@@ -146,20 +146,18 @@ export class HanamiForYouBatchService {
 	/**
 	 * 双方向関係値を全ローカルユーザー分まとめて再計算し `hanami_foryou_relation` を全置換する（§5/§7.3）。
 	 * out = me→other（reaction/reply/renote）, in = other→me（×inbound係数）, mutual = coef*sqrt(out*in)。
-		 * reaction は createdAt 列が無い（1697420555911 で削除済）ため id 窓のバケットで時間減衰する。
+	 * reaction/reply/renote は createdAt 列に頼らず、id 窓のバケットで時間減衰する。
 	 */
 	@bindThis
 	public async runRelationBatch(): Promise<number> {
 		const now = Date.now();
-		const since = new Date(now - RELATION_LOOKBACK_MS);
 		const minReactionId = this.idService.gen(now - RELATION_LOOKBACK_MS);
-		// reaction の時間減衰（半減期120d近似）を id 窓のバケットで。
-		const t30 = this.idService.gen(now - 30 * 24 * 60 * 60 * 1000);
-		const t90 = this.idService.gen(now - 90 * 24 * 60 * 60 * 1000);
-		const t180 = this.idService.gen(now - 180 * 24 * 60 * 60 * 1000);
+		const minNoteId = this.idService.gen(now - RELATION_LOOKBACK_MS);
+		const decayT30 = this.idService.gen(now - 30 * 24 * 60 * 60 * 1000);
+		const decayT90 = this.idService.gen(now - 90 * 24 * 60 * 60 * 1000);
+		const decayT180 = this.idService.gen(now - 180 * 24 * 60 * 60 * 1000);
 		const reactionDecayCase = `CASE WHEN r.id >= $2 THEN 0.9 WHEN r.id >= $3 THEN 0.65 WHEN r.id >= $4 THEN 0.45 ELSE 0.28 END`;
-		// note の時間減衰（連続・半減期120d）。
-		const noteDecay = `power(0.5, EXTRACT(EPOCH FROM (now() - n."createdAt")) / ${120 * 86400}.0)`;
+		const noteDecayCase = `CASE WHEN n.id >= $2 THEN 0.9 WHEN n.id >= $3 THEN 0.65 WHEN n.id >= $4 THEN 0.45 ELSE 0.28 END`;
 
 		const accum = new Map<RelationAccumKey, RelationAccum>();
 		const bump = (me: string, other: string, dir: 'out' | 'in', w: number) => {
@@ -179,7 +177,7 @@ export class HanamiForYouBatchService {
 				 JOIN "user" u ON u.id = r."userId"
 				 WHERE r.id >= $1 AND u.host IS NULL AND r."userId" <> n."userId"
 				 GROUP BY r."userId", n."userId"`,
-				[minReactionId, t30, t90, t180],
+				[minReactionId, decayT30, decayT90, decayT180],
 			) as { me: string; other: string; w: string }[];
 			for (const row of rows) bump(row.me, row.other, 'out', Number(row.w) * RELATION_WEIGHT.reaction);
 		}
@@ -192,21 +190,21 @@ export class HanamiForYouBatchService {
 				 JOIN "user" u ON u.id = n."userId"
 				 WHERE r.id >= $1 AND u.host IS NULL AND r."userId" <> n."userId"
 				 GROUP BY n."userId", r."userId"`,
-				[minReactionId, t30, t90, t180],
+				[minReactionId, decayT30, decayT90, decayT180],
 			) as { me: string; other: string; w: string }[];
 			for (const row of rows) bump(row.me, row.other, 'in', Number(row.w) * RELATION_WEIGHT.reaction);
 		}
-			// OUT replies: me が other に返信。
-			await this.accumulateNoteSignal(accum, bump, 'out', 'replyUserId', noteDecay, since, RELATION_WEIGHT.reply);
+		// OUT replies: me が other に返信。
+		await this.accumulateNoteSignal(accum, bump, 'out', 'replyUserId', noteDecayCase, minNoteId, decayT30, decayT90, decayT180, RELATION_WEIGHT.reply);
 		// IN replies: other が me に返信。
-		await this.accumulateNoteSignal(accum, bump, 'in', 'replyUserId', noteDecay, since, RELATION_WEIGHT.reply);
+		await this.accumulateNoteSignal(accum, bump, 'in', 'replyUserId', noteDecayCase, minNoteId, decayT30, decayT90, decayT180, RELATION_WEIGHT.reply);
 		// OUT renotes: me が other をリノート。
-		await this.accumulateNoteSignal(accum, bump, 'out', 'renoteUserId', noteDecay, since, RELATION_WEIGHT.renote);
+		await this.accumulateNoteSignal(accum, bump, 'out', 'renoteUserId', noteDecayCase, minNoteId, decayT30, decayT90, decayT180, RELATION_WEIGHT.renote);
 		// IN renotes: other が me をリノート。
-		await this.accumulateNoteSignal(accum, bump, 'in', 'renoteUserId', noteDecay, since, RELATION_WEIGHT.renote);
+		await this.accumulateNoteSignal(accum, bump, 'in', 'renoteUserId', noteDecayCase, minNoteId, decayT30, decayT90, decayT180, RELATION_WEIGHT.renote);
 
-			// 合成 → 行に。
-			const updatedAt = new Date();
+		// 合成 → 行に。
+		const updatedAt = new Date();
 		const relationRows: MiHanamiForYouRelation[] = [];
 		for (const [key, a] of accum) {
 			const [me, other] = key.split('\t');
@@ -216,11 +214,11 @@ export class HanamiForYouBatchService {
 			const mutual = RELATION_MUTUAL_COEF * Math.sqrt(Math.max(0, o) * Math.max(0, i));
 			const rel = o + i + mutual;
 			if (rel <= 0) continue;
-				relationRows.push({
-					userId: me,
-					otherUserId: other,
-					relScore: rel,
-					outScore: o,
+			relationRows.push({
+				userId: me,
+				otherUserId: other,
+				relScore: rel,
+				outScore: o,
 				inScore: i,
 				mutualScore: mutual,
 				updatedAt,
@@ -242,29 +240,32 @@ export class HanamiForYouBatchService {
 		return relationRows.length;
 	}
 
-		/** reply/renote の note 由来シグナルを集計する。 */
+	/** reply/renote の note 由来シグナルを集計する。 */
 	private async accumulateNoteSignal(
 		accum: Map<RelationAccumKey, RelationAccum>,
 		bump: (me: string, other: string, dir: 'out' | 'in', w: number) => void,
 		dir: 'out' | 'in',
 		targetCol: 'replyUserId' | 'renoteUserId',
-		noteDecay: string,
-		since: Date,
+		noteDecayCase: string,
+		sinceId: string,
+		decayT30: string,
+		decayT90: string,
+		decayT180: string,
 		typeWeight: number,
 	): Promise<void> {
 		// dir=out: me=投稿者(n.userId) / other=対象(targetCol)。dir=in: me=対象(targetCol) / other=投稿者(n.userId)。
-			const meExpr = dir === 'out' ? 'n."userId"' : `n."${targetCol}"`;
-			const otherExpr = dir === 'out' ? `n."${targetCol}"` : 'n."userId"';
-			const rows = await this.db.query(
-				`SELECT ${meExpr} AS me, ${otherExpr} AS other, SUM(${noteDecay}) AS w
-				 FROM note n
-				 JOIN "user" mu ON mu.id = ${meExpr}
-				 WHERE n."${targetCol}" IS NOT NULL
-				   AND n."${targetCol}" <> n."userId"
-				   AND mu.host IS NULL
-				   AND n."createdAt" >= $1
-				 GROUP BY ${meExpr}, ${otherExpr}`,
-				[since],
+		const meExpr = dir === 'out' ? 'n."userId"' : `n."${targetCol}"`;
+		const otherExpr = dir === 'out' ? `n."${targetCol}"` : 'n."userId"';
+		const rows = await this.db.query(
+			`SELECT ${meExpr} AS me, ${otherExpr} AS other, SUM(${noteDecayCase}) AS w
+			 FROM note n
+			 JOIN "user" mu ON mu.id = ${meExpr}
+			 WHERE n."${targetCol}" IS NOT NULL
+			   AND n."${targetCol}" <> n."userId"
+			   AND mu.host IS NULL
+			   AND n.id >= $1
+			 GROUP BY ${meExpr}, ${otherExpr}`,
+			[sinceId, decayT30, decayT90, decayT180],
 		) as { me: string; other: string; w: string }[];
 		for (const row of rows) bump(row.me, row.other, dir, Number(row.w) * typeWeight);
 	}
@@ -414,7 +415,7 @@ export class HanamiForYouBatchService {
 			.execute();
 	}
 
-	// ───────────────────────── aux 集計（純SQL） ─────────────────────────
+	// ───────────────────────── aux 集計 ─────────────────────────
 
 	/**
 	 * 活動リズム（active_hour_hist・JST）とメディア/テキスト反応率を全ローカルユーザー分集計し upsert（§5/§7.3）。
@@ -424,16 +425,15 @@ export class HanamiForYouBatchService {
 	@bindThis
 	public async runAuxBatch(): Promise<number> {
 		const now = Date.now();
-		const since = new Date(now - AUX_LOOKBACK_MS);
+		const minNoteId = this.idService.gen(now - AUX_LOOKBACK_MS);
 		const minReactionId = this.idService.gen(now - AUX_LOOKBACK_MS);
 
 		const histRows = await this.db.query(
-			`SELECT n."userId" AS uid, EXTRACT(HOUR FROM (n."createdAt" AT TIME ZONE 'Asia/Tokyo'))::int AS hr, count(*)::int AS c
+			`SELECT n.id AS id, n."userId" AS uid
 			 FROM note n JOIN "user" u ON u.id = n."userId"
-			 WHERE u.host IS NULL AND n."createdAt" >= $1
-			 GROUP BY n."userId", hr`,
-			[since],
-		) as { uid: string; hr: number; c: number }[];
+			 WHERE u.host IS NULL AND n.id >= $1`,
+			[minNoteId],
+		) as { id: string; uid: string }[];
 		const rateRows = await this.db.query(
 			`SELECT r."userId" AS uid, count(*)::int AS total,
 			        count(*) FILTER (WHERE n."fileIds" <> '{}')::int AS media,
@@ -450,7 +450,11 @@ export class HanamiForYouBatchService {
 			if (e == null) { e = { hist: {}, media: 0, text: 0 }; byUser.set(uid, e); }
 			return e;
 		};
-		for (const h of histRows) get(h.uid).hist[String(h.hr)] = Number(h.c);
+		for (const h of histRows) {
+			const hr = (this.idService.parse(h.id).date.getUTCHours() + 9) % 24;
+			const hist = get(h.uid).hist;
+			hist[String(hr)] = (hist[String(hr)] ?? 0) + 1;
+		}
 		for (const r of rateRows) {
 			const e = get(r.uid);
 			const total = Number(r.total) || 0;
@@ -458,18 +462,18 @@ export class HanamiForYouBatchService {
 			e.text = total > 0 ? Number(r.txt) / total : 0;
 		}
 
-			const updatedAt = new Date();
-			let written = 0;
-			for (const [uid, e] of byUser) {
-				await this.db.query(
-					`INSERT INTO "hanami_foryou_user_aux" ("userId","activeHourHist","mediaReactionRate","textReactionRate","updatedAt")
-					 VALUES ($1,$2::jsonb,$3,$4,$5)
-					 ON CONFLICT ("userId") DO UPDATE SET
-					   "activeHourHist"=EXCLUDED."activeHourHist",
-					   "mediaReactionRate"=EXCLUDED."mediaReactionRate","textReactionRate"=EXCLUDED."textReactionRate","updatedAt"=EXCLUDED."updatedAt"`,
-					[uid, JSON.stringify(e.hist), e.media, e.text, updatedAt],
-				);
-				written++;
+		const updatedAt = new Date();
+		let written = 0;
+		for (const [uid, e] of byUser) {
+			await this.db.query(
+				`INSERT INTO "hanami_foryou_user_aux" ("userId","activeHourHist","mediaReactionRate","textReactionRate","updatedAt")
+				 VALUES ($1,$2::jsonb,$3,$4,$5)
+				 ON CONFLICT ("userId") DO UPDATE SET
+				   "activeHourHist"=EXCLUDED."activeHourHist",
+				   "mediaReactionRate"=EXCLUDED."mediaReactionRate","textReactionRate"=EXCLUDED."textReactionRate","updatedAt"=EXCLUDED."updatedAt"`,
+				[uid, JSON.stringify(e.hist), e.media, e.text, updatedAt],
+			);
+			written++;
 		}
 		return written;
 	}

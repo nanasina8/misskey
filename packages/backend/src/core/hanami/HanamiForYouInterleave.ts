@@ -118,8 +118,8 @@ function computeCaps(confidence: HanamiConfidence, limit: number, order: readonl
  * - 既出（served/seen）は呼び出し側で軸内スコアを弱く減点済み＝「沈むが再登場」。ここでは除外もtierも行わない（決定論）。
  * - 作者上限超過はスキップ。直前作者と同じ作者は round0 では後回し（候補不足の later round で許可）。
  * - cap は computeCaps で「有効軸での比率再配分」（§Q1）。off軸=0、有効軸だけで budget を量レベル比で分配。
- *   軸が枯れたら他軸へ流れるが cap は超えない（level=off / share=0 の軸は拾わない）。
- * - 全体が limit の半分未満なら globalPopular だけ fallback overflow を許可（fallbackOverflow=true）。
+ *   通常枠では cap を超えない（level=off / share=0 の軸は拾わない）。
+ * - 全体が limit 未満なら、候補が残っている有効軸から cap 比率で fallback overflow を許可（fallbackOverflow=true）。
  * - 出力は cap 合計（headroom）まで。safety filter で落ちた分の backfill 余裕を含む。最終 global sort はしない（§6.1-8）。
  */
 export function hanamiInterleave(opts: {
@@ -200,21 +200,63 @@ export function hanamiInterleave(opts: {
 		}
 	};
 
+	const nextPickIndex = (axis: HanamiAxis, allowSameAuthor: boolean): number => {
+		const list = opts.axisCandidates.get(axis) ?? [];
+		const done = consumed.get(axis)!;
+		let chosenIdx = -1;
+		let fallbackIdx = -1;
+		for (let i = 0; i < list.length; i++) {
+			if (done.has(i)) continue;
+			const c = list[i];
+			if (selected.has(c.noteId)) { done.add(i); continue; }
+			const author = merged.get(c.noteId)?.userId ?? null;
+			if (author != null && (authorCount.get(author) ?? 0) >= AUTHOR_PER_PAGE_CAP) { done.add(i); continue; }
+			if (fallbackIdx < 0) fallbackIdx = i;
+			if (author == null || author !== lastAuthor) { chosenIdx = i; break; }
+		}
+		return chosenIdx >= 0 ? chosenIdx : (allowSameAuthor ? fallbackIdx : -1);
+	};
+
+	const fillOverflow = (target: number): void => {
+		const credit = new Map<HanamiAxis, number>(order.map(a => [a, 0]));
+		let allowSameAuthor = false;
+		for (;;) {
+			if (out.length >= target) break;
+			const eligible: { axis: HanamiAxis; pickIdx: number; cap: number; credit: number }[] = [];
+			for (const axis of order) {
+				const axisCap = cap.get(axis) ?? 0;
+				if (axisCap <= 0) continue; // off 軸 / share=0 軸は fallback でも拾わない。
+				const pickIdx = nextPickIndex(axis, allowSameAuthor);
+				if (pickIdx >= 0) eligible.push({ axis, pickIdx, cap: axisCap, credit: credit.get(axis) ?? 0 });
+			}
+			if (eligible.length === 0) {
+				if (!allowSameAuthor) {
+					allowSameAuthor = true;
+					continue;
+				}
+				break;
+			}
+
+			const totalEligibleCap = eligible.reduce((sum, e) => sum + e.cap, 0);
+			for (const e of eligible) {
+				e.credit += e.cap;
+				credit.set(e.axis, e.credit);
+			}
+			const pick = eligible.reduce((best, e) => e.credit > best.credit ? e : best);
+			consumed.get(pick.axis)!.add(pick.pickIdx);
+			pushPick(pick.axis, (opts.axisCandidates.get(pick.axis) ?? [])[pick.pickIdx], { fallbackOverflow: true });
+			credit.set(pick.axis, (credit.get(pick.axis) ?? 0) - totalEligibleCap);
+			allowSameAuthor = false;
+		}
+	};
+
 	// 1) quota interleave（軸内スコア順・cap 上限まで＝headroom）。safety で落ちた分の backfill 余裕を含む。
 	fill(headroom);
 
-	// 2) fallback overflow（§6.1-6）: 全体が limit の半分未満なら globalPopular だけ cap を超えて足す。
-	if ((cap.get('globalPopular') ?? 0) > 0 && out.length < Math.floor(limit / 2)) {
-		const list = opts.axisCandidates.get('globalPopular') ?? [];
-		const done = consumed.get('globalPopular')!;
-		for (let i = 0; i < list.length && out.length < limit; i++) {
-			if (done.has(i)) continue;
-			const c = list[i];
-			if (selected.has(c.noteId)) continue;
-			done.add(i);
-			pushPick('globalPopular', c, { fallbackOverflow: true });
-		}
-	}
+	// 2) fallback overflow（§6.1-6）: 候補がある軸が少ない実データでもページを痩せさせない。
+	// 後段 safety filter の脱落に備え、通常capと同じ headroom まで余分に渡す。
+	const overflowTarget = Math.max(limit, headroom);
+	if (out.length < overflowTarget) fillOverflow(overflowTarget);
 
 	return out;
 }
