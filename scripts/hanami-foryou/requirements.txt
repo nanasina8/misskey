@@ -1,0 +1,5 @@
+# torch is installed separately from the PyTorch CPU wheel index in Dockerfile.
+numpy
+scipy
+implicit
+sentence-transformers

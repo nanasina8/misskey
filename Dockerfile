@@ -73,14 +73,32 @@ FROM --platform=$TARGETPLATFORM node:${NODE_VERSION}-slim AS runner
 ARG UID="991"
 ARG GID="991"
 
-RUN apt-get update \
+COPY --link ["scripts/hanami-foryou/requirements.txt", "/tmp/hanami-foryou-requirements.txt"]
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV HANAMI_FORYOU_PYTHON=/opt/hanami-foryou-venv/bin/python3
+ENV HOME=/misskey
+ENV HF_HOME=/misskey/.cache/huggingface
+ENV SENTENCE_TRANSFORMERS_HOME=/misskey/.cache/sentence-transformers
+ENV PATH=/opt/hanami-foryou-venv/bin:$PATH
+
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+	apt-get update \
 	&& apt-get install -y --no-install-recommends \
-	ffmpeg tini curl libjemalloc-dev libjemalloc2 \
+	ffmpeg tini curl ca-certificates libjemalloc-dev libjemalloc2 \
+	python3 python3-venv python3-pip libgomp1 \
+	&& python3 -m venv /opt/hanami-foryou-venv \
+	&& /opt/hanami-foryou-venv/bin/python3 -m pip install --upgrade pip setuptools wheel \
+	&& /opt/hanami-foryou-venv/bin/python3 -m pip install --index-url https://download.pytorch.org/whl/cpu torch \
+	&& /opt/hanami-foryou-venv/bin/python3 -m pip install -r /tmp/hanami-foryou-requirements.txt \
 	&& ln -s /usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2 /usr/local/lib/libjemalloc.so \
 	&& groupadd -g "${GID}" misskey \
 	&& useradd -l -u "${UID}" -g "${GID}" -m -d /misskey misskey \
+	&& mkdir -p /misskey/.cache/huggingface /misskey/.cache/sentence-transformers \
+	&& chown -R misskey:misskey /opt/hanami-foryou-venv /misskey/.cache \
 	&& find / -type d -path /sys -prune -o -type d -path /proc -prune -o -type f -perm /u+s -ignore_readdir_race -exec chmod u-s {} \; \
 	&& find / -type d -path /sys -prune -o -type d -path /proc -prune -o -type f -perm /g+s -ignore_readdir_race -exec chmod g-s {} \; \
+	&& rm -f /tmp/hanami-foryou-requirements.txt \
 	&& apt-get clean \
 	&& rm -rf /var/lib/apt/lists
 
