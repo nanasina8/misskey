@@ -29,6 +29,16 @@ const HASHTAG_RANKING_WINDOW = 1000 * 60 * 60; // 1時間ごと
 
 const featuredEpoc = new Date('2023-01-01T00:00:00Z').getTime();
 
+// RN加点の基準値。リレー連合はRN(Announce)だけ届きリアクションが著者・フォロワー以外に届かないため、
+// リモートRNはローカルRNより軽くする（実測: リアクション/RN比 local≈14.5 vs remote≈1.8）。
+export const FEATURED_RENOTE_SCORE_LOCAL = 1;
+export const FEATURED_RENOTE_SCORE_REMOTE = 0.5;
+// 相互RN関係（7日窓・バッチ検出）からのRN加点に掛ける減衰係数
+export const FEATURED_RN_RING_FACTOR = 0.3;
+
+const RN_MUTUAL_PAIRS_KEY = 'hanamiRnMutualPairs';
+const RN_MUTUAL_PAIRS_TTL_SECONDS = 60 * 60 * 2; // バッチ(1h周期)が止まったら失効させる
+
 @Injectable()
 export class FeaturedService {
 	constructor(
@@ -178,16 +188,56 @@ export class FeaturedService {
 		return this.updateRankingOf(`featuredPersonalizedNotesRanking:${userId}`, GLOBAL_NOTES_RANKING_WINDOW_MS, noteId, score, GLOBAL_NOTES_TTL_SECONDS);
 	}
 
+	/**
+	 * RN加点の重複防止セットに追加し、このユーザーが何人目のRNかを返す。
+	 * 既に加点済みのユーザーなら null（加点しない）。
+	 */
 	@bindThis
-	public async tryAddRenoteBoost(noteId: MiNote['id'], userId: MiUser['id']): Promise<boolean> {
+	public async tryAddRenoteBoost(noteId: MiNote['id'], userId: MiUser['id']): Promise<number | null> {
 		const key = `featuredRenoteBoostedUsers:${noteId}`;
 		const result = await this.redisClient
 			.multi()
 			.sadd(key, userId)
+			.scard(key)
 			.expire(key, GLOBAL_NOTES_TTL_SECONDS, 'NX')
 			.exec();
 
-		return Number(result?.[0]?.[1]) === 1;
+		if (Number(result?.[0]?.[1]) !== 1) return null;
+		return Math.max(1, Number(result?.[1]?.[1]));
+	}
+
+	/** アンリノート減点用: このユーザーが加点済みか＋現在のRN人数を返す。セットからは外さない（RN⇄取り消しの繰り返しで加点を稼げてしまうため）。 */
+	@bindThis
+	public async getRenoteBoostState(noteId: MiNote['id'], userId: MiUser['id']): Promise<{ boosted: boolean; count: number }> {
+		const key = `featuredRenoteBoostedUsers:${noteId}`;
+		const result = await this.redisClient
+			.multi()
+			.sismember(key, userId)
+			.scard(key)
+			.exec();
+		return {
+			boosted: Number(result?.[0]?.[1]) === 1,
+			count: Math.max(1, Number(result?.[1]?.[1])),
+		};
+	}
+
+	/** 相互RNペア（"authorId:renoterId"）を全置換する。For You バッチから1h周期で呼ばれる。 */
+	@bindThis
+	public async setRnMutualPairs(pairs: string[]): Promise<void> {
+		const tx = this.redisClient.multi();
+		tx.del(RN_MUTUAL_PAIRS_KEY);
+		for (let i = 0; i < pairs.length; i += 1000) {
+			tx.sadd(RN_MUTUAL_PAIRS_KEY, ...pairs.slice(i, i + 1000));
+		}
+		if (pairs.length > 0) {
+			tx.expire(RN_MUTUAL_PAIRS_KEY, RN_MUTUAL_PAIRS_TTL_SECONDS);
+		}
+		await tx.exec();
+	}
+
+	@bindThis
+	public async isRnMutualPair(authorId: MiUser['id'], renoterId: MiUser['id']): Promise<boolean> {
+		return await this.redisClient.sismember(RN_MUTUAL_PAIRS_KEY, `${authorId}:${renoterId}`) === 1;
 	}
 
 	// グローバルランキング（線形減衰）

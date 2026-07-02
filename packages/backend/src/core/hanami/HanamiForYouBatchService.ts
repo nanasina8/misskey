@@ -14,6 +14,7 @@ import { DataSource } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import { IdService } from '@/core/IdService.js';
+import { FeaturedService } from '@/core/FeaturedService.js';
 import type Logger from '@/logger.js';
 import { MiHanamiForYouRelation } from '@/models/HanamiForYouRelation.js';
 import { MiHanamiForYouUserFactor } from '@/models/HanamiForYouUserFactor.js';
@@ -36,6 +37,9 @@ const RELATION_WEIGHT = { reaction: 1.0, reply: 2.5, renote: 1.5 } as const;
 const RELATION_INBOUND_COEF = 0.8;
 const RELATION_MUTUAL_COEF = 1.5;
 const RELATION_INSERT_CHUNK = 1000;
+
+// 相互RNペア検出（リング減衰）の集計窓
+const RN_RING_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 
 // ALS（§10）。実行は Python（implicit/scipy）。本番に python3+venv 前提。
 const ALS_FACTORS = 128;
@@ -93,6 +97,7 @@ export class HanamiForYouBatchService {
 		private hanamiForYouModelRunsRepository: HanamiForYouModelRunsRepository,
 
 		private idService: IdService,
+		private featuredService: FeaturedService,
 	) {
 	}
 
@@ -132,6 +137,14 @@ export class HanamiForYouBatchService {
 			logger.error('hanami foryou: embedding batch failed', { e: err });
 		}
 
+		// 相互RNペア検出（人気スコアのリング減衰用）。
+		try {
+			const n = await this.runRnRingBatch();
+			logger.succ(`hanami foryou: rn-ring batch wrote ${n} mutual pairs`);
+		} catch (err) {
+			logger.error('hanami foryou: rn-ring batch failed', { e: err });
+		}
+
 		// event cleanup（TTL）。
 		try {
 			await this.cleanupEvents();
@@ -139,6 +152,35 @@ export class HanamiForYouBatchService {
 		} catch (err) {
 			logger.error('hanami foryou: event cleanup failed', { e: err });
 		}
+	}
+
+	// ───────────────────────── 相互RNペア（リング減衰） ─────────────────────────
+
+	/**
+	 * 直近7日で「AがBをRN かつ BがAをRN」した有向ペアを抽出し、Redis set を全置換する。
+	 * NoteCreateService の RN 加点時に参照され、リング内RNの加点が減額される。
+	 */
+	@bindThis
+	public async runRnRingBatch(): Promise<number> {
+		const minId = this.idService.gen(Date.now() - RN_RING_LOOKBACK_MS);
+		const rows = await this.db.query(
+			`WITH rn AS (
+				SELECT DISTINCT n."userId" AS renoter, n."renoteUserId" AS author
+				FROM note n
+				WHERE n.id > $1
+				  AND n."renoteId" IS NOT NULL
+				  AND n.text IS NULL AND n.cw IS NULL AND n."hasPoll" = FALSE
+				  AND COALESCE(cardinality(n."fileIds"), 0) = 0
+				  AND n."renoteUserId" IS NOT NULL
+				  AND n."userId" <> n."renoteUserId"
+			)
+			SELECT a.author AS author, a.renoter AS renoter
+			FROM rn a JOIN rn b ON a.renoter = b.author AND a.author = b.renoter`,
+			[minId],
+		) as { author: string; renoter: string }[];
+
+		await this.featuredService.setRnMutualPairs(rows.map(r => `${r.author}:${r.renoter}`));
+		return rows.length;
 	}
 
 	// ───────────────────────── 関係値バッチ（純SQL） ─────────────────────────

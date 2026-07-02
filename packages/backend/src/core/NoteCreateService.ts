@@ -49,7 +49,7 @@ import { RoleService } from '@/core/RoleService.js';
 import { HanamiSearchService } from '@/core/hanamisearch/HanamiSearchService.js';
 import { HanamiTrendService } from '@/core/hanami/HanamiTrendService.js';
 import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
-import { FeaturedService } from '@/core/FeaturedService.js';
+import { FeaturedService, FEATURED_RENOTE_SCORE_LOCAL, FEATURED_RENOTE_SCORE_REMOTE, FEATURED_RN_RING_FACTOR } from '@/core/FeaturedService.js';
 import { FanoutTimelineNamePrefix, FanoutTimelineService } from '@/core/FanoutTimelineService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { UserBlockingService } from '@/core/UserBlockingService.js';
@@ -1178,11 +1178,18 @@ export class NoteCreateService implements OnApplicationShutdown {
 			.execute();
 
 		// ハイライト用ランキング更新（RN加点は1ユーザー・1ノートにつき1回まで）
-		const shouldBoost = await this.featuredService.tryAddRenoteBoost(renote.id, renoteUser.id);
-		if (!shouldBoost) return;
+		const boostRank = await this.featuredService.tryAddRenoteBoost(renote.id, renoteUser.id);
+		if (boostRank == null) return;
 
-		// リモート/ローカルで将来分けられるよう分岐は残す
-		const renoteScore = this.userEntityService.isRemoteUser(renoteUser) ? 2 : 2;
+		const baseScore = this.userEntityService.isRemoteUser(renoteUser)
+			? FEATURED_RENOTE_SCORE_REMOTE
+			: FEATURED_RENOTE_SCORE_LOCAL;
+		// n人目のRN加点は base/√n。合計寄与を劣線形化し、RNが続く限りランキングに残り続けるのを防ぐ
+		let renoteScore = baseScore / Math.sqrt(boostRank);
+		// 相互RN関係（バッチ検出）からのRNはリング内相互ブーストとみなして減額
+		if (await this.featuredService.isRnMutualPair(renote.userId, renoteUser.id)) {
+			renoteScore *= FEATURED_RN_RING_FACTOR;
+		}
 		if (renote.channelId != null) {
 			if (renote.replyId == null) {
 				this.featuredService.updateInChannelNotesRanking(renote.channelId, renote.id, renoteScore);

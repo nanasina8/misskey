@@ -19,6 +19,7 @@ import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { ApDeliverManagerService } from '@/core/activitypub/ApDeliverManagerService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
+import { FeaturedService, FEATURED_RENOTE_SCORE_LOCAL, FEATURED_RENOTE_SCORE_REMOTE, FEATURED_RN_RING_FACTOR } from '@/core/FeaturedService.js';
 import { bindThis } from '@/decorators.js';
 import { HanamiSearchService } from '@/core/hanamisearch/HanamiSearchService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
@@ -44,6 +45,7 @@ export class NoteDeleteService {
 		private instancesRepository: InstancesRepository,
 
 		private userEntityService: UserEntityService,
+		private featuredService: FeaturedService,
 		private globalEventService: GlobalEventService,
 		private relayService: RelayService,
 		private federatedInstanceService: FederatedInstanceService,
@@ -67,6 +69,13 @@ export class NoteDeleteService {
 
 		if (note.replyId) {
 			await this.notesRepository.decrement({ id: note.replyId }, 'repliesCount', 1);
+		}
+
+		// アンリノート: ハイライト用ランキングからRN加点分を減点（fire-and-forget）
+		if (isRenote(note) && !isQuote(note)) {
+			this.decayRenoteBoost(user, note).catch(err => {
+				console.error('Failed to decay renote boost', err);
+			});
 		}
 
 		if (!quiet) {
@@ -127,6 +136,36 @@ export class NoteDeleteService {
 				noteUserHost: user.host,
 				note: note,
 			});
+		}
+	}
+
+	/**
+	 * アンリノート時にRN加点分をランキングから引く。
+	 * 加点した窓と順位は特定できないため、現在窓から現在人数(n)ベースの base/√n を引く近似。
+	 * boost セットからは外さない（外すとRN⇄取り消しの繰り返しで加点を稼げる）。
+	 */
+	@bindThis
+	private async decayRenoteBoost(user: { id: MiUser['id']; host: MiUser['host']; }, note: MiNote) {
+		if (note.renoteId == null) return;
+		const target = await this.notesRepository.findOneBy({ id: note.renoteId });
+		if (target == null) return;
+
+		const { boosted, count } = await this.featuredService.getRenoteBoostState(target.id, user.id);
+		if (!boosted) return;
+
+		const baseScore = user.host != null ? FEATURED_RENOTE_SCORE_REMOTE : FEATURED_RENOTE_SCORE_LOCAL;
+		let score = baseScore / Math.sqrt(count);
+		if (await this.featuredService.isRnMutualPair(target.userId, user.id)) {
+			score *= FEATURED_RN_RING_FACTOR;
+		}
+
+		if (target.channelId != null) {
+			if (target.replyId == null) {
+				await this.featuredService.updateInChannelNotesRanking(target.channelId, target.id, -score);
+			}
+		} else if ((target.visibility === 'public' || target.visibility === 'home') && target.replyId == null) {
+			await this.featuredService.updateGlobalNotesRanking(target.id, -score);
+			await this.featuredService.updatePerUserNotesRanking(target.userId, target.id, -score);
 		}
 	}
 
