@@ -83,6 +83,7 @@ import { HanamiReactionSimilarService } from './hanami/HanamiReactionSimilarServ
 import { HanamiCatchupService } from './hanami/HanamiCatchupService.js';
 import { HanamiForYouProvenanceService } from './hanami/HanamiForYouProvenanceService.js';
 import { HanamiForYouBatchService } from './hanami/HanamiForYouBatchService.js';
+import { HanamiTasteClusterBatchService } from './hanami/HanamiTasteClusterBatchService.js';
 import { HanamiForYouService } from './hanami/HanamiForYouService.js';
 import { HanamiForYouSafetyService } from './hanami/HanamiForYouSafetyService.js';
 import { FanoutTimelineService } from './FanoutTimelineService.js';
@@ -243,6 +244,7 @@ const $HanamiReactionSimilarService: Provider = { provide: 'HanamiReactionSimila
 const $HanamiCatchupService: Provider = { provide: 'HanamiCatchupService', useExisting: HanamiCatchupService };
 const $HanamiForYouProvenanceService: Provider = { provide: 'HanamiForYouProvenanceService', useExisting: HanamiForYouProvenanceService };
 const $HanamiForYouBatchService: Provider = { provide: 'HanamiForYouBatchService', useExisting: HanamiForYouBatchService };
+const $HanamiTasteClusterBatchService: Provider = { provide: 'HanamiTasteClusterBatchService', useExisting: HanamiTasteClusterBatchService };
 const $HanamiForYouService: Provider = { provide: 'HanamiForYouService', useExisting: HanamiForYouService };
 const $HanamiForYouSafetyService: Provider = { provide: 'HanamiForYouSafetyService', useExisting: HanamiForYouSafetyService };
 const $FanoutTimelineService: Provider = { provide: 'FanoutTimelineService', useExisting: FanoutTimelineService };
@@ -408,6 +410,7 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		HanamiCatchupService,
 		HanamiForYouProvenanceService,
 		HanamiForYouBatchService,
+		HanamiTasteClusterBatchService,
 		HanamiForYouService,
 		HanamiForYouSafetyService,
 		FanoutTimelineService,
@@ -569,6 +572,7 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		$HanamiCatchupService,
 		$HanamiForYouProvenanceService,
 		$HanamiForYouBatchService,
+		$HanamiTasteClusterBatchService,
 		$HanamiForYouService,
 		$HanamiForYouSafetyService,
 		$FanoutTimelineService,
@@ -731,6 +735,7 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		HanamiCatchupService,
 		HanamiForYouProvenanceService,
 		HanamiForYouBatchService,
+		HanamiTasteClusterBatchService,
 		HanamiForYouService,
 		HanamiForYouSafetyService,
 		FanoutTimelineService,
@@ -890,6 +895,7 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		$HanamiCatchupService,
 		$HanamiForYouProvenanceService,
 		$HanamiForYouBatchService,
+		$HanamiTasteClusterBatchService,
 		$HanamiForYouService,
 		$HanamiForYouSafetyService,
 		$FanoutTimelineService,

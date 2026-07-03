@@ -3629,6 +3629,16 @@ _hana:
       trending: "トレンド"
       trendingTerm: "トレンド: {term}"
       fof: "おすすめユーザーの投稿"
+  _tasteClusters:
+    title: "あなたの興味"
+    description: "この分類はあなたのリアクション・投稿履歴から自動生成され、毎日更新されます。『減らす』はそのカテゴリの人気投稿の枠を約1/3にし、『表示しない』は出さなくなります。"
+    empty: "まだ興味データがありません。リアクションや投稿が増えると自動で生成されます（週次更新）。"
+    noLabel: "（特徴語なし）"
+    count: "{n}件"
+    mentionBadge: "言及"
+    weightNormal: "通常"
+    weightReduce: "減らす"
+    weightHide: "表示しない"
   _explore:
     mediaFilter: "みつけるの画像・動画の表示"
     mediaFilterDescription: "みつける（人気の投稿）に表示するメディアを選びます。この設定はみつけるにのみ適用されます。"

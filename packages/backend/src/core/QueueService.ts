@@ -89,6 +89,14 @@ const REPEATABLE_SYSTEM_JOB_DEF = [{
 	name: 'hanamiForYouBatch',
 	// はなみ For You オフラインバッチ（ALS/関係値/MiniLM/aux）。canonical spec §3/§10 = 既定1時間ごと。
 	pattern: '7 * * * *',
+}, {
+	name: 'hanamiTasteSweep',
+	// taste-clustered popular: ノート埋め込みスイープ（spec v0.2 §1.1）。新しい順・時間予算8分。
+	pattern: '*/10 * * * *',
+}, {
+	name: 'hanamiTasteCluster',
+	// taste-clustered popular: evidence整理＋ユーザーごとk-means再構築（spec v0.2 §1.2-1.4）。
+	pattern: '40 4 * * *',
 }];
 
 @Injectable()

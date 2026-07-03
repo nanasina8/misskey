@@ -21,6 +21,7 @@ import { CleanProcessorService } from './processors/CleanProcessorService.js';
 import { CheckModeratorsActivityProcessorService } from './processors/CheckModeratorsActivityProcessorService.js';
 import { CleanRemoteNotesProcessorService } from './processors/CleanRemoteNotesProcessorService.js';
 import { HanamiForYouBatchProcessorService } from './processors/HanamiForYouBatchProcessorService.js';
+import { HanamiTasteBatchProcessorService } from './processors/HanamiTasteBatchProcessorService.js';
 import { CleanRemoteFilesProcessorService } from './processors/CleanRemoteFilesProcessorService.js';
 import { DeleteAccountProcessorService } from './processors/DeleteAccountProcessorService.js';
 import { DeleteDriveFilesProcessorService } from './processors/DeleteDriveFilesProcessorService.js';
@@ -91,6 +92,7 @@ import { RelationshipProcessorService } from './processors/RelationshipProcessor
 		CheckModeratorsActivityProcessorService,
 		CleanRemoteNotesProcessorService,
 		HanamiForYouBatchProcessorService,
+		HanamiTasteBatchProcessorService,
 		QueueProcessorService,
 	],
 	exports: [

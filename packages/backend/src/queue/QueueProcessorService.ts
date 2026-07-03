@@ -46,6 +46,7 @@ import { CleanProcessorService } from './processors/CleanProcessorService.js';
 import { AggregateRetentionProcessorService } from './processors/AggregateRetentionProcessorService.js';
 import { CleanRemoteNotesProcessorService } from './processors/CleanRemoteNotesProcessorService.js';
 import { HanamiForYouBatchProcessorService } from './processors/HanamiForYouBatchProcessorService.js';
+import { HanamiTasteBatchProcessorService } from './processors/HanamiTasteBatchProcessorService.js';
 import { QueueLoggerService } from './QueueLoggerService.js';
 import { QUEUE, baseWorkerOptions } from './const.js';
 import { ImportNotesProcessorService } from './processors/ImportNotesProcessorService.js';
@@ -132,6 +133,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 		private cleanProcessorService: CleanProcessorService,
 		private cleanRemoteNotesProcessorService: CleanRemoteNotesProcessorService,
 		private hanamiForYouBatchProcessorService: HanamiForYouBatchProcessorService,
+		private hanamiTasteBatchProcessorService: HanamiTasteBatchProcessorService,
 	) {
 		this.logger = this.queueLoggerService.logger;
 
@@ -175,6 +177,8 @@ export class QueueProcessorService implements OnApplicationShutdown {
 					case 'clean': return this.cleanProcessorService.process();
 					case 'cleanRemoteNotes': return this.cleanRemoteNotesProcessorService.process(job);
 					case 'hanamiForYouBatch': return this.hanamiForYouBatchProcessorService.process(job);
+					case 'hanamiTasteSweep': return this.hanamiTasteBatchProcessorService.processSweep(job);
+					case 'hanamiTasteCluster': return this.hanamiTasteBatchProcessorService.processCluster(job);
 					default: throw new Error(`unrecognized job type ${job.name} for system`);
 				}
 			};

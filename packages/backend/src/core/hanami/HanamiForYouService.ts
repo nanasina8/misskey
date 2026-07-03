@@ -18,6 +18,7 @@ import { IdService } from '@/core/IdService.js';
 import { HanamiTrendService } from '@/core/hanami/HanamiTrendService.js';
 import { HanamiUserRecommendationService } from '@/core/hanami/HanamiUserRecommendationService.js';
 import { HanamiForYouBatchService } from '@/core/hanami/HanamiForYouBatchService.js';
+import { TASTE_EMBED_MODEL } from '@/core/hanami/HanamiTasteClusterBatchService.js';
 import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
 import { HanamiForYouSafetyService } from '@/core/hanami/HanamiForYouSafetyService.js';
 import { HanamiRecommendationService } from '@/core/HanamiRecommendationService.js';
@@ -55,6 +56,17 @@ const DB_GLOBAL_FALLBACK_WINDOW_MS = 30 * DAY_MS;
 const DB_GLOBAL_FALLBACK_SAMPLE = 5000;
 
 const ALS_RUN_KIND = 'als';
+
+// popular軸のサーブ時パーソナライズ強度: score ×= (1 + β·affinity)。
+// β=0.5 で top20 のうち約4件が「自分好みの人気投稿」に入れ替わる（実測シミュレーション）。
+// ALS author factor は人気候補作者をほぼ100%被覆する（MiniLM埋め込みの被覆1%と対照的）。
+const POPULAR_AFFINITY_BETA = 0.5;
+
+// taste-clustered popular（hanami-taste-cluster-spec v0.2 §2）。
+// 候補をユーザーの好みクラスタに割り当て、クラスタ別%枠の重み付き抽選で並べる（スコア/max合成はしない）。
+const TASTE_TAU_ASSIGN = 0.25; // これ未満の類似は general 扱い（実測校正: 0.25で人気候補の約56%が割当・7/8クラスタに分散）
+const TASTE_GENERAL_SHARE = 0.25; // 非パーソナル枠の固定比率（anti-bubble・全減らし時の保険）
+const TASTE_SOFTMAX_TEMP = 0.7; // クラスタ内抽選の温度（上位固定を避ける）
 
 // MiniLM taste 再ランク＋aux boost（§5/§6/§14-D7。弱め＝タイブレーク程度）。
 const FORYOU_EMBEDDING_MODEL = 'paraphrase-multilingual-MiniLM-L12-v2';
@@ -273,7 +285,7 @@ export class HanamiForYouService {
 
 	private async candidatesForAxis(axis: HanamiAxis, meId: MiUser['id'], alsRunId: string | null, followeeIds: string[], withFiles: boolean): Promise<ForYouCandidate[]> {
 		switch (axis) {
-			case 'globalPopular': return this.globalPopularCandidates();
+			case 'globalPopular': return this.globalPopularCandidates(meId, alsRunId);
 			case 'exploration': return this.explorationCandidates();
 			case 'trending': return this.trendingCandidates();
 			case 'fof': return this.fofCandidates(meId, withFiles);
@@ -284,11 +296,183 @@ export class HanamiForYouService {
 		}
 	}
 
-	/** globalPopular: グローバル人気（公共圏の発見・§4）。engagement 順。 */
-	private async globalPopularCandidates(): Promise<ForYouCandidate[]> {
+	/** globalPopular: グローバル人気（公共圏の発見・§4）。engagement 順 × 作者親和度リランク × taste クラスタ枠。 */
+	private async globalPopularCandidates(meId: MiUser['id'], alsRunId: string | null): Promise<ForYouCandidate[]> {
 		const ranked = await this.featuredService.getGlobalNotesRankingWithScores(GLOBAL_POPULAR_POOL);
-		if (ranked.length === 0) return this.dbGlobalPopularFallbackCandidates(GLOBAL_POPULAR_POOL);
-		return ranked.map(([noteId, score]) => ({ noteId, score }));
+		const candidates = ranked.length === 0
+			? await this.dbGlobalPopularFallbackCandidates(GLOBAL_POPULAR_POOL)
+			: ranked.map(([noteId, score]) => ({ noteId, score }));
+		const reranked = await this.applyAuthorAffinityRerank(meId, alsRunId, candidates);
+		return this.applyTasteClusterOrdering(meId, reranked);
+	}
+
+	/**
+	 * taste-clustered popular（spec v0.2 §2）: 候補を好みクラスタに割り当て、
+	 * クラスタ別%枠（share ∝ size×userWeight、general は固定25%）の重み付き抽選で並べ替える。
+	 * クラスタ未生成・mean_vec 無し・埋め込み欠損は general 縮退（現行挙動と同一）で壊れない。
+	 */
+	private async applyTasteClusterOrdering(meId: MiUser['id'], candidates: ForYouCandidate[]): Promise<ForYouCandidate[]> {
+		if (candidates.length === 0) return candidates;
+
+		const clusters = await this.db.query(
+			`SELECT "clusterId", centroid, size, "userWeight", "labelTerms"
+			 FROM "hanami_foryou_user_taste_cluster" WHERE "userId" = $1`,
+			[meId],
+		) as { clusterId: number; centroid: number[]; size: number; userWeight: number; labelTerms: string[] }[];
+		if (clusters.length === 0) return candidates;
+
+		const stateRows = await this.db.query(
+			`SELECT "meanVec" FROM "hanami_foryou_taste_state" WHERE model = $1`,
+			[TASTE_EMBED_MODEL],
+		) as { meanVec: number[] }[];
+		const meanVec = stateRows[0]?.meanVec;
+		if (meanVec == null || meanVec.length === 0) return candidates;
+
+		const embRows = await this.db.query(
+			`SELECT "noteId", embedding FROM "hanami_note_embedding" WHERE model = $1 AND "noteId" = ANY($2)`,
+			[TASTE_EMBED_MODEL, candidates.map(c => c.noteId)],
+		) as { noteId: string; embedding: number[] }[];
+		const embByNote = new Map(embRows.map(r => [r.noteId, r.embedding]));
+
+		// バケツ分け: 最大類似クラスタ（τ未満・埋め込み無しは general、weight=0 クラスタは除外=「表示しない」）。
+		const buckets = new Map<number | 'general', { cand: ForYouCandidate; term?: string }[]>();
+		buckets.set('general', []);
+		for (const cl of clusters) buckets.set(cl.clusterId, []);
+		for (const cand of candidates) {
+			const emb = embByNote.get(cand.noteId);
+			if (emb == null) {
+				buckets.get('general')!.push({ cand });
+				continue;
+			}
+			// 平均中心化＋正規化して各クラスタ centroid と cos。
+			let norm = 0;
+			const centered = new Array<number>(meanVec.length);
+			for (let i = 0; i < meanVec.length; i++) {
+				const v = (emb[i] ?? 0) - meanVec[i];
+				centered[i] = v;
+				norm += v * v;
+			}
+			norm = Math.sqrt(norm) || 1;
+			let bestCos = -1;
+			let best: typeof clusters[number] | null = null;
+			for (const cl of clusters) {
+				let dot = 0;
+				const len = Math.min(centered.length, cl.centroid.length);
+				for (let i = 0; i < len; i++) dot += centered[i] * cl.centroid[i];
+				const cos = dot / norm;
+				if (cos > bestCos) { bestCos = cos; best = cl; }
+			}
+			if (best == null || bestCos < TASTE_TAU_ASSIGN) {
+				buckets.get('general')!.push({ cand });
+			} else if (Number(best.userWeight) <= 0) {
+				// 「表示しない」クラスタに強く一致する候補は general にも流さない（ユーザー意思の尊重）。
+			} else {
+				buckets.get(best.clusterId)!.push({ cand, term: best.labelTerms.slice(0, 2).join('・') || undefined });
+			}
+		}
+
+		// share ∝ size×weight、general は総 size×固定比率。
+		const totalSize = clusters.reduce((a, c) => a + c.size, 0) || 1;
+		const shareOf = new Map<number | 'general', number>();
+		for (const cl of clusters) shareOf.set(cl.clusterId, cl.size * Number(cl.userWeight));
+		shareOf.set('general', totalSize * TASTE_GENERAL_SHARE);
+
+		// 重み付き抽選でクラスタ→softmax でクラスタ内の1件、を繰り返して全候補を並べる。
+		const out: ForYouCandidate[] = [];
+		const total = candidates.length;
+		while (out.length < total) {
+			const alive = [...buckets.entries()].filter(([, arr]) => arr.length > 0);
+			if (alive.length === 0) break;
+			let sum = 0;
+			for (const [key] of alive) sum += shareOf.get(key) ?? 0;
+			let bucket = alive[alive.length - 1][1];
+			if (sum > 0) {
+				let r = Math.random() * sum;
+				for (const [key, arr] of alive) {
+					r -= shareOf.get(key) ?? 0;
+					if (r <= 0) { bucket = arr; break; }
+				}
+			} else {
+				bucket = alive[Math.floor(Math.random() * alive.length)][1];
+			}
+			// クラスタ内: スコア正規化の softmax で確率的に1件（上位固定を避けて顔ぶれを回す）。
+			const maxScore = bucket.reduce((a, b) => Math.max(a, b.cand.score), 0) || 1;
+			const weights = bucket.map(b => Math.exp((b.cand.score / maxScore) / TASTE_SOFTMAX_TEMP));
+			let wsum = weights.reduce((a, b) => a + b, 0);
+			let pick = bucket.length - 1;
+			let r2 = Math.random() * wsum;
+			for (let i = 0; i < bucket.length; i++) {
+				r2 -= weights[i];
+				if (r2 <= 0) { pick = i; break; }
+			}
+			const chosen = bucket.splice(pick, 1)[0];
+			out.push({ ...chosen.cand, term: chosen.term ?? chosen.cand.term, score: (total - out.length) / total });
+		}
+		return out;
+	}
+
+	/**
+	 * popular軸のサーブ時パーソナライズ: ALS内積（被覆ほぼ100%）＋関係値（被覆〜20%）の
+	 * 大きい方を作者親和度として score ×= (1 + β·aff)。素材が無ければ素通し。
+	 */
+	private async applyAuthorAffinityRerank(meId: MiUser['id'], alsRunId: string | null, candidates: ForYouCandidate[]): Promise<ForYouCandidate[]> {
+		if (candidates.length === 0) return candidates;
+
+		const authorByNote = new Map<string, string>();
+		const missing = candidates.filter(c => c.userId == null).map(c => c.noteId);
+		if (missing.length > 0) {
+			const rows = await this.db.query(
+				'SELECT id, "userId" FROM note WHERE id = ANY($1)',
+				[missing],
+			) as { id: string; userId: string }[];
+			for (const r of rows) authorByNote.set(r.id, r.userId);
+		}
+		const authorOf = (c: ForYouCandidate) => c.userId ?? authorByNote.get(c.noteId);
+		const authorIds = [...new Set(candidates.map(authorOf).filter((x): x is string => x != null))];
+		if (authorIds.length === 0) return candidates;
+
+		const alsByAuthor = new Map<string, number>();
+		if (alsRunId != null) {
+			const uf = await this.db.query(
+				'SELECT factor FROM "hanami_foryou_user_factor" WHERE "runId" = $1 AND "userId" = $2 LIMIT 1',
+				[alsRunId, meId],
+			) as { factor: number[] }[];
+			const userFactor = uf[0]?.factor;
+			if (userFactor != null && userFactor.length > 0) {
+				const rows = await this.db.query(
+					'SELECT "authorId", factor FROM "hanami_foryou_author_factor" WHERE "runId" = $1 AND "authorId" = ANY($2)',
+					[alsRunId, authorIds],
+				) as { authorId: string; factor: number[] }[];
+				for (const row of rows) {
+					let dot = 0;
+					const len = Math.min(userFactor.length, row.factor.length);
+					for (let i = 0; i < len; i++) dot += userFactor[i] * row.factor[i];
+					if (dot > 0) alsByAuthor.set(row.authorId, dot);
+				}
+			}
+		}
+
+		const relByAuthor = new Map<string, number>();
+		{
+			const rows = await this.db.query(
+				'SELECT "otherUserId" AS id, "relScore" FROM "hanami_foryou_relation" WHERE "userId" = $1 AND "otherUserId" = ANY($2) AND "relScore" > 0',
+				[meId, authorIds],
+			) as { id: string; relScore: number }[];
+			for (const r of rows) relByAuthor.set(r.id, Number(r.relScore));
+		}
+
+		if (alsByAuthor.size === 0 && relByAuthor.size === 0) return candidates;
+		const alsMax = Math.max(...alsByAuthor.values(), 0);
+		const relMax = Math.max(...relByAuthor.values(), 0);
+
+		return candidates.map(c => {
+			const author = authorOf(c);
+			if (author == null) return c;
+			const als = alsMax > 0 ? (alsByAuthor.get(author) ?? 0) / alsMax : 0;
+			const rel = relMax > 0 ? (relByAuthor.get(author) ?? 0) / relMax : 0;
+			const aff = Math.max(als, rel);
+			return aff > 0 ? { ...c, score: c.score * (1 + POPULAR_AFFINITY_BETA * aff) } : c;
+		});
 	}
 
 	/** exploration: globalPopular 母集団からの新鮮候補（§4/§14-D1）。recency 順にして top と差別化、bubble化防止。 */

@@ -91,6 +91,33 @@
 		</FormSection>
 
 		<FormSection>
+			<template #label>{{ tasteI18n.title }}</template>
+			<template #description>{{ tasteI18n.description }}</template>
+
+			<div class="_gaps_m">
+				<MkLoading v-if="tasteClustersFetching"/>
+				<div v-else-if="tasteClusters.length === 0" :class="$style.tasteEmpty">{{ tasteI18n.empty }}</div>
+				<div v-else class="_gaps_s">
+					<div v-for="cluster in tasteClusters" :key="cluster.clusterId" :class="$style.tasteCluster">
+						<div :class="$style.tasteClusterHeader">
+							<span :class="$style.tasteClusterTitle">{{ tasteClusterTitle(cluster) }}</span>
+							<span v-if="cluster.isMention" :class="$style.tasteClusterBadge">{{ tasteI18n.mentionBadge }}</span>
+							<span :class="$style.tasteClusterSize">{{ tasteTsx.count({ n: cluster.size }) }}</span>
+						</div>
+						<div v-if="cluster.examples.length > 0" :class="$style.tasteClusterExamples">
+							<div v-for="example in cluster.examples.slice(0, 2)" :key="example.noteId" :class="$style.tasteClusterExample">「{{ example.snippet }}」</div>
+						</div>
+						<MkRadios :modelValue="cluster.weight" @update:modelValue="v => setTasteClusterWeight(cluster, v)">
+							<option value="normal">{{ tasteI18n.weightNormal }}</option>
+							<option value="reduce">{{ tasteI18n.weightReduce }}</option>
+							<option value="hide">{{ tasteI18n.weightHide }}</option>
+						</MkRadios>
+					</div>
+				</div>
+			</div>
+		</FormSection>
+
+		<FormSection>
 			<template #label>{{ exploreI18n.mediaFilter }}</template>
 			<template #description>{{ exploreI18n.mediaFilterDescription }}</template>
 
@@ -120,6 +147,7 @@ import { i18n } from '@/i18n.js';
 import * as os from '@/os.js';
 import { instance } from '@/instance.js';
 import { prefer } from '@/preferences.js';
+import { misskeyApi } from '@/utility/misskey-api.js';
 import { useForm } from '@/composables/use-form.js';
 import { suggestReload } from '@/utility/reload-suggest.js';
 
@@ -171,10 +199,33 @@ type RecommendationI18n = typeof i18n.ts._hana._recommendation & {
 	axisDisabledByServer: string;
 };
 
+type TasteClusterWeight = 'normal' | 'reduce' | 'hide';
+type HanamiTasteCluster = {
+	clusterId: number;
+	labelTerms: string[];
+	size: number;
+	ownRate: number;
+	weight: TasteClusterWeight;
+	isMention: boolean;
+	examples: { noteId: string; snippet: string }[];
+};
+type TasteClustersI18n = {
+	title: string;
+	description: string;
+	empty: string;
+	noLabel: string;
+	mentionBadge: string;
+	weightNormal: string;
+	weightReduce: string;
+	weightHide: string;
+};
+
 const account = $i as RecommendationAccount;
 const recommendationI18n = i18n.ts._hana._recommendation as RecommendationI18n;
 const exploreI18n = (i18n.ts._hana as typeof i18n.ts._hana & { _explore: { mediaFilter: string; mediaFilterDescription: string; mediaFilterAll: string; mediaFilterHideSensitive: string; mediaFilterHideMedia: string } })._explore;
 const reasonLabels = i18n.ts._hana._recommendation._reason as unknown as Record<AxisKey, string>;
+const tasteI18n = (i18n.ts._hana as typeof i18n.ts._hana & { _tasteClusters: TasteClustersI18n })._tasteClusters;
+const tasteTsx = (i18n.tsx._hana as unknown as { _tasteClusters: { count: (args: { n: number }) => string } })._tasteClusters;
 
 const AXES: AxisKey[] = ['globalPopular', 'exploration', 'trending', 'neighborTrending', 'reactionSimilar', 'catchup', 'fof'];
 const AXIS_LEVELS: AxisLevel[] = ['off', 'low', 'normal', 'high'];
@@ -298,6 +349,34 @@ function buildAccountPatch(state: RecommendationFormState) {
 	};
 }
 
+const tasteClusters = ref<HanamiTasteCluster[]>([]);
+const tasteClustersFetching = ref(true);
+
+misskeyApi<HanamiTasteCluster[]>('i/hanami-taste-clusters' as never).then(res => {
+	tasteClusters.value = res ?? [];
+}).catch(() => {
+	tasteClusters.value = [];
+}).finally(() => {
+	tasteClustersFetching.value = false;
+});
+
+function tasteClusterTitle(cluster: HanamiTasteCluster): string {
+	return cluster.labelTerms.length > 0 ? cluster.labelTerms.join('・') : tasteI18n.noLabel;
+}
+
+function setTasteClusterWeight(cluster: HanamiTasteCluster, weight: unknown) {
+	if (weight !== 'normal' && weight !== 'reduce' && weight !== 'hide') return;
+	if (cluster.weight === weight) return;
+	const prev = cluster.weight;
+	cluster.weight = weight;
+	misskeyApi('i/update-hanami-taste-cluster' as never, { clusterId: cluster.clusterId, weight } as never).then(() => {
+		os.success();
+	}).catch(err => {
+		cluster.weight = prev;
+		os.alert({ type: 'error', text: err?.message ?? String(err) });
+	});
+}
+
 async function saveExploreMediaFilter() {
 	const patch = { exploreMediaFilter: exploreMediaFilter.value };
 	await os.apiWithDialog('i/update', patch as never);
@@ -396,6 +475,61 @@ async function saveExploreMediaFilter() {
 
 .axisMultiplier {
 	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.tasteEmpty {
+	font-size: 0.9em;
+	color: color(from var(--MI_THEME-fg) srgb r g b / 0.7);
+}
+
+.tasteCluster {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 12px;
+	border: solid 0.5px var(--MI_THEME-divider);
+	border-radius: 8px;
+}
+
+.tasteClusterHeader {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+	min-width: 0;
+}
+
+.tasteClusterTitle {
+	font-weight: 700;
+	overflow-wrap: anywhere;
+}
+
+.tasteClusterBadge {
+	padding: 1px 6px;
+	border-radius: 999px;
+	background: color(from var(--MI_THEME-accent) srgb r g b / 0.12);
+	color: var(--MI_THEME-accent);
+	font-size: 0.78em;
+}
+
+.tasteClusterSize {
+	color: color(from var(--MI_THEME-fg) srgb r g b / 0.7);
+	font-size: 0.85em;
+	font-variant-numeric: tabular-nums;
+}
+
+.tasteClusterExamples {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.tasteClusterExample {
+	color: color(from var(--MI_THEME-fg) srgb r g b / 0.6);
+	font-size: 0.85em;
+	overflow: hidden;
+	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
