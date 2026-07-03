@@ -19,7 +19,7 @@ import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { ApDeliverManagerService } from '@/core/activitypub/ApDeliverManagerService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
-import { FeaturedService, FEATURED_RENOTE_SCORE_LOCAL, FEATURED_RENOTE_SCORE_REMOTE, FEATURED_RN_RING_FACTOR } from '@/core/FeaturedService.js';
+import { FeaturedService, FEATURED_RENOTE_SCORE_LOCAL, FEATURED_RENOTE_SCORE_REMOTE, FEATURED_RN_RING_FACTOR, renoterActivityDiscount } from '@/core/FeaturedService.js';
 import { bindThis } from '@/decorators.js';
 import { HanamiSearchService } from '@/core/hanamisearch/HanamiSearchService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
@@ -158,6 +158,7 @@ export class NoteDeleteService {
 		if (await this.featuredService.isRnMutualPair(target.userId, user.id)) {
 			score *= FEATURED_RN_RING_FACTOR;
 		}
+		score *= renoterActivityDiscount(await this.featuredService.peekRenoterActivity(user.id));
 
 		if (target.channelId != null) {
 			if (target.replyId == null) {

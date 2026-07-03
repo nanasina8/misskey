@@ -49,7 +49,7 @@ import { RoleService } from '@/core/RoleService.js';
 import { HanamiSearchService } from '@/core/hanamisearch/HanamiSearchService.js';
 import { HanamiTrendService } from '@/core/hanami/HanamiTrendService.js';
 import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
-import { FeaturedService, FEATURED_RENOTE_SCORE_LOCAL, FEATURED_RENOTE_SCORE_REMOTE, FEATURED_RN_RING_FACTOR } from '@/core/FeaturedService.js';
+import { FeaturedService, FEATURED_RENOTE_SCORE_LOCAL, FEATURED_RENOTE_SCORE_REMOTE, FEATURED_RN_RING_FACTOR, renoterActivityDiscount } from '@/core/FeaturedService.js';
 import { FanoutTimelineNamePrefix, FanoutTimelineService } from '@/core/FanoutTimelineService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { UserBlockingService } from '@/core/UserBlockingService.js';
@@ -1190,6 +1190,8 @@ export class NoteCreateService implements OnApplicationShutdown {
 		if (await this.featuredService.isRnMutualPair(renote.userId, renoteUser.id)) {
 			renoteScore *= FEATURED_RN_RING_FACTOR;
 		}
+		// 大量RNユーザーの1票を日次カウントで減衰（少数のヘビーリノーターがランキングの門番になるのを防ぐ）
+		renoteScore *= renoterActivityDiscount(await this.featuredService.incrementRenoterActivity(renoteUser.id));
 		if (renote.channelId != null) {
 			if (renote.replyId == null) {
 				this.featuredService.updateInChannelNotesRanking(renote.channelId, renote.id, renoteScore);

@@ -39,6 +39,16 @@ export const FEATURED_RN_RING_FACTOR = 0.3;
 const RN_MUTUAL_PAIRS_KEY = 'hanamiRnMutualPairs';
 const RN_MUTUAL_PAIRS_TTL_SECONDS = 60 * 60 * 2; // バッチ(1h周期)が止まったら失効させる
 
+// 大量RNユーザーの影響緩和: 1日 FREE 件までは満額、超えた分は 1/√(count/FREE) で減衰（下限FLOOR）。
+// 実測(7日窓・bot除外): リノーターのRN数は p50=2/週・p90=28/週だが、週140件超の26人が全加点イベントの57%を占めた。
+export const FEATURED_RENOTER_DAILY_FREE = 4;
+export const FEATURED_RENOTER_DISCOUNT_FLOOR = 0.1;
+const RENOTER_DAILY_COUNT_TTL_SECONDS = 60 * 60 * 48;
+
+export function renoterActivityDiscount(dailyCount: number): number {
+	return Math.max(FEATURED_RENOTER_DISCOUNT_FLOOR, 1 / Math.sqrt(Math.max(1, dailyCount / FEATURED_RENOTER_DAILY_FREE)));
+}
+
 @Injectable()
 export class FeaturedService {
 	constructor(
@@ -238,6 +248,29 @@ export class FeaturedService {
 	@bindThis
 	public async isRnMutualPair(authorId: MiUser['id'], renoterId: MiUser['id']): Promise<boolean> {
 		return await this.redisClient.sismember(RN_MUTUAL_PAIRS_KEY, `${authorId}:${renoterId}`) === 1;
+	}
+
+	private renoterDailyCountKey(userId: MiUser['id']): string {
+		return `featuredRenoterDailyCount:${userId}:${new Date().toISOString().slice(0, 10)}`;
+	}
+
+	/** RN加点時に呼ぶ: 当日の加点対象RN数をカウントアップし、カウント後の値を返す。 */
+	@bindThis
+	public async incrementRenoterActivity(userId: MiUser['id']): Promise<number> {
+		const key = this.renoterDailyCountKey(userId);
+		const result = await this.redisClient
+			.multi()
+			.incr(key)
+			.expire(key, RENOTER_DAILY_COUNT_TTL_SECONDS, 'NX')
+			.exec();
+		return Number(result?.[0]?.[1]) || 1;
+	}
+
+	/** アンリノート減点用: 当日のカウントをインクリメントせずに読む。 */
+	@bindThis
+	public async peekRenoterActivity(userId: MiUser['id']): Promise<number> {
+		const value = await this.redisClient.get(this.renoterDailyCountKey(userId));
+		return Number(value) || 1;
 	}
 
 	// グローバルランキング（線形減衰）
