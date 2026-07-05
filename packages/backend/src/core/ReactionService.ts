@@ -28,7 +28,7 @@ import { RoleService } from '@/core/RoleService.js';
 import { FeaturedService } from '@/core/FeaturedService.js';
 import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
 import { trackPromise } from '@/misc/promise-tracker.js';
-import { isQuote, isRenote } from '@/misc/is-renote.js';
+import { isQuote, isRenote, pureRenoteSql } from '@/misc/is-renote.js';
 import { ReactionsBufferingService } from '@/core/ReactionsBufferingService.js';
 import { PER_NOTE_REACTION_USER_PAIR_CACHE_MAX } from '@/const.js';
 
@@ -345,6 +345,20 @@ export class ReactionService {
 					this.featuredService.updatePerUserNotesRanking(note.userId, note.id, -1);
 				}
 			}
+		}
+
+		// 興味学習（taste cluster）からも外す: 取り消した反応を嗜好として残さない。
+		// 純RNが残っている場合は evidence の根拠がまだあるので消さない。best-effort。
+		if (user.host == null) {
+			void this.notesRepository.query(
+				`DELETE FROM "hanami_foryou_taste_evidence" ev
+				 WHERE ev."userId" = $1 AND ev."noteId" = $2 AND ev.src = 'R'
+				   AND NOT EXISTS (
+				     SELECT 1 FROM note rn
+				     WHERE rn."userId" = $1 AND rn."renoteId" = $2 AND ${pureRenoteSql('rn')}
+				   )`,
+				[user.id, note.id],
+			).catch(() => { /* ignore */ });
 		}
 
 		this.globalEventService.publishNoteStream(note, 'unreacted', {

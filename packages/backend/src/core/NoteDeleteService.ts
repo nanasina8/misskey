@@ -23,7 +23,7 @@ import { FeaturedService, FEATURED_RENOTE_SCORE_LOCAL, FEATURED_RENOTE_SCORE_REM
 import { bindThis } from '@/decorators.js';
 import { HanamiSearchService } from '@/core/hanamisearch/HanamiSearchService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
-import { isQuote, isRenote } from '@/misc/is-renote.js';
+import { isQuote, isRenote, pureRenoteSql } from '@/misc/is-renote.js';
 import { SearchService } from './SearchService.js';
 
 @Injectable()
@@ -76,6 +76,28 @@ export class NoteDeleteService {
 			this.decayRenoteBoost(user, note).catch(err => {
 				console.error('Failed to decay renote boost', err);
 			});
+			// 興味学習（taste cluster）からも外す（リアクション or 別の純RNが残っていれば根拠が残るので消さない）。
+			// このフックは note 行の物理削除と前後し得るため、純RN残存チェックから削除中の自ノートを除外する。
+			if (user.host == null && note.renoteId != null) {
+				void this.notesRepository.query(
+					`DELETE FROM "hanami_foryou_taste_evidence" ev
+					 WHERE ev."userId" = $1 AND ev."noteId" = $2 AND ev.src = 'R'
+					   AND NOT EXISTS (SELECT 1 FROM note_reaction r WHERE r."userId" = $1 AND r."noteId" = $2)
+					   AND NOT EXISTS (
+					     SELECT 1 FROM note rn
+					     WHERE rn."userId" = $1 AND rn."renoteId" = $2 AND rn.id <> $3 AND ${pureRenoteSql('rn')}
+					   )`,
+					[user.id, note.renoteId, note.id],
+				).catch(() => { /* ignore */ });
+			}
+		}
+
+		// 自ノート削除時は W evidence も外す（ベクトルのみとはいえ、消したノートを嗜好根拠として残さない）。
+		if (user.host == null) {
+			void this.notesRepository.query(
+				`DELETE FROM "hanami_foryou_taste_evidence" WHERE "userId" = $1 AND "noteId" = $2 AND src = 'W'`,
+				[user.id, note.id],
+			).catch(() => { /* ignore */ });
 		}
 
 		if (!quiet) {

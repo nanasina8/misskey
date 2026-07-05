@@ -15,6 +15,7 @@ import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import { IdService } from '@/core/IdService.js';
 import { HanamiTokenizerService } from '@/core/hanami/tokenize/HanamiTokenizerService.js';
+import { pureRenoteSql } from '@/misc/is-renote.js';
 import type Logger from '@/logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -30,8 +31,12 @@ const TASTE_SWEEP_WINDOW_MS = 48 * 60 * 60 * 1000; // 新着スキャン窓（�
 const TASTE_SWEEP_FETCH_LIMIT = 30000; // 時間予算(8分×36件/s≈17k)より広めの取得上限
 const TASTE_SWEEP_TIME_BUDGET_SEC = 8 * 60; // 次の10分実行と重ならないことだけ保証
 const TASTE_MIN_CHARS = 12; // クリーニング後の最低文字数（絵文字/URL/MFMのみノートの偽クラスタ汚染対策）
-const TASTE_EVIDENCE_WINDOW_MS = 90 * DAY_MS;
-const TASTE_EVIDENCE_CAP = 8000; // 超過はランダム間引き（reservoir近似）
+// evidence は日付でなく「ノート数」で切る（v0.3）: 基準30件/日 × 90日 = 最新2,700件/人。
+// ヘビーユーザーは実質90日窓と同等の鮮度、ライトユーザーは何年でも遡って材料を確保できる。
+const TASTE_EVIDENCE_BASE_PER_DAY = 30;
+const TASTE_EVIDENCE_BASE_DAYS = 90;
+const TASTE_EVIDENCE_TARGET = TASTE_EVIDENCE_BASE_PER_DAY * TASTE_EVIDENCE_BASE_DAYS; // 2,700
+const TASTE_EVIDENCE_APPEND_WINDOW_MS = 30 * DAY_MS; // 日次追記の走査窓（埋め込みTTLと同じ。過去分はbootstrapが担う）
 const TASTE_EVIDENCE_APPEND_LIMIT = 20000; // 日次追記の上限（bootstrap時も数日で追いつく）
 const TASTE_MIN_EVIDENCE = 100; // これ未満のユーザーはクラスタを作らない
 const TASTE_K = 8;
@@ -41,6 +46,7 @@ const TASTE_EGO_OWNRATE_MAX = 0.05;
 const TASTE_LABEL_TERMS = 6;
 const TASTE_LABEL_CLUSTER_SAMPLE = 120; // ラベル計算に使うクラスタ内テキスト数
 const TASTE_MEANVEC_SAMPLE = 5000;
+const TASTE_MEANVEC_PER_USER_CAP = 20; // 1ユーザーの mean_vec への寄与上限（連投で基準点を押されないため）
 const TASTE_PROCESS_TIMEOUT_MS = 30 * 60 * 1000;
 
 type KmeansOutUser = {
@@ -106,11 +112,14 @@ export class HanamiTasteClusterBatchService {
 	@bindThis
 	public async runTasteSweep(logger: Logger): Promise<{ processed: number; skipped: number; backlog: number }> {
 		const sinceId = this.idService.gen(Date.now() - TASTE_SWEEP_WINDOW_MS);
+		// 鍵（followers）も学習対象（specified=ダイレクトは常に対象外）。
+		// 埋め込みは学習にのみ使われ、配信候補は public/home のままなので鍵ノートが他人に推薦されることはない。
 		const rows = await this.db.query(
 			`SELECT n.id AS id, n.text AS text
 			 FROM note n
 			 LEFT JOIN "hanami_note_embedding" e ON e."noteId" = n.id AND e.model = $1
-			 WHERE n.id >= $2 AND n.visibility IN ('public','home') AND n."channelId" IS NULL
+			 WHERE n.id >= $2 AND n."channelId" IS NULL
+			   AND n.visibility IN ('public','home','followers')
 			   AND n.text IS NOT NULL AND e."noteId" IS NULL
 			 ORDER BY n.id DESC
 			 LIMIT $3`,
@@ -126,12 +135,21 @@ export class HanamiTasteClusterBatchService {
 		}
 		if (texts.length === 0) return { processed: 0, skipped: rows.length, backlog: 0 };
 
+		const processed = await this.embedAndStore(texts, TASTE_SWEEP_TIME_BUDGET_SEC);
+		// backlog = 時間予算で今回埋めきれなかった分（新しい順なので残りは古い尻尾）。
+		const backlog = texts.length - processed;
+		logger.info(`hanami taste sweep: embedded ${processed}, backlog ${backlog}${rows.length >= TASTE_SWEEP_FETCH_LIMIT ? '+' : ''}`);
+		return { processed, skipped: rows.length - texts.length, backlog };
+	}
+
+	/** クリーニング済みテキストを python(e5) で埋め込み hanami_note_embedding へ upsert。処理件数を返す。 */
+	private async embedAndStore(texts: [string, string][], timeBudgetSec: number): Promise<number> {
 		let tmpDir: string | null = null;
 		try {
 			tmpDir = await mkdtemp(Path.join(tmpdir(), 'hanami-taste-embed-'));
 			const inputPath = Path.join(tmpDir, 'input.json');
 			const outputPath = Path.join(tmpDir, 'output.json');
-			await writeFile(inputPath, JSON.stringify({ model: TASTE_EMBED_MODEL, timeBudgetSec: TASTE_SWEEP_TIME_BUDGET_SEC, texts }), 'utf8');
+			await writeFile(inputPath, JSON.stringify({ model: TASTE_EMBED_MODEL, timeBudgetSec, texts }), 'utf8');
 
 			const scriptPath = process.env.HANAMI_TASTE_EMBED_SCRIPT
 				?? Path.resolve(_dirname, '../../../../../scripts/hanami-foryou/taste_embed_sweep.py');
@@ -157,11 +175,7 @@ export class HanamiTasteClusterBatchService {
 					params,
 				);
 			}
-
-			// backlog = 時間予算で今回埋めきれなかった分（新しい順なので残りは古い尻尾）。
-			const backlog = texts.length - out.processed;
-			logger.info(`hanami taste sweep: embedded ${out.processed}, backlog ${backlog}${rows.length >= TASTE_SWEEP_FETCH_LIMIT ? '+' : ''}`);
-			return { processed: out.processed, skipped: rows.length - texts.length, backlog };
+			return out.processed;
 		} finally {
 			if (tmpDir != null) await rm(tmpDir, { recursive: true, force: true }).catch(() => { /* ignore */ });
 		}
@@ -173,45 +187,58 @@ export class HanamiTasteClusterBatchService {
 	public async runTasteClusterBatch(logger: Logger): Promise<{ users: number }> {
 		const now = Date.now();
 
-		// 0) e5 埋め込みの TTL 整理（30日）。
+		// 0) e5 埋め込みの TTL 整理（30日）＋旧モデル行の purge。
+		//    evidence の PK は (userId, noteId) なので、旧モデル行が残ると ON CONFLICT で新モデルの
+		//    追記が黙って弾かれ、学習素材が欠落する（モデル載せ替え時）。旧空間のベクトルは再利用不能なので消す。
+		//    cluster も同様に purge しないと、閾値未満で再クラスタされないユーザーの旧モデル行が
+		//    永久に残る（serve/一覧は model 一致行しか読まないのにテーブルには居座る）。
+		//    ※モデル載せ替え時の注意: この purge で evidence が一旦空になる。30日窓の append では
+		//      軽量ユーザーが TASTE_MIN_EVIDENCE に届かないため、taste_bootstrap_once の再実行が必要。
 		await this.db.query(
 			`DELETE FROM "hanami_note_embedding" WHERE model = $1 AND "updatedAt" < $2`,
 			[TASTE_EMBED_MODEL, new Date(now - TASTE_EMBED_TTL_MS)],
 		);
+		await this.db.query(
+			`DELETE FROM "hanami_foryou_taste_evidence" WHERE model <> $1`,
+			[TASTE_EMBED_MODEL],
+		);
+		await this.db.query(
+			`DELETE FROM "hanami_foryou_user_taste_cluster" WHERE model <> $1`,
+			[TASTE_EMBED_MODEL],
+		);
 
-		// 1) 対象ユーザー = 90日活動量（リアクション＋text投稿）>= 閾値 のローカルユーザー。
-		const since90 = this.idService.gen(now - TASTE_EVIDENCE_WINDOW_MS);
+		// 1) 対象ユーザー = 生涯活動量（リアクション＋text投稿、閾値でcapしたcount）>= 閾値 のローカルユーザー。
+		//    日付では切らない（v0.3: ライトユーザーも過去に遡って材料を確保する）。
 		const eligible = await this.db.query(
 			`SELECT u.id AS id, u.username AS username, u.name AS name
 			 FROM "user" u
 			 WHERE u.host IS NULL AND u."isSuspended" = FALSE
 			   AND (
-			     (SELECT count(*) FROM note_reaction r WHERE r."userId" = u.id AND r.id >= $1)
-			     + (SELECT count(*) FROM note n WHERE n."userId" = u.id AND n.id >= $1 AND n.text IS NOT NULL)
-			   ) >= $2`,
-			[since90, TASTE_MIN_EVIDENCE],
+			     (SELECT count(*) FROM (SELECT 1 FROM note_reaction r WHERE r."userId" = u.id LIMIT $1) cr)
+			     + (SELECT count(*) FROM (SELECT 1 FROM note n WHERE n."userId" = u.id AND n.text IS NOT NULL LIMIT $1) cn)
+			   ) >= $1`,
+			[TASTE_MIN_EVIDENCE],
 		) as { id: string; username: string; name: string | null }[];
 		if (eligible.length === 0) return { users: 0 };
 		const eligibleIds = eligible.map(u => u.id);
 
 		// 2) evidence 追記（R=リアクション先 / W=自投稿。保存済み埋め込みの fp16 コピーのみ）。
-		await this.appendEvidence(since90, eligibleIds, logger);
+		//    走査窓は埋め込みTTLと同じ30日（それより古い分は bootstrap が担う）。
+		const sinceAppend = this.idService.gen(now - TASTE_EVIDENCE_APPEND_WINDOW_MS);
+		await this.appendEvidence(sinceAppend, eligibleIds, logger);
 
-		// 3) TTL・cap 整理。
-		await this.db.query(`DELETE FROM "hanami_foryou_taste_evidence" WHERE "createdAt" < $1`, [new Date(now - TASTE_EVIDENCE_WINDOW_MS)]);
-		const over = await this.db.query(
-			`SELECT "userId" AS id, count(*)::int AS c FROM "hanami_foryou_taste_evidence" GROUP BY 1 HAVING count(*) > $1`,
-			[TASTE_EVIDENCE_CAP],
-		) as { id: string; c: number }[];
-		for (const o of over) {
-			await this.db.query(
-				`DELETE FROM "hanami_foryou_taste_evidence"
-				 WHERE ("userId", "noteId") IN (
-				   SELECT "userId", "noteId" FROM "hanami_foryou_taste_evidence" WHERE "userId" = $1 ORDER BY random() LIMIT $2
-				 )`,
-				[o.id, o.c - TASTE_EVIDENCE_CAP],
-			);
-		}
+		// 3) ノート数窓の整理: ユーザーごとに最新 TASTE_EVIDENCE_TARGET 件だけ残す（古い方から落ちる）。
+		await this.db.query(
+			`DELETE FROM "hanami_foryou_taste_evidence" e
+			 USING (
+			   SELECT "userId", "noteId" FROM (
+			     SELECT "userId", "noteId", row_number() OVER (PARTITION BY "userId" ORDER BY "createdAt" DESC, "noteId" DESC) AS rn
+			     FROM "hanami_foryou_taste_evidence"
+			   ) t WHERE t.rn > $1
+			 ) d
+			 WHERE e."userId" = d."userId" AND e."noteId" = d."noteId"`,
+			[TASTE_EVIDENCE_TARGET],
+		);
 
 		// 4) mean_vec 更新（直近埋め込みの平均。クラスタ学習と serve の候補割当で共有）。
 		const meanVec = await this.updateMeanVec();
@@ -223,8 +250,8 @@ export class HanamiTasteClusterBatchService {
 		// 5) evidence が十分なユーザーを k-means（pythonへはユーザー30人ずつ）。
 		const targets = await this.db.query(
 			`SELECT "userId" AS id, count(*)::int AS c FROM "hanami_foryou_taste_evidence"
-			 WHERE "userId" = ANY($1) GROUP BY 1 HAVING count(*) >= $2`,
-			[eligibleIds, TASTE_MIN_EVIDENCE],
+			 WHERE "userId" = ANY($1) AND model = $3 GROUP BY 1 HAVING count(*) >= $2`,
+			[eligibleIds, TASTE_MIN_EVIDENCE, TASTE_EMBED_MODEL],
 		) as { id: string; c: number }[];
 		const userMeta = new Map(eligible.map(u => [u.id, u]));
 
@@ -241,30 +268,60 @@ export class HanamiTasteClusterBatchService {
 		return { users: done };
 	}
 
-	private async appendEvidence(since90: string, eligibleIds: string[], logger: Logger): Promise<void> {
-		// R: リアクション先。
+	private async appendEvidence(sinceId: string, eligibleIds: string[], logger: Logger): Promise<void> {
+		// A2: 「古いノートへの新しい反応」を拾う——反応/RN対象なのに埋め込みが無い（TTL切れ or 30日超）ノートを
+		// その場で埋め込み対象に足す（少量）。これが無いと過去ログ掘りの嗜好が構造的に学習されない。
+		await this.embedMissingEngagedNotes(sinceId, eligibleIds, logger);
+
+		// cap 到達ユーザーは「保持中の最古 createdAt」より古い行動を追記対象から外す。
+		// トリムで消した行の行動IDはまだ30日窓内にあるため、これが無いと毎晩 INSERT→トリムを繰り返す。
+		const cutRows = await this.db.query(
+			`SELECT "userId" AS uid, min("createdAt") AS cut FROM "hanami_foryou_taste_evidence"
+			 WHERE "userId" = ANY($1) GROUP BY 1 HAVING count(*) >= $2`,
+			[eligibleIds, TASTE_EVIDENCE_TARGET],
+		) as { uid: string; cut: Date }[];
+		const cutoffOf = new Map(cutRows.map(r => [r.uid, new Date(r.cut).getTime()]));
+		const afterCutoff = (rows: { uid: string; nid: string; emb: number[]; actid: string }[]) => rows.filter(r => {
+			const cut = cutoffOf.get(r.uid);
+			return cut == null || this.idService.parse(r.actid).date.getTime() >= cut;
+		});
+
+		// R: リアクション先。evidence の時刻は「リアクションした時刻」（ノート製造日ではない＝活動の新しさで trim される）。
 		const rRows = await this.db.query(
-			`SELECT r."userId" AS uid, n.id AS nid, e.embedding AS emb
+			`SELECT r."userId" AS uid, n.id AS nid, e.embedding AS emb, r.id AS actid
 			 FROM note_reaction r
 			 JOIN note n ON n.id = r."noteId"
 			 JOIN "hanami_note_embedding" e ON e."noteId" = n.id AND e.model = $1
 			 LEFT JOIN "hanami_foryou_taste_evidence" ev ON ev."userId" = r."userId" AND ev."noteId" = n.id
 			 WHERE r.id >= $2 AND r."userId" = ANY($3) AND r."userId" <> n."userId" AND ev."noteId" IS NULL
 			 LIMIT $4`,
-			[TASTE_EMBED_MODEL, since90, eligibleIds, TASTE_EVIDENCE_APPEND_LIMIT],
-		) as { uid: string; nid: string; emb: number[] }[];
-		// W: 自投稿。
+			[TASTE_EMBED_MODEL, sinceId, eligibleIds, TASTE_EVIDENCE_APPEND_LIMIT],
+		) as { uid: string; nid: string; emb: number[]; actid: string }[];
+		// N: 純RN先（Misskeyで最も強い支持表明。src は R と同扱い＝消費側の好み）。
+		const nRows = await this.db.query(
+			`SELECT rn."userId" AS uid, n.id AS nid, e.embedding AS emb, rn.id AS actid
+			 FROM note rn
+			 JOIN note n ON n.id = rn."renoteId"
+			 JOIN "hanami_note_embedding" e ON e."noteId" = n.id AND e.model = $1
+			 LEFT JOIN "hanami_foryou_taste_evidence" ev ON ev."userId" = rn."userId" AND ev."noteId" = n.id
+			 WHERE rn.id >= $2 AND rn."userId" = ANY($3)
+			   AND ${pureRenoteSql('rn')}
+			   AND rn."userId" <> n."userId" AND ev."noteId" IS NULL
+			 LIMIT $4`,
+			[TASTE_EMBED_MODEL, sinceId, eligibleIds, TASTE_EVIDENCE_APPEND_LIMIT],
+		) as { uid: string; nid: string; emb: number[]; actid: string }[];
+		// W: 自投稿（時刻=ノート時刻）。
 		const wRows = await this.db.query(
-			`SELECT n."userId" AS uid, n.id AS nid, e.embedding AS emb
+			`SELECT n."userId" AS uid, n.id AS nid, e.embedding AS emb, n.id AS actid
 			 FROM note n
 			 JOIN "hanami_note_embedding" e ON e."noteId" = n.id AND e.model = $1
 			 LEFT JOIN "hanami_foryou_taste_evidence" ev ON ev."userId" = n."userId" AND ev."noteId" = n.id
 			 WHERE n.id >= $2 AND n."userId" = ANY($3) AND ev."noteId" IS NULL
 			 LIMIT $4`,
-			[TASTE_EMBED_MODEL, since90, eligibleIds, TASTE_EVIDENCE_APPEND_LIMIT],
-		) as { uid: string; nid: string; emb: number[] }[];
+			[TASTE_EMBED_MODEL, sinceId, eligibleIds, TASTE_EVIDENCE_APPEND_LIMIT],
+		) as { uid: string; nid: string; emb: number[]; actid: string }[];
 
-		const insert = async (rows: { uid: string; nid: string; emb: number[] }[], src: 'R' | 'W') => {
+		const insert = async (rows: { uid: string; nid: string; emb: number[]; actid: string }[], src: 'R' | 'W') => {
 			const chunk = 500;
 			for (let i = 0; i < rows.length; i += chunk) {
 				const slice = rows.slice(i, i + chunk);
@@ -272,26 +329,66 @@ export class HanamiTasteClusterBatchService {
 				const params: unknown[] = [];
 				for (const r of slice) {
 					const base = params.length;
-					values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5})`);
-					params.push(r.uid, r.nid, encodeFp16(r.emb), src, this.idService.parse(r.nid).date);
+					values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6})`);
+					params.push(r.uid, r.nid, encodeFp16(r.emb), src, this.idService.parse(r.actid).date, TASTE_EMBED_MODEL);
 				}
 				await this.db.query(
-					`INSERT INTO "hanami_foryou_taste_evidence" ("userId", "noteId", vector, src, "createdAt")
+					`INSERT INTO "hanami_foryou_taste_evidence" ("userId", "noteId", vector, src, "createdAt", model)
 					 VALUES ${values.join(',')}
 					 ON CONFLICT ("userId", "noteId") DO NOTHING`,
 					params,
 				);
 			}
 		};
-		await insert(rRows, 'R');
-		await insert(wRows, 'W');
-		logger.info(`hanami taste cluster: evidence appended R=${rRows.length} W=${wRows.length}`);
+		const r = afterCutoff(rRows);
+		const n2 = afterCutoff(nRows);
+		const w = afterCutoff(wRows);
+		await insert(r, 'R');
+		await insert(n2, 'R');
+		await insert(w, 'W');
+		logger.info(`hanami taste cluster: evidence appended R=${r.length} RN=${n2.length} W=${w.length}`);
+	}
+
+	/** 反応/RN したのに埋め込みが無いノート（30日超の過去ノート等）を少量その場で埋め込む（A2）。 */
+	private async embedMissingEngagedNotes(sinceId: string, eligibleIds: string[], logger: Logger): Promise<void> {
+		const rows = await this.db.query(
+			`SELECT DISTINCT n.id AS id, n.text AS text
+			 FROM (
+			   SELECT r."noteId" AS nid FROM note_reaction r WHERE r.id >= $2 AND r."userId" = ANY($3)
+			   UNION
+			   SELECT rn."renoteId" FROM note rn
+			   WHERE rn.id >= $2 AND rn."userId" = ANY($3) AND ${pureRenoteSql('rn')}
+			 ) t
+			 JOIN note n ON n.id = t.nid
+			 LEFT JOIN "hanami_note_embedding" e ON e."noteId" = n.id AND e.model = $1
+			 WHERE n.text IS NOT NULL AND n."channelId" IS NULL
+			   AND n.visibility IN ('public','home','followers') AND e."noteId" IS NULL
+			 LIMIT 3000`,
+			[TASTE_EMBED_MODEL, sinceId, eligibleIds],
+		) as { id: string; text: string }[];
+		if (rows.length === 0) return;
+		const texts: [string, string][] = [];
+		for (const r of rows) {
+			const cleaned = this.cleanForEmbedding(r.text);
+			if (cleaned.length >= TASTE_MIN_CHARS) texts.push([r.id, cleaned]);
+		}
+		if (texts.length === 0) return;
+		const n = await this.embedAndStore(texts, 120);
+		logger.info(`hanami taste cluster: embedded ${n} engaged old notes`);
 	}
 
 	private async updateMeanVec(): Promise<number[] | null> {
+		// 平均中心化の基準点。「最新N件」だと約6時間分になり、当日のバズや連投で全ユーザーの割当基準が回転する。
+		// TTL30日の埋め込み全体から md5 で一様サンプルし、1ユーザーの寄与を cap する。
 		const rows = await this.db.query(
-			`SELECT embedding FROM "hanami_note_embedding" WHERE model = $1 ORDER BY "noteId" DESC LIMIT $2`,
-			[TASTE_EMBED_MODEL, TASTE_MEANVEC_SAMPLE],
+			`SELECT embedding FROM (
+			   SELECT e.embedding, md5(e."noteId") AS h,
+			     row_number() OVER (PARTITION BY n."userId" ORDER BY md5(e."noteId")) AS rn
+			   FROM "hanami_note_embedding" e
+			   JOIN note n ON n.id = e."noteId"
+			   WHERE e.model = $1
+			 ) t WHERE t.rn <= $2 ORDER BY t.h LIMIT $3`,
+			[TASTE_EMBED_MODEL, TASTE_MEANVEC_PER_USER_CAP, TASTE_MEANVEC_SAMPLE],
 		) as { embedding: number[] }[];
 		if (rows.length < 100) return null;
 		const mean = new Array<number>(TASTE_EMBED_DIM).fill(0);
@@ -314,8 +411,8 @@ export class HanamiTasteClusterBatchService {
 		let offset = 0;
 		for (const uid of userIds) {
 			const rows = await this.db.query(
-				`SELECT "noteId", vector, src FROM "hanami_foryou_taste_evidence" WHERE "userId" = $1 ORDER BY "noteId"`,
-				[uid],
+				`SELECT "noteId", vector, src FROM "hanami_foryou_taste_evidence" WHERE "userId" = $1 AND model = $2 ORDER BY "noteId"`,
+				[uid, TASTE_EMBED_MODEL],
 			) as { noteId: string; vector: Buffer; src: string }[];
 			if (rows.length < TASTE_MIN_EVIDENCE) continue;
 			for (const r of rows) buffers.push(r.vector);
@@ -376,12 +473,16 @@ export class HanamiTasteClusterBatchService {
 		for (const m of members) for (const i of m.slice(0, TASTE_LABEL_CLUSTER_SAMPLE)) sampleIdx.add(i);
 		const idToText = new Map<string, string>();
 		{
+			// 鍵（followers）ノートはベクトルとして学習には使うが、ラベルの語彙には出さない（本人の投稿は除く）。
+			// labelTerms は集計値なので endpoint 側で可視性フィルタできず、ブロック/アンフォロー後も
+			// 鍵ノート由来の特徴語が見え続けてしまうため、源流で除外する。
 			const ids = [...sampleIdx].map(i => evidence.noteIds[i]);
 			const chunk = 1000;
 			for (let i = 0; i < ids.length; i += chunk) {
 				const rows = await this.db.query(
-					'SELECT id, text FROM note WHERE id = ANY($1)',
-					[ids.slice(i, i + chunk)],
+					`SELECT id, text FROM note
+					 WHERE id = ANY($1) AND (visibility IN ('public','home') OR "userId" = $2)`,
+					[ids.slice(i, i + chunk), res.userId],
 				) as { id: string; text: string | null }[];
 				for (const r of rows) if (r.text != null) idToText.set(r.id, r.text);
 			}
@@ -422,8 +523,8 @@ export class HanamiTasteClusterBatchService {
 
 		// 旧クラスタ（weight 引き継ぎ用）。
 		const oldRows = await this.db.query(
-			`SELECT "clusterId", centroid, "userWeight" FROM "hanami_foryou_user_taste_cluster" WHERE "userId" = $1`,
-			[res.userId],
+			`SELECT "clusterId", centroid, "userWeight" FROM "hanami_foryou_user_taste_cluster" WHERE "userId" = $1 AND model = $2`,
+			[res.userId, TASTE_EMBED_MODEL],
 		) as { clusterId: number; centroid: number[]; userWeight: number }[];
 		const carryWeight = (centroid: number[]): number | null => {
 			let best = TASTE_WEIGHT_CARRY_MIN_COS;
@@ -468,9 +569,9 @@ export class HanamiTasteClusterBatchService {
 			for (const r of rows) {
 				await em.query(
 					`INSERT INTO "hanami_foryou_user_taste_cluster"
-					 ("userId", "clusterId", centroid, size, "ownRate", "labelTerms", "exampleNoteIds", "userWeight", "updatedAt")
-					 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-					[res.userId, r.clusterId, r.centroid, r.size, r.ownRate, r.labelTerms, r.exampleNoteIds, r.userWeight, updatedAt],
+					 ("userId", "clusterId", centroid, size, "ownRate", "labelTerms", "exampleNoteIds", "userWeight", "updatedAt", model)
+					 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+					[res.userId, r.clusterId, r.centroid, r.size, r.ownRate, r.labelTerms, r.exampleNoteIds, r.userWeight, updatedAt, TASTE_EMBED_MODEL],
 				);
 			}
 		});

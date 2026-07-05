@@ -8,6 +8,7 @@ import { DataSource } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { ApiError } from '@/server/api/error.js';
+import { TASTE_EMBED_MODEL } from '@/core/hanami/HanamiTasteClusterBatchService.js';
 
 // taste-clustered popular（spec v0.2 §3）: クラスタ単位の「減らす/表示しない」操作。
 export const meta = {
@@ -51,10 +52,12 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private db: DataSource,
 	) {
 		super(meta, paramDef, async (ps, me) => {
+			// model 条件が無いと、モデル載せ替え後に serve/一覧から見えない旧モデル行を
+			// 「更新成功」してしまう（古い設定画面からの操作が silent に無効になる）。
 			const result = await this.db.query(
 				`UPDATE "hanami_foryou_user_taste_cluster" SET "userWeight" = $1, "updatedAt" = now()
-				 WHERE "userId" = $2 AND "clusterId" = $3`,
-				[WEIGHT_VALUE[ps.weight], me.id, ps.clusterId],
+				 WHERE "userId" = $2 AND "clusterId" = $3 AND model = $4`,
+				[WEIGHT_VALUE[ps.weight], me.id, ps.clusterId, TASTE_EMBED_MODEL],
 			) as unknown as [unknown, number];
 			if (result[1] === 0) throw new ApiError(meta.errors.noSuchCluster);
 			return { ok: true };

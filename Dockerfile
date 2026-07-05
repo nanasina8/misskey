@@ -17,7 +17,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 WORKDIR /misskey
 
 COPY --link ["pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json", "./"]
-COPY --link ["scripts", "./scripts"]
 COPY --link ["patches", "./patches"]
 COPY --link ["packages/backend/package.json", "./packages/backend/"]
 COPY --link ["packages/frontend-shared/package.json", "./packages/frontend-shared/"]
@@ -27,6 +26,7 @@ COPY --link ["packages/frontend-builder/package.json", "./packages/frontend-buil
 COPY --link ["packages/icons-subsetter/package.json", "./packages/icons-subsetter/"]
 COPY --link ["packages/sw/package.json", "./packages/sw/"]
 COPY --link ["packages/misskey-js/package.json", "./packages/misskey-js/"]
+COPY --link ["packages/misskey-js/generator/package.json", "./packages/misskey-js/generator/"]
 COPY --link ["packages/misskey-reversi/package.json", "./packages/misskey-reversi/"]
 COPY --link ["packages/misskey-bubble-game/package.json", "./packages/misskey-bubble-game/"]
 
@@ -39,22 +39,24 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store,sharing=locked \
 
 COPY --link . ./
 
-RUN git submodule update --init
+RUN test -d fluent-emojis/dist || (echo "fluent-emojis submodule is missing; run: git submodule update --init" >&2; exit 1)
 RUN pnpm build
-RUN rm -rf .git/
 
 # build native dependencies for target platform
 
 FROM --platform=$TARGETPLATFORM node:${NODE_VERSION} AS target-builder
 
-RUN apt-get update \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+	--mount=type=cache,target=/var/lib/apt,sharing=locked \
+	rm -f /etc/apt/apt.conf.d/docker-clean \
+	; echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache \
+	&& apt-get update \
 	&& apt-get install -yqq --no-install-recommends \
 	build-essential
 
 WORKDIR /misskey
 
 COPY --link ["pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json", "./"]
-COPY --link ["scripts", "./scripts"]
 COPY --link ["patches", "./patches"]
 COPY --link ["packages/backend/package.json", "./packages/backend/"]
 COPY --link ["packages/misskey-js/package.json", "./packages/misskey-js/"]
@@ -82,8 +84,12 @@ ENV HF_HOME=/misskey/.cache/huggingface
 ENV SENTENCE_TRANSFORMERS_HOME=/misskey/.cache/sentence-transformers
 ENV PATH=/opt/hanami-foryou-venv/bin:$PATH
 
-RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-	apt-get update \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+	--mount=type=cache,target=/var/lib/apt,sharing=locked \
+	--mount=type=cache,target=/root/.cache/pip,sharing=locked \
+	rm -f /etc/apt/apt.conf.d/docker-clean \
+	; echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache \
+	&& apt-get update \
 	&& apt-get install -y --no-install-recommends \
 	ffmpeg tini curl ca-certificates libjemalloc-dev libjemalloc2 \
 	python3 python3-venv python3-pip libgomp1 \
@@ -98,9 +104,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 	&& chown -R misskey:misskey /opt/hanami-foryou-venv /misskey/.cache \
 	&& find / -type d -path /sys -prune -o -type d -path /proc -prune -o -type f -perm /u+s -ignore_readdir_race -exec chmod u-s {} \; \
 	&& find / -type d -path /sys -prune -o -type d -path /proc -prune -o -type f -perm /g+s -ignore_readdir_race -exec chmod g-s {} \; \
-	&& rm -f /tmp/hanami-foryou-requirements.txt \
-	&& apt-get clean \
-	&& rm -rf /var/lib/apt/lists
+	&& rm -f /tmp/hanami-foryou-requirements.txt
 
 # add package.json to add pnpm
 COPY ./package.json ./package.json
@@ -119,7 +123,6 @@ COPY --chown=misskey:misskey --from=native-builder /misskey/packages/misskey-js/
 COPY --chown=misskey:misskey --from=native-builder /misskey/packages/misskey-reversi/built ./packages/misskey-reversi/built
 COPY --chown=misskey:misskey --from=native-builder /misskey/packages/misskey-bubble-game/built ./packages/misskey-bubble-game/built
 COPY --chown=misskey:misskey --from=native-builder /misskey/packages/backend/built ./packages/backend/built
-COPY --chown=misskey:misskey --from=native-builder /misskey/fluent-emojis /misskey/fluent-emojis
 COPY --chown=misskey:misskey . ./
 
 ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so

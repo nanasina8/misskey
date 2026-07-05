@@ -1,4 +1,5 @@
 .autogen
+.git
 .github
 .travis
 .vscode
@@ -6,14 +7,27 @@
 Dockerfile
 build/
 built/
+packages/*/built/
+packages/*/*/built/
+packages/*/built-test/
+packages/*/js-built/
+packages/*/temp/
 db/
 .devcontainer/compose.yml
 node_modules/
 packages/*/node_modules
 redis/
 files/
-fluent-emojis/
 .pnp.*
+.docker-cache/
+.devcontainer/home-node/
+.devcontainer/hanami_data/
+.devcontainer/meili_data/
+.venv/
+.venv-*/
+hanami-archive/
+*.log
+*.rdb
 
 # .yarn関連
 .yarn/*

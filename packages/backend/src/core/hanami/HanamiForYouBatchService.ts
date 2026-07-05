@@ -15,6 +15,7 @@ import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import { IdService } from '@/core/IdService.js';
 import { FeaturedService } from '@/core/FeaturedService.js';
+import { pureRenoteSql } from '@/misc/is-renote.js';
 import type Logger from '@/logger.js';
 import { MiHanamiForYouRelation } from '@/models/HanamiForYouRelation.js';
 import { MiHanamiForYouUserFactor } from '@/models/HanamiForYouUserFactor.js';
@@ -168,9 +169,7 @@ export class HanamiForYouBatchService {
 				SELECT DISTINCT n."userId" AS renoter, n."renoteUserId" AS author
 				FROM note n
 				WHERE n.id > $1
-				  AND n."renoteId" IS NOT NULL
-				  AND n.text IS NULL AND n.cw IS NULL AND n."hasPoll" = FALSE
-				  AND COALESCE(cardinality(n."fileIds"), 0) = 0
+				  AND ${pureRenoteSql('n')}
 				  AND n."renoteUserId" IS NOT NULL
 				  AND n."userId" <> n."renoteUserId"
 			)

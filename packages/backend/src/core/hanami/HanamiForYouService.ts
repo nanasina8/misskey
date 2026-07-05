@@ -71,7 +71,8 @@ const TASTE_SOFTMAX_TEMP = 0.7; // クラスタ内抽選の温度（上位固定
 // MiniLM taste 再ランク＋aux boost（§5/§6/§14-D7。弱め＝タイブレーク程度）。
 const FORYOU_EMBEDDING_MODEL = 'paraphrase-multilingual-MiniLM-L12-v2';
 const TASTE_RERANK_WEIGHT_BY_AXIS: Partial<Record<HanamiAxis, number>> = {
-	globalPopular: 0.3,
+	// globalPopular は taste cluster 枠（applyTasteClusterOrdering）が担うため対象外。
+	// 単一centroidのスカラー加点は「密クラスタ優遇」の再導入になり、クラスタ別%枠を壊す（§8）。
 	trending: 0.3,
 	fof: 0.45,
 };
@@ -84,7 +85,7 @@ const AUX_TEXT_HEAVY_THRESHOLD = 0.2; // mediaReactionRate がこれ未満 = tex
 const SERVED_SCORE_PENALTY = 0.5;
 const SEEN_SCORE_PENALTY = 0.7;
 
-type ReasonMeta = { source: HanamiAxis; sources: HanamiAxis[]; term?: string };
+type ReasonMeta = { source: HanamiAxis; sources: HanamiAxis[]; term?: string; clusterId?: number };
 
 type LegacyHanamiAxis = 'popular';
 type HanamiAxisServerConfig = Partial<Record<HanamiAxis | LegacyHanamiAxis, { available?: boolean; default?: boolean }>>;
@@ -168,7 +169,7 @@ export class HanamiForYouService {
 		// 既出（served/seen）は「除外」ではなく軸内スコアの弱い減点＝沈むが再登場（人気は再キュー）。§6/§9
 		const { served, seen } = await this.hanamiRecommendationService.getServedSeenForExclusion(me.id);
 
-		const axisCandidates = await this.gatherCandidates(me.id, confidence, alsRunId, followeeIds, opts.withFiles, axisLevels);
+		const axisCandidates = await this.gatherCandidates(me.id, confidence, alsRunId, followeeIds, opts.withFiles, axisLevels, served, seen);
 		await this.resolveAuthors(axisCandidates);
 		// 前段除外: noteベースのグローバル安全＋ユーザーのメディア設定を interleave の前で候補から除く。
 		// 除外で空いた枠は interleave が他候補で埋め直す＝hideSensitive でもページが痩せない。
@@ -182,7 +183,7 @@ export class HanamiForYouService {
 		if (interleaved.length === 0) return [];
 
 		// source=枠を消費した軸 / sources=全寄与軸（§6.1-2）。
-		const reasonOf = new Map<string, ReasonMeta>(interleaved.map(c => [c.noteId, { source: c.source, sources: c.sources, term: c.term }]));
+		const reasonOf = new Map<string, ReasonMeta>(interleaved.map(c => [c.noteId, { source: c.source, sources: c.sources, term: c.term, clusterId: c.clusterId }]));
 		// safety filter（§8 中央化）。interleave 順で取得・安全化し limit まで backfill。
 		const notes = await this.hanamiForYouSafetyService.filterAndPack(interleaved.map(c => c.noteId), opts.limit, me, opts.withFiles);
 		if (notes.length === 0) return [];
@@ -270,12 +271,12 @@ export class HanamiForYouService {
 	// ───────────────────────── 候補生成（§4/§5） ─────────────────────────
 
 	@bindThis
-	private async gatherCandidates(meId: MiUser['id'], confidence: HanamiConfidence, alsRunId: string | null, followeeIds: string[], withFiles: boolean, axisLevels: ReadonlyMap<HanamiAxis, HanamiAxisLevel>): Promise<Map<HanamiAxis, ForYouCandidate[]>> {
+	private async gatherCandidates(meId: MiUser['id'], confidence: HanamiConfidence, alsRunId: string | null, followeeIds: string[], withFiles: boolean, axisLevels: ReadonlyMap<HanamiAxis, HanamiAxisLevel>, served: ReadonlySet<string>, seen: ReadonlySet<string>): Promise<Map<HanamiAxis, ForYouCandidate[]>> {
 		const order = hanamiAxisOrder(confidence).filter(axis => axisLevels.has(axis)); // exploration を含む
 		const map = new Map<HanamiAxis, ForYouCandidate[]>();
 		await Promise.all(order.map(async axis => {
 			try {
-				map.set(axis, await this.candidatesForAxis(axis, meId, alsRunId, followeeIds, withFiles));
+				map.set(axis, await this.candidatesForAxis(axis, meId, alsRunId, followeeIds, withFiles, served, seen));
 			} catch {
 				map.set(axis, []); // 1軸が落ちても他軸で配信する
 			}
@@ -283,9 +284,9 @@ export class HanamiForYouService {
 		return map;
 	}
 
-	private async candidatesForAxis(axis: HanamiAxis, meId: MiUser['id'], alsRunId: string | null, followeeIds: string[], withFiles: boolean): Promise<ForYouCandidate[]> {
+	private async candidatesForAxis(axis: HanamiAxis, meId: MiUser['id'], alsRunId: string | null, followeeIds: string[], withFiles: boolean, served: ReadonlySet<string>, seen: ReadonlySet<string>): Promise<ForYouCandidate[]> {
 		switch (axis) {
-			case 'globalPopular': return this.globalPopularCandidates(meId, alsRunId);
+			case 'globalPopular': return this.globalPopularCandidates(meId, alsRunId, served, seen);
 			case 'exploration': return this.explorationCandidates();
 			case 'trending': return this.trendingCandidates();
 			case 'fof': return this.fofCandidates(meId, withFiles);
@@ -297,13 +298,13 @@ export class HanamiForYouService {
 	}
 
 	/** globalPopular: グローバル人気（公共圏の発見・§4）。engagement 順 × 作者親和度リランク × taste クラスタ枠。 */
-	private async globalPopularCandidates(meId: MiUser['id'], alsRunId: string | null): Promise<ForYouCandidate[]> {
+	private async globalPopularCandidates(meId: MiUser['id'], alsRunId: string | null, served: ReadonlySet<string>, seen: ReadonlySet<string>): Promise<ForYouCandidate[]> {
 		const ranked = await this.featuredService.getGlobalNotesRankingWithScores(GLOBAL_POPULAR_POOL);
 		const candidates = ranked.length === 0
 			? await this.dbGlobalPopularFallbackCandidates(GLOBAL_POPULAR_POOL)
 			: ranked.map(([noteId, score]) => ({ noteId, score }));
 		const reranked = await this.applyAuthorAffinityRerank(meId, alsRunId, candidates);
-		return this.applyTasteClusterOrdering(meId, reranked);
+		return this.applyTasteClusterOrdering(meId, reranked, served, seen);
 	}
 
 	/**
@@ -311,22 +312,32 @@ export class HanamiForYouService {
 	 * クラスタ別%枠（share ∝ size×userWeight、general は固定25%）の重み付き抽選で並べ替える。
 	 * クラスタ未生成・mean_vec 無し・埋め込み欠損は general 縮退（現行挙動と同一）で壊れない。
 	 */
-	private async applyTasteClusterOrdering(meId: MiUser['id'], candidates: ForYouCandidate[]): Promise<ForYouCandidate[]> {
+	private async applyTasteClusterOrdering(meId: MiUser['id'], candidates: ForYouCandidate[], served: ReadonlySet<string>, seen: ReadonlySet<string>): Promise<ForYouCandidate[]> {
 		if (candidates.length === 0) return candidates;
 
+		// 縮退パス（クラスタ未生成・mean_vec 無し）: applyRecencyPenalty が globalPopular をスキップするため、
+		// 既出のソフト減点はここで従来どおり適用する（さもないとクラスタの無いユーザーで同じ人気が再登場し続ける）。
+		const recencyPenaltyFallback = () => {
+			for (const c of candidates) {
+				if (served.has(c.noteId)) c.score *= SERVED_SCORE_PENALTY;
+				else if (seen.has(c.noteId)) c.score *= SEEN_SCORE_PENALTY;
+			}
+			return candidates.sort((a, b) => b.score - a.score);
+		};
+
 		const clusters = await this.db.query(
-			`SELECT "clusterId", centroid, size, "userWeight", "labelTerms"
-			 FROM "hanami_foryou_user_taste_cluster" WHERE "userId" = $1`,
-			[meId],
-		) as { clusterId: number; centroid: number[]; size: number; userWeight: number; labelTerms: string[] }[];
-		if (clusters.length === 0) return candidates;
+			`SELECT "clusterId", centroid, size, "userWeight"
+			 FROM "hanami_foryou_user_taste_cluster" WHERE "userId" = $1 AND model = $2`,
+			[meId, TASTE_EMBED_MODEL],
+		) as { clusterId: number; centroid: number[]; size: number; userWeight: number }[];
+		if (clusters.length === 0) return recencyPenaltyFallback();
 
 		const stateRows = await this.db.query(
 			`SELECT "meanVec" FROM "hanami_foryou_taste_state" WHERE model = $1`,
 			[TASTE_EMBED_MODEL],
 		) as { meanVec: number[] }[];
 		const meanVec = stateRows[0]?.meanVec;
-		if (meanVec == null || meanVec.length === 0) return candidates;
+		if (meanVec == null || meanVec.length === 0) return recencyPenaltyFallback();
 
 		const embRows = await this.db.query(
 			`SELECT "noteId", embedding FROM "hanami_note_embedding" WHERE model = $1 AND "noteId" = ANY($2)`,
@@ -335,13 +346,21 @@ export class HanamiForYouService {
 		const embByNote = new Map(embRows.map(r => [r.noteId, r.embedding]));
 
 		// バケツ分け: 最大類似クラスタ（τ未満・埋め込み無しは general、weight=0 クラスタは除外=「表示しない」）。
-		const buckets = new Map<number | 'general', { cand: ForYouCandidate; term?: string }[]>();
-		buckets.set('general', []);
-		for (const cl of clusters) buckets.set(cl.clusterId, []);
+		// 各バケツは fresh（未見）と shown（served/seen 済み）の二段。未見から先に抽選し、尽きたら既出が
+		// 同じクラスタ抽選で後ろに続く＝ページは空にならず、後段の再ソートも不要（A3）。
+		type Item = { cand: ForYouCandidate; clusterId?: number };
+		type Bucket = { fresh: Item[]; shown: Item[] };
+		const buckets = new Map<number | 'general', Bucket>();
+		buckets.set('general', { fresh: [], shown: [] });
+		for (const cl of clusters) buckets.set(cl.clusterId, { fresh: [], shown: [] });
+		const push = (key: number | 'general', item: Item) => {
+			const b = buckets.get(key)!;
+			(served.has(item.cand.noteId) || seen.has(item.cand.noteId) ? b.shown : b.fresh).push(item);
+		};
 		for (const cand of candidates) {
 			const emb = embByNote.get(cand.noteId);
 			if (emb == null) {
-				buckets.get('general')!.push({ cand });
+				push('general', { cand });
 				continue;
 			}
 			// 平均中心化＋正規化して各クラスタ centroid と cos。
@@ -363,11 +382,11 @@ export class HanamiForYouService {
 				if (cos > bestCos) { bestCos = cos; best = cl; }
 			}
 			if (best == null || bestCos < TASTE_TAU_ASSIGN) {
-				buckets.get('general')!.push({ cand });
+				push('general', { cand });
 			} else if (Number(best.userWeight) <= 0) {
 				// 「表示しない」クラスタに強く一致する候補は general にも流さない（ユーザー意思の尊重）。
 			} else {
-				buckets.get(best.clusterId)!.push({ cand, term: best.labelTerms.slice(0, 2).join('・') || undefined });
+				push(best.clusterId, { cand, clusterId: best.clusterId });
 			}
 		}
 
@@ -377,37 +396,42 @@ export class HanamiForYouService {
 		for (const cl of clusters) shareOf.set(cl.clusterId, cl.size * Number(cl.userWeight));
 		shareOf.set('general', totalSize * TASTE_GENERAL_SHARE);
 
-		// 重み付き抽選でクラスタ→softmax でクラスタ内の1件、を繰り返して全候補を並べる。
+		// 重み付き抽選でクラスタ→softmax でクラスタ内の1件。tier='fresh' が尽きるまで未見だけで回し、
+		// その後 tier='shown' を同じ抽選で続ける。
 		const out: ForYouCandidate[] = [];
 		const total = candidates.length;
-		while (out.length < total) {
-			const alive = [...buckets.entries()].filter(([, arr]) => arr.length > 0);
-			if (alive.length === 0) break;
-			let sum = 0;
-			for (const [key] of alive) sum += shareOf.get(key) ?? 0;
-			let bucket = alive[alive.length - 1][1];
-			if (sum > 0) {
-				let r = Math.random() * sum;
-				for (const [key, arr] of alive) {
-					r -= shareOf.get(key) ?? 0;
-					if (r <= 0) { bucket = arr; break; }
+		const drawFrom = (tier: 'fresh' | 'shown') => {
+			for (;;) {
+				const alive = [...buckets.entries()].filter(([, b]) => b[tier].length > 0);
+				if (alive.length === 0) return;
+				let sum = 0;
+				for (const [key] of alive) sum += shareOf.get(key) ?? 0;
+				let bucket = alive[alive.length - 1][1][tier];
+				if (sum > 0) {
+					let r = Math.random() * sum;
+					for (const [key, b] of alive) {
+						r -= shareOf.get(key) ?? 0;
+						if (r <= 0) { bucket = b[tier]; break; }
+					}
+				} else {
+					bucket = alive[Math.floor(Math.random() * alive.length)][1][tier];
 				}
-			} else {
-				bucket = alive[Math.floor(Math.random() * alive.length)][1];
+				// クラスタ内: スコア正規化の softmax で確率的に1件（上位固定を避けて顔ぶれを回す）。
+				const maxScore = bucket.reduce((a, b) => Math.max(a, b.cand.score), 0) || 1;
+				const weights = bucket.map(b => Math.exp((b.cand.score / maxScore) / TASTE_SOFTMAX_TEMP));
+				const wsum = weights.reduce((a, b) => a + b, 0);
+				let pick = bucket.length - 1;
+				let r2 = Math.random() * wsum;
+				for (let i = 0; i < bucket.length; i++) {
+					r2 -= weights[i];
+					if (r2 <= 0) { pick = i; break; }
+				}
+				const chosen = bucket.splice(pick, 1)[0];
+				out.push({ ...chosen.cand, clusterId: chosen.clusterId, score: (total - out.length) / total });
 			}
-			// クラスタ内: スコア正規化の softmax で確率的に1件（上位固定を避けて顔ぶれを回す）。
-			const maxScore = bucket.reduce((a, b) => Math.max(a, b.cand.score), 0) || 1;
-			const weights = bucket.map(b => Math.exp((b.cand.score / maxScore) / TASTE_SOFTMAX_TEMP));
-			let wsum = weights.reduce((a, b) => a + b, 0);
-			let pick = bucket.length - 1;
-			let r2 = Math.random() * wsum;
-			for (let i = 0; i < bucket.length; i++) {
-				r2 -= weights[i];
-				if (r2 <= 0) { pick = i; break; }
-			}
-			const chosen = bucket.splice(pick, 1)[0];
-			out.push({ ...chosen.cand, term: chosen.term ?? chosen.cand.term, score: (total - out.length) / total });
-		}
+		};
+		drawFrom('fresh');
+		drawFrom('shown');
 		return out;
 	}
 
@@ -659,7 +683,10 @@ export class HanamiForYouService {
 
 	/** 既出（served/seen）を軸内スコアの弱い減点として反映し再ソートする（除外・tier ゲートは廃止＝決定論）。 */
 	private applyRecencyPenalty(map: Map<HanamiAxis, ForYouCandidate[]>, served: Set<string>, seen: Set<string>): void {
-		for (const list of map.values()) {
+		for (const [axis, list] of map.entries()) {
+			// globalPopular は taste cluster 枠が既出を「未見優先の二段抽選」で内包処理済み。
+			// ここで再ソートするとクラスタ別%枠の並びが壊れる（A3）。
+			if (axis === 'globalPopular') continue;
 			for (const c of list) {
 				if (served.has(c.noteId)) c.score *= SERVED_SCORE_PENALTY;
 				else if (seen.has(c.noteId)) c.score *= SEEN_SCORE_PENALTY;
@@ -723,6 +750,9 @@ export class HanamiForYouService {
 
 		for (const [axis, list] of axisCandidates) {
 			if (axis === 'exploration') continue; // 多様性枠は補正しない
+			// globalPopular は taste cluster 枠が並びを所有する。aux 補正でも sort が入り
+			// クラスタ別%枠と未見優先の二段順が壊れるため、全補正をスキップ（A3）。
+			if (axis === 'globalPopular') continue;
 			for (const c of list) {
 				let mult = 1;
 				const tasteWeight = TASTE_RERANK_WEIGHT_BY_AXIS[axis] ?? 0;
@@ -774,7 +804,17 @@ export class HanamiForYouService {
 			if (fofAuthorIds.length > 0) await this.hanamiUserRecommendationService.recordShown(meId, fofAuthorIds);
 				await this.hanamiForYouProvenanceService.recordServedEvents(
 					meId,
-					notes.map(n => ({ noteId: n.id, source: reasonOf.get(n.id)?.source ?? null })),
+					notes.map(n => {
+						const reason = reasonOf.get(n.id);
+						if (reason == null) return { noteId: n.id, source: null };
+						// taste cluster 経由は source に :c{k} を添える（§6 クラスタ別転換率の計測口）。
+						// clusterId は note 単位で merge されるため、globalPopular 枠を消費した時だけ付ける
+						//（trending 等が枠を消費した pick に :c を付けると軸別統計が汚れる）。
+						const source = reason.source === 'globalPopular' && reason.clusterId != null
+							? `${reason.source}:c${reason.clusterId}`
+							: reason.source;
+						return { noteId: n.id, source };
+					}),
 				);
 		} catch (err) {
 			// eslint-disable-next-line no-console
