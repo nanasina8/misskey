@@ -301,7 +301,7 @@ const appearNote = getAppearNote(note) ?? note;
 // _hanamiReason はユーザー設定ON時だけ表示用に付く。
 const hanamiRecommendationMeta = computed(() => props.note as {
 	_hanamiRecommended?: boolean;
-	_hanamiReason?: { reason: string; term?: string };
+	_hanamiReason?: { reason: string; term?: string; clusterId?: number };
 });
 const hanamiReason = computed(() => hanamiRecommendationMeta.value._hanamiReason ?? null);
 const hanamiRecommended = computed(() => hanamiRecommendationMeta.value._hanamiRecommended === true || hanamiReason.value != null);

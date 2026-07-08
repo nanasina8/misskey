@@ -5,6 +5,7 @@
 
 import { DataSource } from 'typeorm';
 import { Inject, Injectable } from '@nestjs/common';
+import * as Redis from 'ioredis';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import type { NotesRepository } from '@/models/_.js';
@@ -18,7 +19,8 @@ import { IdService } from '@/core/IdService.js';
 import { HanamiTrendService } from '@/core/hanami/HanamiTrendService.js';
 import { HanamiUserRecommendationService } from '@/core/hanami/HanamiUserRecommendationService.js';
 import { HanamiForYouBatchService } from '@/core/hanami/HanamiForYouBatchService.js';
-import { TASTE_EMBED_MODEL } from '@/core/hanami/HanamiTasteClusterBatchService.js';
+import { TASTE_EMBED_MODEL, TASTE_MATCH_WINDOW_MS } from '@/core/hanami/HanamiTasteClusterBatchService.js';
+import { HANAMI_TASTE_MATCH_KEY_PREFIX, HANAMI_FORYOU_ACTIVE_KEY_PREFIX, HANAMI_FORYOU_ACTIVE_TTL_SEC } from '@/core/hanami/HanamiForYouKeys.js';
 import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
 import { HanamiForYouSafetyService } from '@/core/hanami/HanamiForYouSafetyService.js';
 import { HanamiRecommendationService } from '@/core/HanamiRecommendationService.js';
@@ -40,7 +42,6 @@ const CONFIDENCE_LOW_ENGAGEMENT = 5;
 
 // 候補窓（§10）。
 const NEIGHBOR_TRENDING_WINDOW_MS = 48 * 60 * 60 * 1000;
-const REACTION_SIMILAR_WINDOW_MS = 7 * DAY_MS;
 const CATCHUP_WINDOW_MS = 7 * DAY_MS; // §14-D8 = 7d 固定
 
 // 候補プールサイズ（§10。safety filter で多く落ちる前提の余裕）。
@@ -49,8 +50,11 @@ const EXPLORATION_POOL = 500;
 const TRENDING_POOL = 200;
 const FOF_POOL = 200;
 const NEIGHBOR_NOTE_POOL = 250;
-const REACTION_SIMILAR_NOTE_POOL = 250;
 const CATCHUP_NOTE_POOL = 250;
+
+// reactionSimilar（興味マッチ新着）: バッチ事前計算 zset（24h窓・cos≥τ）の取り出し。
+// zset score = cos×鮮度（バッチ側で焼き込み済み・毎10分更新）。人気条件なし＝埋もれた投稿でも内容が興味に合えば出る。
+const TASTE_MATCH_POOL = 300;
 const TOP_RELATION_OTHERS = 100;
 const DB_GLOBAL_FALLBACK_WINDOW_MS = 30 * DAY_MS;
 const DB_GLOBAL_FALLBACK_SAMPLE = 5000;
@@ -67,6 +71,17 @@ const POPULAR_AFFINITY_BETA = 0.5;
 const TASTE_TAU_ASSIGN = 0.25; // これ未満の類似は general 扱い（実測校正: 0.25で人気候補の約56%が割当・7/8クラスタに分散）
 const TASTE_GENERAL_SHARE = 0.25; // 非パーソナル枠の固定比率（anti-bubble・全減らし時の保険）
 const TASTE_SOFTMAX_TEMP = 0.7; // クラスタ内抽選の温度（上位固定を避ける）
+
+// メディア嗜好のオッズ比較正（2026-07-06 実測）: 配信のメディア比率をユーザーの反応実績
+// （aux.mediaReactionRate）へ収束させる。odds = (r/(1-r)) / (p/(1-p))（r=ユーザーのメディア反応率,
+// p=候補プールのメディア比率）をメディア候補の抽選重みに乗算する。
+// バケツ内抽選とバケツ選択の両段に掛けるのが要点: 片段だけだとメディア過多バケツ（絵のキャプションが
+// 文体クラスタに誤マッチして溜まる）が share ごと絵を吐き続け 31% で下げ止まる。両段で 9% まで収束
+//（nanasina 実測 r=3.9%・プール p=70% のダンプ再現。メディア好き r=0.9 側は 84% と対称に動く）。
+const TASTE_MEDIA_RATE_MIN = 0.02; // r/p のクランプ（0/1 で odds が発散しないように）
+const TASTE_MEDIA_RATE_MAX = 0.98;
+const TASTE_MEDIA_ODDS_MIN = 0.01;
+const TASTE_MEDIA_ODDS_MAX = 50;
 
 // MiniLM taste 再ランク＋aux boost（§5/§6/§14-D7。弱め＝タイブレーク程度）。
 const FORYOU_EMBEDDING_MODEL = 'paraphrase-multilingual-MiniLM-L12-v2';
@@ -130,6 +145,9 @@ export class HanamiForYouService {
 		@Inject(DI.meta)
 		private meta: MiMeta,
 
+		@Inject(DI.redis)
+		private redisClient: Redis.Redis,
+
 		@Inject(DI.notesRepository)
 		private notesRepository: NotesRepository,
 
@@ -159,6 +177,9 @@ export class HanamiForYouService {
 		const showReason = profile.hanamiShowRecommendationReason;
 		const axisLevels = this.resolveAxisLevels(profile);
 		if (axisLevels.size === 0) return [];
+
+		// taste match バッチの対象ゲート用アクティブマーカー（fire-and-forget。served は TTL30分なので流用しない）。
+		this.redisClient.set(HANAMI_FORYOU_ACTIVE_KEY_PREFIX + me.id, '1', 'EX', HANAMI_FORYOU_ACTIVE_TTL_SEC).catch(() => { /* 次回ページで再試行 */ });
 
 		const followings = await this.cacheService.userFollowingsCache.fetch(me.id);
 		const followeeIds = Object.keys(followings);
@@ -291,7 +312,7 @@ export class HanamiForYouService {
 			case 'trending': return this.trendingCandidates();
 			case 'fof': return this.fofCandidates(meId, withFiles);
 			case 'neighborTrending': return this.neighborTrendingCandidates(meId, alsRunId);
-			case 'reactionSimilar': return this.reactionSimilarCandidates(meId, alsRunId);
+			case 'reactionSimilar': return this.reactionSimilarCandidates(meId, followeeIds, served, seen);
 			case 'catchup': return this.catchupCandidates(meId, followeeIds);
 			default: return [];
 		}
@@ -345,6 +366,9 @@ export class HanamiForYouService {
 		) as { noteId: string; embedding: number[] }[];
 		const embByNote = new Map(embRows.map(r => [r.noteId, r.embedding]));
 
+		// メディア嗜好の較正材料（aux 未生成・反応実績ゼロなら null = 補正なし）。
+		const mediaCal = await this.computeMediaOddsCalibration(meId, candidates.map(c => c.noteId));
+
 		// バケツ分け: 最大類似クラスタ（τ未満・埋め込み無しは general、weight=0 クラスタは除外=「表示しない」）。
 		// 各バケツは fresh（未見）と shown（served/seen 済み）の二段。未見から先に抽選し、尽きたら既出が
 		// 同じクラスタ抽選で後ろに続く＝ページは空にならず、後段の再ソートも不要（A3）。
@@ -396,21 +420,43 @@ export class HanamiForYouService {
 		for (const cl of clusters) shareOf.set(cl.clusterId, cl.size * Number(cl.userWeight));
 		shareOf.set('general', totalSize * TASTE_GENERAL_SHARE);
 
-		// 重み付き抽選でクラスタ→softmax でクラスタ内の1件。tier='fresh' が尽きるまで未見だけで回し、
-		// その後 tier='shown' を同じ抽選で続ける。
+		return this.drawClusterLottery(buckets, shareOf, mediaCal, candidates.length);
+	}
+
+	/**
+	 * クラスタ別%枠の重み付き抽選（globalPopular と reactionSimilar で共用）。
+	 * 重み付き抽選でクラスタ→softmax でクラスタ内の1件。tier='fresh' が尽きるまで未見だけで回し、
+	 * その後 tier='shown' を同じ抽選で続ける。
+	 * メディア較正は両段に掛ける: ①バケツ選択 share ×= バケツ残り候補のメディア調整後平均重み
+	 * （テキストが尽きて絵だけ残ったバケツは枠ごと沈む） ②バケツ内 softmax 重み ×= odds。
+	 */
+	private drawClusterLottery(
+		buckets: Map<number | 'general', { fresh: { cand: ForYouCandidate; clusterId?: number }[]; shown: { cand: ForYouCandidate; clusterId?: number }[] }>,
+		shareOf: Map<number | 'general', number>,
+		mediaCal: { odds: number; mediaNoteIds: Set<string> } | null,
+		total: number,
+	): ForYouCandidate[] {
+		const itemMediaW = (it: { cand: ForYouCandidate }) =>
+			mediaCal != null && mediaCal.mediaNoteIds.has(it.cand.noteId) ? mediaCal.odds : 1;
+		const effShare = (key: number | 'general', items: { cand: ForYouCandidate }[]): number => {
+			const share = shareOf.get(key) ?? 0;
+			if (mediaCal == null || items.length === 0) return share;
+			let m = 0;
+			for (const it of items) m += itemMediaW(it);
+			return share * (m / items.length);
+		};
 		const out: ForYouCandidate[] = [];
-		const total = candidates.length;
 		const drawFrom = (tier: 'fresh' | 'shown') => {
 			for (;;) {
 				const alive = [...buckets.entries()].filter(([, b]) => b[tier].length > 0);
 				if (alive.length === 0) return;
 				let sum = 0;
-				for (const [key] of alive) sum += shareOf.get(key) ?? 0;
+				for (const [key, b] of alive) sum += effShare(key, b[tier]);
 				let bucket = alive[alive.length - 1][1][tier];
 				if (sum > 0) {
 					let r = Math.random() * sum;
 					for (const [key, b] of alive) {
-						r -= shareOf.get(key) ?? 0;
+						r -= effShare(key, b[tier]);
 						if (r <= 0) { bucket = b[tier]; break; }
 					}
 				} else {
@@ -418,7 +464,7 @@ export class HanamiForYouService {
 				}
 				// クラスタ内: スコア正規化の softmax で確率的に1件（上位固定を避けて顔ぶれを回す）。
 				const maxScore = bucket.reduce((a, b) => Math.max(a, b.cand.score), 0) || 1;
-				const weights = bucket.map(b => Math.exp((b.cand.score / maxScore) / TASTE_SOFTMAX_TEMP));
+				const weights = bucket.map(b => Math.exp((b.cand.score / maxScore) / TASTE_SOFTMAX_TEMP) * itemMediaW(b));
 				const wsum = weights.reduce((a, b) => a + b, 0);
 				let pick = bucket.length - 1;
 				let r2 = Math.random() * wsum;
@@ -433,6 +479,35 @@ export class HanamiForYouService {
 		drawFrom('fresh');
 		drawFrom('shown');
 		return out;
+	}
+
+	/**
+	 * メディア嗜好のオッズ比較正の材料を作る。odds = (r/(1-r)) / (p/(1-p))。
+	 * テキストしか埋め込めない以上、絵はベクトル照合の土俵に乗らない（テキスト無し→general 直行・
+	 * キャプション→文体クラスタに誤マッチ）ため、taste とは独立にユーザーの顕示選好（反応実績）で
+	 * メディア比率を較正する。aux 未生成 or 窓内の反応実績ゼロなら null（補正なし）。
+	 */
+	private async computeMediaOddsCalibration(meId: MiUser['id'], noteIds: string[]): Promise<{ odds: number; mediaNoteIds: Set<string> } | null> {
+		if (noteIds.length === 0) return null;
+		const auxRows = await this.db.query(
+			`SELECT "mediaReactionRate" AS media, "textReactionRate" AS text FROM "hanami_foryou_user_aux" WHERE "userId" = $1`,
+			[meId],
+		) as { media: number; text: number }[];
+		const aux = auxRows[0];
+		// media/text とも 0 = 窓内に反応実績なし（嗜好不明）。補正しない。
+		if (aux == null || (Number(aux.media) <= 0 && Number(aux.text) <= 0)) return null;
+
+		const rows = await this.db.query(
+			`SELECT id FROM note WHERE id = ANY($1) AND "fileIds" <> '{}'`,
+			[noteIds],
+		) as { id: string }[];
+		const mediaNoteIds = new Set(rows.map(r => r.id));
+
+		const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
+		const r = clamp(Number(aux.media), TASTE_MEDIA_RATE_MIN, TASTE_MEDIA_RATE_MAX);
+		const p = clamp(mediaNoteIds.size / noteIds.length, TASTE_MEDIA_RATE_MIN, TASTE_MEDIA_RATE_MAX);
+		const odds = clamp((r / (1 - r)) / (p / (1 - p)), TASTE_MEDIA_ODDS_MIN, TASTE_MEDIA_ODDS_MAX);
+		return { odds, mediaNoteIds };
 	}
 
 	/**
@@ -586,32 +661,57 @@ export class HanamiForYouService {
 		return rows.map(r => ({ noteId: r.noteId, userId: r.userId, score: r.c / max }));
 	}
 
-	/** reactionSimilar: ALS 発見作者→新着（§4）。7d 窓。ALS run 未生成なら skip。 */
-	private async reactionSimilarCandidates(meId: MiUser['id'], alsRunId: string | null): Promise<ForYouCandidate[]> {
-		if (alsRunId == null) return [];
-		const authors = await this.db.query(
-			`SELECT "authorId" AS id FROM "hanami_foryou_author_rec" WHERE "runId" = $1 AND "userId" = $2 ORDER BY "rank" ASC`,
-			[alsRunId, meId],
-		) as { id: string }[];
-		if (authors.length === 0) return [];
-		const authorIds = authors.map(a => a.id);
-		const rank = new Map(authorIds.map((id, i) => [id, i]));
-		const sinceId = this.idService.gen(Date.now() - REACTION_SIMILAR_WINDOW_MS);
-		const rows = await this.db.query(
-			`SELECT n.id AS "noteId", n."userId" AS "userId"
-			 FROM note n
-			 WHERE n."userId" = ANY($1) AND n.id >= $2
-			   AND n.visibility IN ('public','home') AND n."channelId" IS NULL
-			   AND (n."renoteId" IS NULL OR n.text IS NOT NULL OR n."hasPoll" = TRUE OR n."fileIds" <> '{}')
-			 ORDER BY n.id DESC
-			 LIMIT $3`,
-			[authorIds, sinceId, REACTION_SIMILAR_NOTE_POOL],
-		) as { noteId: string; userId: string }[];
-		// 発見作者の rank が高い順を優先しつつ、新着を上に。
-		return rows
-			.map(r => ({ noteId: r.noteId, userId: r.userId, authorRank: rank.get(r.userId) ?? 9999 }))
-			.sort((a, b) => a.authorRank - b.authorRank || (a.noteId < b.noteId ? 1 : -1))
-			.map((r, i) => ({ noteId: r.noteId, userId: r.userId, score: 1 - i / REACTION_SIMILAR_NOTE_POOL }));
+	/**
+	 * reactionSimilar: 興味マッチ新着。バッチ（10分スイープ直後）が全新着×taste クラスタ centroid の
+	 * 照合結果をユーザー別 zset に事前計算済み。ここは取り出し＋除外＋クラスタ別%枠の抽選のみ。
+	 * 人気条件なし＝リアクションゼロの投稿でも内容が興味に合えば出る（旧 ALS 発見作者方式は廃止）。
+	 * フォロー中の作者はホームTL/catchup の領分なので除外（この軸は「未知との出会い」担当）。
+	 */
+	private async reactionSimilarCandidates(meId: MiUser['id'], followeeIds: string[], served: ReadonlySet<string>, seen: ReadonlySet<string>): Promise<ForYouCandidate[]> {
+		const raw = await this.redisClient.zrevrange(HANAMI_TASTE_MATCH_KEY_PREFIX + meId, 0, TASTE_MATCH_POOL - 1, 'WITHSCORES');
+		if (raw.length === 0) return [];
+
+		// share 計算と userWeight 失効チェック用（クラスタ再構築後〜次スイープ≦10分の間、旧 clusterId が
+		// zset に残り得る → 現行クラスタに無い id は捨てる）。
+		const clusters = await this.db.query(
+			`SELECT "clusterId", size, "userWeight" FROM "hanami_foryou_user_taste_cluster" WHERE "userId" = $1 AND model = $2`,
+			[meId, TASTE_EMBED_MODEL],
+		) as { clusterId: number; size: number; userWeight: number }[];
+		if (clusters.length === 0) return [];
+		const clusterOf = new Map(clusters.map(c => [c.clusterId, c]));
+
+		const followees = new Set(followeeIds);
+		// 窓外ガード（v0.7 R2-H1）: バッチが止まった/対象から外れたユーザーの zset は最大 TTL48h 残る。
+		// 24h 窓より古いノートはここで捨てる（バッチ健在なら no-op）。
+		const windowFloor = Date.now() - TASTE_MATCH_WINDOW_MS;
+
+		type Item = { cand: ForYouCandidate; clusterId?: number };
+		const buckets = new Map<number | 'general', { fresh: Item[]; shown: Item[] }>();
+		let total = 0;
+		for (let i = 0; i + 1 < raw.length; i += 2) {
+			const [noteId, authorId, cidStr] = raw[i].split(':');
+			const clusterId = Number(cidStr);
+			const cl = clusterOf.get(clusterId);
+			if (cl == null || Number(cl.userWeight) <= 0) continue;
+			if (authorId === meId || followees.has(authorId)) continue;
+			if (this.idService.parse(noteId).date.getTime() < windowFloor) continue;
+			// zset score = cos×鮮度（バッチ側焼き込み）。ここでは再計算しない。
+			const item: Item = { cand: { noteId, userId: authorId, score: Number(raw[i + 1]) }, clusterId };
+			let b = buckets.get(clusterId);
+			if (b == null) { b = { fresh: [], shown: [] }; buckets.set(clusterId, b); }
+			(served.has(noteId) || seen.has(noteId) ? b.shown : b.fresh).push(item);
+			total++;
+		}
+		if (total === 0) return [];
+
+		// share ∝ size×userWeight。純粋な興味軸なので general バケツは持たない（anti-bubble は
+		// globalPopular の general と exploration が担う）。
+		const shareOf = new Map<number | 'general', number>();
+		for (const cl of clusters) {
+			if (buckets.has(cl.clusterId)) shareOf.set(cl.clusterId, cl.size * Number(cl.userWeight));
+		}
+		const mediaCal = await this.computeMediaOddsCalibration(meId, [...buckets.values()].flatMap(b => [...b.fresh, ...b.shown].map(it => it.cand.noteId)));
+		return this.drawClusterLottery(buckets, shareOf, mediaCal, total);
 	}
 
 	/** catchup: フォロー＋高 affinity(関係値) の未読回収（§4）。7d 窓。未読判定は interleave の served/seen 除外に委譲。 */
@@ -684,9 +784,9 @@ export class HanamiForYouService {
 	/** 既出（served/seen）を軸内スコアの弱い減点として反映し再ソートする（除外・tier ゲートは廃止＝決定論）。 */
 	private applyRecencyPenalty(map: Map<HanamiAxis, ForYouCandidate[]>, served: Set<string>, seen: Set<string>): void {
 		for (const [axis, list] of map.entries()) {
-			// globalPopular は taste cluster 枠が既出を「未見優先の二段抽選」で内包処理済み。
+			// globalPopular / reactionSimilar は taste cluster 枠が既出を「未見優先の二段抽選」で内包処理済み。
 			// ここで再ソートするとクラスタ別%枠の並びが壊れる（A3）。
-			if (axis === 'globalPopular') continue;
+			if (axis === 'globalPopular' || axis === 'reactionSimilar') continue;
 			for (const c of list) {
 				if (served.has(c.noteId)) c.score *= SERVED_SCORE_PENALTY;
 				else if (seen.has(c.noteId)) c.score *= SEEN_SCORE_PENALTY;
@@ -750,9 +850,10 @@ export class HanamiForYouService {
 
 		for (const [axis, list] of axisCandidates) {
 			if (axis === 'exploration') continue; // 多様性枠は補正しない
-			// globalPopular は taste cluster 枠が並びを所有する。aux 補正でも sort が入り
+			// globalPopular / reactionSimilar は taste cluster 枠が並びを所有する。aux 補正でも sort が入り
 			// クラスタ別%枠と未見優先の二段順が壊れるため、全補正をスキップ（A3）。
-			if (axis === 'globalPopular') continue;
+			// reactionSimilar は候補自体が taste 照合済みなので二重の taste 補正にもなる。
+			if (axis === 'globalPopular' || axis === 'reactionSimilar') continue;
 			for (const c of list) {
 				let mult = 1;
 				const tasteWeight = TASTE_RERANK_WEIGHT_BY_AXIS[axis] ?? 0;
@@ -789,7 +890,8 @@ export class HanamiForYouService {
 			meta._hanamiRecommended = true;
 			const reason = reasonOf.get(note.id);
 			// クライアントに出すのは最小限（sources 等は provenance/測定用）。UI 用に軸を表示語彙へ寄せる。
-			if (showReason && reason) meta._hanamiReason = { reason: AXIS_TO_UI_REASON[reason.source], term: reason.term };
+			// clusterId はインライン「この興味を減らす」（spec §3.2/Phase D）の材料としてクラスタ由来軸のみ添える。
+			if (showReason && reason) meta._hanamiReason = { reason: AXIS_TO_UI_REASON[reason.source], term: reason.term, clusterId: reason.clusterId };
 		}
 	}
 
@@ -808,9 +910,9 @@ export class HanamiForYouService {
 						const reason = reasonOf.get(n.id);
 						if (reason == null) return { noteId: n.id, source: null };
 						// taste cluster 経由は source に :c{k} を添える（§6 クラスタ別転換率の計測口）。
-						// clusterId は note 単位で merge されるため、globalPopular 枠を消費した時だけ付ける
+						// clusterId は note 単位で merge されるため、クラスタ枠を持つ軸が枠を消費した時だけ付ける
 						//（trending 等が枠を消費した pick に :c を付けると軸別統計が汚れる）。
-						const source = reason.source === 'globalPopular' && reason.clusterId != null
+						const source = (reason.source === 'globalPopular' || reason.source === 'reactionSimilar') && reason.clusterId != null
 							? `${reason.source}:c${reason.clusterId}`
 							: reason.source;
 						return { noteId: n.id, source };

@@ -6,20 +6,53 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { cpus, tmpdir } from 'node:os';
 import * as Path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Inject, Injectable } from '@nestjs/common';
+import * as Redis from 'ioredis';
 import { DataSource } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import { IdService } from '@/core/IdService.js';
 import { HanamiTokenizerService } from '@/core/hanami/tokenize/HanamiTokenizerService.js';
+import * as mfm from 'mfm-js';
+import { HANAMI_TASTE_MATCH_KEY_PREFIX, HANAMI_FORYOU_ACTIVE_KEY_PREFIX } from '@/core/hanami/HanamiForYouKeys.js';
 import { pureRenoteSql } from '@/misc/is-renote.js';
 import type Logger from '@/logger.js';
 
 const execFileAsync = promisify(execFile);
 const _dirname = Path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * MFM を mfm-js でパースして本文だけ抽出する（v0.7 敵対レビューR2-H2:
+ * 旧 clean() の `$\[[^\]]*\]` はネスト MFM で破綻し `<center ]] ]` のような装飾残骸が
+ * 高cosで埋め込まれ、装飾クラスタが軸上位を占拠していた。ダンプ実測 top20 の 16/20 が装飾残骸）。
+ * text/unicodeEmoji/hashtag のみ本文扱い。url/mention/emojiCode/code/math/search は落とす。
+ * パース失敗時は素の text にフォールバック（下段の clean が記号を落とす）。純関数（unit test 用に export）。
+ */
+export function extractMfmText(text: string): string {
+	try {
+		const out: string[] = [];
+		const walk = (nodes: mfm.MfmNode[]): void => {
+			for (const n of nodes) {
+				if (n.type === 'text') out.push(n.props.text);
+				else if (n.type === 'unicodeEmoji') out.push(n.props.emoji);
+				else if (n.type === 'hashtag') out.push(n.props.hashtag); // 話題語として本文扱い
+				else if ('children' in n && n.children != null) walk(n.children as mfm.MfmNode[]);
+			}
+		};
+		walk(mfm.parse(text));
+		return out.join(' ');
+	} catch {
+		return text;
+	}
+}
+
+/** 「内容文字」（Letter/Number）だけを数える。絵文字連打・記号のみは0（v0.7 R3）。純関数（unit test 用に export）。 */
+export function contentCharCount(s: string): number {
+	return (s.match(/[\p{L}\p{N}]/gu) ?? []).length;
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -30,7 +63,7 @@ const TASTE_EMBED_TTL_MS = 30 * DAY_MS;
 const TASTE_SWEEP_WINDOW_MS = 48 * 60 * 60 * 1000; // 新着スキャン窓（それより古い尻尾はTTL窓に入らないので追わない）
 const TASTE_SWEEP_FETCH_LIMIT = 30000; // 時間予算(8分×36件/s≈17k)より広めの取得上限
 const TASTE_SWEEP_TIME_BUDGET_SEC = 8 * 60; // 次の10分実行と重ならないことだけ保証
-const TASTE_MIN_CHARS = 12; // クリーニング後の最低文字数（絵文字/URL/MFMのみノートの偽クラスタ汚染対策）
+const TASTE_MIN_CHARS = 12; // クリーニング後の最低「内容文字」数（絵文字/URL/MFMのみノートの偽クラスタ汚染対策。v0.7 R3: 単純lengthでなく Letter/Number を数える＝絵文字連打・ゼロ幅のみを弾く）
 // evidence は日付でなく「ノート数」で切る（v0.3）: 基準30件/日 × 90日 = 最新2,700件/人。
 // ヘビーユーザーは実質90日窓と同等の鮮度、ライトユーザーは何年でも遡って材料を確保できる。
 const TASTE_EVIDENCE_BASE_PER_DAY = 30;
@@ -49,6 +82,41 @@ const TASTE_MEANVEC_SAMPLE = 5000;
 const TASTE_MEANVEC_PER_USER_CAP = 20; // 1ユーザーの mean_vec への寄与上限（連投で基準点を押されないため）
 const TASTE_PROCESS_TIMEOUT_MS = 30 * 60 * 1000;
 
+// reactionSimilar（興味マッチ新着）の事前計算。人気条件なしの全新着×クラスタcentroid照合。
+// τ は人気枠（TASTE_TAU_ASSIGN=0.25）より大幅に高め: 母集団が「人気200件」でなく「全新着」なので、
+// 低い閾値だと雑談の尻尾が大量に入りノイズ軸になる（2026-07-07 ダンプ実測: 0.35→1,151件/日で
+// top-N キャップ側が効いて弱マッチが残る。0.5→162件/日＝日次 p95 相当で軸の量としても十分）。
+export const TASTE_MATCH_WINDOW_MS = 24 * 60 * 60 * 1000; // serve 側の窓外ガードと共有
+const TASTE_MATCH_TAU = 0.5;
+const TASTE_MATCH_TOP_N = 300;
+const TASTE_MATCH_KEY_TTL_SEC = 48 * 60 * 60; // バッチ停止時に古い推薦が残り続けない保険
+// zset score は cos でなく cos×鮮度（v0.6 敵対レビュー#6）: cos 順だと強マッチが24h上位に居座り、
+// TOP_N が効く状況で新着の弱マッチが候補集合に入れない。毎10分フル再計算なので鮮度は自然に更新される。
+const TASTE_MATCH_FRESHNESS_BUCKETS: { withinMs: number; weight: number }[] = [
+	{ withinMs: 6 * 60 * 60 * 1000, weight: 1.0 },
+	{ withinMs: 12 * 60 * 60 * 1000, weight: 0.9 },
+];
+const TASTE_MATCH_FRESHNESS_FLOOR = 0.75;
+// 同一作者の連投/コピペが TOP_N を占領する経路を塞ぐ（v0.6 #12。ページ側の作者cap=2とは別に候補段で切る）。
+const TASTE_MATCH_AUTHOR_CAP = 3;
+// 多重実行ガード（v0.6 #3 / v0.7 R3: match だけでなく sweep も含む tick 全体を1ロックで覆う。
+// 複数 worker/手動起動で 8分予算の python sweep が並走すると CPU/RAM を二重消費するため）。
+// TTL は最悪実行時間（python timeout 30分）＋余裕（v0.7 R4: 10分周期より短い 9.5分だと、実行が
+// 周期を跨いだ瞬間に次 tick が NX を通ってしまい重複ガードにならない）。正常/timeout 終了時は
+// finally の Lua 解放で即座に空くので、TTL が長くても平常のスループットには影響しない。
+// TTL まで塞がるのはプロセス即死時のみ（最大3-4 tick スキップ後に自己回復）。
+const TASTE_TICK_LOCK_KEY = 'hanami:taste:tick:lock';
+const TASTE_TICK_LOCK_TTL_SEC = 35 * 60;
+const TASTE_MATCH_SLOW_WARN_MS = 60 * 1000; // これを超えたらスケール対策（ANN/差分化）検討のサイン
+const TASTE_REBUILD_STATUS_KEY = 'hanami:taste:rebuild:status';
+const TASTE_REBUILD_STATUS_TTL_SEC = 7 * 24 * 60 * 60;
+const TASTE_REBUILD_RUNNING_FRESH_MS = 10 * 60 * 1000;
+const TASTE_REBUILD_DELAY_MS = 30 * 1000;
+const TASTE_REBUILD_LOCK_RETRY_MS = 60 * 1000;
+const TASTE_REBUILD_TIME_BUDGET_SEC = 4 * 60;
+const TASTE_REBUILD_EMBED_TIME_BUDGET_SEC = 220;
+const TASTE_REBUILD_DEFAULT_CHUNK = 500;
+
 type KmeansOutUser = {
 	userId: string;
 	k: number;
@@ -56,6 +124,42 @@ type KmeansOutUser = {
 	assignment: number[];
 	examples: number[][];
 };
+
+export type HanamiTasteRebuildPhase = 'embeddings' | 'evidence';
+export type HanamiTasteRebuildStats = {
+	reembedded: number;
+	purged: number;
+	evidenceUpdated: number;
+	evidencePurged: number;
+};
+export type HanamiTasteRebuildJobData = {
+	phase: HanamiTasteRebuildPhase;
+	cursor: string | null;
+	stats: HanamiTasteRebuildStats;
+	startedAt: number;
+};
+export type HanamiTasteRebuildStatus = {
+	state: 'idle' | 'running' | 'done' | 'error';
+	phase: HanamiTasteRebuildPhase | null;
+	reembedded: number;
+	purged: number;
+	evidenceUpdated: number;
+	evidencePurged: number;
+	startedAt: number | null;
+	updatedAt: number | null;
+	error: string | null;
+};
+export type HanamiTasteRebuildChunkResult =
+	| { action: 'retry'; delayMs: number; data: HanamiTasteRebuildJobData }
+	| { action: 'continue'; delayMs: number; data: HanamiTasteRebuildJobData }
+	| { action: 'cluster'; data: HanamiTasteRebuildJobData };
+
+export class HanamiTasteRebuildAlreadyRunningError extends Error {
+	constructor() {
+		super('hanami taste rebuild is already running');
+		this.name = 'HanamiTasteRebuildAlreadyRunningError';
+	}
+}
 
 /** float32 → IEEE754 half(fp16) bits。埋め込みは正規化済み[-1,1]なので丸め誤差は無視できる。 */
 function float32ToFloat16Bits(val: number): number {
@@ -93,18 +197,69 @@ export function encodeFp16(vec: number[]): Buffer {
  */
 @Injectable()
 export class HanamiTasteClusterBatchService {
+	private loggedTastePythonThreads = false;
+
 	constructor(
 		@Inject(DI.db)
 		private db: DataSource,
+
+		@Inject(DI.redis)
+		private redisClient: Redis.Redis,
 
 		private idService: IdService,
 		private hanamiTokenizerService: HanamiTokenizerService,
 	) {
 	}
 
-	/** 埋め込み対象のクリーニング（トークナイザ共通cleanを流用し空白を潰す）。 */
+	/**
+	 * 埋め込み対象のクリーニング。
+	 * MFM は正規表現でなく mfm-js でパースして本文だけ抽出する（v0.7 敵対レビューR2-H2:
+	 * clean() の `$\[[^\]]*\]` はネスト MFM で破綻し `<center ]] ]` のような装飾残骸が
+	 * 高cosで埋め込まれ、装飾クラスタが軸上位を占拠していた。ダンプ実測 top20 の 16/20 が装飾残骸）。
+	 * パース失敗時は素の text にフォールバック（従来 clean が下段で記号を落とす）。
+	 */
 	private cleanForEmbedding(text: string): string {
-		return this.hanamiTokenizerService.clean(text).replace(/\s+/g, ' ').trim();
+		return this.hanamiTokenizerService.clean(extractMfmText(text))
+			.replace(/[\p{Cf}\u{FE00}-\u{FE0F}]/gu, '') // ゼロ幅/結合子/異体字セレクタ（不可視のみ投稿対策。v0.7 R3）
+			.replace(/\s+/g, ' ')
+			.trim();
+	}
+
+	private tasteRebuildChunkLimit(): number {
+		const n = Number(process.env.HANAMI_TASTE_REBUILD_CHUNK ?? TASTE_REBUILD_DEFAULT_CHUNK);
+		return Number.isFinite(n) && n > 0 ? Math.floor(n) : TASTE_REBUILD_DEFAULT_CHUNK;
+	}
+
+	private async acquireTasteTickLock(): Promise<string | null> {
+		const lockToken = `${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+		const lock = await this.redisClient.set(TASTE_TICK_LOCK_KEY, lockToken, 'EX', TASTE_TICK_LOCK_TTL_SEC, 'NX');
+		return lock == null ? null : lockToken;
+	}
+
+	private async releaseTasteTickLock(lockToken: string): Promise<void> {
+		await this.redisClient.eval(
+			'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end',
+			1, TASTE_TICK_LOCK_KEY, lockToken,
+		).catch(() => { /* TTLで解ける */ });
+	}
+
+	private tastePythonMaxThreads(): number {
+		const configured = Number(process.env.HANAMI_TASTE_MAX_THREADS);
+		if (Number.isFinite(configured) && configured > 0) return Math.floor(configured);
+		return Math.max(1, Math.floor(cpus().length / 2));
+	}
+
+	private tastePythonEnv(logger?: Logger): NodeJS.ProcessEnv {
+		const maxThreads = String(this.tastePythonMaxThreads());
+		const env = { ...process.env };
+		for (const name of ['OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS']) {
+			if (env[name] == null || env[name] === '') env[name] = maxThreads;
+		}
+		if (!this.loggedTastePythonThreads) {
+			this.loggedTastePythonThreads = true;
+			logger?.info(`hanami taste python threads: ${maxThreads} default (nproc=${cpus().length}, explicit env is respected)`);
+		}
+		return env;
 	}
 
 	// ───────────────────────── 10分スイープ ─────────────────────────
@@ -131,19 +286,19 @@ export class HanamiTasteClusterBatchService {
 		const texts: [string, string][] = [];
 		for (const r of rows) {
 			const cleaned = this.cleanForEmbedding(r.text);
-			if (cleaned.length >= TASTE_MIN_CHARS) texts.push([r.id, cleaned]);
+			if (contentCharCount(cleaned) >= TASTE_MIN_CHARS) texts.push([r.id, cleaned]);
 		}
 		if (texts.length === 0) return { processed: 0, skipped: rows.length, backlog: 0 };
 
-		const processed = await this.embedAndStore(texts, TASTE_SWEEP_TIME_BUDGET_SEC);
+		const processed = await this.embedAndStore(texts, TASTE_SWEEP_TIME_BUDGET_SEC, logger);
 		// backlog = 時間予算で今回埋めきれなかった分（新しい順なので残りは古い尻尾）。
 		const backlog = texts.length - processed;
 		logger.info(`hanami taste sweep: embedded ${processed}, backlog ${backlog}${rows.length >= TASTE_SWEEP_FETCH_LIMIT ? '+' : ''}`);
 		return { processed, skipped: rows.length - texts.length, backlog };
 	}
 
-	/** クリーニング済みテキストを python(e5) で埋め込み hanami_note_embedding へ upsert。処理件数を返す。 */
-	private async embedAndStore(texts: [string, string][], timeBudgetSec: number): Promise<number> {
+	/** クリーニング済みテキストを python(e5) へ渡し、保存せずベクトル配列だけ返す。sweep/rebuildで同じ入口を使う。 */
+	private async embedTexts(texts: [string, string][], timeBudgetSec: number, logger?: Logger): Promise<{ dim: number; processed: number; embeddings: [string, number[]][] }> {
 		let tmpDir: string | null = null;
 		try {
 			tmpDir = await mkdtemp(Path.join(tmpdir(), 'hanami-taste-embed-'));
@@ -154,31 +309,492 @@ export class HanamiTasteClusterBatchService {
 			const scriptPath = process.env.HANAMI_TASTE_EMBED_SCRIPT
 				?? Path.resolve(_dirname, '../../../../../scripts/hanami-foryou/taste_embed_sweep.py');
 			const python = process.env.HANAMI_FORYOU_PYTHON ?? 'python3';
-			await execFileAsync(python, [scriptPath, inputPath, outputPath], { timeout: TASTE_PROCESS_TIMEOUT_MS, maxBuffer: 512 * 1024 * 1024 });
+			await execFileAsync(python, [scriptPath, inputPath, outputPath], { env: this.tastePythonEnv(logger), timeout: TASTE_PROCESS_TIMEOUT_MS, maxBuffer: 512 * 1024 * 1024 });
 
-			const out = JSON.parse(await readFile(outputPath, 'utf8')) as { dim: number; processed: number; embeddings: [string, number[]][] };
-			const updatedAt = new Date();
-			const chunk = 200;
-			for (let i = 0; i < out.embeddings.length; i += chunk) {
-				const slice = out.embeddings.slice(i, i + chunk);
-				const values: string[] = [];
-				const params: unknown[] = [];
-				for (const [noteId, vec] of slice) {
-					const base = params.length;
-					values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5})`);
-					params.push(noteId, TASTE_EMBED_MODEL, out.dim, `{${vec.join(',')}}`, updatedAt);
-				}
-				await this.db.query(
-					`INSERT INTO "hanami_note_embedding" ("noteId", model, dim, embedding, "updatedAt")
-					 VALUES ${values.join(',')}
-					 ON CONFLICT ("noteId", model) DO NOTHING`,
-					params,
-				);
-			}
-			return out.processed;
+			return JSON.parse(await readFile(outputPath, 'utf8')) as { dim: number; processed: number; embeddings: [string, number[]][] };
 		} finally {
 			if (tmpDir != null) await rm(tmpDir, { recursive: true, force: true }).catch(() => { /* ignore */ });
 		}
+	}
+
+	/** クリーニング済みテキストを埋め込み hanami_note_embedding へ保存する。処理件数を返す。 */
+	private async embedAndStore(texts: [string, string][], timeBudgetSec: number, logger?: Logger): Promise<number> {
+		const out = await this.embedTexts(texts, timeBudgetSec, logger);
+		await this.upsertNoteEmbeddings(out.embeddings, out.dim, false);
+		return out.processed;
+	}
+
+	private async upsertNoteEmbeddings(embeddings: [string, number[]][], dim: number, updateExisting: boolean): Promise<void> {
+		const updatedAt = new Date();
+		const chunk = 200;
+		for (let i = 0; i < embeddings.length; i += chunk) {
+			const slice = embeddings.slice(i, i + chunk);
+			const values: string[] = [];
+			const params: unknown[] = [];
+			for (const [noteId, vec] of slice) {
+				const base = params.length;
+				values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5})`);
+				params.push(noteId, TASTE_EMBED_MODEL, dim, `{${vec.join(',')}}`, updatedAt);
+			}
+			await this.db.query(
+				`INSERT INTO "hanami_note_embedding" ("noteId", model, dim, embedding, "updatedAt")
+				 VALUES ${values.join(',')}
+				 ON CONFLICT ("noteId", model) DO ${updateExisting ? 'UPDATE SET dim = EXCLUDED.dim, embedding = EXCLUDED.embedding, "updatedAt" = EXCLUDED."updatedAt"' : 'NOTHING'}`,
+				params,
+			);
+		}
+	}
+
+	// ───────────────────────── 興味マッチ新着（reactionSimilar 軸）の事前計算 ─────────────────────────
+
+	/**
+	 * 直近24hの埋め込み済み全ノート（人気条件なし）をユーザーの taste クラスタ centroid と照合し、
+	 * ユーザー別 zset（member=noteId:authorId:clusterId / score=cos）を全置換する。
+	 *
+	 * 10分スイープの直後に呼ぶ: 新着はどのみち埋め込まれるまで候補になれないので、鮮度の追加損失ゼロで
+	 * 「サーブは事前計算の取り出し」の原則を保てる。毎回フル再計算（ステートレス＝Redis 消失・クラスタ
+	 * 再構築・userWeight 変更・窓スライドすべて次回実行≦10分で自己回復）。
+	 */
+	/**
+	 * 10分 tick の本体: 埋め込みスイープ→興味マッチ事前計算を1ロックの下で順に実行する。
+	 * - ロックは tick 全体を覆う（v0.7 R3: sweep の python 並走も防ぐ）。前回が周期を跨いでいたらスキップ（次回≦10分で追いつく）。
+	 * - token 照合つき解放（v0.7 R2-M3: 無条件 DEL だと TTL 超過した旧実行が新実行のロックを消し、
+	 *   三つ巴の多重実行を再発させる）。token は tmp キーの衝突回避にも使う。
+	 * - sweep 失敗（python 不在等）でも match は既存の埋め込みだけで実行する。
+	 */
+	@bindThis
+	public async runTasteTick(logger: Logger): Promise<void> {
+		const lockToken = await this.acquireTasteTickLock();
+		if (lockToken == null) {
+			logger.warn('hanami taste tick: previous run still in progress, skip');
+			return;
+		}
+		try {
+			try {
+				await this.runTasteSweep(logger);
+			} catch (err) {
+				// python 不在などの環境では警告に留めて次回に任せる（serve は general 縮退で壊れない）。
+				logger.warn(`hanami taste sweep failed: ${(err as Error).message}`);
+			}
+			try {
+				await this.computeTasteMatches(logger, lockToken);
+			} catch (err) {
+				logger.warn(`hanami taste match failed: ${(err as Error).message}`);
+			}
+		} finally {
+			await this.releaseTasteTickLock(lockToken);
+		}
+	}
+
+	private emptyRebuildStats(): HanamiTasteRebuildStats {
+		return { reembedded: 0, purged: 0, evidenceUpdated: 0, evidencePurged: 0 };
+	}
+
+	private async writeTasteRebuildStatus(state: HanamiTasteRebuildStatus['state'], data: HanamiTasteRebuildJobData, error: string | null = null): Promise<void> {
+		const fields: Record<string, string> = {
+			state,
+			phase: data.phase,
+			reembedded: String(data.stats.reembedded),
+			purged: String(data.stats.purged),
+			evidenceUpdated: String(data.stats.evidenceUpdated),
+			evidencePurged: String(data.stats.evidencePurged),
+			startedAt: String(data.startedAt),
+			updatedAt: String(Date.now()),
+			error: error ?? '',
+		};
+		await this.redisClient.hset(TASTE_REBUILD_STATUS_KEY, fields);
+		await this.redisClient.expire(TASTE_REBUILD_STATUS_KEY, TASTE_REBUILD_STATUS_TTL_SEC);
+	}
+
+	@bindThis
+	public async getTasteRebuildStatus(): Promise<HanamiTasteRebuildStatus> {
+		const raw = await this.redisClient.hgetall(TASTE_REBUILD_STATUS_KEY);
+		if (raw.state == null) {
+			return {
+				state: 'idle',
+				phase: null,
+				...this.emptyRebuildStats(),
+				startedAt: null,
+				updatedAt: null,
+				error: null,
+			};
+		}
+		const phase = raw.phase === 'embeddings' || raw.phase === 'evidence' ? raw.phase : null;
+		return {
+			state: raw.state === 'running' || raw.state === 'done' || raw.state === 'error' ? raw.state : 'idle',
+			phase,
+			reembedded: Number(raw.reembedded ?? 0),
+			purged: Number(raw.purged ?? 0),
+			evidenceUpdated: Number(raw.evidenceUpdated ?? 0),
+			evidencePurged: Number(raw.evidencePurged ?? 0),
+			startedAt: raw.startedAt != null ? Number(raw.startedAt) : null,
+			updatedAt: raw.updatedAt != null ? Number(raw.updatedAt) : null,
+			error: raw.error ? raw.error : null,
+		};
+	}
+
+	@bindThis
+	public async startTasteRebuild(force: boolean): Promise<HanamiTasteRebuildJobData> {
+		const current = await this.getTasteRebuildStatus();
+		if (!force && current.state === 'running' && current.updatedAt != null && Date.now() - current.updatedAt < TASTE_REBUILD_RUNNING_FRESH_MS) {
+			throw new HanamiTasteRebuildAlreadyRunningError();
+		}
+		const data: HanamiTasteRebuildJobData = {
+			phase: 'embeddings',
+			cursor: null,
+			stats: this.emptyRebuildStats(),
+			startedAt: Date.now(),
+		};
+		await this.writeTasteRebuildStatus('running', data);
+		return data;
+	}
+
+	@bindThis
+	public async runTasteRebuildChunk(data: HanamiTasteRebuildJobData, logger: Logger): Promise<HanamiTasteRebuildChunkResult> {
+		const lockToken = await this.acquireTasteTickLock();
+		if (lockToken == null) {
+			logger.warn('hanami taste rebuild: taste tick lock busy, retry later');
+			return { action: 'retry', delayMs: TASTE_REBUILD_LOCK_RETRY_MS, data };
+		}
+		try {
+			await this.writeTasteRebuildStatus('running', data);
+			const next = data.phase === 'embeddings'
+				? await this.rebuildEmbeddingChunk(data, logger)
+				: await this.rebuildEvidenceChunk(data, logger);
+			if (next.action === 'cluster') {
+				await this.writeTasteRebuildStatus('done', next.data);
+			} else {
+				await this.writeTasteRebuildStatus('running', next.data);
+			}
+			return next;
+		} catch (err) {
+			await this.writeTasteRebuildStatus('error', data, (err as Error).message);
+			throw err;
+		} finally {
+			await this.releaseTasteTickLock(lockToken);
+		}
+	}
+
+	private async rebuildEmbeddingChunk(data: HanamiTasteRebuildJobData, logger: Logger): Promise<HanamiTasteRebuildChunkResult> {
+		const limit = this.tasteRebuildChunkLimit();
+		const rows = await this.db.query(
+			`SELECT e."noteId" AS id, n.text AS text
+			 FROM "hanami_note_embedding" e
+			 LEFT JOIN note n ON n.id = e."noteId"
+			 WHERE e.model = $1 AND ($2::text IS NULL OR e."noteId" > $2)
+			 ORDER BY e."noteId" ASC
+			 LIMIT $3`,
+			[TASTE_EMBED_MODEL, data.cursor, limit],
+		) as { id: string; text: string | null }[];
+
+		if (rows.length === 0) {
+			const next = { ...data, phase: 'evidence' as const, cursor: null };
+			logger.info(`hanami taste rebuild: embeddings done reembedded=${next.stats.reembedded} purged=${next.stats.purged}`);
+			return { action: 'continue', delayMs: TASTE_REBUILD_DELAY_MS, data: next };
+		}
+
+		const purgeIds: string[] = [];
+		const texts: [string, string][] = [];
+		for (const r of rows) {
+			if (r.text == null) {
+				purgeIds.push(r.id);
+				continue;
+			}
+			const cleaned = this.cleanForEmbedding(r.text);
+			if (contentCharCount(cleaned) >= TASTE_MIN_CHARS) texts.push([r.id, cleaned]);
+			else purgeIds.push(r.id);
+		}
+		if (purgeIds.length > 0) {
+			await this.db.query(
+				`DELETE FROM "hanami_note_embedding" WHERE model = $1 AND "noteId" = ANY($2)`,
+				[TASTE_EMBED_MODEL, purgeIds],
+			);
+		}
+
+		const out = texts.length === 0
+			? { dim: TASTE_EMBED_DIM, processed: 0, embeddings: [] as [string, number[]][] }
+			: await this.embedTexts(texts, TASTE_REBUILD_EMBED_TIME_BUDGET_SEC, logger);
+		if (out.embeddings.length > 0) await this.upsertNoteEmbeddings(out.embeddings, out.dim, true);
+
+		const partial = texts.length > 0 && out.embeddings.length < texts.length;
+		const processedLastId = out.embeddings.at(-1)?.[0] ?? null;
+		const cursor = partial && processedLastId != null ? processedLastId : rows.at(-1)!.id;
+		const next: HanamiTasteRebuildJobData = {
+			...data,
+			cursor,
+			stats: {
+				...data.stats,
+				reembedded: data.stats.reembedded + out.embeddings.length,
+				purged: data.stats.purged + purgeIds.length,
+			},
+		};
+		if (partial && processedLastId == null) throw new Error('hanami taste rebuild: embedding made no progress');
+		if (!partial && rows.length < limit) {
+			return { action: 'continue', delayMs: TASTE_REBUILD_DELAY_MS, data: { ...next, phase: 'evidence', cursor: null } };
+		}
+		return { action: 'continue', delayMs: TASTE_REBUILD_DELAY_MS, data: next };
+	}
+
+	private packEvidenceCursor(userId: string, noteId: string): string {
+		return `${userId}:${noteId}`;
+	}
+
+	private unpackEvidenceCursor(cursor: string | null): { userId: string | null; noteId: string | null } {
+		if (cursor == null) return { userId: null, noteId: null };
+		const i = cursor.indexOf(':');
+		if (i < 0) return { userId: cursor, noteId: null };
+		return { userId: cursor.slice(0, i), noteId: cursor.slice(i + 1) };
+	}
+
+	private async rebuildEvidenceChunk(data: HanamiTasteRebuildJobData, logger: Logger): Promise<HanamiTasteRebuildChunkResult> {
+		const limit = this.tasteRebuildChunkLimit();
+		const cursor = this.unpackEvidenceCursor(data.cursor);
+		const rows = await this.db.query(
+			`SELECT ev."userId" AS uid, ev."noteId" AS nid, n.text AS text
+			 FROM "hanami_foryou_taste_evidence" ev
+			 LEFT JOIN note n ON n.id = ev."noteId"
+			 WHERE ev.model = $1
+			   AND ($2::text IS NULL OR ev."userId" > $2 OR (ev."userId" = $2 AND ($3::text IS NULL OR ev."noteId" > $3)))
+			 ORDER BY ev."userId" ASC, ev."noteId" ASC
+			 LIMIT $4`,
+			[TASTE_EMBED_MODEL, cursor.userId, cursor.noteId, limit],
+		) as { uid: string; nid: string; text: string | null }[];
+		if (rows.length === 0) {
+			logger.info(`hanami taste rebuild: evidence done updated=${data.stats.evidenceUpdated} purged=${data.stats.evidencePurged}`);
+			return { action: 'cluster', data };
+		}
+
+		const purgeRows: { uid: string; nid: string }[] = [];
+		const textRows: [string, string][] = [];
+		for (const r of rows) {
+			if (r.text == null) {
+				purgeRows.push(r);
+				continue;
+			}
+			const cleaned = this.cleanForEmbedding(r.text);
+			if (contentCharCount(cleaned) >= TASTE_MIN_CHARS) textRows.push([this.packEvidenceCursor(r.uid, r.nid), cleaned]);
+			else purgeRows.push(r);
+		}
+		await this.deleteEvidenceRows(purgeRows);
+
+		const out = textRows.length === 0
+			? { dim: TASTE_EMBED_DIM, processed: 0, embeddings: [] as [string, number[]][] }
+			: await this.embedTexts(textRows, TASTE_REBUILD_EMBED_TIME_BUDGET_SEC, logger);
+		await this.updateEvidenceVectors(out.embeddings);
+
+		const partial = textRows.length > 0 && out.embeddings.length < textRows.length;
+		const processedLast = out.embeddings.at(-1)?.[0] ?? null;
+		const nextCursor = partial && processedLast != null
+			? processedLast
+			: this.packEvidenceCursor(rows.at(-1)!.uid, rows.at(-1)!.nid);
+		const next: HanamiTasteRebuildJobData = {
+			...data,
+			cursor: nextCursor,
+			stats: {
+				...data.stats,
+				evidenceUpdated: data.stats.evidenceUpdated + out.embeddings.length,
+				evidencePurged: data.stats.evidencePurged + purgeRows.length,
+			},
+		};
+		if (partial && processedLast == null) throw new Error('hanami taste rebuild: evidence embedding made no progress');
+		if (!partial && rows.length < limit) return { action: 'cluster', data: next };
+		return { action: 'continue', delayMs: TASTE_REBUILD_DELAY_MS, data: next };
+	}
+
+	private async deleteEvidenceRows(rows: { uid: string; nid: string }[]): Promise<void> {
+		if (rows.length === 0) return;
+		const chunk = 500;
+		for (let i = 0; i < rows.length; i += chunk) {
+			const slice = rows.slice(i, i + chunk);
+			const values: string[] = [];
+			const params: unknown[] = [TASTE_EMBED_MODEL];
+			for (const r of slice) {
+				const base = params.length;
+				values.push(`($${base + 1}, $${base + 2})`);
+				params.push(r.uid, r.nid);
+			}
+			await this.db.query(
+				`DELETE FROM "hanami_foryou_taste_evidence" ev
+				 USING (VALUES ${values.join(',')}) AS v(uid, nid)
+				 WHERE ev.model = $1 AND ev."userId" = v.uid AND ev."noteId" = v.nid`,
+				params,
+			);
+		}
+	}
+
+	private async updateEvidenceVectors(embeddings: [string, number[]][]): Promise<void> {
+		if (embeddings.length === 0) return;
+		const chunk = 200;
+		for (let i = 0; i < embeddings.length; i += chunk) {
+			const slice = embeddings.slice(i, i + chunk);
+			const values: string[] = [];
+			const params: unknown[] = [TASTE_EMBED_MODEL];
+			for (const [key, vec] of slice) {
+				const { userId, noteId } = this.unpackEvidenceCursor(key);
+				if (userId == null || noteId == null) continue;
+				const base = params.length;
+				values.push(`($${base + 1}, $${base + 2}, $${base + 3})`);
+				params.push(userId, noteId, encodeFp16(vec));
+			}
+			if (values.length === 0) continue;
+			await this.db.query(
+				`UPDATE "hanami_foryou_taste_evidence" ev
+				 SET vector = v.vector
+				 FROM (VALUES ${values.join(',')}) AS v(uid, nid, vector)
+				 WHERE ev.model = $1 AND ev."userId" = v.uid AND ev."noteId" = v.nid`,
+				params,
+			);
+		}
+	}
+
+	private async computeTasteMatches(logger: Logger, runToken: string): Promise<{ users: number; notes: number }> {
+		const startedAt = Date.now();
+		// userWeight=0（表示しない）クラスタは照合対象から外す。For You OFF のユーザーは計算しない。
+		const clusterRows = await this.db.query(
+			`SELECT c."userId" AS uid, c."clusterId" AS cid, c.centroid AS centroid
+			 FROM "hanami_foryou_user_taste_cluster" c
+			 JOIN "user_profile" p ON p."userId" = c."userId"
+			 WHERE c.model = $1 AND c."userWeight" > 0 AND p."hanamiRecommendationEnabled" = TRUE`,
+			[TASTE_EMBED_MODEL],
+		) as { uid: string; cid: number; centroid: number[] }[];
+		if (clusterRows.length === 0) return { users: 0, notes: 0 };
+
+		const stateRows = await this.db.query(
+			`SELECT "meanVec" FROM "hanami_foryou_taste_state" WHERE model = $1`,
+			[TASTE_EMBED_MODEL],
+		) as { meanVec: number[] }[];
+		const meanVec = stateRows[0]?.meanVec;
+		if (meanVec == null || meanVec.length === 0) return { users: 0, notes: 0 };
+
+		// 配信可能な新着だけ（public/home・チャンネル外・リプライ以外・bot以外）。
+		// 鍵（followers）ノートは学習専用なのでここには乗せない。
+		// isExplorable=FALSE の作者は載せない（v0.6 #5: 低反応投稿を本人の合図なしに広域配信する軸なので、
+		// 「発見されたくない」意思表示は fof と同様に尊重する。人気系軸より一段厳しくてよい）。
+		const sinceId = this.idService.gen(Date.now() - TASTE_MATCH_WINDOW_MS);
+		const noteRows = await this.db.query(
+			`SELECT e."noteId" AS nid, e.embedding AS emb, n."userId" AS aid
+			 FROM "hanami_note_embedding" e
+			 JOIN note n ON n.id = e."noteId"
+			 JOIN "user" u ON u.id = n."userId"
+			 WHERE e.model = $1 AND e."noteId" >= $2
+			   AND n.visibility IN ('public','home') AND n."channelId" IS NULL AND n."replyId" IS NULL
+			   AND u."isBot" = FALSE AND u."isSuspended" = FALSE AND u."isExplorable" = TRUE`,
+			[TASTE_EMBED_MODEL, sinceId],
+		) as { nid: string; emb: number[]; aid: string }[];
+		if (noteRows.length === 0) return { users: 0, notes: 0 };
+
+		// 平均中心化＋正規化はユーザー数に依らず1回だけ（クラスタ割当と同じ前処理）。
+		const dim = meanVec.length;
+		const mat = new Float32Array(noteRows.length * dim);
+		for (let r = 0; r < noteRows.length; r++) {
+			const emb = noteRows[r].emb;
+			const off = r * dim;
+			let norm = 0;
+			for (let i = 0; i < dim; i++) {
+				const v = (emb[i] ?? 0) - meanVec[i];
+				mat[off + i] = v;
+				norm += v * v;
+			}
+			norm = Math.sqrt(norm) || 1;
+			for (let i = 0; i < dim; i++) mat[off + i] /= norm;
+		}
+
+		const byUser = new Map<string, { cid: number; centroid: Float32Array }[]>();
+		for (const c of clusterRows) {
+			let arr = byUser.get(c.uid);
+			if (arr == null) { arr = []; byUser.set(c.uid, arr); }
+			arr.push({ cid: c.cid, centroid: Float32Array.from(c.centroid) });
+		}
+
+		// アクティブユーザー限定（v0.6 #1/#2）: 直近14日に For You を読んだマーカー（active キー）が
+		// あるユーザーだけ計算する。計算量とRedis書き込みが「クラスタ保有者全員」でなく「実利用者」に比例する。
+		// served キー（TTL30分の重複抑制）は判定に使わない（v0.7 R2-H1）。
+		// 新規に For You を開いたユーザーは初回サーブで active が付き、次回実行（≦10分）から候補が出る。
+		const uids = [...byUser.keys()];
+		const existsPipeline = this.redisClient.pipeline();
+		for (const uid of uids) existsPipeline.exists(HANAMI_FORYOU_ACTIVE_KEY_PREFIX + uid);
+		const existsRes = await existsPipeline.exec();
+		for (let i = 0; i < uids.length; i++) {
+			if (existsRes?.[i]?.[1] !== 1) byUser.delete(uids[i]);
+		}
+		if (byUser.size === 0) return { users: 0, notes: noteRows.length };
+
+		// 鮮度（cos に乗算して zset score へ焼き込む。毎10分フル再計算なので自然に更新される）。
+		const now = Date.now();
+		const freshnessOf = (nid: string): number => {
+			const age = now - this.idService.parse(nid).date.getTime();
+			for (const b of TASTE_MATCH_FRESHNESS_BUCKETS) {
+				if (age <= b.withinMs) return b.weight;
+			}
+			return TASTE_MATCH_FRESHNESS_FLOOR;
+		};
+		const freshness = noteRows.map(r => freshnessOf(r.nid));
+
+		let users = 0;
+		const matchCounts: number[] = [];
+		for (const [uid, cls] of byUser) {
+			const matches: { member: string; aid: string; score: number }[] = [];
+			for (let r = 0; r < noteRows.length; r++) {
+				if (noteRows[r].aid === uid) continue; // 自分の投稿は推薦しない
+				const off = r * dim;
+				let bestCos = TASTE_MATCH_TAU;
+				let bestCid = -1;
+				for (const cl of cls) {
+					const cen = cl.centroid;
+					const n = Math.min(dim, cen.length);
+					let dot = 0;
+					for (let i = 0; i < n; i++) dot += mat[off + i] * cen[i];
+					if (dot >= bestCos) { bestCos = dot; bestCid = cl.cid; }
+				}
+				if (bestCid >= 0) {
+					matches.push({
+						member: `${noteRows[r].nid}:${noteRows[r].aid}:${bestCid}`,
+						aid: noteRows[r].aid,
+						score: bestCos * freshness[r],
+					});
+				}
+			}
+			// score 降順＋作者cap（同一作者の連投/コピペが TOP_N を占領しない）。
+			matches.sort((a, b) => b.score - a.score);
+			const top: typeof matches = [];
+			const perAuthor = new Map<string, number>();
+			for (const m of matches) {
+				if (top.length >= TASTE_MATCH_TOP_N) break;
+				const c = perAuthor.get(m.aid) ?? 0;
+				if (c >= TASTE_MATCH_AUTHOR_CAP) continue;
+				perAuthor.set(m.aid, c + 1);
+				top.push(m);
+			}
+			matchCounts.push(top.length);
+
+			const key = HANAMI_TASTE_MATCH_KEY_PREFIX + uid;
+			const pipeline = this.redisClient.pipeline();
+			if (top.length === 0) {
+				pipeline.del(key);
+			} else {
+				// tmp キーへ書いて rename＝サーブ側から見て常に完全な集合（部分書き込みを見せない）。
+				// tmp 名に runToken を含め、TTL 超過で並走した旧実行と同じ tmp を触り合わない（v0.7 R2-M3）。
+				// 短い expire で孤児 tmp（rename 前クラッシュ）も自然消滅させる。
+				const tmp = `${key}:tmp:${runToken}`;
+				const args: (string | number)[] = [];
+				for (const m of top) args.push(m.score, m.member);
+				pipeline.zadd(tmp, ...args);
+				pipeline.expire(tmp, 600);
+				pipeline.rename(tmp, key);
+				pipeline.expire(key, TASTE_MATCH_KEY_TTL_SEC);
+			}
+			const res = await pipeline.exec();
+			const failed = res?.find(([err]) => err != null);
+			if (failed?.[0] != null) logger.warn(`hanami taste match: redis write failed for ${uid}: ${failed[0].message}`);
+			users++;
+		}
+		matchCounts.sort((a, b) => a - b);
+		const elapsed = Date.now() - startedAt;
+		const med = matchCounts[Math.floor(matchCounts.length / 2)] ?? 0;
+		logger.info(`hanami taste match: ${users} users x ${noteRows.length} notes in ${elapsed}ms (matches min=${matchCounts[0] ?? 0} med=${med} max=${matchCounts.at(-1) ?? 0})`);
+		// 実行時間がここを超え始めたら ANN/差分更新化（spec §9.4）を検討する。
+		if (elapsed > TASTE_MATCH_SLOW_WARN_MS) logger.warn(`hanami taste match: slow run ${elapsed}ms (users=${users}, notes=${noteRows.length}) — consider ANN/incremental`);
+		return { users, notes: noteRows.length };
 	}
 
 	// ───────────────────────── 日次クラスタバッチ ─────────────────────────
@@ -193,7 +809,8 @@ export class HanamiTasteClusterBatchService {
 		//    cluster も同様に purge しないと、閾値未満で再クラスタされないユーザーの旧モデル行が
 		//    永久に残る（serve/一覧は model 一致行しか読まないのにテーブルには居座る）。
 		//    ※モデル載せ替え時の注意: この purge で evidence が一旦空になる。30日窓の append では
-		//      軽量ユーザーが TASTE_MIN_EVIDENCE に届かないため、taste_bootstrap_once の再実行が必要。
+		//      軽量ユーザーが TASTE_MIN_EVIDENCE に届かない（管理画面の taste 再構築は既存行の再生成
+		//      なので空 evidence は救えない。過去掘りの backfill 手段は必要になった時に別途用意する）。
 		await this.db.query(
 			`DELETE FROM "hanami_note_embedding" WHERE model = $1 AND "updatedAt" < $2`,
 			[TASTE_EMBED_MODEL, new Date(now - TASTE_EMBED_TTL_MS)],
@@ -370,10 +987,10 @@ export class HanamiTasteClusterBatchService {
 		const texts: [string, string][] = [];
 		for (const r of rows) {
 			const cleaned = this.cleanForEmbedding(r.text);
-			if (cleaned.length >= TASTE_MIN_CHARS) texts.push([r.id, cleaned]);
+			if (contentCharCount(cleaned) >= TASTE_MIN_CHARS) texts.push([r.id, cleaned]);
 		}
 		if (texts.length === 0) return;
-		const n = await this.embedAndStore(texts, 120);
+		const n = await this.embedAndStore(texts, 120, logger);
 		logger.info(`hanami taste cluster: embedded ${n} engaged old notes`);
 	}
 
@@ -437,7 +1054,7 @@ export class HanamiTasteClusterBatchService {
 			const scriptPath = process.env.HANAMI_TASTE_KMEANS_SCRIPT
 				?? Path.resolve(_dirname, '../../../../../scripts/hanami-foryou/taste_kmeans.py');
 			const python = process.env.HANAMI_FORYOU_PYTHON ?? 'python3';
-			await execFileAsync(python, [scriptPath, inputPath, binPath, outputPath], { timeout: TASTE_PROCESS_TIMEOUT_MS, maxBuffer: 512 * 1024 * 1024 });
+			await execFileAsync(python, [scriptPath, inputPath, binPath, outputPath], { env: this.tastePythonEnv(logger), timeout: TASTE_PROCESS_TIMEOUT_MS, maxBuffer: 512 * 1024 * 1024 });
 			out = JSON.parse(await readFile(outputPath, 'utf8')) as { users: KmeansOutUser[] };
 		} finally {
 			if (tmpDir != null) await rm(tmpDir, { recursive: true, force: true }).catch(() => { /* ignore */ });

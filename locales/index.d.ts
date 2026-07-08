@@ -13516,6 +13516,30 @@ export interface Locale extends ILocale {
              */
             "axisDefault": string;
             /**
+             * taste データ再構築
+             */
+            "tasteRebuild": string;
+            /**
+             * 埋め込みクリーニング更新後の再構築用です。現行クリーナーで再埋め込みし、evidence とクラスタを作り直します。数十分〜数時間かかることがあります。
+             */
+            "tasteRebuildDescription": string;
+            /**
+             * 再構築を開始
+             */
+            "tasteRebuildRun": string;
+            /**
+             * taste データ再構築を開始します。完了まで数十分〜数時間かかることがあります。
+             */
+            "tasteRebuildConfirm": string;
+            /**
+             * 埋め込み
+             */
+            "tasteRebuildPhase_embeddings": string;
+            /**
+             * evidence
+             */
+            "tasteRebuildPhase_evidence": string;
+            /**
              * おすすめの理由ラベルを表示する
              */
             "showReason": string;
@@ -13541,7 +13565,7 @@ export interface Locale extends ILocale {
                  */
                 "neighborTrending": string;
                 /**
-                 * 好みに近い作者の投稿
+                 * あなたの興味に近い投稿
                  */
                 "reactionSimilar": string;
                 /**
@@ -13561,6 +13585,66 @@ export interface Locale extends ILocale {
                  */
                 "fof": string;
             };
+        };
+        "_tasteClusters": {
+            /**
+             * あなたの興味
+             */
+            "title": string;
+            /**
+             * この分類はあなたのリアクション・投稿履歴から自動生成され、毎日更新されます。『減らす』はそのカテゴリの人気投稿の枠を約1/3にし、『表示しない』は出さなくなります。
+             */
+            "description": string;
+            /**
+             * まだ興味データがありません。リアクションや投稿が増えると自動で生成されます（週次更新）。
+             */
+            "empty": string;
+            /**
+             * （特徴語なし）
+             */
+            "noLabel": string;
+            /**
+             * {n}件
+             */
+            "count": ParameterizedString<"n">;
+            /**
+             * 言及
+             */
+            "mentionBadge": string;
+            /**
+             * 通常
+             */
+            "weightNormal": string;
+            /**
+             * 減らす
+             */
+            "weightReduce": string;
+            /**
+             * 表示しない
+             */
+            "weightHide": string;
+        };
+        "_explore": {
+            /**
+             * みつけるの画像・動画の表示
+             */
+            "mediaFilter": string;
+            /**
+             * みつける（人気の投稿）に表示するメディアを選びます。この設定はみつけるにのみ適用されます。
+             */
+            "mediaFilterDescription": string;
+            /**
+             * すべて表示
+             */
+            "mediaFilterAll": string;
+            /**
+             * センシティブな画像・動画を表示しない
+             */
+            "mediaFilterHideSensitive": string;
+            /**
+             * 画像・動画があるものを表示しない
+             */
+            "mediaFilterHideMedia": string;
         };
         "_roles": {
             /**

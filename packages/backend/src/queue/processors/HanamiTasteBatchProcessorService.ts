@@ -6,7 +6,8 @@
 import { Injectable } from '@nestjs/common';
 import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
-import { HanamiTasteClusterBatchService } from '@/core/hanami/HanamiTasteClusterBatchService.js';
+import { HanamiTasteClusterBatchService, type HanamiTasteRebuildJobData } from '@/core/hanami/HanamiTasteClusterBatchService.js';
+import { QueueService } from '@/core/QueueService.js';
 import { QueueLoggerService } from '../QueueLoggerService.js';
 import type * as Bull from 'bullmq';
 
@@ -21,6 +22,7 @@ export class HanamiTasteBatchProcessorService {
 
 	constructor(
 		private hanamiTasteClusterBatchService: HanamiTasteClusterBatchService,
+		private queueService: QueueService,
 		private queueLoggerService: QueueLoggerService,
 	) {
 		this.logger = this.queueLoggerService.logger.createSubLogger('hanami-taste-batch');
@@ -28,12 +30,9 @@ export class HanamiTasteBatchProcessorService {
 
 	@bindThis
 	public async processSweep(job: Bull.Job<Record<string, unknown>>): Promise<void> {
-		try {
-			await this.hanamiTasteClusterBatchService.runTasteSweep(this.logger);
-		} catch (err) {
-			// python 不在などの環境では警告に留めて次回に任せる（serve は general 縮退で壊れない）。
-			this.logger.warn(`hanami taste sweep failed: ${(err as Error).message}`);
-		}
+		// 埋め込みスイープ→興味マッチ事前計算（reactionSimilar 軸）。1ロックの下で順に実行され、
+		// 個別の失敗は tick 内部で警告に留まる（sweep 失敗でも match は既存埋め込みで動く）。
+		await this.hanamiTasteClusterBatchService.runTasteTick(this.logger);
 		job.updateProgress(100);
 	}
 
@@ -44,6 +43,18 @@ export class HanamiTasteBatchProcessorService {
 			this.logger.succ(`hanami taste cluster: done (${res.users} users)`);
 		} catch (err) {
 			this.logger.warn(`hanami taste cluster failed: ${(err as Error).message}`);
+		}
+		job.updateProgress(100);
+	}
+
+	@bindThis
+	public async processRebuild(job: Bull.Job<HanamiTasteRebuildJobData>): Promise<void> {
+		const res = await this.hanamiTasteClusterBatchService.runTasteRebuildChunk(job.data, this.logger);
+		if (res.action === 'cluster') {
+			await this.queueService.enqueueHanamiTasteClusterNow();
+			this.logger.succ('hanami taste rebuild: done; enqueued cluster rebuild');
+		} else {
+			await this.queueService.enqueueHanamiTasteRebuild(res.data, res.delayMs);
 		}
 		job.updateProgress(100);
 	}

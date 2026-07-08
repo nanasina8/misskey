@@ -458,6 +458,24 @@ export type paths = {
          */
         post: operations['admin___get-user-ips'];
     };
+    '/admin/hanami/taste-rebuild': {
+        /**
+         * admin/hanami/taste-rebuild
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:admin:queue*
+         */
+        post: operations['admin___hanami___taste-rebuild'];
+    };
+    '/admin/hanami/taste-rebuild-status': {
+        /**
+         * admin/hanami/taste-rebuild-status
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['admin___hanami___taste-rebuild-status'];
+    };
     '/admin/invite/create': {
         /**
          * admin/invite/create
@@ -2557,6 +2575,15 @@ export type paths = {
          */
         post: operations['i___gallery___posts'];
     };
+    '/i/hanami-taste-clusters': {
+        /**
+         * i/hanami-taste-clusters
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:account*
+         */
+        post: operations['i___hanami-taste-clusters'];
+    };
     '/i/import-antennas': {
         /**
          * i/import-antennas
@@ -2811,6 +2838,15 @@ export type paths = {
          *     **Credential required**: *Yes*
          */
         post: operations['i___update-email'];
+    };
+    '/i/update-hanami-taste-cluster': {
+        /**
+         * i/update-hanami-taste-cluster
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:account*
+         */
+        post: operations['i___update-hanami-taste-cluster'];
     };
     '/i/webhooks/create': {
         /**
@@ -4144,6 +4180,8 @@ export type components = {
             isModerator: boolean;
             isAdmin: boolean;
             injectFeaturedNote: boolean;
+            /** @enum {string} */
+            exploreMediaFilter: 'all' | 'hideSensitive' | 'hideMedia';
             hanamiRecommendationEnabled?: boolean;
             /** @enum {string} */
             hanamiRecommendationStrength?: 'low' | 'normal' | 'high' | 'veryHigh';
@@ -9282,6 +9320,154 @@ export interface operations {
                         /** Format: date-time */
                         createdAt: string;
                     }[];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___hanami___taste-rebuild': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @default false */
+                    force?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        /** @enum {string} */
+                        state: 'idle' | 'running' | 'done' | 'error';
+                        /** @enum {string|null} */
+                        phase: 'embeddings' | 'evidence' | null;
+                        reembedded: number;
+                        purged: number;
+                        evidenceUpdated: number;
+                        evidencePurged: number;
+                        startedAt: number | null;
+                        updatedAt: number | null;
+                        error: string | null;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___hanami___taste-rebuild-status': {
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        /** @enum {string} */
+                        state: 'idle' | 'running' | 'done' | 'error';
+                        /** @enum {string|null} */
+                        phase: 'embeddings' | 'evidence' | null;
+                        reembedded: number;
+                        purged: number;
+                        evidenceUpdated: number;
+                        evidencePurged: number;
+                        startedAt: number | null;
+                        updatedAt: number | null;
+                        error: string | null;
+                    };
                 };
             };
             /** @description Client error */
@@ -25969,6 +26155,76 @@ export interface operations {
             };
         };
     };
+    'i___hanami-taste-clusters': {
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        clusterId: number;
+                        labelTerms: string[];
+                        size: number;
+                        ownRate: number;
+                        /** @enum {string} */
+                        weight: 'normal' | 'reduce' | 'hide';
+                        isMention: boolean;
+                        examples: {
+                            noteId: string;
+                            snippet: string;
+                        }[];
+                    }[];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
     'i___import-antennas': {
         requestBody: {
             content: {
@@ -27765,6 +28021,8 @@ export interface operations {
                     isCat?: boolean;
                     isInHanaMode?: boolean;
                     injectFeaturedNote?: boolean;
+                    /** @enum {string} */
+                    exploreMediaFilter?: 'all' | 'hideSensitive' | 'hideMedia';
                     hanamiRecommendationEnabled?: boolean;
                     /** @enum {string} */
                     hanamiRecommendationStrength?: 'low' | 'normal' | 'high' | 'veryHigh';
@@ -28088,6 +28346,75 @@ export interface operations {
             };
             /** @description Too many requests */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'i___update-hanami-taste-cluster': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    clusterId: number;
+                    /** @enum {string} */
+                    weight: 'normal' | 'reduce' | 'hide';
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        ok: boolean;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -30349,18 +30676,12 @@ export interface operations {
                     limit?: number;
                     /** Format: misskey:id */
                     sinceId?: string;
+                    sinceDate?: number;
                     /** Format: misskey:id */
                     untilId?: string;
-                    sinceDate?: number;
                     untilDate?: number;
                     /** @default false */
                     allowPartial?: boolean;
-                    /** @default true */
-                    includeMyRenotes?: boolean;
-                    /** @default true */
-                    includeRenotedMyNotes?: boolean;
-                    /** @default true */
-                    includeLocalRenotes?: boolean;
                     /** @default false */
                     withFiles?: boolean;
                     /** @default true */
@@ -37457,3 +37778,4 @@ export interface operations {
         };
     };
 }
+

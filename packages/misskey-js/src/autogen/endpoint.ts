@@ -69,6 +69,9 @@ import type {
 	AdminGetTableStatsResponse,
 	AdminGetUserIpsRequest,
 	AdminGetUserIpsResponse,
+	AdminHanamiTasteRebuildRequest,
+	AdminHanamiTasteRebuildResponse,
+	AdminHanamiTasteRebuildStatusResponse,
 	AdminInviteCreateRequest,
 	AdminInviteCreateResponse,
 	AdminInviteListRequest,
@@ -423,6 +426,7 @@ import type {
 	IGalleryLikesResponse,
 	IGalleryPostsRequest,
 	IGalleryPostsResponse,
+	IHanamiTasteClustersResponse,
 	IImportAntennasRequest,
 	IImportBlockingRequest,
 	IImportFollowingRequest,
@@ -465,6 +469,8 @@ import type {
 	IUpdateResponse,
 	IUpdateEmailRequest,
 	IUpdateEmailResponse,
+	IUpdateHanamiTasteClusterRequest,
+	IUpdateHanamiTasteClusterResponse,
 	IWebhooksCreateRequest,
 	IWebhooksCreateResponse,
 	IWebhooksDeleteRequest,
@@ -721,6 +727,8 @@ export type Endpoints = {
 	'admin/get-index-stats': { req: EmptyRequest; res: AdminGetIndexStatsResponse };
 	'admin/get-table-stats': { req: EmptyRequest; res: AdminGetTableStatsResponse };
 	'admin/get-user-ips': { req: AdminGetUserIpsRequest; res: AdminGetUserIpsResponse };
+	'admin/hanami/taste-rebuild': { req: AdminHanamiTasteRebuildRequest; res: AdminHanamiTasteRebuildResponse };
+	'admin/hanami/taste-rebuild-status': { req: EmptyRequest; res: AdminHanamiTasteRebuildStatusResponse };
 	'admin/invite/create': { req: AdminInviteCreateRequest; res: AdminInviteCreateResponse };
 	'admin/invite/list': { req: AdminInviteListRequest; res: AdminInviteListResponse };
 	'admin/meta': { req: EmptyRequest; res: AdminMetaResponse };
@@ -951,6 +959,7 @@ export type Endpoints = {
 	'i/favorites': { req: IFavoritesRequest; res: IFavoritesResponse };
 	'i/gallery/likes': { req: IGalleryLikesRequest; res: IGalleryLikesResponse };
 	'i/gallery/posts': { req: IGalleryPostsRequest; res: IGalleryPostsResponse };
+	'i/hanami-taste-clusters': { req: EmptyRequest; res: IHanamiTasteClustersResponse };
 	'i/import-antennas': { req: IImportAntennasRequest; res: EmptyResponse };
 	'i/import-blocking': { req: IImportBlockingRequest; res: EmptyResponse };
 	'i/import-following': { req: IImportFollowingRequest; res: EmptyResponse };
@@ -978,6 +987,7 @@ export type Endpoints = {
 	'i/unpin': { req: IUnpinRequest; res: IUnpinResponse };
 	'i/update': { req: IUpdateRequest; res: IUpdateResponse };
 	'i/update-email': { req: IUpdateEmailRequest; res: IUpdateEmailResponse };
+	'i/update-hanami-taste-cluster': { req: IUpdateHanamiTasteClusterRequest; res: IUpdateHanamiTasteClusterResponse };
 	'i/webhooks/create': { req: IWebhooksCreateRequest; res: IWebhooksCreateResponse };
 	'i/webhooks/delete': { req: IWebhooksDeleteRequest; res: EmptyResponse };
 	'i/webhooks/list': { req: EmptyRequest; res: IWebhooksListResponse };

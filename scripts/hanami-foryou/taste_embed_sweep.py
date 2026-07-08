@@ -9,8 +9,24 @@ Node（HanamiForYouBatchService.runTasteSweep）が未埋め込みノートを�
 出力 JSON: { "dim": int, "processed": int, "embeddings": [[noteId, [f32...]], ...] }
 """
 import json
+import os
 import sys
 import time
+
+
+def configure_torch_threads() -> None:
+    """Node側のCPU上限envが効かないtorchビルドでも、taste系queueがCPUを食い切らないようにする。"""
+    try:
+        n = int(os.environ.get('OMP_NUM_THREADS') or '0')
+    except ValueError:
+        n = 0
+    if n <= 0:
+        return
+    try:
+        import torch
+        torch.set_num_threads(n)
+    except Exception:
+        pass
 
 
 def main() -> None:
@@ -21,6 +37,7 @@ def main() -> None:
     budget = float(inp.get('timeBudgetSec', 480))
     texts = inp['texts']
 
+    configure_torch_threads()
     from sentence_transformers import SentenceTransformer
     model = SentenceTransformer(model_name, device='cpu')
 

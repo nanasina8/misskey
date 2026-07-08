@@ -42,6 +42,7 @@ import type {
 import type httpSignature from '@peertube/http-signature';
 import type * as Bull from 'bullmq';
 import { MiNote } from '@/models/Note.js';
+import type { HanamiTasteRebuildJobData } from '@/core/hanami/HanamiTasteClusterBatchService.js';
 
 export const QUEUE_TYPES = [
 	'system',
@@ -243,6 +244,35 @@ export class QueueService {
 			},
 			removeOnFail: {
 				age: 3600 * 24 * 7, // keep up to 7 days
+				count: 100,
+			},
+		});
+	}
+
+	@bindThis
+	public enqueueHanamiTasteRebuild(data: HanamiTasteRebuildJobData, delay = 0) {
+		return this.systemQueue.add('hanamiTasteRebuild', data as unknown as Record<string, unknown>, {
+			delay,
+			removeOnComplete: {
+				age: 3600 * 24 * 7,
+				count: 100,
+			},
+			removeOnFail: {
+				age: 3600 * 24 * 7,
+				count: 100,
+			},
+		});
+	}
+
+	@bindThis
+	public enqueueHanamiTasteClusterNow() {
+		return this.systemQueue.add('hanamiTasteCluster', {}, {
+			removeOnComplete: {
+				age: 3600 * 24 * 7,
+				count: 30,
+			},
+			removeOnFail: {
+				age: 3600 * 24 * 7,
 				count: 100,
 			},
 		});

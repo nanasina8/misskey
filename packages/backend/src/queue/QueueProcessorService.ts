@@ -179,6 +179,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 					case 'hanamiForYouBatch': return this.hanamiForYouBatchProcessorService.process(job);
 					case 'hanamiTasteSweep': return this.hanamiTasteBatchProcessorService.processSweep(job);
 					case 'hanamiTasteCluster': return this.hanamiTasteBatchProcessorService.processCluster(job);
+					case 'hanamiTasteRebuild': return this.hanamiTasteBatchProcessorService.processRebuild(job);
 					default: throw new Error(`unrecognized job type ${job.name} for system`);
 				}
 			};

@@ -128,10 +128,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 						</template>
 
 						<div class="_gaps">
-							<MkFolder :defaultOpen="false">
-								<template #icon><i class="ti ti-adjustments"></i></template>
-								<template #label>{{ i18n.ts._hana._recommendation.axes }}</template>
-								<template #caption>{{ i18n.ts._hana._recommendation.axisConfigDescription }}</template>
+								<MkFolder :defaultOpen="false">
+									<template #icon><i class="ti ti-adjustments"></i></template>
+									<template #label>{{ i18n.ts._hana._recommendation.axes }}</template>
+									<template #caption>{{ i18n.ts._hana._recommendation.axisConfigDescription }}</template>
 
 								<div class="_gaps">
 									<div v-for="ax in axisKeys" :key="ax" class="_gaps_s">
@@ -142,12 +142,25 @@ SPDX-License-Identifier: AGPL-3.0-only
 										<MkSwitch v-model="hanamiRecForm.state[`${ax}Default`]" :disabled="!hanamiRecForm.state[`${ax}Available`]">
 											<template #label>{{ i18n.ts._hana._recommendation.axisDefault }}<span v-if="hanamiRecForm.modifiedStates[`${ax}Default`]" class="_modified">{{ i18n.ts.modified }}</span></template>
 										</MkSwitch>
+										</div>
 									</div>
-								</div>
-							</MkFolder>
-						</div>
-					</MkFolder>
-				</SearchMarker>
+								</MkFolder>
+
+								<MkFolder :defaultOpen="false">
+									<template #icon><i class="ti ti-database-refresh"></i></template>
+									<template #label>{{ i18n.ts._hana._recommendation.tasteRebuild }}</template>
+									<template #caption>{{ i18n.ts._hana._recommendation.tasteRebuildDescription }}</template>
+
+									<div class="_gaps_s">
+										<MkInfo>{{ tasteRebuildStatusText }}</MkInfo>
+										<MkButton danger :disabled="tasteRebuildStarting || tasteRebuildStatus.state === 'running'" @click="startTasteRebuild">
+											<i class="ti ti-player-play"></i> {{ i18n.ts._hana._recommendation.tasteRebuildRun }}
+										</MkButton>
+									</div>
+								</MkFolder>
+							</div>
+						</MkFolder>
+					</SearchMarker>
 
 				<SearchMarker>
 					<MkFolder :defaultOpen="true">
@@ -207,7 +220,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { ref, computed } from 'vue';
+	import { ref, computed, onUnmounted } from 'vue';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { fetchInstance } from '@/instance.js';
@@ -218,8 +231,9 @@ import MkFolder from '@/components/MkFolder.vue';
 import MkInput from '@/components/MkInput.vue';
 import MkLink from '@/components/MkLink.vue';
 import { useForm } from '@/composables/use-form.js';
-import MkFormFooter from '@/components/MkFormFooter.vue';
-import MkInfo from '@/components/MkInfo.vue';
+	import MkFormFooter from '@/components/MkFormFooter.vue';
+	import MkInfo from '@/components/MkInfo.vue';
+	import MkButton from '@/components/MkButton.vue';
 
 const meta = await misskeyApi('admin/meta');
 
@@ -345,6 +359,88 @@ const hanamiRecForm = useForm({
 		},
 	} as never);
 	fetchInstance(true);
+});
+
+type TasteRebuildStatus = {
+	state: 'idle' | 'running' | 'done' | 'error';
+	phase: 'embeddings' | 'evidence' | null;
+	reembedded: number;
+	purged: number;
+	evidenceUpdated: number;
+	evidencePurged: number;
+	startedAt: number | null;
+	updatedAt: number | null;
+	error: string | null;
+};
+
+const tasteRebuildStatus = ref<TasteRebuildStatus>({
+	state: 'idle',
+	phase: null,
+	reembedded: 0,
+	purged: 0,
+	evidenceUpdated: 0,
+	evidencePurged: 0,
+	startedAt: null,
+	updatedAt: null,
+	error: null,
+});
+const tasteRebuildStarting = ref(false);
+let tasteRebuildPollTimer: number | null = null;
+
+function formatTasteRebuildTime(t: number | null): string {
+	return t == null ? '-' : new Date(t).toLocaleString();
+}
+
+const tasteRebuildStatusText = computed(() => {
+	const s = tasteRebuildStatus.value;
+	const phase = s.phase == null ? '-' : i18n.ts._hana._recommendation[`tasteRebuildPhase_${s.phase}`];
+	const counts = `embedding ${s.reembedded}/${s.purged}, evidence ${s.evidenceUpdated}/${s.evidencePurged}`;
+	const updated = formatTasteRebuildTime(s.updatedAt);
+	return s.error != null
+		? `${s.state} / ${phase} / ${counts} / ${updated} / ${s.error}`
+		: `${s.state} / ${phase} / ${counts} / ${updated}`;
+});
+
+function syncTasteRebuildPolling() {
+	if (tasteRebuildStatus.value.state === 'running') {
+		if (tasteRebuildPollTimer == null) {
+			tasteRebuildPollTimer = window.setInterval(() => {
+				refreshTasteRebuildStatus();
+			}, 10 * 1000);
+		}
+	} else if (tasteRebuildPollTimer != null) {
+		window.clearInterval(tasteRebuildPollTimer);
+		tasteRebuildPollTimer = null;
+	}
+}
+
+async function refreshTasteRebuildStatus() {
+	tasteRebuildStatus.value = await misskeyApi('admin/hanami/taste-rebuild-status');
+	syncTasteRebuildPolling();
+}
+
+async function startTasteRebuild() {
+	const { canceled } = await os.confirm({
+		type: 'warning',
+		title: i18n.ts._hana._recommendation.tasteRebuild,
+		text: i18n.ts._hana._recommendation.tasteRebuildConfirm,
+	});
+	if (canceled) return;
+	tasteRebuildStarting.value = true;
+	try {
+		tasteRebuildStatus.value = await misskeyApi('admin/hanami/taste-rebuild', {});
+		syncTasteRebuildPolling();
+	} catch (err) {
+		await os.alert({ type: 'error', text: err instanceof Error ? err.message : String(err) });
+		await refreshTasteRebuildStatus();
+	} finally {
+		tasteRebuildStarting.value = false;
+	}
+}
+
+await refreshTasteRebuildStatus();
+onUnmounted(() => {
+	if (tasteRebuildPollTimer != null) window.clearInterval(tasteRebuildPollTimer);
 });
 
 const rbtForm = useForm({

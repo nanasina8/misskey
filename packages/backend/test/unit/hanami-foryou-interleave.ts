@@ -231,6 +231,35 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		expect(out.length).toBe(6);
 	});
 
+	it('clusterId は枠を消費した軸自身の値を使う（軸間で merge しない。v0.7 R2-M4）', () => {
+		// 同一 note が globalPopular（general=clusterId 無し）と reactionSimilar（c5）の両方にいる。
+		const shared: ForYouCandidate = { noteId: 'shared-note', userId: 'author-x', score: 1 };
+		const sharedWithCluster: ForYouCandidate = { noteId: 'shared-note', userId: 'author-x', score: 1, clusterId: 5 };
+		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>([
+			['globalPopular', [shared, ...uniqueCands('gp', 5)]],
+			['reactionSimilar', [sharedWithCluster, ...uniqueCands('rs', 5)]],
+		]);
+		const out = hanamiInterleave({ confidence: 'high', limit: 10, axisCandidates });
+		const pick = out.find(o => o.noteId === 'shared-note')!;
+		// 軸順で globalPopular が先に消費する → reactionSimilar 由来の c5 を引き継いではいけない。
+		expect(pick.source).toBe('globalPopular');
+		expect(pick.sources).toEqual(expect.arrayContaining(['globalPopular', 'reactionSimilar']));
+		expect(pick.clusterId).toBeUndefined();
+	});
+
+	it('reactionSimilar が枠を消費した候補は自軸の clusterId を保持する（v0.7 R2-M4）', () => {
+		const rsWithCluster: ForYouCandidate = { noteId: 'rs-c7-note', userId: 'author-rs7', score: 1, clusterId: 7 };
+		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>([
+			['globalPopular', uniqueCands('gp', 5)],
+			['reactionSimilar', [rsWithCluster, ...uniqueCands('rs', 5)]],
+		]);
+		const out = hanamiInterleave({ confidence: 'high', limit: 10, axisCandidates });
+		const pick = out.find(o => o.noteId === 'rs-c7-note')!;
+		expect(pick).toBeDefined();
+		expect(pick.source).toBe('reactionSimilar');
+		expect(pick.clusterId).toBe(7);
+	});
+
 	it('cap 合計が limit を超えても interleave は pre-safety 上限だけを返す（§6.1-10）', () => {
 		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>(
 			hanamiAxisOrder('high').map(axis => [axis, uniqueCands(axis, 30)] as [HanamiAxis, ForYouCandidate[]]),

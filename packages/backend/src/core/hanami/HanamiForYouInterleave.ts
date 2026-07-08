@@ -27,7 +27,7 @@ export type ForYouCandidate = {
 	userId?: string | null; // 作者（dedup 用。orchestrator が事前解決）
 	score: number;
 	term?: string; // trending の該当用語
-	clusterId?: number; // taste cluster 由来（globalPopular。provenance/インライン減らす用）
+	clusterId?: number; // taste cluster 由来（globalPopular/reactionSimilar。provenance/インライン減らす用）
 };
 
 // interleave 出力（配信順）。source=枠を消費した軸 / sources=寄与した全軸（§6.1-2）。
@@ -134,15 +134,17 @@ export function hanamiInterleave(opts: {
 	const order = hanamiAxisOrder(confidence);
 
 	// 同一 note の sources / userId / term を統合（§6.1-2）。
-	const merged = new Map<string, { sources: HanamiAxis[]; userId: string | null; term?: string; clusterId?: number }>();
+	// clusterId は統合しない: 軸ごとに割当クラスタが違い得るため、「枠を消費した軸自身の候補」の値を使う
+	//（さもないと globalPopular の general 枠で出たノートに reactionSimilar 側の c{k} が付き、
+	// クラスタ別転換率の計測が汚れる。v0.7 敵対レビューR2-M4）。
+	const merged = new Map<string, { sources: HanamiAxis[]; userId: string | null; term?: string }>();
 	for (const axis of order) {
 		for (const c of opts.axisCandidates.get(axis) ?? []) {
 			let e = merged.get(c.noteId);
-			if (e == null) { e = { sources: [], userId: c.userId ?? null, term: c.term, clusterId: c.clusterId }; merged.set(c.noteId, e); }
+			if (e == null) { e = { sources: [], userId: c.userId ?? null, term: c.term }; merged.set(c.noteId, e); }
 			if (!e.sources.includes(axis)) e.sources.push(axis);
 			e.userId ??= c.userId ?? null;
 			e.term ??= c.term;
-			e.clusterId ??= c.clusterId;
 		}
 	}
 
@@ -162,7 +164,7 @@ export function hanamiInterleave(opts: {
 		if (m.userId != null) authorCount.set(m.userId, (authorCount.get(m.userId) ?? 0) + 1);
 		lastAuthor = m.userId ?? null;
 		out.push({
-			noteId: c.noteId, userId: m.userId, source: axis, sources: [...m.sources], term: m.term, clusterId: m.clusterId,
+			noteId: c.noteId, userId: m.userId, source: axis, sources: [...m.sources], term: m.term, clusterId: c.clusterId,
 			...(flags.fallbackOverflow ? { fallbackOverflow: true } : {}),
 		});
 	};
