@@ -20,7 +20,7 @@ import { HanamiTrendService } from '@/core/hanami/HanamiTrendService.js';
 import { HanamiUserRecommendationService } from '@/core/hanami/HanamiUserRecommendationService.js';
 import { HanamiForYouBatchService } from '@/core/hanami/HanamiForYouBatchService.js';
 import { TASTE_EMBED_MODEL, TASTE_MATCH_WINDOW_MS } from '@/core/hanami/HanamiTasteClusterBatchService.js';
-import { HANAMI_TASTE_MATCH_KEY_PREFIX, HANAMI_FORYOU_ACTIVE_KEY_PREFIX, HANAMI_FORYOU_ACTIVE_TTL_SEC } from '@/core/hanami/HanamiForYouKeys.js';
+import { HANAMI_TASTE_MATCH_KEY_PREFIX, HANAMI_TASTE_MATCH_META_KEY_PREFIX, HANAMI_FORYOU_ACTIVE_KEY_PREFIX, HANAMI_FORYOU_ACTIVE_TTL_SEC } from '@/core/hanami/HanamiForYouKeys.js';
 import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
 import { HanamiForYouSafetyService } from '@/core/hanami/HanamiForYouSafetyService.js';
 import { HanamiRecommendationService } from '@/core/HanamiRecommendationService.js';
@@ -55,6 +55,9 @@ const CATCHUP_NOTE_POOL = 250;
 // reactionSimilar（興味マッチ新着）: バッチ事前計算 zset（24h窓・cos≥τ）の取り出し。
 // zset score = cos×鮮度（バッチ側で焼き込み済み・毎10分更新）。人気条件なし＝埋もれた投稿でも内容が興味に合えば出る。
 const TASTE_MATCH_POOL = 300;
+const TASTE_RECENT_SHARE_MAX = 0.5;
+const TASTE_HEAT_SAT = 12;
+const TASTE_HEAT_BETA = 2.0;
 const TOP_RELATION_OTHERS = 100;
 const DB_GLOBAL_FALLBACK_WINDOW_MS = 30 * DAY_MS;
 const DB_GLOBAL_FALLBACK_SAMPLE = 5000;
@@ -66,11 +69,16 @@ const ALS_RUN_KIND = 'als';
 // ALS author factor は人気候補作者をほぼ100%被覆する（MiniLM埋め込みの被覆1%と対照的）。
 const POPULAR_AFFINITY_BETA = 0.5;
 
-// taste-clustered popular（hanami-taste-cluster-spec v0.2 §2）。
+// taste-clustered popular（hanami-taste-cluster-spec v0.9 §2）。
 // 候補をユーザーの好みクラスタに割り当て、クラスタ別%枠の重み付き抽選で並べる（スコア/max合成はしない）。
-const TASTE_TAU_ASSIGN = 0.25; // これ未満の類似は general 扱い（実測校正: 0.25で人気候補の約56%が割当・7/8クラスタに分散）
-const TASTE_GENERAL_SHARE = 0.25; // 非パーソナル枠の固定比率（anti-bubble・全減らし時の保険）
+const TASTE_TAU_ASSIGN = 0.30; // 弱一致がクラスタ枠を食わないよう v0.9 で強める。
+const TASTE_GENERAL_SHARE = 0.10; // 非パーソナル枠の固定比率。serendipity は exploration に寄せる v0.9 設定。
 const TASTE_SOFTMAX_TEMP = 0.7; // クラスタ内抽選の温度（上位固定を避ける）
+const TASTE_COS_NORM_BASE = 0.15;
+const TASTE_COS_NORM_RANGE = 0.35;
+const TASTE_COS_NORM_FLOOR = 0.1;
+const TASTE_COS_NORM_CEIL = 1.5;
+const TASTE_COS_NORM_MISSING = 0.25;
 
 // メディア嗜好のオッズ比較正（2026-07-06 実測）: 配信のメディア比率をユーザーの反応実績
 // （aux.mediaReactionRate）へ収束させる。odds = (r/(1-r)) / (p/(1-p))（r=ユーザーのメディア反応率,
@@ -100,7 +108,12 @@ const AUX_TEXT_HEAVY_THRESHOLD = 0.2; // mediaReactionRate がこれ未満 = tex
 const SERVED_SCORE_PENALTY = 0.5;
 const SEEN_SCORE_PENALTY = 0.7;
 
-type ReasonMeta = { source: HanamiAxis; sources: HanamiAxis[]; term?: string; clusterId?: number };
+type ReasonBucket = 'cluster' | 'recent';
+type ReasonMeta = { source: HanamiAxis; sources: HanamiAxis[]; term?: string; clusterId?: number; bucket?: ReasonBucket };
+type ForYouCandidateWithReason = ForYouCandidate & { bucket?: ReasonBucket };
+type ClusterLotteryBucket = number | 'general' | 'r';
+type ClusterLotteryItem = { cand: ForYouCandidateWithReason; clusterId?: number; bucket?: ReasonBucket; bestCos?: number | null; cosNorm?: number };
+type TasteMatchMeta = { totalHeat: number; heatOf: Map<number, number>; hasRecentVec: boolean };
 
 type LegacyHanamiAxis = 'popular';
 type HanamiAxisServerConfig = Partial<Record<HanamiAxis | LegacyHanamiAxis, { available?: boolean; default?: boolean }>>;
@@ -204,7 +217,15 @@ export class HanamiForYouService {
 		if (interleaved.length === 0) return [];
 
 		// source=枠を消費した軸 / sources=全寄与軸（§6.1-2）。
-		const reasonOf = new Map<string, ReasonMeta>(interleaved.map(c => [c.noteId, { source: c.source, sources: c.sources, term: c.term, clusterId: c.clusterId }]));
+		const sourceCandidateOf = new Map<string, ForYouCandidateWithReason>();
+		for (const [axis, candidates] of axisCandidates) {
+			for (const candidate of candidates as ForYouCandidateWithReason[]) sourceCandidateOf.set(`${axis}\t${candidate.noteId}`, candidate);
+		}
+		const reasonOf = new Map<string, ReasonMeta>(interleaved.map(c => {
+			const sourceCandidate = sourceCandidateOf.get(`${c.source}\t${c.noteId}`);
+			const bucket = sourceCandidate?.bucket ?? (((c.source === 'globalPopular' || c.source === 'reactionSimilar') && c.clusterId != null) ? 'cluster' : undefined);
+			return [c.noteId, { source: c.source, sources: c.sources, term: c.term, clusterId: c.clusterId, bucket }];
+		}));
 		// safety filter（§8 中央化）。interleave 順で取得・安全化し limit まで backfill。
 		const notes = await this.hanamiForYouSafetyService.filterAndPack(interleaved.map(c => c.noteId), opts.limit, me, opts.withFiles);
 		if (notes.length === 0) return [];
@@ -329,8 +350,8 @@ export class HanamiForYouService {
 	}
 
 	/**
-	 * taste-clustered popular（spec v0.2 §2）: 候補を好みクラスタに割り当て、
-	 * クラスタ別%枠（share ∝ size×userWeight、general は固定25%）の重み付き抽選で並べ替える。
+	 * taste-clustered popular（spec v0.9 §2）: 候補を好みクラスタに割り当て、
+	 * クラスタ別%枠（share ∝ size×userWeight、general は固定10%）の重み付き抽選で並べ替える。
 	 * クラスタ未生成・mean_vec 無し・埋め込み欠損は general 縮退（現行挙動と同一）で壊れない。
 	 */
 	private async applyTasteClusterOrdering(meId: MiUser['id'], candidates: ForYouCandidate[], served: ReadonlySet<string>, seen: ReadonlySet<string>): Promise<ForYouCandidate[]> {
@@ -372,19 +393,18 @@ export class HanamiForYouService {
 		// バケツ分け: 最大類似クラスタ（τ未満・埋め込み無しは general、weight=0 クラスタは除外=「表示しない」）。
 		// 各バケツは fresh（未見）と shown（served/seen 済み）の二段。未見から先に抽選し、尽きたら既出が
 		// 同じクラスタ抽選で後ろに続く＝ページは空にならず、後段の再ソートも不要（A3）。
-		type Item = { cand: ForYouCandidate; clusterId?: number };
-		type Bucket = { fresh: Item[]; shown: Item[] };
-		const buckets = new Map<number | 'general', Bucket>();
+		type Bucket = { fresh: ClusterLotteryItem[]; shown: ClusterLotteryItem[] };
+		const buckets = new Map<ClusterLotteryBucket, Bucket>();
 		buckets.set('general', { fresh: [], shown: [] });
 		for (const cl of clusters) buckets.set(cl.clusterId, { fresh: [], shown: [] });
-		const push = (key: number | 'general', item: Item) => {
+		const push = (key: number | 'general', item: ClusterLotteryItem) => {
 			const b = buckets.get(key)!;
 			(served.has(item.cand.noteId) || seen.has(item.cand.noteId) ? b.shown : b.fresh).push(item);
 		};
 		for (const cand of candidates) {
 			const emb = embByNote.get(cand.noteId);
 			if (emb == null) {
-				push('general', { cand });
+				push('general', { cand, bestCos: null, cosNorm: TASTE_COS_NORM_MISSING });
 				continue;
 			}
 			// 平均中心化＋正規化して各クラスタ centroid と cos。
@@ -405,66 +425,72 @@ export class HanamiForYouService {
 				const cos = dot / norm;
 				if (cos > bestCos) { bestCos = cos; best = cl; }
 			}
+			const cosNorm = this.tasteCosNorm(bestCos);
 			if (best == null || bestCos < TASTE_TAU_ASSIGN) {
-				push('general', { cand });
+				push('general', { cand, bestCos, cosNorm });
 			} else if (Number(best.userWeight) <= 0) {
 				// 「表示しない」クラスタに強く一致する候補は general にも流さない（ユーザー意思の尊重）。
 			} else {
-				push(best.clusterId, { cand, clusterId: best.clusterId });
+				push(best.clusterId, { cand, clusterId: best.clusterId, bestCos, cosNorm });
 			}
 		}
 
 		// share ∝ size×weight、general は総 size×固定比率。
 		const totalSize = clusters.reduce((a, c) => a + c.size, 0) || 1;
-		const shareOf = new Map<number | 'general', number>();
+		const shareOf = new Map<ClusterLotteryBucket, number>();
 		for (const cl of clusters) shareOf.set(cl.clusterId, cl.size * Number(cl.userWeight));
 		shareOf.set('general', totalSize * TASTE_GENERAL_SHARE);
 
-		return this.drawClusterLottery(buckets, shareOf, mediaCal, candidates.length);
+		return this.drawClusterLottery(buckets, shareOf, mediaCal, candidates.length, it => it.cosNorm ?? TASTE_COS_NORM_MISSING);
+	}
+
+	private tasteCosNorm(cos: number | null | undefined): number {
+		if (cos == null || !Number.isFinite(cos)) return TASTE_COS_NORM_MISSING;
+		return Math.min(TASTE_COS_NORM_CEIL, Math.max(TASTE_COS_NORM_FLOOR, (cos - TASTE_COS_NORM_BASE) / TASTE_COS_NORM_RANGE));
 	}
 
 	/**
 	 * クラスタ別%枠の重み付き抽選（globalPopular と reactionSimilar で共用）。
 	 * 重み付き抽選でクラスタ→softmax でクラスタ内の1件。tier='fresh' が尽きるまで未見だけで回し、
 	 * その後 tier='shown' を同じ抽選で続ける。
-	 * メディア較正は両段に掛ける: ①バケツ選択 share ×= バケツ残り候補のメディア調整後平均重み
-	 * （テキストが尽きて絵だけ残ったバケツは枠ごと沈む） ②バケツ内 softmax 重み ×= odds。
+	 * メディア較正/taste 重みは両段に掛ける: ①バケツ選択 share ×= バケツ残り候補の調整後平均重み
+	 * ②バケツ内 softmax 重み ×= odds × taste。reactionSimilar は zset score に cos 焼き込み済みなので taste=1。
 	 */
 	private drawClusterLottery(
-		buckets: Map<number | 'general', { fresh: { cand: ForYouCandidate; clusterId?: number }[]; shown: { cand: ForYouCandidate; clusterId?: number }[] }>,
-		shareOf: Map<number | 'general', number>,
+		buckets: Map<ClusterLotteryBucket, { fresh: ClusterLotteryItem[]; shown: ClusterLotteryItem[] }>,
+		shareOf: Map<ClusterLotteryBucket, number>,
 		mediaCal: { odds: number; mediaNoteIds: Set<string> } | null,
 		total: number,
+		tasteWeightOf: (it: ClusterLotteryItem) => number = () => 1,
 	): ForYouCandidate[] {
 		const itemMediaW = (it: { cand: ForYouCandidate }) =>
 			mediaCal != null && mediaCal.mediaNoteIds.has(it.cand.noteId) ? mediaCal.odds : 1;
-		const effShare = (key: number | 'general', items: { cand: ForYouCandidate }[]): number => {
+		const itemCombinedW = (it: ClusterLotteryItem) => itemMediaW(it) * tasteWeightOf(it);
+		const effShare = (key: ClusterLotteryBucket, items: ClusterLotteryItem[]): number => {
 			const share = shareOf.get(key) ?? 0;
-			if (mediaCal == null || items.length === 0) return share;
-			let m = 0;
-			for (const it of items) m += itemMediaW(it);
-			return share * (m / items.length);
+			if (!Number.isFinite(share) || share <= 0 || items.length === 0) return 0;
+			let w = 0;
+			for (const it of items) w += itemCombinedW(it);
+			return share * (w / items.length);
 		};
-		const out: ForYouCandidate[] = [];
+		const out: ForYouCandidateWithReason[] = [];
 		const drawFrom = (tier: 'fresh' | 'shown') => {
 			for (;;) {
-				const alive = [...buckets.entries()].filter(([, b]) => b[tier].length > 0);
+				const alive = [...buckets.entries()]
+					.map(([key, b]) => ({ bucket: b[tier], weight: effShare(key, b[tier]) }))
+					.filter(e => e.bucket.length > 0 && Number.isFinite(e.weight) && e.weight > 0);
 				if (alive.length === 0) return;
 				let sum = 0;
-				for (const [key, b] of alive) sum += effShare(key, b[tier]);
-				let bucket = alive[alive.length - 1][1][tier];
-				if (sum > 0) {
-					let r = Math.random() * sum;
-					for (const [key, b] of alive) {
-						r -= effShare(key, b[tier]);
-						if (r <= 0) { bucket = b[tier]; break; }
-					}
-				} else {
-					bucket = alive[Math.floor(Math.random() * alive.length)][1][tier];
+				for (const b of alive) sum += b.weight;
+				let bucket = alive[alive.length - 1].bucket;
+				let r = Math.random() * sum;
+				for (const b of alive) {
+					r -= b.weight;
+					if (r <= 0) { bucket = b.bucket; break; }
 				}
 				// クラスタ内: スコア正規化の softmax で確率的に1件（上位固定を避けて顔ぶれを回す）。
 				const maxScore = bucket.reduce((a, b) => Math.max(a, b.cand.score), 0) || 1;
-				const weights = bucket.map(b => Math.exp((b.cand.score / maxScore) / TASTE_SOFTMAX_TEMP) * itemMediaW(b));
+				const weights = bucket.map(b => Math.exp((b.cand.score / maxScore) / TASTE_SOFTMAX_TEMP) * itemCombinedW(b));
 				const wsum = weights.reduce((a, b) => a + b, 0);
 				let pick = bucket.length - 1;
 				let r2 = Math.random() * wsum;
@@ -473,7 +499,14 @@ export class HanamiForYouService {
 					if (r2 <= 0) { pick = i; break; }
 				}
 				const chosen = bucket.splice(pick, 1)[0];
-				out.push({ ...chosen.cand, clusterId: chosen.clusterId, score: (total - out.length) / total });
+				const result: ForYouCandidateWithReason = { ...chosen.cand, score: (total - out.length) / total };
+				if (chosen.clusterId != null) {
+					result.clusterId = chosen.clusterId;
+					result.bucket = chosen.bucket ?? 'cluster';
+				} else if (chosen.bucket != null) {
+					result.bucket = chosen.bucket;
+				}
+				out.push(result);
 			}
 		};
 		drawFrom('fresh');
@@ -661,6 +694,27 @@ export class HanamiForYouService {
 		return rows.map(r => ({ noteId: r.noteId, userId: r.userId, score: r.c / max }));
 	}
 
+	private async readTasteMatchMeta(meId: MiUser['id']): Promise<TasteMatchMeta> {
+		const fallback = { totalHeat: 0, heatOf: new Map<number, number>(), hasRecentVec: false };
+		const hgetall = (this.redisClient as unknown as { hgetall?: (key: string) => Promise<Record<string, string>> }).hgetall;
+		if (typeof hgetall !== 'function') return fallback;
+		try {
+			const raw = await hgetall.call(this.redisClient, HANAMI_TASTE_MATCH_META_KEY_PREFIX + meId);
+			const totalHeatRaw = Number(raw.totalHeat);
+			const totalHeat = Number.isFinite(totalHeatRaw) && totalHeatRaw > 0 ? totalHeatRaw : 0;
+			const heatOf = new Map<number, number>();
+			for (const [field, value] of Object.entries(raw)) {
+				if (!field.startsWith('heat:')) continue;
+				const clusterId = Number(field.slice('heat:'.length));
+				const heat = Number(value);
+				if (Number.isInteger(clusterId) && clusterId >= 0 && Number.isFinite(heat) && heat > 0) heatOf.set(clusterId, heat);
+			}
+			return { totalHeat, heatOf, hasRecentVec: raw.hasRecentVec === '1' };
+		} catch {
+			return fallback;
+		}
+	}
+
 	/**
 	 * reactionSimilar: 興味マッチ新着。バッチ（10分スイープ直後）が全新着×taste クラスタ centroid の
 	 * 照合結果をユーザー別 zset に事前計算済み。ここは取り出し＋除外＋クラスタ別%枠の抽選のみ。
@@ -679,39 +733,75 @@ export class HanamiForYouService {
 		) as { clusterId: number; size: number; userWeight: number }[];
 		if (clusters.length === 0) return [];
 		const clusterOf = new Map(clusters.map(c => [c.clusterId, c]));
+		const meta = await this.readTasteMatchMeta(meId);
 
 		const followees = new Set(followeeIds);
 		// 窓外ガード（v0.7 R2-H1）: バッチが止まった/対象から外れたユーザーの zset は最大 TTL48h 残る。
 		// 24h 窓より古いノートはここで捨てる（バッチ健在なら no-op）。
 		const windowFloor = Date.now() - TASTE_MATCH_WINDOW_MS;
 
-		type Item = { cand: ForYouCandidate; clusterId?: number };
-		const buckets = new Map<number | 'general', { fresh: Item[]; shown: Item[] }>();
+		const buckets = new Map<ClusterLotteryBucket, { fresh: ClusterLotteryItem[]; shown: ClusterLotteryItem[] }>();
 		let total = 0;
 		for (let i = 0; i + 1 < raw.length; i += 2) {
 			const [noteId, authorId, cidStr] = raw[i].split(':');
-			const clusterId = Number(cidStr);
-			const cl = clusterOf.get(clusterId);
-			if (cl == null || Number(cl.userWeight) <= 0) continue;
 			if (authorId === meId || followees.has(authorId)) continue;
 			if (this.idService.parse(noteId).date.getTime() < windowFloor) continue;
+			const score = Number(raw[i + 1]);
+			if (!Number.isFinite(score)) continue;
+
+			let bucketKey: number | 'r';
+			let clusterId: number | undefined;
+			let bucket: ReasonBucket;
+			if (cidStr === 'r') {
+				bucketKey = 'r';
+				bucket = 'recent';
+			} else {
+				const parsedClusterId = Number(cidStr);
+				const cl = clusterOf.get(parsedClusterId);
+				if (cl == null || Number(cl.userWeight) <= 0) continue;
+				bucketKey = parsedClusterId;
+				clusterId = parsedClusterId;
+				bucket = 'cluster';
+			}
 			// zset score = cos×鮮度（バッチ側焼き込み）。ここでは再計算しない。
-			const item: Item = { cand: { noteId, userId: authorId, score: Number(raw[i + 1]) }, clusterId };
-			let b = buckets.get(clusterId);
-			if (b == null) { b = { fresh: [], shown: [] }; buckets.set(clusterId, b); }
+			const item: ClusterLotteryItem = { cand: { noteId, userId: authorId, score, bucket }, clusterId, bucket };
+			let b = buckets.get(bucketKey);
+			if (b == null) { b = { fresh: [], shown: [] }; buckets.set(bucketKey, b); }
 			(served.has(noteId) || seen.has(noteId) ? b.shown : b.fresh).push(item);
 			total++;
 		}
 		if (total === 0) return [];
 
-		// share ∝ size×userWeight。純粋な興味軸なので general バケツは持たない（anti-bubble は
-		// globalPopular の general と exploration が担う）。
-		const shareOf = new Map<number | 'general', number>();
+		// cluster share ∝ size×userWeight×recent heat boost。純粋な興味軸なので general バケツは持たない
+		//（anti-bubble は globalPopular の general と exploration が担う）。
+		const shareOf = new Map<ClusterLotteryBucket, number>();
+		let clusterShareSum = 0;
 		for (const cl of clusters) {
-			if (buckets.has(cl.clusterId)) shareOf.set(cl.clusterId, cl.size * Number(cl.userWeight));
+			if (!buckets.has(cl.clusterId)) continue;
+			const baseShare = cl.size * Number(cl.userWeight);
+			if (!Number.isFinite(baseShare) || baseShare <= 0) continue;
+			const heatNorm = meta.totalHeat > 0 ? ((meta.heatOf.get(cl.clusterId) ?? 0) / meta.totalHeat) : 0;
+			const share = baseShare * (1 + TASTE_HEAT_BETA * heatNorm);
+			shareOf.set(cl.clusterId, share);
+			clusterShareSum += share;
+		}
+		if (buckets.has('r')) {
+			const hasClusterBucket = [...buckets.keys()].some(key => typeof key === 'number');
+			const recentRatio = meta.hasRecentVec && meta.totalHeat > 0
+				? TASTE_RECENT_SHARE_MAX * Math.min(1, meta.totalHeat / TASTE_HEAT_SAT)
+				: 0;
+			let recentShare = 0;
+			if (recentRatio > 0) {
+				if (clusterShareSum > 0) {
+					recentShare = recentRatio * clusterShareSum / (1 - recentRatio);
+				} else if (!hasClusterBucket) {
+					recentShare = 1;
+				}
+			}
+			shareOf.set('r', recentShare);
 		}
 		const mediaCal = await this.computeMediaOddsCalibration(meId, [...buckets.values()].flatMap(b => [...b.fresh, ...b.shown].map(it => it.cand.noteId)));
-		return this.drawClusterLottery(buckets, shareOf, mediaCal, total);
+		return this.drawClusterLottery(buckets, shareOf, mediaCal, total, () => 1);
 	}
 
 	/** catchup: フォロー＋高 affinity(関係値) の未読回収（§4）。7d 窓。未読判定は interleave の served/seen 除外に委譲。 */
@@ -891,8 +981,14 @@ export class HanamiForYouService {
 			const reason = reasonOf.get(note.id);
 			// クライアントに出すのは最小限（sources 等は provenance/測定用）。UI 用に軸を表示語彙へ寄せる。
 			// clusterId はインライン「この興味を減らす」（spec §3.2/Phase D）の材料としてクラスタ由来軸のみ添える。
-			if (showReason && reason) meta._hanamiReason = { reason: AXIS_TO_UI_REASON[reason.source], term: reason.term, clusterId: reason.clusterId };
+			if (showReason && reason) meta._hanamiReason = { reason: AXIS_TO_UI_REASON[reason.source], term: reason.term, clusterId: reason.clusterId, bucket: reason.bucket };
 		}
+	}
+
+	private provenanceSource(reason: ReasonMeta): string {
+		if (reason.source === 'reactionSimilar' && reason.bucket === 'recent') return 'reactionSimilar:r';
+		if ((reason.source === 'globalPopular' || reason.source === 'reactionSimilar') && reason.clusterId != null) return `${reason.source}:c${reason.clusterId}`;
+		return reason.source;
 	}
 
 	/** served を Redis（短期重複排除）＋ PG provenance（source=枠を消費した軸）＋ fof shown に記録。 */
@@ -904,20 +1000,17 @@ export class HanamiForYouService {
 			await this.hanamiRecommendationService.recordServed(meId, noteIds); // Redis served zset（既存と共有）
 			const fofAuthorIds = notes.filter(n => reasonOf.get(n.id)?.source === 'fof').map(n => n.userId);
 			if (fofAuthorIds.length > 0) await this.hanamiUserRecommendationService.recordShown(meId, fofAuthorIds);
-				await this.hanamiForYouProvenanceService.recordServedEvents(
-					meId,
-					notes.map(n => {
-						const reason = reasonOf.get(n.id);
-						if (reason == null) return { noteId: n.id, source: null };
-						// taste cluster 経由は source に :c{k} を添える（§6 クラスタ別転換率の計測口）。
-						// clusterId は note 単位で merge されるため、クラスタ枠を持つ軸が枠を消費した時だけ付ける
-						//（trending 等が枠を消費した pick に :c を付けると軸別統計が汚れる）。
-						const source = (reason.source === 'globalPopular' || reason.source === 'reactionSimilar') && reason.clusterId != null
-							? `${reason.source}:c${reason.clusterId}`
-							: reason.source;
-						return { noteId: n.id, source };
-					}),
-				);
+			await this.hanamiForYouProvenanceService.recordServedEvents(
+				meId,
+				notes.map(n => {
+					const reason = reasonOf.get(n.id);
+					if (reason == null) return { noteId: n.id, source: null };
+					// taste cluster 経由は source に :c{k} を添える（§6 クラスタ別転換率の計測口）。
+					// clusterId は note 単位で merge されるため、クラスタ枠を持つ軸が枠を消費した時だけ付ける
+					//（trending 等が枠を消費した pick に :c を付けると軸別統計が汚れる）。
+					return { noteId: n.id, source: this.provenanceSource(reason) };
+				}),
+			);
 		} catch (err) {
 			// eslint-disable-next-line no-console
 			console.error('hanami foryou: recordServed failed', err);

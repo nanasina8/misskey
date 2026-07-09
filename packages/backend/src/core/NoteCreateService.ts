@@ -49,6 +49,7 @@ import { RoleService } from '@/core/RoleService.js';
 import { HanamiSearchService } from '@/core/hanamisearch/HanamiSearchService.js';
 import { HanamiTrendService } from '@/core/hanami/HanamiTrendService.js';
 import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
+import { HanamiRecentActService } from '@/core/hanami/HanamiRecentActService.js';
 import { FeaturedService, FEATURED_RENOTE_SCORE_LOCAL, FEATURED_RENOTE_SCORE_REMOTE, FEATURED_RN_RING_FACTOR, renoterActivityDiscount } from '@/core/FeaturedService.js';
 import { FanoutTimelineNamePrefix, FanoutTimelineService } from '@/core/FanoutTimelineService.js';
 import { UtilityService } from '@/core/UtilityService.js';
@@ -231,6 +232,7 @@ export class NoteCreateService implements OnApplicationShutdown {
 		private userBlockingService: UserBlockingService,
 		private cacheService: CacheService,
 		private hanamiForYouProvenanceService: HanamiForYouProvenanceService,
+		private hanamiRecentActService: HanamiRecentActService,
 	) {
 		this.updateNotesCountQueue = new CollapsedQueue(process.env.NODE_ENV !== 'test' ? 60 * 1000 * 5 : 0, this.collapseNotesCount, this.performUpdateNotesCount);
 	}
@@ -584,6 +586,8 @@ export class NoteCreateService implements OnApplicationShutdown {
 		if (user.host == null) {
 			if (data.reply != null) void this.hanamiForYouProvenanceService.recordEngagement(user.id, data.reply.id, 'reply');
 			if (data.renote != null) void this.hanamiForYouProvenanceService.recordEngagement(user.id, data.renote.id, 'renote');
+			if (data.reply != null) void this.hanamiRecentActService.recordNoteAction(user, note, data.reply, 'p');
+			if (data.renote != null) void this.hanamiRecentActService.recordNoteAction(user, note, data.renote, 'n');
 		}
 
 		return note;

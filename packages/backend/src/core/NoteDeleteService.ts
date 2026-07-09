@@ -22,6 +22,7 @@ import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { FeaturedService, FEATURED_RENOTE_SCORE_LOCAL, FEATURED_RENOTE_SCORE_REMOTE, FEATURED_RN_RING_FACTOR, renoterActivityDiscount } from '@/core/FeaturedService.js';
 import { bindThis } from '@/decorators.js';
 import { HanamiSearchService } from '@/core/hanamisearch/HanamiSearchService.js';
+import { HanamiRecentActService } from '@/core/hanami/HanamiRecentActService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { isQuote, isRenote, pureRenoteSql } from '@/misc/is-renote.js';
 import { SearchService } from './SearchService.js';
@@ -53,6 +54,7 @@ export class NoteDeleteService {
 		private apDeliverManagerService: ApDeliverManagerService,
 		private searchService: SearchService,
 		private hanamiSearchService: HanamiSearchService,
+		private hanamiRecentActService: HanamiRecentActService,
 		private moderationLogService: ModerationLogService,
 		private notesChart: NotesChart,
 		private perUserNotesChart: PerUserNotesChart,
@@ -92,12 +94,20 @@ export class NoteDeleteService {
 			}
 		}
 
+		if (user.host == null && note.renoteId != null) {
+			void this.hanamiRecentActService.removeNoteAction(user, note, { id: note.renoteId, userId: note.renoteUserId }, 'n');
+		}
+
 		// 自ノート削除時は W evidence も外す（ベクトルのみとはいえ、消したノートを嗜好根拠として残さない）。
 		if (user.host == null) {
 			void this.notesRepository.query(
 				`DELETE FROM "hanami_foryou_taste_evidence" WHERE "userId" = $1 AND "noteId" = $2 AND src = 'W'`,
 				[user.id, note.id],
 			).catch(() => { /* ignore */ });
+		}
+
+		if (user.host == null && note.replyId != null) {
+			void this.hanamiRecentActService.removeNoteAction(user, note, { id: note.replyId, userId: note.replyUserId }, 'p');
 		}
 
 		if (!quiet) {

@@ -17,7 +17,7 @@ import { bindThis } from '@/decorators.js';
 import { IdService } from '@/core/IdService.js';
 import { HanamiTokenizerService } from '@/core/hanami/tokenize/HanamiTokenizerService.js';
 import * as mfm from 'mfm-js';
-import { HANAMI_TASTE_MATCH_KEY_PREFIX, HANAMI_FORYOU_ACTIVE_KEY_PREFIX } from '@/core/hanami/HanamiForYouKeys.js';
+import { HANAMI_TASTE_MATCH_KEY_PREFIX, HANAMI_TASTE_MATCH_META_KEY_PREFIX, HANAMI_RECENT_ACT_KEY_PREFIX, HANAMI_FORYOU_ACTIVE_KEY_PREFIX } from '@/core/hanami/HanamiForYouKeys.js';
 import { pureRenoteSql } from '@/misc/is-renote.js';
 import type Logger from '@/logger.js';
 
@@ -99,6 +99,16 @@ const TASTE_MATCH_FRESHNESS_BUCKETS: { withinMs: number; weight: number }[] = [
 const TASTE_MATCH_FRESHNESS_FLOOR = 0.75;
 // 同一作者の連投/コピペが TOP_N を占領する経路を塞ぐ（v0.6 #12。ページ側の作者cap=2とは別に候補段で切る）。
 const TASTE_MATCH_AUTHOR_CAP = 3;
+// 短期興味レイヤー（spec §9.8.6）。
+const RECENT_WINDOW = 72 * 60 * 60 * 1000;
+const RECENT_HALF_LIFE = 24 * 60 * 60 * 1000;
+const RECENT_KIND_W = { r: 1.0, n: 1.0, p: 0.8 } as const;
+const RECENT_MIN_ACTIONS = 3;
+const TAU_RECENT = 0.35;
+const TAU_ASSIGN = 0.25;
+const HEAT_AUTHOR_CAP = 3.0;
+const RECENT_BACKFILL_MAX = 200;
+const RECENT_BACKFILL_TIME_BUDGET_SEC = 60;
 // 多重実行ガード（v0.6 #3 / v0.7 R3: match だけでなく sweep も含む tick 全体を1ロックで覆う。
 // 複数 worker/手動起動で 8分予算の python sweep が並走すると CPU/RAM を二重消費するため）。
 // TTL は最悪実行時間（python timeout 30分）＋余裕（v0.7 R4: 10分周期より短い 9.5分だと、実行が
@@ -123,6 +133,45 @@ type KmeansOutUser = {
 	centroids: number[][];
 	assignment: number[];
 	examples: number[][];
+};
+
+type RecentActKind = keyof typeof RECENT_KIND_W;
+
+type TasteClusterRow = {
+	uid: string;
+	cid: number;
+	centroid: number[];
+	userWeight: number;
+};
+
+type TasteClusterForMatch = {
+	cid: number;
+	userWeight: number;
+	centroid: Float32Array;
+};
+
+type RecentAction = {
+	noteId: string;
+	kind: RecentActKind;
+	actionMs: number;
+	weight: number;
+};
+
+type RecentActionsByUser = {
+	actionsByUser: Map<string, RecentAction[]>;
+	usersWithRecentKey: Set<string>;
+};
+
+type RecentUserInterest = {
+	recentVec: Float32Array | null;
+	totalHeat: number;
+	heatByCluster: Map<number, number>;
+};
+
+type RecentInterestResult = {
+	byUser: Map<string, RecentUserInterest>;
+	recentUsers: number;
+	recentActions: number;
 };
 
 export type HanamiTasteRebuildPhase = 'embeddings' | 'evidence';
@@ -262,6 +311,253 @@ export class HanamiTasteClusterBatchService {
 		return env;
 	}
 
+	private async loadTasteClusterRows(): Promise<TasteClusterRow[]> {
+		return await this.db.query(
+			`SELECT c."userId" AS uid, c."clusterId" AS cid, c.centroid AS centroid, c."userWeight" AS "userWeight"
+			 FROM "hanami_foryou_user_taste_cluster" c
+			 JOIN "user_profile" p ON p."userId" = c."userId"
+			 WHERE c.model = $1 AND p."hanamiRecommendationEnabled" = TRUE`,
+			[TASTE_EMBED_MODEL],
+		) as TasteClusterRow[];
+	}
+
+	private async filterActiveTasteUserIds(uids: string[]): Promise<Set<string>> {
+		const unique = [...new Set(uids)];
+		const active = new Set<string>();
+		if (unique.length === 0) return active;
+		const existsPipeline = this.redisClient.pipeline();
+		for (const uid of unique) existsPipeline.exists(HANAMI_FORYOU_ACTIVE_KEY_PREFIX + uid);
+		const existsRes = await existsPipeline.exec();
+		for (let i = 0; i < unique.length; i++) {
+			if (existsRes?.[i]?.[1] === 1) active.add(unique[i]);
+		}
+		return active;
+	}
+
+	private clustersByActiveUser(clusterRows: TasteClusterRow[], activeUids: ReadonlySet<string>): Map<string, TasteClusterForMatch[]> {
+		const byUser = new Map<string, TasteClusterForMatch[]>();
+		for (const c of clusterRows) {
+			if (!activeUids.has(c.uid)) continue;
+			let arr = byUser.get(c.uid);
+			if (arr == null) { arr = []; byUser.set(c.uid, arr); }
+			arr.push({ cid: c.cid, userWeight: Number(c.userWeight), centroid: Float32Array.from(c.centroid) });
+		}
+		return byUser;
+	}
+
+	private parseRecentActionMember(member: string): { noteId: string; kind: RecentActKind } | null {
+		const i = member.lastIndexOf(':');
+		if (i <= 0) return null;
+		const kind = member.slice(i + 1);
+		if (kind !== 'r' && kind !== 'n' && kind !== 'p') return null;
+		return { noteId: member.slice(0, i), kind };
+	}
+
+	private recentActionWeight(kind: RecentActKind, actionMs: number, now: number): number {
+		const elapsed = Math.max(0, now - actionMs);
+		if (elapsed > RECENT_WINDOW) return 0;
+		return RECENT_KIND_W[kind] * Math.pow(0.5, elapsed / RECENT_HALF_LIFE);
+	}
+
+	private async loadRecentActionsByUser(activeUids: Iterable<string>, now: number): Promise<RecentActionsByUser> {
+		const uids = [...activeUids];
+		const usersWithRecentKey = new Set<string>();
+		const actionsByUser = new Map<string, RecentAction[]>();
+		if (uids.length === 0) return { actionsByUser, usersWithRecentKey };
+
+		const existsPipeline = this.redisClient.pipeline();
+		for (const uid of uids) existsPipeline.exists(HANAMI_RECENT_ACT_KEY_PREFIX + uid);
+		const existsRes = await existsPipeline.exec();
+		const recentUids: string[] = [];
+		for (let i = 0; i < uids.length; i++) {
+			if (existsRes?.[i]?.[1] === 1) {
+				recentUids.push(uids[i]);
+				usersWithRecentKey.add(uids[i]);
+			}
+		}
+		if (recentUids.length === 0) return { actionsByUser, usersWithRecentKey };
+
+		const actionPipeline = this.redisClient.pipeline();
+		const floor = now - RECENT_WINDOW;
+		for (const uid of recentUids) actionPipeline.zrangebyscore(HANAMI_RECENT_ACT_KEY_PREFIX + uid, floor, '+inf', 'WITHSCORES');
+		const actionRes = await actionPipeline.exec();
+		for (let i = 0; i < recentUids.length; i++) {
+			const raw = actionRes?.[i]?.[1] as string[] | undefined;
+			const actions: RecentAction[] = [];
+			if (Array.isArray(raw)) {
+				for (let j = 0; j + 1 < raw.length; j += 2) {
+					const parsed = this.parseRecentActionMember(raw[j]);
+					if (parsed == null) continue;
+					const actionMs = Number(raw[j + 1]);
+					if (!Number.isFinite(actionMs)) continue;
+					const weight = this.recentActionWeight(parsed.kind, actionMs, now);
+					if (weight <= 0) continue;
+					actions.push({ noteId: parsed.noteId, kind: parsed.kind, actionMs, weight });
+				}
+			}
+			actionsByUser.set(recentUids[i], actions);
+		}
+		return { actionsByUser, usersWithRecentKey };
+	}
+
+	private async runRecentBackfill(activeUids: ReadonlySet<string>, logger: Logger): Promise<{ processed: number; backlog: number }> {
+		const now = Date.now();
+		const recent = await this.loadRecentActionsByUser(activeUids, now);
+		const noteIds = [...new Set([...recent.actionsByUser.values()].flatMap(actions => actions.map(a => a.noteId)))];
+		if (noteIds.length === 0) {
+			logger.info('hanami taste recent backfill: recentBackfillProcessed=0 recentBackfillBacklog=0');
+			return { processed: 0, backlog: 0 };
+		}
+
+		const rows = await this.db.query(
+			`SELECT n.id AS id, n.text AS text
+			 FROM note n
+			 LEFT JOIN "hanami_note_embedding" e ON e."noteId" = n.id AND e.model = $1
+			 WHERE n.id = ANY($2)
+			   AND n."channelId" IS NULL
+			   AND n.visibility IN ('public','home','followers')
+			   AND n.text IS NOT NULL
+			   AND e."noteId" IS NULL
+			 ORDER BY n.id DESC`,
+			[TASTE_EMBED_MODEL, noteIds],
+		) as { id: string; text: string }[];
+
+		const texts: [string, string][] = [];
+		for (const r of rows) {
+			const cleaned = this.cleanForEmbedding(r.text);
+			if (contentCharCount(cleaned) >= TASTE_MIN_CHARS) texts.push([r.id, cleaned]);
+		}
+		if (texts.length === 0) {
+			logger.info('hanami taste recent backfill: recentBackfillProcessed=0 recentBackfillBacklog=0');
+			return { processed: 0, backlog: 0 };
+		}
+
+		const slice = texts.slice(0, RECENT_BACKFILL_MAX);
+		const processed = await this.embedAndStore(slice, RECENT_BACKFILL_TIME_BUDGET_SEC, logger);
+		const backlog = Math.max(0, texts.length - processed);
+		logger.info(`hanami taste recent backfill: recentBackfillProcessed=${processed} recentBackfillBacklog=${backlog}`);
+		return { processed, backlog };
+	}
+
+	private centeredVector(embedding: number[], meanVec: number[]): { raw: Float32Array; normalized: Float32Array } {
+		const raw = new Float32Array(meanVec.length);
+		const normalized = new Float32Array(meanVec.length);
+		let norm = 0;
+		for (let i = 0; i < meanVec.length; i++) {
+			const v = (embedding[i] ?? 0) - meanVec[i];
+			raw[i] = v;
+			norm += v * v;
+		}
+		norm = Math.sqrt(norm) || 1;
+		for (let i = 0; i < meanVec.length; i++) normalized[i] = raw[i] / norm;
+		return { raw, normalized };
+	}
+
+	private dot(a: Float32Array, b: Float32Array, dim: number): number {
+		const n = Math.min(dim, a.length, b.length);
+		let out = 0;
+		for (let i = 0; i < n; i++) out += a[i] * b[i];
+		return out;
+	}
+
+	private async computeRecentInterest(
+		activeUids: ReadonlySet<string>,
+		byUser: Map<string, TasteClusterForMatch[]>,
+		meanVec: number[],
+	): Promise<RecentInterestResult> {
+		const now = Date.now();
+		const recent = await this.loadRecentActionsByUser(activeUids, now);
+		const noteIds = [...new Set([...recent.actionsByUser.values()].flatMap(actions => actions.map(a => a.noteId)))];
+		const noteById = new Map<string, { aid: string; emb: number[] | null }>();
+		if (noteIds.length > 0) {
+			const rows = await this.db.query(
+				`SELECT n.id AS nid, n."userId" AS aid, e.embedding AS emb
+				 FROM note n
+				 LEFT JOIN "hanami_note_embedding" e ON e."noteId" = n.id AND e.model = $1
+				 WHERE n.id = ANY($2)`,
+				[TASTE_EMBED_MODEL, noteIds],
+			) as { nid: string; aid: string; emb: number[] | null }[];
+			for (const r of rows) noteById.set(r.nid, { aid: r.aid, emb: r.emb });
+		}
+
+		const byRecentUser = new Map<string, RecentUserInterest>();
+		let recentActions = 0;
+		const metaPipeline = this.redisClient.pipeline();
+		let metaOps = 0;
+		for (const uid of recent.usersWithRecentKey) {
+			const actions = recent.actionsByUser.get(uid) ?? [];
+			recentActions += actions.length;
+			const metaKey = HANAMI_TASTE_MATCH_META_KEY_PREFIX + uid;
+			if (actions.length === 0) {
+				metaPipeline.del(metaKey);
+				metaOps++;
+				continue;
+			}
+
+			const weighted: { aid: string; weight: number; emb: number[] }[] = [];
+			const byAuthorWeight = new Map<string, number>();
+			for (const a of actions) {
+				const note = noteById.get(a.noteId);
+				if (note?.emb == null) continue;
+				weighted.push({ aid: note.aid, weight: a.weight, emb: note.emb });
+				byAuthorWeight.set(note.aid, (byAuthorWeight.get(note.aid) ?? 0) + a.weight);
+			}
+
+			const visibleClusters = (byUser.get(uid) ?? []).filter(c => c.userWeight > 0);
+			const heatByCluster = new Map<number, number>();
+			const recentSum = new Float32Array(meanVec.length);
+			let embeddedActions = 0;
+			for (const a of weighted) {
+				const authorSum = byAuthorWeight.get(a.aid) ?? 0;
+				const scale = authorSum > HEAT_AUTHOR_CAP ? HEAT_AUTHOR_CAP / authorSum : 1;
+				const cappedWeight = a.weight * scale;
+				embeddedActions++;
+				const vec = this.centeredVector(a.emb, meanVec);
+				for (let i = 0; i < meanVec.length; i++) recentSum[i] += vec.normalized[i] * cappedWeight;
+
+				let bestCos = -Infinity;
+				let bestCid = -1;
+				for (const cl of visibleClusters) {
+					const cos = this.dot(vec.normalized, cl.centroid, meanVec.length);
+					if (cos > bestCos) { bestCos = cos; bestCid = cl.cid; }
+				}
+				if (bestCid >= 0 && bestCos >= TAU_ASSIGN) {
+					heatByCluster.set(bestCid, (heatByCluster.get(bestCid) ?? 0) + cappedWeight);
+				}
+			}
+
+			let recentVec: Float32Array | null = null;
+			if (embeddedActions >= RECENT_MIN_ACTIONS) {
+				let norm = 0;
+				for (let i = 0; i < recentSum.length; i++) norm += recentSum[i] * recentSum[i];
+				norm = Math.sqrt(norm);
+				if (norm > 0) {
+					recentVec = new Float32Array(recentSum.length);
+					for (let i = 0; i < recentSum.length; i++) recentVec[i] = recentSum[i] / norm;
+				}
+			}
+			const totalHeat = [...heatByCluster.values()].reduce((a, b) => a + b, 0);
+			byRecentUser.set(uid, { recentVec, totalHeat, heatByCluster });
+
+			const fields: Record<string, string> = {
+				totalHeat: String(totalHeat),
+				hasRecentVec: recentVec == null ? '0' : '1',
+			};
+			for (const [cid, heat] of heatByCluster) fields[`heat:${cid}`] = String(heat);
+			metaPipeline.del(metaKey);
+			metaPipeline.hset(metaKey, fields);
+			metaPipeline.expire(metaKey, TASTE_MATCH_KEY_TTL_SEC);
+			metaOps += 3;
+		}
+		if (metaOps > 0) await metaPipeline.exec();
+
+		return {
+			byUser: byRecentUser,
+			recentUsers: recent.usersWithRecentKey.size,
+			recentActions,
+		};
+	}
+
 	// ───────────────────────── 10分スイープ ─────────────────────────
 
 	@bindThis
@@ -348,19 +644,19 @@ export class HanamiTasteClusterBatchService {
 	// ───────────────────────── 興味マッチ新着（reactionSimilar 軸）の事前計算 ─────────────────────────
 
 	/**
-	 * 直近24hの埋め込み済み全ノート（人気条件なし）をユーザーの taste クラスタ centroid と照合し、
-	 * ユーザー別 zset（member=noteId:authorId:clusterId / score=cos）を全置換する。
+	 * 直近24hの埋め込み済み全ノート（人気条件なし）をユーザーの taste クラスタ / recentVec と照合し、
+	 * ユーザー別 zset（member=noteId:authorId:{clusterId|r} / score=max(cos_cluster, cos_recent)×鮮度）を全置換する。
 	 *
 	 * 10分スイープの直後に呼ぶ: 新着はどのみち埋め込まれるまで候補になれないので、鮮度の追加損失ゼロで
 	 * 「サーブは事前計算の取り出し」の原則を保てる。毎回フル再計算（ステートレス＝Redis 消失・クラスタ
 	 * 再構築・userWeight 変更・窓スライドすべて次回実行≦10分で自己回復）。
 	 */
 	/**
-	 * 10分 tick の本体: 埋め込みスイープ→興味マッチ事前計算を1ロックの下で順に実行する。
+	 * 10分 tick の本体: recent backfill→埋め込みスイープ→短期量計算→興味マッチ事前計算を1ロックの下で順に実行する。
 	 * - ロックは tick 全体を覆う（v0.7 R3: sweep の python 並走も防ぐ）。前回が周期を跨いでいたらスキップ（次回≦10分で追いつく）。
 	 * - token 照合つき解放（v0.7 R2-M3: 無条件 DEL だと TTL 超過した旧実行が新実行のロックを消し、
 	 *   三つ巴の多重実行を再発させる）。token は tmp キーの衝突回避にも使う。
-	 * - sweep 失敗（python 不在等）でも match は既存の埋め込みだけで実行する。
+	 * - backfill/sweep 失敗（python 不在等）でも match は既存の埋め込みだけで実行する。
 	 */
 	@bindThis
 	public async runTasteTick(logger: Logger): Promise<void> {
@@ -370,6 +666,13 @@ export class HanamiTasteClusterBatchService {
 			return;
 		}
 		try {
+			const clusterRows = await this.loadTasteClusterRows();
+			const activeUids = await this.filterActiveTasteUserIds(clusterRows.map(r => r.uid));
+			try {
+				await this.runRecentBackfill(activeUids, logger);
+			} catch (err) {
+				logger.warn(`hanami taste recent backfill failed: ${(err as Error).message}`);
+			}
 			try {
 				await this.runTasteSweep(logger);
 			} catch (err) {
@@ -377,7 +680,7 @@ export class HanamiTasteClusterBatchService {
 				logger.warn(`hanami taste sweep failed: ${(err as Error).message}`);
 			}
 			try {
-				await this.computeTasteMatches(logger, lockToken);
+				await this.computeTasteMatches(logger, lockToken, clusterRows, activeUids);
 			} catch (err) {
 				logger.warn(`hanami taste match failed: ${(err as Error).message}`);
 			}
@@ -647,17 +950,12 @@ export class HanamiTasteClusterBatchService {
 		}
 	}
 
-	private async computeTasteMatches(logger: Logger, runToken: string): Promise<{ users: number; notes: number }> {
+	private async computeTasteMatches(logger: Logger, runToken: string, clusterRows: TasteClusterRow[], activeUids: ReadonlySet<string>): Promise<{ users: number; notes: number }> {
 		const startedAt = Date.now();
-		// userWeight=0（表示しない）クラスタは照合対象から外す。For You OFF のユーザーは計算しない。
-		const clusterRows = await this.db.query(
-			`SELECT c."userId" AS uid, c."clusterId" AS cid, c.centroid AS centroid
-			 FROM "hanami_foryou_user_taste_cluster" c
-			 JOIN "user_profile" p ON p."userId" = c."userId"
-			 WHERE c.model = $1 AND c."userWeight" > 0 AND p."hanamiRecommendationEnabled" = TRUE`,
-			[TASTE_EMBED_MODEL],
-		) as { uid: string; cid: number; centroid: number[] }[];
 		if (clusterRows.length === 0) return { users: 0, notes: 0 };
+
+		const byUser = this.clustersByActiveUser(clusterRows, activeUids);
+		if (byUser.size === 0) return { users: 0, notes: 0 };
 
 		const stateRows = await this.db.query(
 			`SELECT "meanVec" FROM "hanami_foryou_taste_state" WHERE model = $1`,
@@ -665,6 +963,8 @@ export class HanamiTasteClusterBatchService {
 		) as { meanVec: number[] }[];
 		const meanVec = stateRows[0]?.meanVec;
 		if (meanVec == null || meanVec.length === 0) return { users: 0, notes: 0 };
+
+		const recent = await this.computeRecentInterest(activeUids, byUser, meanVec);
 
 		// 配信可能な新着だけ（public/home・チャンネル外・リプライ以外・bot以外）。
 		// 鍵（followers）ノートは学習専用なのでここには乗せない。
@@ -681,7 +981,10 @@ export class HanamiTasteClusterBatchService {
 			   AND u."isBot" = FALSE AND u."isSuspended" = FALSE AND u."isExplorable" = TRUE`,
 			[TASTE_EMBED_MODEL, sinceId],
 		) as { nid: string; emb: number[]; aid: string }[];
-		if (noteRows.length === 0) return { users: 0, notes: 0 };
+		if (noteRows.length === 0) {
+			logger.info(`hanami taste recent: recentUsers=${recent.recentUsers} recentActions=${recent.recentActions} cosRecentMs=0`);
+			return { users: 0, notes: 0 };
+		}
 
 		// 平均中心化＋正規化はユーザー数に依らず1回だけ（クラスタ割当と同じ前処理）。
 		const dim = meanVec.length;
@@ -699,26 +1002,6 @@ export class HanamiTasteClusterBatchService {
 			for (let i = 0; i < dim; i++) mat[off + i] /= norm;
 		}
 
-		const byUser = new Map<string, { cid: number; centroid: Float32Array }[]>();
-		for (const c of clusterRows) {
-			let arr = byUser.get(c.uid);
-			if (arr == null) { arr = []; byUser.set(c.uid, arr); }
-			arr.push({ cid: c.cid, centroid: Float32Array.from(c.centroid) });
-		}
-
-		// アクティブユーザー限定（v0.6 #1/#2）: 直近14日に For You を読んだマーカー（active キー）が
-		// あるユーザーだけ計算する。計算量とRedis書き込みが「クラスタ保有者全員」でなく「実利用者」に比例する。
-		// served キー（TTL30分の重複抑制）は判定に使わない（v0.7 R2-H1）。
-		// 新規に For You を開いたユーザーは初回サーブで active が付き、次回実行（≦10分）から候補が出る。
-		const uids = [...byUser.keys()];
-		const existsPipeline = this.redisClient.pipeline();
-		for (const uid of uids) existsPipeline.exists(HANAMI_FORYOU_ACTIVE_KEY_PREFIX + uid);
-		const existsRes = await existsPipeline.exec();
-		for (let i = 0; i < uids.length; i++) {
-			if (existsRes?.[i]?.[1] !== 1) byUser.delete(uids[i]);
-		}
-		if (byUser.size === 0) return { users: 0, notes: noteRows.length };
-
 		// 鮮度（cos に乗算して zset score へ焼き込む。毎10分フル再計算なので自然に更新される）。
 		const now = Date.now();
 		const freshnessOf = (nid: string): number => {
@@ -731,29 +1014,54 @@ export class HanamiTasteClusterBatchService {
 		const freshness = noteRows.map(r => freshnessOf(r.nid));
 
 		let users = 0;
+		let cosRecentMs = 0;
 		const matchCounts: number[] = [];
 		for (const [uid, cls] of byUser) {
+			const visibleClusters = cls.filter(cl => cl.userWeight > 0);
+			const hiddenClusters = cls.filter(cl => cl.userWeight <= 0);
+			const recentVec = recent.byUser.get(uid)?.recentVec ?? null;
 			const matches: { member: string; aid: string; score: number }[] = [];
+			const recentCandidateLoopStartedAt = recentVec == null ? null : Date.now();
 			for (let r = 0; r < noteRows.length; r++) {
 				if (noteRows[r].aid === uid) continue; // 自分の投稿は推薦しない
 				const off = r * dim;
-				let bestCos = TASTE_MATCH_TAU;
-				let bestCid = -1;
-				for (const cl of cls) {
+				let bestVisibleCos = -Infinity;
+				let bestVisibleCid = -1;
+				for (const cl of visibleClusters) {
 					const cen = cl.centroid;
 					const n = Math.min(dim, cen.length);
 					let dot = 0;
 					for (let i = 0; i < n; i++) dot += mat[off + i] * cen[i];
-					if (dot >= bestCos) { bestCos = dot; bestCid = cl.cid; }
+					if (dot > bestVisibleCos) { bestVisibleCos = dot; bestVisibleCid = cl.cid; }
 				}
-				if (bestCid >= 0) {
-					matches.push({
-						member: `${noteRows[r].nid}:${noteRows[r].aid}:${bestCid}`,
-						aid: noteRows[r].aid,
-						score: bestCos * freshness[r],
-					});
+				let bestHiddenCos = -Infinity;
+				for (const cl of hiddenClusters) {
+					const cen = cl.centroid;
+					const n = Math.min(dim, cen.length);
+					let dot = 0;
+					for (let i = 0; i < n; i++) dot += mat[off + i] * cen[i];
+					if (dot > bestHiddenCos) bestHiddenCos = dot;
 				}
+				let cosRecent: number | null = null;
+				if (recentVec != null) {
+					let dot = 0;
+					for (let i = 0; i < dim; i++) dot += mat[off + i] * recentVec[i];
+					cosRecent = dot;
+				}
+
+				if (bestHiddenCos >= TASTE_MATCH_TAU) continue;
+				const clusterAdopted = bestVisibleCid >= 0 && bestVisibleCos >= TASTE_MATCH_TAU;
+				const recentAdopted = cosRecent != null && cosRecent >= TAU_RECENT;
+				if (!clusterAdopted && !recentAdopted) continue;
+				const bucket = clusterAdopted ? String(bestVisibleCid) : 'r';
+				const scoreCos = Math.max(clusterAdopted ? bestVisibleCos : -Infinity, cosRecent ?? -Infinity);
+				matches.push({
+					member: `${noteRows[r].nid}:${noteRows[r].aid}:${bucket}`,
+					aid: noteRows[r].aid,
+					score: scoreCos * freshness[r],
+				});
 			}
+			if (recentCandidateLoopStartedAt != null) cosRecentMs += Date.now() - recentCandidateLoopStartedAt;
 			// score 降順＋作者cap（同一作者の連投/コピペが TOP_N を占領しない）。
 			matches.sort((a, b) => b.score - a.score);
 			const top: typeof matches = [];
@@ -791,6 +1099,7 @@ export class HanamiTasteClusterBatchService {
 		matchCounts.sort((a, b) => a - b);
 		const elapsed = Date.now() - startedAt;
 		const med = matchCounts[Math.floor(matchCounts.length / 2)] ?? 0;
+		logger.info(`hanami taste recent: recentUsers=${recent.recentUsers} recentActions=${recent.recentActions} cosRecentMs=${cosRecentMs}`);
 		logger.info(`hanami taste match: ${users} users x ${noteRows.length} notes in ${elapsed}ms (matches min=${matchCounts[0] ?? 0} med=${med} max=${matchCounts.at(-1) ?? 0})`);
 		// 実行時間がここを超え始めたら ANN/差分更新化（spec §9.4）を検討する。
 		if (elapsed > TASTE_MATCH_SLOW_WARN_MS) logger.warn(`hanami taste match: slow run ${elapsed}ms (users=${users}, notes=${noteRows.length}) — consider ANN/incremental`);

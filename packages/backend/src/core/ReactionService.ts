@@ -27,6 +27,7 @@ import { CustomEmojiService } from '@/core/CustomEmojiService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { FeaturedService } from '@/core/FeaturedService.js';
 import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
+import { HanamiRecentActService } from '@/core/hanami/HanamiRecentActService.js';
 import { trackPromise } from '@/misc/promise-tracker.js';
 import { isQuote, isRenote, pureRenoteSql } from '@/misc/is-renote.js';
 import { ReactionsBufferingService } from '@/core/ReactionsBufferingService.js';
@@ -101,6 +102,7 @@ export class ReactionService {
 		private notificationService: NotificationService,
 		private perUserReactionsChart: PerUserReactionsChart,
 		private hanamiForYouProvenanceService: HanamiForYouProvenanceService,
+		private hanamiRecentActService: HanamiRecentActService,
 	) {
 	}
 
@@ -184,7 +186,7 @@ export class ReactionService {
 
 				if (exists.reaction !== reaction) {
 					// 別のリアクションがすでにされていたら置き換える
-					await this.delete(user, note);
+					await this.delete(user, note, { skipHanamiRecentAct: true });
 					await this.noteReactionsRepository.insert(record);
 				} else {
 					// 同じリアクションがすでにされていたらエラー
@@ -239,6 +241,7 @@ export class ReactionService {
 		// best-effort。hot path を塞がないよう await しない。
 		if (user.host == null) {
 			void this.hanamiForYouProvenanceService.recordEngagement(user.id, note.id, 'reaction');
+			void this.hanamiRecentActService.recordReaction(user, note, record.id);
 		}
 
 		// カスタム絵文字リアクションだったら絵文字情報も送る
@@ -296,7 +299,7 @@ export class ReactionService {
 	}
 
 	@bindThis
-	public async delete(user: { id: MiUser['id']; host: MiUser['host']; isBot: MiUser['isBot']; }, note: MiNote) {
+	public async delete(user: { id: MiUser['id']; host: MiUser['host']; isBot: MiUser['isBot']; }, note: MiNote, opts: { skipHanamiRecentAct?: boolean } = {}) {
 		// if already unreacted
 		const exist = await this.noteReactionsRepository.findOneBy({
 			noteId: note.id,
@@ -359,6 +362,10 @@ export class ReactionService {
 				   )`,
 				[user.id, note.id],
 			).catch(() => { /* ignore */ });
+		}
+
+		if (user.host == null && !opts.skipHanamiRecentAct) {
+			void this.hanamiRecentActService.removeReaction(user, note, exist.id);
 		}
 
 		this.globalEventService.publishNoteStream(note, 'unreacted', {

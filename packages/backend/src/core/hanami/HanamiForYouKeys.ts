@@ -11,9 +11,13 @@ export const HANAMI_AUTHOR_SERVED_KEY_PREFIX = 'hanami:rec:authorServed:';
 export const HANAMI_SEEN_KEY_PREFIX = 'hanami:rec:seen:';
 export const HANAMI_HOME_SEEN_KEY_PREFIX = 'hanami:rec:homeSeen:';
 export const HANAMI_FOF_SHOWN_KEY_PREFIX = 'hanami:fof:shown:';
-// reactionSimilar（興味マッチ新着）: 10分スイープ直後に事前計算するユーザー別 zset。
-// member = `${noteId}:${authorId}:${clusterId}` / score = 平均中心化 cos × 鮮度。
+// reactionSimilar（興味マッチ新着）: 10分tickで事前計算するユーザー別 zset。
+// member = `${noteId}:${authorId}:${clusterId | 'r'}` / score = max(cos_cluster, cos_recent) × 鮮度。
 export const HANAMI_TASTE_MATCH_KEY_PREFIX = 'hanami:tastematch:';
+// 短期興味量 meta（§9.8.2）: hash fields totalHeat / heat:{clusterId} / hasRecentVec。
+export const HANAMI_TASTE_MATCH_META_KEY_PREFIX = 'hanami:tastematch:meta:';
+// 短期興味シグナル（§9.8.1）: member = `${targetNoteId}:${kind}` / score = 行動時刻ms。
+export const HANAMI_RECENT_ACT_KEY_PREFIX = 'hanami:recentact:';
 // For You を実際に読んだ人のマーカー（taste match バッチの対象ゲート）。
 // served は TTL30分の重複抑制キーなので流用不可（v0.7 敵対レビューR2-H1: 30分でactive判定から
 // 外れて zset が48h腐る）。ページ配信のたびに張り直す長期マーカーを別に持つ。
