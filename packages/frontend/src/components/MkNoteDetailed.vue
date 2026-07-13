@@ -48,6 +48,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</div>
 	<template v-else>
 		<article :class="$style.note" @contextmenu.stop="onContextmenu">
+			<MkInstanceTicker v-if="showTicker && prefer.s.instanceTickerPosition !== 'default'" :host="appearNote.user.host" :instance="appearNote.user.instance" :position="prefer.s.instanceTickerPosition"/>
 			<header :class="$style.noteHeader">
 				<MkAvatar :class="$style.noteHeaderAvatar" :user="appearNote.user" indicator link preview/>
 				<div :class="$style.noteHeaderBody">
@@ -74,7 +75,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							<img v-for="(role, i) in appearNote.user.badgeRoles" :key="i" v-tooltip="role.name" :class="$style.noteHeaderBadgeRole" :src="role.iconUrl!"/>
 						</div>
 					</div>
-					<MkInstanceTicker v-if="showTicker" :host="appearNote.user.host" :instance="appearNote.user.instance" :position="prefer.s.instanceTickerPosition"/>
+					<MkInstanceTicker v-if="showTicker && prefer.s.instanceTickerPosition === 'default'" :host="appearNote.user.host" :instance="appearNote.user.instance" :position="prefer.s.instanceTickerPosition"/>
 				</div>
 			</header>
 			<div :class="$style.noteContent">
@@ -711,6 +712,7 @@ function loadConversation() {
 }
 
 .note {
+	position: relative;
 	padding: 32px;
 	font-size: 1.2em;
 

@@ -984,6 +984,7 @@ function emitUpdReaction(emoji: string, delta: number) {
 
 .colorBar {
 	position: absolute;
+	z-index: 1;
 	top: 8px;
 	left: 8px;
 	width: 5px;

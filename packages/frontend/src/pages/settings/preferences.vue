@@ -311,7 +311,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 								</MkPreferenceContainer>
 							</SearchMarker>
 
-							<SearchMarker v-if="instanceTicker !== 'none'" :keywords="['ticker', 'position', 'vertical', 'bar', 'watermark']">
+							<SearchMarker v-if="instance.federation !== 'none' && instanceTicker !== 'none'" :keywords="['ticker', 'position', 'vertical', 'bar', 'watermark']">
 								<MkPreferenceContainer k="instanceTickerPosition">
 									<MkSelect
 										v-model="instanceTickerPosition"
