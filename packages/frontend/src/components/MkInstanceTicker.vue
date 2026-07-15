@@ -187,7 +187,7 @@ $height: 2ex;
 		rgba(var(--ticker-bg-rgb, 119, 119, 119), 0.35) calc(100% - 3em),
 		rgba(var(--ticker-bg-rgb, 119, 119, 119), 0.35) 100%
 	);
-	color: var(--ticker-fg, #fff);
+	color: #fff;
 	text-shadow: /* 0.866 ≈ sin(60deg) */
 		1px 0 1px #000,
 		0.866px 0.5px 1px #000,
