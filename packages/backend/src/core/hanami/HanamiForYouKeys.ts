@@ -14,6 +14,11 @@ export const HANAMI_FOF_SHOWN_KEY_PREFIX = 'hanami:fof:shown:';
 // reactionSimilar（興味マッチ新着）: 10分tickで事前計算するユーザー別 zset。
 // member = `${noteId}:${authorId}:${clusterId | 'r'}` / score = max(cos_cluster, cos_recent) × 鮮度。
 export const HANAMI_TASTE_MATCH_KEY_PREFIX = 'hanami:tastematch:';
+// 差分計算用。raw score は鮮度を掛ける前の baseCos、metadata は noteId -> authorId:bucket。
+export const HANAMI_TASTE_MATCH_RAW_KEY_PREFIX = 'hanami:tastematch:raw:';
+export const HANAMI_TASTE_MATCH_RAW_META_KEY_PREFIX = 'hanami:tastematch:rawmeta:';
+// cursor と入力ベクトルの指紋を持つユーザー別 hash。serve からは参照しない。
+export const HANAMI_TASTE_MATCH_STATE_KEY_PREFIX = 'hanami:tastematch:state:';
 // 短期興味量 meta（§9.8.2）: hash fields totalHeat / heat:{clusterId} / hasRecentVec。
 export const HANAMI_TASTE_MATCH_META_KEY_PREFIX = 'hanami:tastematch:meta:';
 // 短期興味シグナル（§9.8.1）: member = `${targetNoteId}:${kind}` / score = 行動時刻ms。

@@ -97,6 +97,7 @@ import { MiHanamiNoteEmbedding } from '@/models/HanamiNoteEmbedding.js';
 import { MiHanamiForYouUserCentroid } from '@/models/HanamiForYouUserCentroid.js';
 import { MiHanamiForYouUserAux } from '@/models/HanamiForYouUserAux.js';
 import { MiHanamiRecommendationEvent } from '@/models/HanamiRecommendationEvent.js';
+import { MiHanamiForYouInteractionDaily } from '@/models/HanamiForYouInteractionDaily.js';
 
 pg.types.setTypeParser(20, Number);
 
@@ -274,6 +275,7 @@ export const entities = [
 	MiHanamiForYouUserCentroid,
 	MiHanamiForYouUserAux,
 	MiHanamiRecommendationEvent,
+	MiHanamiForYouInteractionDaily,
 	...charts,
 ];
 

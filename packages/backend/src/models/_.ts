@@ -94,6 +94,7 @@ import { MiHanamiNoteEmbedding } from '@/models/HanamiNoteEmbedding.js';
 import { MiHanamiForYouUserCentroid } from '@/models/HanamiForYouUserCentroid.js';
 import { MiHanamiForYouUserAux } from '@/models/HanamiForYouUserAux.js';
 import { MiHanamiRecommendationEvent } from '@/models/HanamiRecommendationEvent.js';
+import { MiHanamiForYouInteractionDaily } from '@/models/HanamiForYouInteractionDaily.js';
 import type { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity.js';
 
 export interface MiRepository<T extends ObjectLiteral> {
@@ -193,6 +194,7 @@ export {
 	MiHanamiForYouUserCentroid,
 	MiHanamiForYouUserAux,
 	MiHanamiRecommendationEvent,
+	MiHanamiForYouInteractionDaily,
 };
 
 export type AbuseUserReportsRepository = Repository<MiAbuseUserReport> & MiRepository<MiAbuseUserReport>;
@@ -285,3 +287,4 @@ export type HanamiNoteEmbeddingsRepository = Repository<MiHanamiNoteEmbedding> &
 export type HanamiForYouUserCentroidsRepository = Repository<MiHanamiForYouUserCentroid> & MiRepository<MiHanamiForYouUserCentroid>;
 export type HanamiForYouUserAuxRepository = Repository<MiHanamiForYouUserAux> & MiRepository<MiHanamiForYouUserAux>;
 export type HanamiRecommendationEventsRepository = Repository<MiHanamiRecommendationEvent> & MiRepository<MiHanamiRecommendationEvent>;
+export type HanamiForYouInteractionDailyRepository = Repository<MiHanamiForYouInteractionDaily> & MiRepository<MiHanamiForYouInteractionDaily>;

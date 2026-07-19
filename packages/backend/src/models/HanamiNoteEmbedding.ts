@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { Entity, PrimaryColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
+import { Entity, PrimaryColumn, Column, ManyToOne, JoinColumn, Index } from 'typeorm';
 import { id } from './util/id.js';
 import { MiNote } from './Note.js';
 
@@ -13,6 +13,7 @@ import { MiNote } from './Note.js';
  * note 削除で消す（FK CASCADE）。モデル変更時は別 model 行として持つ。pgvector は使わず real[]。
  */
 @Entity('hanami_note_embedding')
+@Index('IDX_hanami_embedding_model_updatedAt', ['model', 'updatedAt'])
 export class MiHanamiNoteEmbedding {
 	@PrimaryColumn(id())
 	public noteId: MiNote['id'];

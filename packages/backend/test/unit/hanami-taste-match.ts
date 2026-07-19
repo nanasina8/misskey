@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, jest, test } from '@jest/globals';
 import { HanamiTasteClusterBatchService } from '@/core/hanami/HanamiTasteClusterBatchService.js';
 import { HanamiForYouService } from '@/core/hanami/HanamiForYouService.js';
-import { HANAMI_FORYOU_ACTIVE_KEY_PREFIX, HANAMI_RECENT_ACT_KEY_PREFIX, HANAMI_TASTE_MATCH_KEY_PREFIX, HANAMI_TASTE_MATCH_META_KEY_PREFIX } from '@/core/hanami/HanamiForYouKeys.js';
+import { HANAMI_FORYOU_ACTIVE_KEY_PREFIX, HANAMI_RECENT_ACT_KEY_PREFIX, HANAMI_TASTE_MATCH_KEY_PREFIX, HANAMI_TASTE_MATCH_META_KEY_PREFIX, HANAMI_TASTE_MATCH_RAW_KEY_PREFIX, HANAMI_TASTE_MATCH_RAW_META_KEY_PREFIX, HANAMI_TASTE_MATCH_STATE_KEY_PREFIX } from '@/core/hanami/HanamiForYouKeys.js';
 import type { ForYouCandidate } from '@/core/hanami/HanamiForYouInterleave.js';
 
 const NOW = Date.UTC(2026, 6, 7, 12, 0, 0);
@@ -39,6 +39,21 @@ class FakeRedisPipeline {
 
 	public hset(key: string, fields: Record<string, string>): this {
 		this.ops.push({ kind: 'hset', args: [key, fields] });
+		return this;
+	}
+
+	public hgetall(key: string): this {
+		this.ops.push({ kind: 'hgetall', args: [key] });
+		return this;
+	}
+
+	public zrem(key: string, ...members: string[]): this {
+		this.ops.push({ kind: 'zrem', args: [key, ...members] });
+		return this;
+	}
+
+	public hdel(key: string, ...fields: string[]): this {
+		this.ops.push({ kind: 'hdel', args: [key, ...fields] });
 		return this;
 	}
 
@@ -76,6 +91,7 @@ class FakeRedisPipeline {
 				}
 				return [null, out];
 			}
+			if (op.kind === 'hgetall') return [null, this.redis.hashes.get(op.args[0] as string) ?? {}];
 			if (op.kind === 'zadd') {
 				const key = op.args[0] as string;
 				let zset = this.redis.zsets.get(key);
@@ -87,10 +103,27 @@ class FakeRedisPipeline {
 				const fields = op.args[1] as Record<string, string>;
 				this.redis.hashes.set(key, { ...(this.redis.hashes.get(key) ?? {}), ...fields });
 			}
+			if (op.kind === 'zrem') {
+				const zset = this.redis.zsets.get(op.args[0] as string);
+				for (const member of op.args.slice(1)) zset?.delete(member as string);
+			}
+			if (op.kind === 'hdel') {
+				const hash = this.redis.hashes.get(op.args[0] as string);
+				if (hash != null) for (const field of op.args.slice(1)) delete hash[field as string];
+			}
+			if (op.kind === 'rename') {
+				const from = op.args[0] as string;
+				const to = op.args[1] as string;
+				const zset = this.redis.zsets.get(from);
+				const hash = this.redis.hashes.get(from);
+				if (zset != null) { this.redis.zsets.set(to, zset); this.redis.zsets.delete(from); }
+				if (hash != null) { this.redis.hashes.set(to, hash); this.redis.hashes.delete(from); }
+			}
 			if (op.kind === 'del') {
-				const key = op.args[0] as string;
-				this.redis.hashes.delete(key);
-				this.redis.zsets.delete(key);
+				for (const key of op.args) {
+					this.redis.hashes.delete(key as string);
+					this.redis.zsets.delete(key as string);
+				}
 			}
 			return [null, 'OK'];
 		});
@@ -134,6 +167,11 @@ class FakeRedis {
 
 	public async hgetall(key: string): Promise<Record<string, string>> {
 		return this.hashes.get(key) ?? {};
+	}
+
+	public async zrange(key: string, _start: number, _stop: number, _withScores: string): Promise<string[]> {
+		const entries = [...(this.zsets.get(key) ?? new Map()).entries()].sort((a, b) => a[1] - b[1]);
+		return entries.flatMap(([member, score]) => [member, String(score)]);
 	}
 
 	public async expire(...args: unknown[]): Promise<number> {
@@ -195,7 +233,18 @@ function tasteBatchService(db: { query: ReturnType<typeof jest.fn> }, redis: Fak
 }
 
 function writePipelines(redis: FakeRedis): RedisOp[][] {
-	return redis.pipelineExecs.filter(ops => ops.some(op => op.kind === 'zadd' || op.kind === 'del'));
+	const isServeKey = (value: unknown): boolean => {
+		const key = String(value);
+		return key.startsWith(HANAMI_TASTE_MATCH_KEY_PREFIX)
+			&& !key.startsWith(HANAMI_TASTE_MATCH_RAW_KEY_PREFIX)
+			&& !key.startsWith(HANAMI_TASTE_MATCH_RAW_META_KEY_PREFIX)
+			&& !key.startsWith(HANAMI_TASTE_MATCH_STATE_KEY_PREFIX)
+			&& !key.startsWith(HANAMI_TASTE_MATCH_META_KEY_PREFIX);
+	};
+	return redis.pipelineExecs.filter(ops => ops.some(op => (
+		(op.kind === 'zadd' && isServeKey(op.args[0])) ||
+		(op.kind === 'del' && isServeKey(op.args[0]))
+	)));
 }
 
 function zaddScores(ops: RedisOp[]): Map<string, number> {
@@ -250,6 +299,90 @@ afterEach(() => {
 });
 
 describe('HanamiTasteClusterBatchService reactionSimilar match', () => {
+	test('通常tickはupdatedAt overlap内だけを再照合し、既存rawを鮮度再計算して再publishする', async () => {
+		jest.spyOn(Date, 'now').mockReturnValue(NOW);
+		const redis = new FakeRedis();
+		const unchanged = noteId(3 * HOUR, 'raw-unchanged');
+		const changed = noteId(2 * HOUR, 'raw-changed');
+		let matchQuery = 0;
+		const db = {
+			query: jest.fn(async (sql: string, params: unknown[]) => {
+				if (sql.includes('FROM "hanami_foryou_taste_state"')) return [{ meanVec: [0, 0] }];
+				if (sql.includes('FROM "hanami_note_embedding" e')) {
+					matchQuery++;
+					if (matchQuery === 1) {
+						expect(params[3]).toBe(true);
+						return [
+							{ nid: unchanged, aid: 'author-a', emb: [0.8, 0.6], updatedAt: new Date(NOW - HOUR) },
+							{ nid: changed, aid: 'author-b', emb: [0.9, Math.sqrt(0.19)], updatedAt: new Date(NOW - HOUR) },
+						];
+					}
+					expect(params[3]).toBe(false);
+					expect((params[4] as Date).getTime()).toBe(NOW - 2 * HOUR);
+				return [{ nid: changed, aid: 'author-b', emb: [0.1, Math.sqrt(0.99)], updatedAt: new Date(NOW - HOUR) }];
+				}
+				throw new Error(`unexpected query: ${sql}`);
+			}),
+		};
+		const service = tasteBatchService(db, redis);
+		const compute = (service as unknown as {
+			computeTasteMatches: (log: ReturnType<typeof logger>, token: string, rows: unknown[], active: Set<string>) => Promise<unknown>;
+		}).computeTasteMatches.bind(service);
+		const clusters = [{ uid: 'u', cid: 7, centroid: [1, 0], userWeight: 1 }];
+
+		await compute(logger(), 'first', clusters, new Set(['u']));
+		expect(redis.zsets.get(HANAMI_TASTE_MATCH_RAW_KEY_PREFIX + 'u')?.get(unchanged)).toBeCloseTo(0.8);
+		expect(redis.hashes.get(HANAMI_TASTE_MATCH_RAW_META_KEY_PREFIX + 'u')?.[unchanged]).toBe('author-a:7');
+
+		await compute(logger(), 'second', clusters, new Set(['u']));
+
+		const raw = redis.zsets.get(HANAMI_TASTE_MATCH_RAW_KEY_PREFIX + 'u');
+		expect(raw?.get(unchanged)).toBeCloseTo(0.8);
+		expect(raw?.has(changed)).toBe(false);
+		const served = redis.zsets.get(HANAMI_TASTE_MATCH_KEY_PREFIX + 'u');
+		expect(served?.get(`${unchanged}:author-a:7`)).toBeCloseTo(0.8);
+		expect(redis.hashes.get(HANAMI_TASTE_MATCH_STATE_KEY_PREFIX + 'u')?.cursor).toBe(String(NOW));
+		expect(matchQuery).toBe(2);
+	});
+
+	test('raw欠損・入力ベクトル変更・定期reconciliationはユーザーをfull rebuildへ戻す', async () => {
+		jest.spyOn(Date, 'now').mockReturnValue(NOW);
+		const redis = new FakeRedis();
+		const candidate = noteId(HOUR, 'full-fallback');
+		const fullFlags: boolean[] = [];
+		let meanVec = [0, 0];
+		const db = {
+			query: jest.fn(async (sql: string, params: unknown[]) => {
+				if (sql.includes('FROM "hanami_foryou_taste_state"')) return [{ meanVec }];
+				if (sql.includes('WHERE n.id = ANY')) {
+					return [1, 2, 3].map(i => ({ nid: noteId(i * HOUR, `recent-full-${i}`), aid: `recent-author-${i}`, emb: [0, 1] }));
+				}
+				if (sql.includes('FROM "hanami_note_embedding" e')) {
+					fullFlags.push(params[3] as boolean);
+					return [{ nid: candidate, aid: 'author', emb: [1, 0], updatedAt: new Date(NOW - HOUR) }];
+				}
+				throw new Error(`unexpected query: ${sql}`);
+			}),
+		};
+		const service = tasteBatchService(db, redis);
+		const compute = (service as unknown as {
+			computeTasteMatches: (log: ReturnType<typeof logger>, token: string, rows: unknown[], active: Set<string>) => Promise<unknown>;
+		}).computeTasteMatches.bind(service);
+
+		await compute(logger(), 'initial', [{ uid: 'u', cid: 7, centroid: [1, 0], userWeight: 1 }], new Set(['u']));
+		redis.zsets.delete(HANAMI_TASTE_MATCH_RAW_KEY_PREFIX + 'u');
+		await compute(logger(), 'missing', [{ uid: 'u', cid: 7, centroid: [1, 0], userWeight: 1 }], new Set(['u']));
+		await compute(logger(), 'cluster-change', [{ uid: 'u', cid: 7, centroid: [0, 1], userWeight: 1 }], new Set(['u']));
+		meanVec = [0.1, 0];
+		await compute(logger(), 'mean-change', [{ uid: 'u', cid: 7, centroid: [0, 1], userWeight: 1 }], new Set(['u']));
+		for (let i = 1; i <= 3; i++) addRecent(redis, 'u', noteId(i * HOUR, `recent-full-${i}`), 'r');
+		await compute(logger(), 'recent-change', [{ uid: 'u', cid: 7, centroid: [0, 1], userWeight: 1 }], new Set(['u']));
+		redis.hashes.get(HANAMI_TASTE_MATCH_STATE_KEY_PREFIX + 'u')!.reconciledAt = String(NOW - 6 * HOUR);
+		await compute(logger(), 'periodic', [{ uid: 'u', cid: 7, centroid: [0, 1], userWeight: 1 }], new Set(['u']));
+
+		expect(fullFlags).toEqual([true, true, true, true, true, true]);
+	});
+
 	test('runTasteTick で閾値・作者cap・鮮度・active・Redis置換順を守る', async () => {
 		jest.spyOn(Date, 'now').mockReturnValue(NOW);
 		const redis = new FakeRedis();

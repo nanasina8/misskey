@@ -4,6 +4,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { cpus, tmpdir } from 'node:os';
@@ -17,7 +18,7 @@ import { bindThis } from '@/decorators.js';
 import { IdService } from '@/core/IdService.js';
 import { HanamiTokenizerService } from '@/core/hanami/tokenize/HanamiTokenizerService.js';
 import * as mfm from 'mfm-js';
-import { HANAMI_TASTE_MATCH_KEY_PREFIX, HANAMI_TASTE_MATCH_META_KEY_PREFIX, HANAMI_RECENT_ACT_KEY_PREFIX, HANAMI_FORYOU_ACTIVE_KEY_PREFIX } from '@/core/hanami/HanamiForYouKeys.js';
+import { HANAMI_TASTE_MATCH_KEY_PREFIX, HANAMI_TASTE_MATCH_META_KEY_PREFIX, HANAMI_TASTE_MATCH_RAW_KEY_PREFIX, HANAMI_TASTE_MATCH_RAW_META_KEY_PREFIX, HANAMI_TASTE_MATCH_STATE_KEY_PREFIX, HANAMI_RECENT_ACT_KEY_PREFIX, HANAMI_FORYOU_ACTIVE_KEY_PREFIX } from '@/core/hanami/HanamiForYouKeys.js';
 import { pureRenoteSql } from '@/misc/is-renote.js';
 import type Logger from '@/logger.js';
 
@@ -90,6 +91,10 @@ export const TASTE_MATCH_WINDOW_MS = 24 * 60 * 60 * 1000; // serve 側の窓外�
 const TASTE_MATCH_TAU = 0.5;
 const TASTE_MATCH_TOP_N = 300;
 const TASTE_MATCH_KEY_TTL_SEC = 48 * 60 * 60; // バッチ停止時に古い推薦が残り続けない保険
+const TASTE_MATCH_STATE_TTL_SEC = 15 * 24 * 60 * 60;
+// updatedAt は commit 時刻ではないため広めに再読込し、定期全照合で overlap 外の遅延 commit も回収する。
+const TASTE_MATCH_CURSOR_OVERLAP_MS = 2 * 60 * 60 * 1000;
+const TASTE_MATCH_RECONCILE_MS = 6 * 60 * 60 * 1000;
 // zset score は cos でなく cos×鮮度（v0.6 敵対レビュー#6）: cos 順だと強マッチが24h上位に居座り、
 // TOP_N が効く状況で新着の弱マッチが候補集合に入れない。毎10分フル再計算なので鮮度は自然に更新される。
 const TASTE_MATCH_FRESHNESS_BUCKETS: { withinMs: number; weight: number }[] = [
@@ -148,6 +153,13 @@ type TasteClusterForMatch = {
 	cid: number;
 	userWeight: number;
 	centroid: Float32Array;
+};
+
+type TasteMatchNoteRow = {
+	nid: string;
+	emb: number[];
+	aid: string;
+	updatedAt: Date | string;
 };
 
 type RecentAction = {
@@ -227,6 +239,7 @@ function float32ToFloat16Bits(val: number): number {
 	}
 	return sign | (e << 10) | (frac >> 13);
 }
+
 const f32 = new Float32Array(1);
 const u32 = new Uint32Array(f32.buffer);
 
@@ -644,12 +657,12 @@ export class HanamiTasteClusterBatchService {
 	// ───────────────────────── 興味マッチ新着（reactionSimilar 軸）の事前計算 ─────────────────────────
 
 	/**
-	 * 直近24hの埋め込み済み全ノート（人気条件なし）をユーザーの taste クラスタ / recentVec と照合し、
-	 * ユーザー別 zset（member=noteId:authorId:{clusterId|r} / score=max(cos_cluster, cos_recent)×鮮度）を全置換する。
+	 * 新規・更新された埋め込みをユーザー別 raw へ差分反映し、raw 全体から窓・鮮度・作者capを再評価して
+	 * serve zset（member=noteId:authorId:{clusterId|r} / score=max(cos_cluster, cos_recent)×鮮度）を全置換する。
 	 *
 	 * 10分スイープの直後に呼ぶ: 新着はどのみち埋め込まれるまで候補になれないので、鮮度の追加損失ゼロで
-	 * 「サーブは事前計算の取り出し」の原則を保てる。毎回フル再計算（ステートレス＝Redis 消失・クラスタ
-	 * 再構築・userWeight 変更・窓スライドすべて次回実行≦10分で自己回復）。
+	 * 「サーブは事前計算の取り出し」の原則を保てる。入力指紋変更・Redis消失時と定期reconciliationは
+	 * ユーザー単位でフル再構築する。
 	 */
 	/**
 	 * 10分 tick の本体: recent backfill→埋め込みスイープ→短期量計算→興味マッチ事前計算を1ロックの下で順に実行する。
@@ -965,145 +978,195 @@ export class HanamiTasteClusterBatchService {
 		if (meanVec == null || meanVec.length === 0) return { users: 0, notes: 0 };
 
 		const recent = await this.computeRecentInterest(activeUids, byUser, meanVec);
+		const signature = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('base64url');
+		const meanSig = signature(meanVec);
+		const inputs = new Map<string, { clusterSig: string; recentSig: string; full: boolean; cursor: number; reconciledAt: number }>();
+		const inputPipeline = this.redisClient.pipeline();
+		for (const uid of byUser.keys()) {
+			inputPipeline.exists(HANAMI_TASTE_MATCH_RAW_KEY_PREFIX + uid);
+			inputPipeline.exists(HANAMI_TASTE_MATCH_RAW_META_KEY_PREFIX + uid);
+			inputPipeline.hgetall(HANAMI_TASTE_MATCH_STATE_KEY_PREFIX + uid);
+		}
+		const inputRes = await inputPipeline.exec();
+		let inputIndex = 0;
+		for (const [uid, cls] of byUser) {
+			const rawExists = inputRes?.[inputIndex++]?.[1] === 1;
+			const rawMetaExists = inputRes?.[inputIndex++]?.[1] === 1;
+			const state = (inputRes?.[inputIndex++]?.[1] ?? {}) as Record<string, string>;
+			const clusterSig = signature(cls.map(c => [c.cid, c.userWeight, [...c.centroid]]));
+			const recentVec = recent.byUser.get(uid)?.recentVec ?? null;
+			// 時間減衰の共通倍率が正規化で相殺された際のfloat丸め揺れは、意味上の変更として扱わない。
+			const recentSig = signature(recentVec == null ? null : [...recentVec].map(value => Math.round(value * 1e6)));
+			const cursor = Number(state.cursor ?? 0);
+			const reconciledAt = Number(state.reconciledAt ?? 0);
+			const rawMissing = state.rawCount !== '0' && (!rawExists || !rawMetaExists);
+			const full = rawMissing || !Number.isFinite(cursor) || cursor <= 0
+				|| state.meanSig !== meanSig || state.clusterSig !== clusterSig || state.recentSig !== recentSig
+				|| !Number.isFinite(reconciledAt) || startedAt - reconciledAt >= TASTE_MATCH_RECONCILE_MS;
+			inputs.set(uid, { clusterSig, recentSig, full, cursor, reconciledAt });
+		}
 
-		// 配信可能な新着だけ（public/home・チャンネル外・リプライ以外・bot以外）。
-		// 鍵（followers）ノートは学習専用なのでここには乗せない。
-		// isExplorable=FALSE の作者は載せない（v0.6 #5: 低反応投稿を本人の合図なしに広域配信する軸なので、
-		// 「発見されたくない」意思表示は fof と同様に尊重する。人気系軸より一段厳しくてよい）。
-		const sinceId = this.idService.gen(Date.now() - TASTE_MATCH_WINDOW_MS);
+		const incremental = [...inputs.values()].filter(input => !input.full);
+		const earliestUpdatedAt = incremental.length === 0
+			? startedAt
+			: Math.min(...incremental.map(input => input.cursor - TASTE_MATCH_CURSOR_OVERLAP_MS));
+		const needFullRows = [...inputs.values()].some(input => input.full);
+		const sinceId = this.idService.gen(startedAt - TASTE_MATCH_WINDOW_MS);
+		// Full 時も差分時も現在配信可能な行だけを読む。削除・visibility/作者eligibility変更は6時間ごとの full でrawから消える。
 		const noteRows = await this.db.query(
-			`SELECT e."noteId" AS nid, e.embedding AS emb, n."userId" AS aid
+			`SELECT e."noteId" AS nid, e.embedding AS emb, e."updatedAt" AS "updatedAt", n."userId" AS aid
 			 FROM "hanami_note_embedding" e
 			 JOIN note n ON n.id = e."noteId"
 			 JOIN "user" u ON u.id = n."userId"
-			 WHERE e.model = $1 AND e."noteId" >= $2
+			 WHERE e.model = $1 AND e."noteId" >= $2 AND e."updatedAt" < $3
+			   AND ($4::boolean OR e."updatedAt" >= $5)
 			   AND n.visibility IN ('public','home') AND n."channelId" IS NULL AND n."replyId" IS NULL
 			   AND u."isBot" = FALSE AND u."isSuspended" = FALSE AND u."isExplorable" = TRUE`,
-			[TASTE_EMBED_MODEL, sinceId],
-		) as { nid: string; emb: number[]; aid: string }[];
-		if (noteRows.length === 0) {
-			logger.info(`hanami taste recent: recentUsers=${recent.recentUsers} recentActions=${recent.recentActions} cosRecentMs=0`);
-			return { users: 0, notes: 0 };
-		}
+			[TASTE_EMBED_MODEL, sinceId, new Date(startedAt), needFullRows, new Date(earliestUpdatedAt)],
+		) as TasteMatchNoteRow[];
 
-		// 平均中心化＋正規化はユーザー数に依らず1回だけ（クラスタ割当と同じ前処理）。
 		const dim = meanVec.length;
-		const mat = new Float32Array(noteRows.length * dim);
-		for (let r = 0; r < noteRows.length; r++) {
-			const emb = noteRows[r].emb;
-			const off = r * dim;
-			let norm = 0;
-			for (let i = 0; i < dim; i++) {
-				const v = (emb[i] ?? 0) - meanVec[i];
-				mat[off + i] = v;
-				norm += v * v;
-			}
-			norm = Math.sqrt(norm) || 1;
-			for (let i = 0; i < dim; i++) mat[off + i] /= norm;
-		}
-
-		// 鮮度（cos に乗算して zset score へ焼き込む。毎10分フル再計算なので自然に更新される）。
-		const now = Date.now();
-		const freshnessOf = (nid: string): number => {
-			const age = now - this.idService.parse(nid).date.getTime();
-			for (const b of TASTE_MATCH_FRESHNESS_BUCKETS) {
-				if (age <= b.withinMs) return b.weight;
-			}
-			return TASTE_MATCH_FRESHNESS_FLOOR;
-		};
-		const freshness = noteRows.map(r => freshnessOf(r.nid));
-
+		const normalized = new Map<string, Float32Array>();
+		for (const row of noteRows) normalized.set(row.nid, this.centeredVector(row.emb, meanVec).normalized);
 		let users = 0;
 		let cosRecentMs = 0;
 		const matchCounts: number[] = [];
 		for (const [uid, cls] of byUser) {
+			const input = inputs.get(uid)!;
+			const rows = input.full ? noteRows : noteRows.filter(row => new Date(row.updatedAt).getTime() >= input.cursor - TASTE_MATCH_CURSOR_OVERLAP_MS);
 			const visibleClusters = cls.filter(cl => cl.userWeight > 0);
 			const hiddenClusters = cls.filter(cl => cl.userWeight <= 0);
 			const recentVec = recent.byUser.get(uid)?.recentVec ?? null;
-			const matches: { member: string; aid: string; score: number }[] = [];
+			const matches: { nid: string; aid: string; bucket: string; score: number }[] = [];
 			const recentCandidateLoopStartedAt = recentVec == null ? null : Date.now();
-			for (let r = 0; r < noteRows.length; r++) {
-				if (noteRows[r].aid === uid) continue; // 自分の投稿は推薦しない
-				const off = r * dim;
+			for (const row of rows) {
+				if (row.aid === uid) continue;
+				const vec = normalized.get(row.nid)!;
 				let bestVisibleCos = -Infinity;
 				let bestVisibleCid = -1;
 				for (const cl of visibleClusters) {
-					const cen = cl.centroid;
-					const n = Math.min(dim, cen.length);
-					let dot = 0;
-					for (let i = 0; i < n; i++) dot += mat[off + i] * cen[i];
-					if (dot > bestVisibleCos) { bestVisibleCos = dot; bestVisibleCid = cl.cid; }
+					const cos = this.dot(vec, cl.centroid, dim);
+					if (cos > bestVisibleCos) { bestVisibleCos = cos; bestVisibleCid = cl.cid; }
 				}
 				let bestHiddenCos = -Infinity;
-				for (const cl of hiddenClusters) {
-					const cen = cl.centroid;
-					const n = Math.min(dim, cen.length);
-					let dot = 0;
-					for (let i = 0; i < n; i++) dot += mat[off + i] * cen[i];
-					if (dot > bestHiddenCos) bestHiddenCos = dot;
-				}
-				let cosRecent: number | null = null;
-				if (recentVec != null) {
-					let dot = 0;
-					for (let i = 0; i < dim; i++) dot += mat[off + i] * recentVec[i];
-					cosRecent = dot;
-				}
-
+				for (const cl of hiddenClusters) bestHiddenCos = Math.max(bestHiddenCos, this.dot(vec, cl.centroid, dim));
+				const cosRecent = recentVec == null ? null : this.dot(vec, recentVec, dim);
 				if (bestHiddenCos >= TASTE_MATCH_TAU) continue;
 				const clusterAdopted = bestVisibleCid >= 0 && bestVisibleCos >= TASTE_MATCH_TAU;
 				const recentAdopted = cosRecent != null && cosRecent >= TAU_RECENT;
 				if (!clusterAdopted && !recentAdopted) continue;
-				const bucket = clusterAdopted ? String(bestVisibleCid) : 'r';
-				const scoreCos = Math.max(clusterAdopted ? bestVisibleCos : -Infinity, cosRecent ?? -Infinity);
 				matches.push({
-					member: `${noteRows[r].nid}:${noteRows[r].aid}:${bucket}`,
-					aid: noteRows[r].aid,
-					score: scoreCos * freshness[r],
+					nid: row.nid,
+					aid: row.aid,
+					bucket: clusterAdopted ? String(bestVisibleCid) : 'r',
+					score: Math.max(clusterAdopted ? bestVisibleCos : -Infinity, cosRecent ?? -Infinity),
 				});
 			}
 			if (recentCandidateLoopStartedAt != null) cosRecentMs += Date.now() - recentCandidateLoopStartedAt;
-			// score 降順＋作者cap（同一作者の連投/コピペが TOP_N を占領しない）。
-			matches.sort((a, b) => b.score - a.score);
-			const top: typeof matches = [];
+
+			const rawKey = HANAMI_TASTE_MATCH_RAW_KEY_PREFIX + uid;
+			const rawMetaKey = HANAMI_TASTE_MATCH_RAW_META_KEY_PREFIX + uid;
+			const rawWrite = this.redisClient.pipeline();
+			if (input.full) {
+				const rawTmp = `${rawKey}:tmp:${runToken}`;
+				const metaTmp = `${rawMetaKey}:tmp:${runToken}`;
+				// 途中失敗時に旧stateだけが残って差分扱いされないよう、full開始時にstateを無効化する。
+				rawWrite.del(HANAMI_TASTE_MATCH_STATE_KEY_PREFIX + uid);
+				rawWrite.del(rawTmp, metaTmp);
+				if (matches.length === 0) {
+					rawWrite.del(rawKey, rawMetaKey);
+				} else {
+					const zargs: (string | number)[] = [];
+					const fields: Record<string, string> = {};
+					for (const match of matches) { zargs.push(match.score, match.nid); fields[match.nid] = `${match.aid}:${match.bucket}`; }
+					rawWrite.zadd(rawTmp, ...zargs);
+					rawWrite.hset(metaTmp, fields);
+					rawWrite.rename(rawTmp, rawKey);
+					rawWrite.rename(metaTmp, rawMetaKey);
+				}
+			} else if (rows.length > 0) {
+				const changedIds = rows.map(row => row.nid);
+				rawWrite.zrem(rawKey, ...changedIds);
+				rawWrite.hdel(rawMetaKey, ...changedIds);
+				if (matches.length > 0) {
+					const zargs: (string | number)[] = [];
+					const fields: Record<string, string> = {};
+					for (const match of matches) { zargs.push(match.score, match.nid); fields[match.nid] = `${match.aid}:${match.bucket}`; }
+					rawWrite.zadd(rawKey, ...zargs);
+					rawWrite.hset(rawMetaKey, fields);
+				}
+			}
+			rawWrite.expire(rawKey, TASTE_MATCH_KEY_TTL_SEC);
+			rawWrite.expire(rawMetaKey, TASTE_MATCH_KEY_TTL_SEC);
+			this.throwOnRedisPipelineError(await rawWrite.exec(), `raw write for ${uid}`);
+
+			const raw = await this.redisClient.zrange(rawKey, 0, -1, 'WITHSCORES') as string[];
+			const rawMeta = await this.redisClient.hgetall(rawMetaKey);
+			const stale: string[] = [];
+			const publish: { member: string; aid: string; score: number }[] = [];
+			for (let i = 0; i + 1 < raw.length; i += 2) {
+				const nid = raw[i];
+				const age = startedAt - this.idService.parse(nid).date.getTime();
+				const meta = rawMeta[nid];
+				const split = meta?.lastIndexOf(':') ?? -1;
+				const baseCos = Number(raw[i + 1]);
+				if (age > TASTE_MATCH_WINDOW_MS || age < 0 || split <= 0 || !Number.isFinite(baseCos)) { stale.push(nid); continue; }
+				const aid = meta.slice(0, split);
+				const bucket = meta.slice(split + 1);
+				let freshness = TASTE_MATCH_FRESHNESS_FLOOR;
+				for (const b of TASTE_MATCH_FRESHNESS_BUCKETS) if (age <= b.withinMs) { freshness = b.weight; break; }
+				publish.push({ member: `${nid}:${aid}:${bucket}`, aid, score: baseCos * freshness });
+			}
+			if (stale.length > 0) {
+				const prune = this.redisClient.pipeline().zrem(rawKey, ...stale).hdel(rawMetaKey, ...stale);
+				this.throwOnRedisPipelineError(await prune.exec(), `raw prune for ${uid}`);
+			}
+			publish.sort((a, b) => b.score - a.score);
+			const top: typeof publish = [];
 			const perAuthor = new Map<string, number>();
-			for (const m of matches) {
+			for (const match of publish) {
 				if (top.length >= TASTE_MATCH_TOP_N) break;
-				const c = perAuthor.get(m.aid) ?? 0;
-				if (c >= TASTE_MATCH_AUTHOR_CAP) continue;
-				perAuthor.set(m.aid, c + 1);
-				top.push(m);
+				const count = perAuthor.get(match.aid) ?? 0;
+				if (count >= TASTE_MATCH_AUTHOR_CAP) continue;
+				perAuthor.set(match.aid, count + 1);
+				top.push(match);
 			}
 			matchCounts.push(top.length);
 
 			const key = HANAMI_TASTE_MATCH_KEY_PREFIX + uid;
-			const pipeline = this.redisClient.pipeline();
-			if (top.length === 0) {
-				pipeline.del(key);
-			} else {
-				// tmp キーへ書いて rename＝サーブ側から見て常に完全な集合（部分書き込みを見せない）。
-				// tmp 名に runToken を含め、TTL 超過で並走した旧実行と同じ tmp を触り合わない（v0.7 R2-M3）。
-				// 短い expire で孤児 tmp（rename 前クラッシュ）も自然消滅させる。
+			const serveWrite = this.redisClient.pipeline();
+			if (top.length === 0) serveWrite.del(key);
+			else {
 				const tmp = `${key}:tmp:${runToken}`;
 				const args: (string | number)[] = [];
-				for (const m of top) args.push(m.score, m.member);
-				pipeline.zadd(tmp, ...args);
-				pipeline.expire(tmp, 600);
-				pipeline.rename(tmp, key);
-				pipeline.expire(key, TASTE_MATCH_KEY_TTL_SEC);
+				for (const match of top) args.push(match.score, match.member);
+				serveWrite.zadd(tmp, ...args).expire(tmp, 600).rename(tmp, key).expire(key, TASTE_MATCH_KEY_TTL_SEC);
 			}
-			const res = await pipeline.exec();
-			const failed = res?.find(([err]) => err != null);
-			if (failed?.[0] != null) logger.warn(`hanami taste match: redis write failed for ${uid}: ${failed[0].message}`);
+			this.throwOnRedisPipelineError(await serveWrite.exec(), `publish for ${uid}`);
+			await this.redisClient.hset(HANAMI_TASTE_MATCH_STATE_KEY_PREFIX + uid, {
+				cursor: String(startedAt),
+				reconciledAt: String(input.full ? startedAt : input.reconciledAt),
+				rawCount: String(publish.length),
+				meanSig,
+				clusterSig: input.clusterSig,
+				recentSig: input.recentSig,
+			});
+			await this.redisClient.expire(HANAMI_TASTE_MATCH_STATE_KEY_PREFIX + uid, TASTE_MATCH_STATE_TTL_SEC);
 			users++;
 		}
 		matchCounts.sort((a, b) => a - b);
 		const elapsed = Date.now() - startedAt;
 		const med = matchCounts[Math.floor(matchCounts.length / 2)] ?? 0;
 		logger.info(`hanami taste recent: recentUsers=${recent.recentUsers} recentActions=${recent.recentActions} cosRecentMs=${cosRecentMs}`);
-		logger.info(`hanami taste match: ${users} users x ${noteRows.length} notes in ${elapsed}ms (matches min=${matchCounts[0] ?? 0} med=${med} max=${matchCounts.at(-1) ?? 0})`);
+		logger.info(`hanami taste match: ${users} users x ${noteRows.length} changed/full notes in ${elapsed}ms (matches min=${matchCounts[0] ?? 0} med=${med} max=${matchCounts.at(-1) ?? 0})`);
 		// 実行時間がここを超え始めたら ANN/差分更新化（spec §9.4）を検討する。
 		if (elapsed > TASTE_MATCH_SLOW_WARN_MS) logger.warn(`hanami taste match: slow run ${elapsed}ms (users=${users}, notes=${noteRows.length}) — consider ANN/incremental`);
 		return { users, notes: noteRows.length };
+	}
+
+	private throwOnRedisPipelineError(result: [Error | null, unknown][] | null, operation: string): void {
+		const error = result?.find(([err]) => err != null)?.[0];
+		if (error != null) throw new Error(`hanami taste match ${operation}: ${error.message}`);
 	}
 
 	// ───────────────────────── 日次クラスタバッチ ─────────────────────────

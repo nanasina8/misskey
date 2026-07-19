@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import * as Path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Inject, Injectable } from '@nestjs/common';
-import { DataSource } from 'typeorm';
+import { DataSource, type QueryRunner } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import { IdService } from '@/core/IdService.js';
@@ -38,6 +38,9 @@ const RELATION_WEIGHT = { reaction: 1.0, reply: 2.5, renote: 1.5 } as const;
 const RELATION_INBOUND_COEF = 0.8;
 const RELATION_MUTUAL_COEF = 1.5;
 const RELATION_INSERT_CHUNK = 1000;
+const INTERACTION_ROLLUP_DAYS = 240;
+const INTERACTION_ROLLUP_RECENT_DAYS = 7;
+const INTERACTION_ROLLUP_LOCK = 'hanami_foryou_interaction_daily_refresh_v1';
 
 // 相互RNペア検出（リング減衰）の集計窓
 const RN_RING_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -69,6 +72,26 @@ const EMBEDDING_PROCESS_TIMEOUT_MS = 30 * 60 * 1000;
 
 type RelationAccumKey = string; // `${me}\t${other}`
 type RelationAccum = { out: number; in: number };
+type InteractionSignal = keyof typeof RELATION_WEIGHT;
+
+function utcDay(date: Date): string {
+	return date.toISOString().slice(0, 10);
+}
+
+function addUtcDays(day: string, days: number): string {
+	const date = new Date(`${day}T00:00:00.000Z`);
+	date.setUTCDate(date.getUTCDate() + days);
+	return utcDay(date);
+}
+
+/** UTC日rollupのため、rolling境界はraw集計と最大1日ずれる。 */
+export function hanamiRelationDecayForUtcDay(day: string, now: Date): number {
+	const today = utcDay(now);
+	if (day >= addUtcDays(today, -30)) return 0.9;
+	if (day >= addUtcDays(today, -90)) return 0.65;
+	if (day >= addUtcDays(today, -180)) return 0.45;
+	return 0.28;
+}
 
 type AlsOutput = {
 	userFactors: { userId: string; factor: number[]; evidenceCount: number }[];
@@ -90,6 +113,8 @@ type AlsOutput = {
  */
 @Injectable()
 export class HanamiForYouBatchService {
+	private interactionRollupReady = false;
+
 	constructor(
 		@Inject(DI.db)
 		private db: DataSource,
@@ -106,6 +131,14 @@ export class HanamiForYouBatchService {
 
 	@bindThis
 	public async runAll(logger: Logger): Promise<void> {
+		try {
+			this.interactionRollupReady = await this.refreshInteractionRollup();
+			logger.succ(`hanami foryou: interaction daily rollup ${this.interactionRollupReady ? 'ready' : 'not ready; using raw fallback'}`);
+		} catch (err) {
+			this.interactionRollupReady = false;
+			logger.warn(`hanami foryou: interaction daily rollup failed; using raw fallback: ${(err as Error).message}`);
+		}
+
 		// 関係値（純SQL・検証可能）。
 		try {
 			const n = await this.runRelationBatch();
@@ -209,8 +242,34 @@ export class HanamiForYouBatchService {
 			a[dir] += w;
 		};
 
-		// OUT reactions: me が other のノートに反応。reaction には createdAt 列が無いので id 窓＋バケット減衰。
-		{
+		if (!this.interactionRollupReady) {
+			this.interactionRollupReady = await this.refreshInteractionRollup().catch(() => false);
+		}
+		if (this.interactionRollupReady) {
+			try {
+				const today = utcDay(new Date(now));
+				const rows = await this.db.query(
+					`WITH weighted AS (
+						SELECT "actorUserId" AS me, "targetUserId" AS other, 'out' AS dir, signal,
+						       sum(count * CASE WHEN day >= $2::date THEN 0.9 WHEN day >= $3::date THEN 0.65 WHEN day >= $4::date THEN 0.45 ELSE 0.28 END) AS w
+						FROM "hanami_foryou_interaction_daily" d JOIN "user" u ON u.id = d."actorUserId"
+						WHERE day >= $1::date AND u.host IS NULL GROUP BY "actorUserId", "targetUserId", signal
+						UNION ALL
+						SELECT "targetUserId" AS me, "actorUserId" AS other, 'in' AS dir, signal,
+						       sum(count * CASE WHEN day >= $2::date THEN 0.9 WHEN day >= $3::date THEN 0.65 WHEN day >= $4::date THEN 0.45 ELSE 0.28 END) AS w
+						FROM "hanami_foryou_interaction_daily" d JOIN "user" u ON u.id = d."targetUserId"
+						WHERE day >= $1::date AND u.host IS NULL GROUP BY "targetUserId", "actorUserId", signal
+					) SELECT me, other, dir, signal, w FROM weighted`,
+					[addUtcDays(today, -INTERACTION_ROLLUP_DAYS), addUtcDays(today, -30), addUtcDays(today, -90), addUtcDays(today, -180)],
+				) as { me: string; other: string; dir: 'out' | 'in'; signal: InteractionSignal; w: string }[];
+				for (const row of rows) bump(row.me, row.other, row.dir, Number(row.w) * RELATION_WEIGHT[row.signal]);
+			} catch {
+				this.interactionRollupReady = false;
+			}
+		}
+
+		if (!this.interactionRollupReady) {
+			// OUT reactions: me が other のノートに反応。reaction には createdAt 列が無いので id 窓＋バケット減衰。
 			const rows = await this.db.query(
 				`SELECT r."userId" AS me, n."userId" AS other, SUM(${reactionDecayCase}) AS w
 				 FROM note_reaction r
@@ -221,7 +280,7 @@ export class HanamiForYouBatchService {
 				[minReactionId, decayT30, decayT90, decayT180],
 			) as { me: string; other: string; w: string }[];
 			for (const row of rows) bump(row.me, row.other, 'out', Number(row.w) * RELATION_WEIGHT.reaction);
-		}
+
 		// IN reactions: other が me のノートに反応。
 		{
 			const rows = await this.db.query(
@@ -243,6 +302,7 @@ export class HanamiForYouBatchService {
 		await this.accumulateNoteSignal(accum, bump, 'out', 'renoteUserId', noteDecayCase, minNoteId, decayT30, decayT90, decayT180, RELATION_WEIGHT.renote);
 		// IN renotes: other が me をリノート。
 		await this.accumulateNoteSignal(accum, bump, 'in', 'renoteUserId', noteDecayCase, minNoteId, decayT30, decayT90, decayT180, RELATION_WEIGHT.renote);
+		}
 
 		// 合成 → 行に。
 		const updatedAt = new Date();
@@ -279,6 +339,93 @@ export class HanamiForYouBatchService {
 		});
 
 		return relationRows.length;
+	}
+
+	/** 初回/UTC日初回は240日、それ以外は直近7日をDELETEして再集計する。 */
+	@bindThis
+	public async refreshInteractionRollup(now = new Date()): Promise<boolean> {
+		let stats: { c: number; latest: Date | string | null };
+		try {
+			const rows = await this.db.query(
+				`SELECT count(*)::int AS c, max("updatedAt") AS latest FROM "hanami_foryou_interaction_daily"`,
+			) as { c: number; latest: Date | string | null }[];
+			stats = rows[0] ?? { c: 0, latest: null };
+		} catch {
+			return false;
+		}
+
+		const today = utcDay(now);
+		const latest = stats.latest == null ? null : new Date(stats.latest);
+		const full = Number(stats.c) === 0 || latest == null || latest < new Date(`${today}T00:00:00.000Z`);
+		const days = full ? INTERACTION_ROLLUP_DAYS : INTERACTION_ROLLUP_RECENT_DAYS;
+		// Rolling N日をUTC日集計で安全側に覆うため、境界日を含むN+1暦日を再集計する。
+		const startDay = addUtcDays(today, -days);
+		const runner = this.db.createQueryRunner();
+		try {
+			await runner.connect();
+			await runner.startTransaction();
+			const lockRows = await runner.query(
+				`SELECT pg_try_advisory_xact_lock(hashtext($1)) AS locked`,
+				[INTERACTION_ROLLUP_LOCK],
+			) as { locked: boolean }[];
+			if (lockRows[0]?.locked !== true) {
+				await runner.rollbackTransaction();
+				return Number(stats.c) > 0;
+			}
+
+			await runner.query(
+				full
+					? `DELETE FROM "hanami_foryou_interaction_daily"`
+					: `DELETE FROM "hanami_foryou_interaction_daily" WHERE day >= $1::date`,
+				full ? [] : [startDay],
+			);
+			const ranges = this.createUtcIdRanges(startDay, today, now);
+			await this.insertInteractionRollup(runner, 'reaction', ranges, now);
+			await this.insertInteractionRollup(runner, 'reply', ranges, now);
+			await this.insertInteractionRollup(runner, 'renote', ranges, now);
+			await runner.commitTransaction();
+			const readyRows = await this.db.query(`SELECT EXISTS (SELECT 1 FROM "hanami_foryou_interaction_daily") AS ready`) as { ready: boolean }[];
+			return readyRows[0]?.ready === true;
+		} catch {
+			if (runner.isTransactionActive) await runner.rollbackTransaction().catch(() => undefined);
+			return false;
+		} finally {
+			await runner.release();
+		}
+	}
+
+	private createUtcIdRanges(startDay: string, today: string, now: Date): { day: string; minId: string; maxId: string }[] {
+		const ranges = [];
+		for (let day = startDay; day <= today; day = addUtcDays(day, 1)) {
+			const start = new Date(`${day}T00:00:00.000Z`).getTime();
+			const next = new Date(`${addUtcDays(day, 1)}T00:00:00.000Z`).getTime();
+			ranges.push({ day, minId: this.idService.gen(start), maxId: this.idService.gen(Math.min(next, now.getTime())) });
+		}
+		return ranges;
+	}
+
+	private async insertInteractionRollup(runner: QueryRunner, signal: InteractionSignal, ranges: { day: string; minId: string; maxId: string }[], updatedAt: Date): Promise<void> {
+		const params: unknown[] = [];
+		const values = ranges.map(range => {
+			const p = params.length;
+			params.push(range.day, range.minId, range.maxId);
+			return `($${p + 1}::date,$${p + 2}::varchar,$${p + 3}::varchar)`;
+		}).join(',');
+		params.push(updatedAt);
+		const joins = signal === 'reaction'
+			? `JOIN note_reaction x ON x.id >= d."minId" AND x.id < d."maxId" JOIN note n ON n.id = x."noteId"`
+			: `JOIN note x ON x.id >= d."minId" AND x.id < d."maxId"`;
+		const actor = `x."userId"`;
+		const target = signal === 'reaction' ? `n."userId"` : `x."${signal === 'reply' ? 'replyUserId' : 'renoteUserId'}"`;
+		await runner.query(
+			`INSERT INTO "hanami_foryou_interaction_daily" (day, signal, "actorUserId", "targetUserId", count, "updatedAt")
+			 SELECT d.day, '${signal}', ${actor}, ${target}, count(*)::int, $${params.length}
+			 FROM (VALUES ${values}) AS d(day, "minId", "maxId")
+			 ${joins}
+			 WHERE ${target} IS NOT NULL AND ${actor} <> ${target}
+			 GROUP BY d.day, ${actor}, ${target}`,
+			params,
+		);
 	}
 
 	/** reply/renote の note 由来シグナルを集計する。 */
@@ -320,27 +467,57 @@ export class HanamiForYouBatchService {
 		try {
 			// 1) user×author 反応行列を export。
 			const minId = this.idService.gen(Date.now() - ALS_REACTION_LOOKBACK_MS);
-			const matrixRows = await this.db.query(
-				`SELECT r."userId" AS u, n."userId" AS a, count(*)::int AS c
-				 FROM note_reaction r
-				 JOIN note n ON n.id = r."noteId"
-				 WHERE r.id >= $1 AND r."userId" <> n."userId"
-				 GROUP BY r."userId", n."userId"`,
-				[minId],
-			) as { u: string; a: string; c: number }[];
+			if (!this.interactionRollupReady) {
+				this.interactionRollupReady = await this.refreshInteractionRollup().catch(() => false);
+			}
+			let matrixRows: { u: string; a: string; c: number }[];
+			let localUserRows: { id: string }[];
+			if (this.interactionRollupReady) {
+				try {
+					const sinceDay = addUtcDays(utcDay(new Date()), -INTERACTION_ROLLUP_DAYS);
+					matrixRows = await this.db.query(
+						`SELECT "actorUserId" AS u, "targetUserId" AS a, sum(count)::int AS c
+						 FROM "hanami_foryou_interaction_daily"
+						 WHERE signal = 'reaction' AND day >= $1::date
+						 GROUP BY "actorUserId", "targetUserId"`,
+						[sinceDay],
+					) as { u: string; a: string; c: number }[];
+					localUserRows = await this.db.query(
+						`SELECT DISTINCT d."actorUserId" AS id
+						 FROM "hanami_foryou_interaction_daily" d JOIN "user" u ON u.id = d."actorUserId"
+						 WHERE d.signal = 'reaction' AND d.day >= $1::date AND u.host IS NULL`,
+						[sinceDay],
+					) as { id: string }[];
+				} catch {
+					this.interactionRollupReady = false;
+					matrixRows = [];
+					localUserRows = [];
+				}
+			} else {
+				matrixRows = [];
+				localUserRows = [];
+			}
+			if (!this.interactionRollupReady) {
+				matrixRows = await this.db.query(
+					`SELECT r."userId" AS u, n."userId" AS a, count(*)::int AS c
+					 FROM note_reaction r
+					 JOIN note n ON n.id = r."noteId"
+					 WHERE r.id >= $1 AND r."userId" <> n."userId"
+					 GROUP BY r."userId", n."userId"`,
+					[minId],
+				) as { u: string; a: string; c: number }[];
+				localUserRows = await this.db.query(
+					`SELECT DISTINCT r."userId" AS id
+					 FROM note_reaction r
+					 JOIN "user" u ON u.id = r."userId"
+					 WHERE r.id >= $1 AND u.host IS NULL`,
+					[minId],
+				) as { id: string }[];
+			}
 			if (matrixRows.length === 0) {
 				await this.markRun(runId, 'failed');
 				return { runId, status: 'failed' };
 			}
-
-			// recommend/neighbor を計算する対象 = ローカルユーザー（行列に存在する分）。
-			const localUserRows = await this.db.query(
-				`SELECT DISTINCT r."userId" AS id
-				 FROM note_reaction r
-				 JOIN "user" u ON u.id = r."userId"
-				 WHERE r.id >= $1 AND u.host IS NULL`,
-				[minId],
-			) as { id: string }[];
 
 			const input = {
 				matrix: matrixRows.map(r => [r.u, r.a, r.c]),
