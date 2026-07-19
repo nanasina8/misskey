@@ -64,7 +64,7 @@ router.useListener('change', ({ resolved }) => {
 <style lang="scss" module>
 .root {
 	height: 100%;
-	background-color: var(--MI_THEME-bg);
+	background-color: var(--MI-routerViewBg, var(--MI_THEME-bg));
 
 	/**
 	 * FIXME: Safari 26 で contain: layout を指定するとバグるので、hotfixとして _pageContainer の content: strict を上書き

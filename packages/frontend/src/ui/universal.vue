@@ -4,7 +4,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div :class="[$style.root, { '_forceShrinkSpacer': deviceKind === 'smartphone' }]">
+<div
+	:class="[$style.root, { '_forceShrinkSpacer': deviceKind === 'smartphone', [$style.withWallpaper]: withWallpaper }]"
+	:style="{ backgroundImage: wallpaper != null ? `linear-gradient(var(--MI_THEME-wallpaperOverlay, transparent), var(--MI_THEME-wallpaperOverlay, transparent)), url(${JSON.stringify(wallpaper)})` : '' }"
+>
 	<XTitlebar v-if="prefer.r.showTitlebar.value" style="flex-shrink: 0;"/>
 
 	<div :class="$style.nonTitlebarArea">
@@ -59,6 +62,8 @@ const XStatusBars = defineAsyncComponent(() => import('@/ui/_common_/statusbars.
 const XAnnouncements = defineAsyncComponent(() => import('@/ui/_common_/announcements.vue'));
 
 const isRoot = computed(() => mainRouter.currentRoute.value.name === 'index');
+const wallpaper = miLocalStorage.getItem('wallpaper');
+const withWallpaper = wallpaper != null;
 
 const DESKTOP_THRESHOLD = 1100;
 const MOBILE_THRESHOLD = 500;
@@ -131,6 +136,17 @@ $widgets-hide-threshold: 1090px;
 	display: flex;
 	flex-direction: column;
 	background: var(--MI_THEME-navBg);
+	background-position: center;
+	background-size: cover;
+	background-repeat: no-repeat;
+
+	&.withWallpaper {
+		--MI-routerViewBg: transparent;
+
+		.contents.withSidebarAndTitlebar {
+			background: transparent;
+		}
+	}
 }
 
 .nonTitlebarArea {

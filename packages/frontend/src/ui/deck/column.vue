@@ -49,14 +49,14 @@ import type { MenuItem } from '@/types/menu.js';
 import { updateColumn, swapLeftColumn, swapRightColumn, swapUpColumn, swapDownColumn, stackLeftColumn, popRightColumn, removeColumn, swapColumn } from '@/deck.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
-import { prefer } from '@/preferences.js';
+import { miLocalStorage } from '@/local-storage.js';
 import { DI } from '@/di.js';
 import { checkDragDataType, getDragData, setDragData } from '@/drag-and-drop.js';
 
 provide('shouldHeaderThin', true);
 provide('shouldOmitHeaderTitle', true);
 
-const withWallpaper = prefer.s['deck.wallpaper'] != null;
+const withWallpaper = miLocalStorage.getItem('wallpaper') != null;
 
 const props = withDefaults(defineProps<{
 	column: Column;

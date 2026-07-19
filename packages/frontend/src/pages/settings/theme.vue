@@ -200,6 +200,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<FormLink to="/theme-editor"><template #icon><i class="ti ti-paint"></i></template>{{ i18n.ts._theme.make }}</FormLink>
 			</div>
 		</FormSection>
+
+		<SearchMarker :keywords="['wallpaper']">
+			<MkButton v-if="wallpaper == null" @click="setWallpaper"><SearchLabel>{{ i18n.ts.setWallpaper }}</SearchLabel></MkButton>
+			<MkButton v-else @click="wallpaper = null">{{ i18n.ts.removeWallpaper }}</MkButton>
+		</SearchMarker>
 	</div>
 </SearchMarker>
 </template>
@@ -215,10 +220,12 @@ import * as os from '@/os.js';
 import MkSwitch from '@/components/MkSwitch.vue';
 import FormSection from '@/components/form/section.vue';
 import FormLink from '@/components/form/link.vue';
+import MkButton from '@/components/MkButton.vue';
 import MkFolder from '@/components/MkFolder.vue';
 import MkThemePreview from '@/components/MkThemePreview.vue';
 import MkInfo from '@/components/MkInfo.vue';
 import { getBuiltinThemesRef, getThemesRef, installTheme, parseThemeCode, removeTheme } from '@/theme.js';
+import { selectFile } from '@/utility/drive.js';
 import { isDeviceDarkmode } from '@/utility/is-device-darkmode.js';
 import { store } from '@/store.js';
 import { i18n } from '@/i18n.js';
@@ -226,6 +233,8 @@ import { instance } from '@/instance.js';
 import { uniqueBy } from '@/utility/array.js';
 import { definePage } from '@/page.js';
 import { prefer } from '@/preferences.js';
+import { miLocalStorage } from '@/local-storage.js';
+import { suggestReload } from '@/utility/reload-suggest.js';
 import { copyToClipboard } from '@/utility/copy-to-clipboard.js';
 import { checkDragDataType, getDragData, getPlainDragData, setDragData, setPlainDragData } from '@/drag-and-drop.js';
 
@@ -268,6 +277,7 @@ const lightThemeId = computed({
 });
 
 const syncDeviceDarkMode = prefer.model('syncDeviceDarkMode');
+const wallpaper = ref(miLocalStorage.getItem('wallpaper'));
 const themesCount = installedThemes.value.length;
 
 watch(syncDeviceDarkMode, () => {
@@ -275,6 +285,24 @@ watch(syncDeviceDarkMode, () => {
 		store.set('darkMode', isDeviceDarkmode());
 	}
 });
+
+watch(wallpaper, () => {
+	if (wallpaper.value == null) {
+		miLocalStorage.removeItem('wallpaper');
+	} else {
+		miLocalStorage.setItem('wallpaper', wallpaper.value);
+	}
+	suggestReload();
+});
+
+function setWallpaper(ev: MouseEvent) {
+	selectFile({
+		anchorElement: ev.currentTarget ?? ev.target,
+		multiple: false,
+	}).then(file => {
+		wallpaper.value = file.url;
+	});
+}
 
 async function toggleDarkMode() {
 	const value = !store.r.darkMode.value;

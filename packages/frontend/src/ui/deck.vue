@@ -10,7 +10,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<div :class="$style.nonTitlebarArea">
 		<XSidebar v-if="!isMobile && prefer.r['deck.navbarPosition'].value === 'left'"/>
 
-		<div :class="[$style.main, { [$style.withWallpaper]: withWallpaper, [$style.withSidebarAndTitlebar]: !isMobile && prefer.r['deck.navbarPosition'].value === 'left' && prefer.r.showTitlebar.value }]" :style="{ backgroundImage: prefer.s['deck.wallpaper'] != null ? `url(${ prefer.s['deck.wallpaper'] })` : '' }">
+		<div :class="[$style.main, { [$style.withWallpaper]: withWallpaper, [$style.withSidebarAndTitlebar]: !isMobile && prefer.r['deck.navbarPosition'].value === 'left' && prefer.r.showTitlebar.value }]" :style="{ backgroundImage: wallpaper != null ? `linear-gradient(var(--MI_THEME-wallpaperOverlay, transparent), var(--MI_THEME-wallpaperOverlay, transparent)), url(${JSON.stringify(wallpaper)})` : '' }">
 			<XNavbarH v-if="!isMobile && prefer.r['deck.navbarPosition'].value === 'top'" :acrylic="withWallpaper"/>
 
 			<XReloadSuggestion v-if="shouldSuggestReload"/>
@@ -95,6 +95,7 @@ import * as os from '@/os.js';
 import { $i } from '@/i.js';
 import { i18n } from '@/i18n.js';
 import { deviceKind } from '@/utility/device-kind.js';
+import { miLocalStorage } from '@/local-storage.js';
 import { prefer } from '@/preferences.js';
 import XMainColumn from '@/ui/deck/main-column.vue';
 import XTlColumn from '@/ui/deck/tl-column.vue';
@@ -146,7 +147,8 @@ window.addEventListener('resize', () => {
 
 // ポインターイベント非対応用に初期値はUAから出す
 const snapScroll = ref(deviceKind === 'smartphone' || deviceKind === 'tablet');
-const withWallpaper = prefer.s['deck.wallpaper'] != null;
+const wallpaper = miLocalStorage.getItem('wallpaper');
+const withWallpaper = wallpaper != null;
 const drawerMenuShowing = ref(false);
 const widgetsShowing = ref(false);
 const gap = prefer.r['deck.columnGap'];
@@ -247,6 +249,9 @@ window.document.documentElement.style.scrollBehavior = 'auto';
 	min-width: 0;
 	display: flex;
 	flex-direction: column;
+	background-position: center;
+	background-size: cover;
+	background-repeat: no-repeat;
 
 	&:not(.withWallpaper) {
 		background: var(--MI_THEME-deckBg);

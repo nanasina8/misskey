@@ -112,6 +112,14 @@
 		document.documentElement.classList.add('useSystemFont');
 	}
 
+	const wallpaper = localStorage.getItem('wallpaper');
+	if (wallpaper) {
+		document.documentElement.style.backgroundImage = `linear-gradient(var(--MI_THEME-wallpaperOverlay, transparent), var(--MI_THEME-wallpaperOverlay, transparent)), url(${JSON.stringify(wallpaper)})`;
+		document.documentElement.style.backgroundSize = 'cover';
+		document.documentElement.style.backgroundPosition = 'center';
+		document.documentElement.style.backgroundRepeat = 'no-repeat';
+	}
+
 	if (!isSafeMode) {
 		const customCss = localStorage.getItem('customCss');
 		if (customCss && customCss.length > 0) {

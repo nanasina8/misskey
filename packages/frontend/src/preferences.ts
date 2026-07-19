@@ -98,6 +98,13 @@ const io: StorageProvider = {
 	},
 };
 
+// deck.wallpaper から localStorage の壁紙設定への移行（いずれ削除する）
+// NOTE: PreferencesManager の正規化で未定義のキーは破棄されるため、コンストラクタより前に生の値を読む必要がある
+const legacyDeckWallpaper = miLocalStorage.getItemAsJson('preferences')?.preferences?.['deck.wallpaper']?.[0]?.[1];
+if (legacyDeckWallpaper != null && miLocalStorage.getItem('wallpaper') == null) {
+	miLocalStorage.setItem('wallpaper', legacyDeckWallpaper);
+}
+
 export const prefer = new PreferencesManager(io, $i);
 
 //#region タブ間同期

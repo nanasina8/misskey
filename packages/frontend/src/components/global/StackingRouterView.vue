@@ -211,7 +211,7 @@ router.useListener('replace', ({ fullPath }) => {
 			flex: 1;
 			width: 100%;
 			height: 100%;
-			background: var(--MI_THEME-bg);
+			background: var(--MI-routerViewBg, var(--MI_THEME-bg));
 		}
 	}
 }
