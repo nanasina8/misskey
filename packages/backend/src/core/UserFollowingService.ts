@@ -6,7 +6,9 @@
 import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { Brackets, IsNull } from 'typeorm';
-import type { MiLocalUser, MiPartialLocalUser, MiPartialRemoteUser, MiRemoteUser, MiUser } from '@/models/User.js';
+import type { DataSource } from 'typeorm';
+import { MiUser, type MiLocalUser, type MiPartialLocalUser, type MiPartialRemoteUser, type MiRemoteUser } from '@/models/User.js';
+import { MiFollowing } from '@/models/Following.js';
 import { IdentifiableError } from '@/misc/identifiable-error.js';
 import { QueueService } from '@/core/QueueService.js';
 import PerUserFollowingChart from '@/core/chart/charts/per-user-following.js';
@@ -51,6 +53,9 @@ export class UserFollowingService implements OnModuleInit {
 
 	constructor(
 		private moduleRef: ModuleRef,
+
+		@Inject(DI.db)
+		private db: DataSource,
 
 		@Inject(DI.config)
 		private config: Config,
@@ -239,19 +244,30 @@ export class UserFollowingService implements OnModuleInit {
 
 		let alreadyFollowed = false as boolean;
 
-		await this.followingsRepository.insert({
-			id: this.idService.gen(),
-			followerId: follower.id,
-			followeeId: followee.id,
-			withReplies: withReplies,
+		await this.db.transaction(async em => {
+			const followerState = follower.host == null
+				? await em.findOneOrFail(MiUser, {
+					where: { id: follower.id },
+					select: ['id', 'isHibernated'],
+					lock: { mode: 'pessimistic_read' },
+				})
+				: null;
 
-			// 非正規化
-			followerHost: follower.host,
-			followerInbox: this.userEntityService.isRemoteUser(follower) ? follower.inbox : null,
-			followerSharedInbox: this.userEntityService.isRemoteUser(follower) ? follower.sharedInbox : null,
-			followeeHost: followee.host,
-			followeeInbox: this.userEntityService.isRemoteUser(followee) ? followee.inbox : null,
-			followeeSharedInbox: this.userEntityService.isRemoteUser(followee) ? followee.sharedInbox : null,
+			await em.insert(MiFollowing, {
+				id: this.idService.gen(),
+				followerId: follower.id,
+				followeeId: followee.id,
+				withReplies: withReplies,
+				isFollowerHibernated: followerState?.isHibernated ?? false,
+
+				// 非正規化
+				followerHost: follower.host,
+				followerInbox: this.userEntityService.isRemoteUser(follower) ? follower.inbox : null,
+				followerSharedInbox: this.userEntityService.isRemoteUser(follower) ? follower.sharedInbox : null,
+				followeeHost: followee.host,
+				followeeInbox: this.userEntityService.isRemoteUser(followee) ? followee.inbox : null,
+				followeeSharedInbox: this.userEntityService.isRemoteUser(followee) ? followee.sharedInbox : null,
+			});
 		}).catch(err => {
 			if (isDuplicateKeyValueError(err) && this.userEntityService.isRemoteUser(follower) && this.userEntityService.isLocalUser(followee)) {
 				logger.info(`Insert duplicated ignore. ${follower.id} => ${followee.id}`);

@@ -47,6 +47,7 @@ import { AggregateRetentionProcessorService } from './processors/AggregateRetent
 import { CleanRemoteNotesProcessorService } from './processors/CleanRemoteNotesProcessorService.js';
 import { HanamiForYouBatchProcessorService } from './processors/HanamiForYouBatchProcessorService.js';
 import { HanamiTasteBatchProcessorService } from './processors/HanamiTasteBatchProcessorService.js';
+import { HibernationSweepProcessorService } from './processors/HibernationSweepProcessorService.js';
 import { QueueLoggerService } from './QueueLoggerService.js';
 import { QUEUE, baseWorkerOptions } from './const.js';
 import { ImportNotesProcessorService } from './processors/ImportNotesProcessorService.js';
@@ -134,6 +135,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 		private cleanRemoteNotesProcessorService: CleanRemoteNotesProcessorService,
 		private hanamiForYouBatchProcessorService: HanamiForYouBatchProcessorService,
 		private hanamiTasteBatchProcessorService: HanamiTasteBatchProcessorService,
+		private hibernationSweepProcessorService: HibernationSweepProcessorService,
 	) {
 		this.logger = this.queueLoggerService.logger;
 
@@ -176,6 +178,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 					case 'checkModeratorsActivity': return this.checkModeratorsActivityProcessorService.process();
 					case 'clean': return this.cleanProcessorService.process();
 					case 'cleanRemoteNotes': return this.cleanRemoteNotesProcessorService.process(job);
+					case 'hibernationSweep': return this.hibernationSweepProcessorService.process();
 					case 'hanamiForYouBatch': return this.hanamiForYouBatchProcessorService.process(job);
 					case 'hanamiTasteSweep': return this.hanamiTasteBatchProcessorService.processSweep(job);
 					case 'hanamiTasteCluster': return this.hanamiTasteBatchProcessorService.processCluster(job);

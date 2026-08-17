@@ -17,6 +17,7 @@ import type { MiMeta, UserIpsRepository } from '@/models/_.js';
 import { createTemp } from '@/misc/create-temp.js';
 import { bindThis } from '@/decorators.js';
 import { RoleService } from '@/core/RoleService.js';
+import { UserService } from '@/core/UserService.js';
 import type { Config } from '@/config.js';
 import { ApiError } from './error.js';
 import { RateLimiterService } from './RateLimiterService.js';
@@ -51,6 +52,7 @@ export class ApiCallService implements OnApplicationShutdown {
 		private authenticateService: AuthenticateService,
 		private rateLimiterService: RateLimiterService,
 		private roleService: RoleService,
+		private userService: UserService,
 		private apiLoggerService: ApiLoggerService,
 	) {
 		this.logger = this.apiLoggerService.logger;
@@ -408,6 +410,13 @@ export class ApiCallService implements OnApplicationShutdown {
 				kind: 'permission',
 				id: '1370e5b7-d4eb-4566-bb1d-7748ee6a1838',
 			});
+		}
+
+		if (user != null) {
+			await this.userService.updateLastActiveDate(user)
+				.catch((err: Error) => {
+					this.logger.error(`Failed to update activity for user ${user.id}`, { e: err });
+				});
 		}
 
 		// Cast non JSON input

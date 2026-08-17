@@ -87,6 +87,10 @@ const REPEATABLE_SYSTEM_JOB_DEF = [{
 	// 毎日午前4時に起動(最も人の少ない時間帯)
 	pattern: '0 4 * * *',
 }, {
+	name: 'hibernationSweep',
+	// 投稿処理に負荷を載せず、毎日午前3時に休眠対象を確定する
+	pattern: '0 3 * * *',
+}, {
 	name: 'hanamiForYouBatch',
 	// はなみ For You オフラインバッチ（ALS/関係値/MiniLM/aux）。canonical spec §3/§10 = 既定1時間ごと。
 	pattern: '7 * * * *',

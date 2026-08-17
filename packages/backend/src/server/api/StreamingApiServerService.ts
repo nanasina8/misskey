@@ -17,6 +17,7 @@ import { UserService } from '@/core/UserService.js';
 import { ChannelFollowingService } from '@/core/ChannelFollowingService.js';
 import { ChannelMutingService } from '@/core/ChannelMutingService.js';
 import { AuthenticateService, AuthenticationError } from './AuthenticateService.js';
+import { ApiLoggerService } from './ApiLoggerService.js';
 import MainStreamConnection from './stream/Connection.js';
 import { ChannelsService } from './stream/ChannelsService.js';
 import type * as http from 'node:http';
@@ -39,6 +40,7 @@ export class StreamingApiServerService {
 		private channelsService: ChannelsService,
 		private notificationService: NotificationService,
 		private usersService: UserService,
+		private apiLoggerService: ApiLoggerService,
 		private channelFollowingService: ChannelFollowingService,
 		private channelMutingService: ChannelMutingService,
 	) {
@@ -139,10 +141,14 @@ export class StreamingApiServerService {
 			this.#connections.set(connection, Date.now());
 
 			const userUpdateIntervalId = user ? setInterval(() => {
-				this.usersService.updateLastActiveDate(user);
+				void this.usersService.updateLastActiveDate(user).catch((err: Error) => {
+					this.apiLoggerService.logger.error(`Failed to update activity for user ${user.id}`, { e: err });
+				});
 			}, 1000 * 60 * 5) : null;
 			if (user) {
-				this.usersService.updateLastActiveDate(user);
+				void this.usersService.updateLastActiveDate(user).catch((err: Error) => {
+					this.apiLoggerService.logger.error(`Failed to update activity for user ${user.id}`, { e: err });
+				});
 			}
 
 			connection.once('close', () => {

@@ -16,6 +16,7 @@ const bskMigrateSupportedTypes = [
 
 @Entity('user')
 @Index(['usernameLower', 'host'], { unique: true })
+@Index('IDX_user_hibernation_candidates', { synchronize: false })
 export class MiUser {
 	@PrimaryColumn(id())
 	public id: string;
