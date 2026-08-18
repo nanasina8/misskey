@@ -40,10 +40,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 						<template #key>{{ i18n.ts.createdAt }}</template>
 						<template #value><span class="_monospace"><MkTime :time="user.createdAt" :mode="'detail'"/></span></template>
 					</MkKeyValue>
-					<MkKeyValue v-if="info" oneline>
-						<template #key>{{ i18n.ts.lastActiveDate }}</template>
-						<template #value><span class="_monospace"><MkTime :time="info.lastActiveDate" :mode="'detail'"/></span></template>
-					</MkKeyValue>
+				<MkKeyValue v-if="info" oneline>
+					<template #key>{{ i18n.ts.lastActiveDate }}</template>
+					<template #value><span class="_monospace"><MkTime v-if="info.lastActiveDate" :time="info.lastActiveDate" :mode="'detail'"/><span v-else>{{ i18n.ts.unknown }}</span></span></template>
+				</MkKeyValue>
+				<MkKeyValue oneline>
+					<template #key>{{ i18n.ts.lastPosted }}</template>
+					<template #value><span class="_monospace"><MkTime v-if="user.updatedAt" :time="user.updatedAt" :mode="'detail'"/><span v-else>{{ i18n.ts.unknown }}</span></span></template>
+				</MkKeyValue>
 					<MkKeyValue v-if="info" oneline>
 						<template #key>{{ i18n.ts.email }}</template>
 						<template #value><span class="_monospace">{{ info.email }}</span></template>

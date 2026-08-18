@@ -5,7 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <PageWithHeader :actions="headerActions" :tabs="headerTabs">
-	<div class="_spacer" style="--MI_SPACER-w: 900px;">
+	<div ref="rootEl" class="_spacer" style="--MI_SPACER-w: 900px;">
 		<div class="_gaps">
 			<div :class="$style.inputs">
 				<MkButton style="margin-left: auto" @click="resetQuery">{{ i18n.ts.reset }}</MkButton>
@@ -34,7 +34,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 			<MkPagination v-slot="{items}" :paginator="paginator">
 				<div :class="$style.users">
-					<MkA v-for="user in items" :key="user.id" v-tooltip.mfm="`Last posted: ${user.updatedAt ? dateString(user.updatedAt) : 'Unknown'}`" :class="$style.user" :to="`/admin/user/${user.id}`">
+					<MkA v-for="user in items" :key="user.id" v-tooltip.mfm="`${i18n.ts.lastPosted}: ${user.updatedAt ? dateString(user.updatedAt) : i18n.ts.unknown}`" :class="$style.user" :data-scroll-anchor="user.id" :to="`/admin/user/${user.id}`">
 						<MkUserCardMini :user="user"/>
 					</MkA>
 				</div>
@@ -45,8 +45,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, markRaw, ref, watchEffect } from 'vue';
-import { defaultMemoryStorage } from '@/memory-storage';
+import { computed, markRaw, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue';
+import { throttle } from 'throttle-debounce';
+import { getScrollContainer } from '@@/js/scroll.js';
 import MkButton from '@/components/MkButton.vue';
 import MkInput from '@/components/MkInput.vue';
 import MkSelect from '@/components/MkSelect.vue';
@@ -61,14 +62,30 @@ import { dateString } from '@/filters/date.js';
 import { Paginator } from '@/utility/paginator.js';
 
 type SearchQuery = {
-	sort?: '-createdAt' | '+createdAt' | '-updatedAt' | '+updatedAt';
+	sort?: '-createdAt' | '+createdAt' | '-updatedAt' | '+updatedAt' | '-lastActiveDate' | '+lastActiveDate';
 	state?: 'all' | 'available' | 'admin' | 'moderator' | 'suspended';
 	origin?: 'combined' | 'local' | 'remote';
 	username?: string;
 	hostname?: string;
 };
 
-const storedQuery = JSON.parse(defaultMemoryStorage.getItem('admin-users-query') ?? '{}') as SearchQuery;
+type SavedState = SearchQuery & {
+	scrollTop?: number;
+	itemCount?: number;
+};
+
+const storageKey = 'admin-users-state';
+const defaultLimit = 10;
+
+function loadSavedState(): SavedState {
+	try {
+		return JSON.parse(sessionStorage.getItem(storageKey) ?? '{}') as SavedState;
+	} catch {
+		return {};
+	}
+}
+
+const savedState = loadSavedState();
 
 const {
 	model: sort,
@@ -77,10 +94,12 @@ const {
 	items: [
 		{ label: `${i18n.ts.registeredDate} (${i18n.ts.ascendingOrder})`, value: '-createdAt' },
 		{ label: `${i18n.ts.registeredDate} (${i18n.ts.descendingOrder})`, value: '+createdAt' },
-		{ label: `${i18n.ts.lastUsed} (${i18n.ts.ascendingOrder})`, value: '-updatedAt' },
-		{ label: `${i18n.ts.lastUsed} (${i18n.ts.descendingOrder})`, value: '+updatedAt' },
+		{ label: `${i18n.ts.lastActiveDate} (${i18n.ts.ascendingOrder})`, value: '-lastActiveDate' },
+		{ label: `${i18n.ts.lastActiveDate} (${i18n.ts.descendingOrder})`, value: '+lastActiveDate' },
+		{ label: `${i18n.ts.lastPosted} (${i18n.ts.ascendingOrder})`, value: '-updatedAt' },
+		{ label: `${i18n.ts.lastPosted} (${i18n.ts.descendingOrder})`, value: '+updatedAt' },
 	],
-	initialValue: storedQuery.sort ?? '+createdAt',
+	initialValue: savedState.sort ?? '+updatedAt',
 });
 const {
 	model: state,
@@ -93,7 +112,7 @@ const {
 		{ label: i18n.ts.moderator, value: 'moderator' },
 		{ label: i18n.ts.suspend, value: 'suspended' },
 	],
-	initialValue: storedQuery.state ?? 'all',
+	initialValue: savedState.state ?? 'all',
 });
 const {
 	model: origin,
@@ -104,12 +123,15 @@ const {
 		{ label: i18n.ts.local, value: 'local' },
 		{ label: i18n.ts.remote, value: 'remote' },
 	],
-	initialValue: storedQuery.origin ?? 'local',
+	initialValue: savedState.origin ?? 'local',
 });
-const searchUsername = ref(storedQuery.username ?? '');
-const searchHost = ref(storedQuery.hostname ?? '');
+const searchUsername = ref(savedState.username ?? '');
+const searchHost = ref(savedState.hostname ?? '');
+const rootEl = useTemplateRef('rootEl');
+let scrollContainer: HTMLElement | null = null;
+let restoreScrollPosition = true;
 const paginator = markRaw(new Paginator('admin/show-users', {
-	limit: 10,
+	limit: Math.min(100, Math.max(defaultLimit, savedState.itemCount ?? defaultLimit)),
 	computedParams: computed(() => ({
 		sort: sort.value,
 		state: state.value,
@@ -151,7 +173,7 @@ function show(user) {
 }
 
 function resetQuery() {
-	sort.value = '+createdAt';
+	sort.value = '+updatedAt';
 	state.value = 'all';
 	origin.value = 'local';
 	searchUsername.value = '';
@@ -176,14 +198,56 @@ const headerActions = computed(() => [{
 
 const headerTabs = computed(() => []);
 
-watchEffect(() => {
-	defaultMemoryStorage.setItem('admin-users-query', JSON.stringify({
-		sort: sort.value,
-		state: state.value,
-		origin: origin.value,
-		username: searchUsername.value,
-		hostname: searchHost.value,
-	}));
+const query = computed(() => ({
+	sort: sort.value,
+	state: state.value,
+	origin: origin.value,
+	username: searchUsername.value,
+	hostname: searchHost.value,
+}));
+
+function saveState() {
+	sessionStorage.setItem(storageKey, JSON.stringify({
+		...query.value,
+		scrollTop: scrollContainer?.scrollTop ?? 0,
+		itemCount: Math.max(defaultLimit, paginator.items.value.length),
+	} satisfies SavedState));
+}
+
+const onScroll = throttle(250, saveState);
+
+async function restorePosition() {
+	if (!restoreScrollPosition || paginator.fetching.value || scrollContainer == null) return;
+	await nextTick();
+	scrollContainer.scrollTop = savedState.scrollTop ?? 0;
+	restoreScrollPosition = false;
+}
+
+watch(query, () => {
+	restoreScrollPosition = false;
+	if (scrollContainer) scrollContainer.scrollTop = 0;
+	saveState();
+}, { deep: true });
+
+watch(paginator.fetching, fetching => {
+	if (!fetching) restorePosition();
+});
+
+watch(() => paginator.items.value.length, saveState);
+
+onMounted(() => {
+	scrollContainer = rootEl.value ? getScrollContainer(rootEl.value) : null;
+	scrollContainer?.addEventListener('scroll', onScroll, { passive: true });
+	restorePosition();
+});
+
+onActivated(restorePosition);
+
+onDeactivated(saveState);
+
+onUnmounted(() => {
+	saveState();
+	scrollContainer?.removeEventListener('scroll', onScroll);
 });
 
 definePage(() => ({

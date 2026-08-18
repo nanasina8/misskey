@@ -1915,6 +1915,10 @@ export interface Locale extends ILocale {
      */
     "lastUsedAt": ParameterizedString<"t">;
     /**
+     * 最終投稿日時
+     */
+    "lastPosted": string;
+    /**
      * 登録を解除
      */
     "unregister": string;
