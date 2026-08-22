@@ -11,6 +11,8 @@ const source = readFileSync(resolve(process.cwd(), 'src/components/MkStreamingNo
 
 describe('MkStreamingNotesTimeline Hanami integration', () => {
 	test('renders and anchors wrappers by feed entry while passing the wrapped note and locator', () => {
+		expect(source).toContain('const items = (hanamiPaginator?.items ?? paginator!.items) as Ref<TimelineItem[]>;');
+		expect(source).not.toContain('computed<TimelineItem[]>(() => hanamiPaginator?.items.value');
 		expect(source).toContain(':key="itemKey(item)"');
 		expect(source).toContain(':data-scroll-anchor="itemKey(item)"');
 		expect(source).toContain(':note="itemNote(item)"');

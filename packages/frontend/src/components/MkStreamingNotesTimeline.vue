@@ -60,6 +60,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script lang="ts" setup>
 import { computed, watch, onUnmounted, provide, useTemplateRef, TransitionGroup, onMounted, ref, markRaw } from 'vue';
+import type { Ref } from 'vue';
 import * as Misskey from 'misskey-js';
 import { useInterval } from '@@/js/use-interval.js';
 import { useDocumentVisibility } from '@@/js/use-document-visibility.js';
@@ -198,7 +199,7 @@ if (props.src === 'antenna') {
 
 type TimelineItem = Misskey.entities.Note | HanamiTimelineItem;
 
-const items = computed<TimelineItem[]>(() => hanamiPaginator?.items.value ?? paginator?.items.value ?? []);
+const items = (hanamiPaginator?.items ?? paginator!.items) as Ref<TimelineItem[]>;
 const fetching = computed(() => hanamiPaginator?.fetching.value ?? paginator?.fetching.value ?? false);
 const fetchingOlder = computed(() => hanamiPaginator?.fetchingOlder.value ?? paginator?.fetchingOlder.value ?? false);
 const canFetchOlder = computed(() => hanamiPaginator?.canFetchOlder.value ?? paginator?.canFetchOlder.value ?? false);
