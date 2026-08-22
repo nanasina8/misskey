@@ -16,6 +16,23 @@ describe('Hanami config contracts', () => {
 		expect(() => readHanamiCursorSigningKeys(undefined, undefined)).toThrow('hanamiCursorSigningKeys is required');
 	});
 
+	test('lets migrations load config without runtime-only secrets', () => {
+		// `pnpm migrate` はDB接続情報しか使わない。鍵未設定でスキーマ適用が止まると復旧できなくなる。
+		expect(readHanamiCursorSigningKeys(undefined, undefined, false)).toEqual([]);
+		expect(resolveHanamiConfig({}, {}, false).hanamiCursorSigningKeys).toEqual([]);
+	});
+
+	test('still validates signing keys that are present even when they are not required', () => {
+		expect(() => readHanamiCursorSigningKeys([], undefined, false)).toThrow('1 or 2 keys');
+		expect(() => readHanamiCursorSigningKeys([{ id: 'short', secret: 'x'.repeat(31) }], undefined, false)).toThrow('at least 32 bytes');
+		expect(readHanamiCursorSigningKeys(yamlKeys, undefined, false)).toEqual(yamlKeys);
+	});
+
+	test('tells the operator how to generate a missing signing key', () => {
+		expect(() => readHanamiCursorSigningKeys(undefined, undefined)).toThrow('HANAMI_CURSOR_SIGNING_KEYS_JSON');
+		expect(() => readHanamiCursorSigningKeys(undefined, undefined)).toThrow('randomBytes');
+	});
+
 	test('rejects empty signing key lists, short secrets, and duplicate ids', () => {
 		expect(() => readHanamiCursorSigningKeys([], undefined)).toThrow('1 or 2 keys');
 		expect(() => readHanamiCursorSigningKeys([{ id: 'short', secret: 'x'.repeat(31) }], undefined)).toThrow('at least 32 bytes');

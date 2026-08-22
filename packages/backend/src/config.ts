@@ -312,7 +312,19 @@ export const path = process.env.MISSKEY_CONFIG_YML
 		? resolve(dir, 'test.yml')
 		: resolve(dir, 'default.yml');
 
-export function loadConfig(): Config {
+export type LoadConfigOptions = {
+	/**
+	 * サーバー実行時にしか使わない秘密（cursor署名鍵）の検証を要求するか。既定はtrue。
+	 *
+	 * migrationやCLIはDB接続情報しか使わないため、鍵が未設定でも動かせる必要がある。
+	 * ここをtrueに固定すると `pnpm migrate` が鍵未設定のデプロイでスキーマ適用すらできなくなる。
+	 * falseのときは鍵を空配列にするが、HanamiFeedCodec側が空配列を拒否するため、
+	 * 万一この設定でAPIを動かしても署名なしcursorが発行されることはない。
+	 */
+	requireRuntimeSecrets?: boolean;
+};
+
+export function loadConfig(options: LoadConfigOptions = {}): Config {
 	const meta = JSON.parse(fs.readFileSync(`${_dirname}/../../../built/meta.json`, 'utf-8'));
 
 	const frontendManifestExists = fs.existsSync(_dirname + '/../../../built/_frontend_vite_/manifest.json');
@@ -325,7 +337,7 @@ export function loadConfig(): Config {
 		: { 'src/boot.ts': { file: null } };
 
 	const config = yaml.load(fs.readFileSync(path, 'utf-8')) as Source;
-	const hanamiConfig = resolveHanamiConfig(config, process.env);
+	const hanamiConfig = resolveHanamiConfig(config, process.env, options.requireRuntimeSecrets ?? true);
 
 	const url = tryCreateUrl(config.url ?? process.env.MISSKEY_URL ?? '');
 	const version = meta.version;
@@ -441,8 +453,8 @@ function convertRedisOptions(options: RedisOptionsSource, host: string): RedisOp
 	};
 }
 
-export function resolveHanamiConfig(config: HanamiConfigSource, env: NodeJS.ProcessEnv = process.env): HanamiConfigValues {
-	const hanamiCursorSigningKeys = readHanamiCursorSigningKeys(config.hanamiCursorSigningKeys, env[HANAMI_CURSOR_SIGNING_KEYS_JSON_ENV]);
+export function resolveHanamiConfig(config: HanamiConfigSource, env: NodeJS.ProcessEnv = process.env, requireRuntimeSecrets = true): HanamiConfigValues {
+	const hanamiCursorSigningKeys = readHanamiCursorSigningKeys(config.hanamiCursorSigningKeys, env[HANAMI_CURSOR_SIGNING_KEYS_JSON_ENV], requireRuntimeSecrets);
 	const hanamiGenerationSyncWaitMs = readConfigInt('hanamiGenerationSyncWaitMs', config.hanamiGenerationSyncWaitMs, 2000, { min: 0 });
 	const userHibernationDays = readConfigInt('userHibernationDays', config.userHibernationDays, 50, { min: 1, max: MAX_USER_HIBERNATION_DAYS });
 	const hanamiCommonGenerationIntervalMs = readConfigInt('hanamiCommonGenerationIntervalMs', config.hanamiCommonGenerationIntervalMs, 600000, { min: 1 });
@@ -472,12 +484,16 @@ export function resolveHanamiConfig(config: HanamiConfigSource, env: NodeJS.Proc
 export function readHanamiCursorSigningKeys(
 	yamlValue: Source['hanamiCursorSigningKeys'],
 	envValue = process.env[HANAMI_CURSOR_SIGNING_KEYS_JSON_ENV],
+	requireRuntimeSecrets = true,
 ): HanamiCursorSigningKey[] {
 	if (envValue != null) {
 		return parseHanamiCursorSigningKeysJson(envValue);
 	}
 
-	return validateHanamiCursorSigningKeysSource(yamlValue, 'hanamiCursorSigningKeys is required and must be a YAML list with 1 or 2 entries.');
+	// 未設定のまま起動を許すのはmigration/CLIだけ。設定されていれば常に検証する。
+	if (!requireRuntimeSecrets && yamlValue === undefined) return [];
+
+	return validateHanamiCursorSigningKeysSource(yamlValue, 'hanamiCursorSigningKeys is required and must be a YAML list with 1 or 2 entries. Generate one with `node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'base64url\'))"` and add it to your .config yml as `hanamiCursorSigningKeys: [{ id: current, secret: <value> }]`, or set the HANAMI_CURSOR_SIGNING_KEYS_JSON env var.');
 }
 
 function parseHanamiCursorSigningKeysJson(value: string): HanamiCursorSigningKey[] {
