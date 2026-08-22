@@ -9,6 +9,7 @@ import type Logger from '@/logger.js';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { bindThis } from '@/decorators.js';
+import { hanamiReturningRows } from '@/core/hanami/HanamiReturningRows.js';
 import { IdService } from '@/core/IdService.js';
 import { LoggerService } from '@/core/LoggerService.js';
 import { QueueService } from '@/core/QueueService.js';
@@ -254,12 +255,12 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 						throw new Error(`Hanami active batch ${context.activeBatch.id} belongs to a different epoch`);
 					}
 					if (state.generating_batch_id == null) {
-						const installed = await queryRunner.query(`
+						const installed = hanamiReturningRows(await queryRunner.query(`
 							UPDATE "hanami_user_feed_state"
 							SET "generatingBatchId" = $3, "updatedAt" = clock_timestamp()
 							WHERE "userId" = $1 AND "epochId" = $2 AND "generatingBatchId" IS NULL
 							RETURNING "userId" AS user_id
-						`, [userId, state.epoch_id, context.activeBatch.id]) as Array<{ user_id: string }>;
+						`, [userId, state.epoch_id, context.activeBatch.id]) as Array<{ user_id: string }>);
 						if (installed.length !== 1) throw new Error('Failed to join the active Hanami user feed batch');
 						state = { ...state, generating_batch_id: context.activeBatch.id };
 					} else if (state.generating_batch_id !== context.activeBatch.id) {
@@ -390,7 +391,7 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 			return this.emptyState(context.user.id, epochId, 'skippedUnavailable', commonHead);
 		}
 
-		const rows = await queryRunner.query(`
+		const rows = hanamiReturningRows(await queryRunner.query(`
 			UPDATE "hanami_user_feed_state"
 			SET "mode" = 'common',
 				"initialGenerationState" = 'skippedUnavailable',
@@ -401,7 +402,7 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 				"updatedAt" = clock_timestamp()
 			WHERE "userId" = $1 AND "epochId" = $2 AND "initialGenerationState" = 'notEvaluated'
 			RETURNING "userId" AS user_id
-		`, [context.user.id, epochId, commonHead?.epochId ?? null, commonHead?.generationId ?? null, commonHead?.headSequence ?? null]) as Array<{ user_id: string }>;
+		`, [context.user.id, epochId, commonHead?.epochId ?? null, commonHead?.generationId ?? null, commonHead?.headSequence ?? null]) as Array<{ user_id: string }>);
 		if (rows.length !== 1) throw new Error('Failed to record unavailable Hanami initial evaluation');
 		return {
 			...context.state,
@@ -438,7 +439,7 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 				UPDATE "hanami_user_feed_batch" SET "trigger" = 'initial'
 				WHERE "id" = $1 AND "userId" = $2 AND "epochId" = $3 AND "status" IN ('pending', 'generating')
 			`, [context.activeBatch.id, context.user.id, epochId]);
-			const joined = await queryRunner.query(`
+			const joined = hanamiReturningRows(await queryRunner.query(`
 				UPDATE "hanami_user_feed_state"
 				SET "mode" = 'common', "initialGenerationState" = 'requested',
 					"initialGenerationAttemptedAt" = clock_timestamp(), "generatingBatchId" = $3,
@@ -447,7 +448,7 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 				WHERE "userId" = $1 AND "epochId" = $2 AND "initialGenerationState" = 'notEvaluated'
 					AND ("generatingBatchId" IS NULL OR "generatingBatchId" = $3)
 				RETURNING "userId" AS user_id
-			`, [context.user.id, epochId, context.activeBatch.id, commonHead.epochId, commonHead.generationId, commonHead.headSequence]) as Array<{ user_id: string }>;
+			`, [context.user.id, epochId, context.activeBatch.id, commonHead.epochId, commonHead.generationId, commonHead.headSequence]) as Array<{ user_id: string }>);
 			if (joined.length !== 1) throw new Error('Failed to join the active Hanami initial generation');
 			return {
 				batchId: context.activeBatch.id,
@@ -465,7 +466,7 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 				WHERE "id" = $1 AND "userId" = $2 AND "epochId" = $3 AND "status" IN ('pending', 'generating')
 			`, [activeBatch, context.user.id, epochId]);
 		}
-		const updated = await queryRunner.query(`
+		const updated = hanamiReturningRows(await queryRunner.query(`
 			UPDATE "hanami_user_feed_state"
 			SET "mode" = 'common', "initialGenerationState" = 'requested',
 				"initialGenerationAttemptedAt" = clock_timestamp(), "generatingBatchId" = $3,
@@ -474,7 +475,7 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 			WHERE "userId" = $1 AND "epochId" = $2 AND "initialGenerationState" = 'notEvaluated'
 				AND "generatingBatchId" IS NULL
 			RETURNING "userId" AS user_id
-		`, [context.user.id, epochId, activeBatch, commonHead.epochId, commonHead.generationId, commonHead.headSequence]) as Array<{ user_id: string }>;
+		`, [context.user.id, epochId, activeBatch, commonHead.epochId, commonHead.generationId, commonHead.headSequence]) as Array<{ user_id: string }>);
 		if (updated.length !== 1) throw new Error('Failed to install the Hanami initial generation batch');
 
 		return {
@@ -493,7 +494,7 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 		const inserted = await this.insertBatch(queryRunner, batchId, state.user_id, state.epoch_id, 'refresh', commonHead.generationId);
 		const activeBatch = inserted ? batchId : await this.requireActiveBatchId(queryRunner, state.user_id, state.epoch_id);
 		const updateCommonHead = state.mode === 'common';
-		const updated = await queryRunner.query(`
+		const updated = hanamiReturningRows(await queryRunner.query(`
 			UPDATE "hanami_user_feed_state"
 			SET "generatingBatchId" = $3,
 				"initialGenerationState" = CASE
@@ -510,7 +511,7 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 				"updatedAt" = clock_timestamp()
 			WHERE "userId" = $1 AND "epochId" = $2 AND "generatingBatchId" IS NULL
 			RETURNING "userId" AS user_id
-		`, [state.user_id, state.epoch_id, activeBatch, updateCommonHead, commonHead.epochId, commonHead.generationId, commonHead.headSequence]) as Array<{ user_id: string }>;
+		`, [state.user_id, state.epoch_id, activeBatch, updateCommonHead, commonHead.epochId, commonHead.generationId, commonHead.headSequence]) as Array<{ user_id: string }>);
 		if (updated.length !== 1) throw new Error('Failed to install the Hanami refresh generation batch');
 
 		return {

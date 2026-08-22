@@ -5,6 +5,7 @@
 
 import { Injectable } from '@nestjs/common';
 import { bindThis } from '@/decorators.js';
+import { hanamiReturningRows } from '@/core/hanami/HanamiReturningRows.js';
 import { IdService } from '@/core/IdService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { HanamiCommonHeadQueries } from './HanamiCommonHeadQueries.js';
@@ -47,7 +48,7 @@ export class HanamiFeedLifecycleService {
 		await this.obsoleteCurrentWork(manager, stateUserIds, transitionedAt);
 		const commonHead = await this.commonHeadQueries.lockLatestReadyCommonHead(manager);
 
-		const updated = await manager.query<Array<{ user_id: MiUser['id'] }>>(`
+		const updated = hanamiReturningRows(await manager.query<Array<{ user_id: MiUser['id'] }>>(`
 			UPDATE "hanami_user_feed_state" s
 			SET "mode" = 'common',
 				"generatingBatchId" = NULL,
@@ -63,7 +64,7 @@ export class HanamiFeedLifecycleService {
 			commonHead?.generationId ?? null,
 			commonHead?.headSequence ?? null,
 			transitionedAt,
-		]);
+		]));
 		if (updated.length !== states.length) {
 			throw new Error(`Hanami hibernation updated ${updated.length} of ${states.length} locked feed states`);
 		}
@@ -90,12 +91,12 @@ export class HanamiFeedLifecycleService {
 		const initialGenerationState = await this.getInitialGenerationState(manager, userId);
 		const commonHead = await this.commonHeadQueries.lockLatestReadyCommonHead(manager);
 
-		const retired = await manager.query<Array<{ epoch_id: string }>>(`
+		const retired = hanamiReturningRows(await manager.query<Array<{ epoch_id: string }>>(`
 			UPDATE "hanami_user_feed_epoch"
 			SET "retiredAt" = $3
 			WHERE "userId" = $1 AND "epochId" = $2 AND "retiredAt" IS NULL
 			RETURNING "epochId" AS epoch_id
-		`, [userId, state.epoch_id, transitionedAt]);
+		`, [userId, state.epoch_id, transitionedAt]));
 		if (retired.length !== 1) throw new Error('Hanami user feed state does not reference its active epoch');
 
 		const newEpochId = this.idService.gen();
@@ -104,7 +105,7 @@ export class HanamiFeedLifecycleService {
 			VALUES ($1, $2, $3, NULL)
 		`, [newEpochId, userId, transitionedAt]);
 
-		const updated = state == null ? [] : await manager.query<Array<{ user_id: MiUser['id'] }>>(`
+		const updated = state == null ? [] : hanamiReturningRows(await manager.query<Array<{ user_id: MiUser['id'] }>>(`
 			UPDATE "hanami_user_feed_state"
 			SET "epochId" = $2,
 				"mode" = 'common',
@@ -129,7 +130,7 @@ export class HanamiFeedLifecycleService {
 			commonHead?.headSequence ?? null,
 			transitionedAt,
 			state.epoch_id,
-		]);
+		]));
 		if (updated.length !== 1) throw new Error('Hanami user feed state changed during revival');
 	}
 
@@ -171,7 +172,7 @@ export class HanamiFeedLifecycleService {
 			FOR UPDATE OF b
 		`, [userIds]);
 		if (batches.length > 0) {
-			const updated = await manager.query<Array<{ id: string }>>(`
+			const updated = hanamiReturningRows(await manager.query<Array<{ id: string }>>(`
 				UPDATE "hanami_user_feed_batch" b
 				SET "status" = 'obsolete',
 					"leaseOwner" = NULL,
@@ -182,7 +183,7 @@ export class HanamiFeedLifecycleService {
 					AND s."userId" = ANY($1::varchar[])
 					AND b."status" IN ('pending', 'generating')
 				RETURNING b."id" AS id
-			`, [userIds, transitionedAt]);
+			`, [userIds, transitionedAt]));
 			if (updated.length !== batches.length) {
 				throw new Error(`Hanami lifecycle obsoleted ${updated.length} of ${batches.length} locked active feed batches`);
 			}
@@ -198,7 +199,7 @@ export class HanamiFeedLifecycleService {
 			FOR UPDATE OF r
 		`, [userIds]);
 		if (refreshes.length > 0) {
-			const updated = await manager.query<Array<{ user_id: MiUser['id'] }>>(`
+			const updated = hanamiReturningRows(await manager.query<Array<{ user_id: MiUser['id'] }>>(`
 				UPDATE "hanami_user_feed_refresh" r
 				SET "status" = 'obsolete',
 					"resultMode" = NULL,
@@ -210,7 +211,7 @@ export class HanamiFeedLifecycleService {
 					AND s."userId" = ANY($1::varchar[])
 					AND r."status" = 'pending'
 				RETURNING r."userId" AS user_id
-			`, [userIds]);
+			`, [userIds]));
 			if (updated.length !== refreshes.length) {
 				throw new Error(`Hanami lifecycle obsoleted ${updated.length} of ${refreshes.length} locked pending refreshes`);
 			}

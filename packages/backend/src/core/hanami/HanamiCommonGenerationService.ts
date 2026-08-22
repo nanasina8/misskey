@@ -9,6 +9,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { bindThis } from '@/decorators.js';
+import { hanamiReturningRows } from '@/core/hanami/HanamiReturningRows.js';
 import { IdService } from '@/core/IdService.js';
 import {
 	HANAMI_COMMON_AXES,
@@ -200,7 +201,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 				FROM inserted_generation
 			`, [generationId, ordinal, this.computation.algorithmVersion, state.generation_fence, snapshotId]);
 
-			const pointerRows = await queryRunner.query(`
+			const pointerRows = hanamiReturningRows(await queryRunner.query(`
 				UPDATE "hanami_common_feed_state"
 				SET "generatingGenerationId" = $2,
 					"generationLeaseOwner" = NULL,
@@ -209,7 +210,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 				WHERE "singletonId" = $1
 					AND "generatingGenerationId" IS NULL
 				RETURNING "generationFence"::text AS generation_fence
-			`, [COMMON_STATE_ID, generationId]) as Array<{ generation_fence: string }>;
+			`, [COMMON_STATE_ID, generationId]) as Array<{ generation_fence: string }>);
 			if (pointerRows.length !== 1) throw new Error('Failed to install the Hanami common generation pointer');
 
 			return { kind: 'dispatch', generationId };
@@ -437,7 +438,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 			}
 
 			const leaseOwner = randomUUID();
-			const stateRows = await this.deadlineQuery<Array<{ generation_fence: string; epoch_id: string | null }>>(queryRunner, workerLease, `
+			const stateRows = hanamiReturningRows(await this.deadlineQuery<Array<{ generation_fence: string; epoch_id: string | null }>>(queryRunner, workerLease, `
 				UPDATE "hanami_common_feed_state"
 				SET "generationFence" = "generationFence" + '1'::bigint,
 					"generationLeaseOwner" = $3,
@@ -461,11 +462,11 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 				String(this.config.hanamiGenerationLeaseMs),
 				state.generation_fence,
 				pendingClaim ? 'pending' : 'expired',
-			]);
+			]));
 			const claimedState = stateRows.at(0);
 			if (claimedState == null) return { kind: 'notClaimed', generationId, reason: 'leased' };
 
-			const claimedGenerationRows = await this.deadlineQuery<Array<{
+			const claimedGenerationRows = hanamiReturningRows(await this.deadlineQuery<Array<{
 				started_at: string;
 				generation_fence: string;
 			}>>(queryRunner, workerLease, `
@@ -476,7 +477,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 				WHERE "id" = $1 AND "status" = $4
 				RETURNING to_char("startedAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS started_at,
 					"generationFence"::text AS generation_fence
-			`, [generationId, claimedState.generation_fence, this.computation.algorithmVersion, generation.status]);
+			`, [generationId, claimedState.generation_fence, this.computation.algorithmVersion, generation.status]));
 			const claimedGeneration = claimedGenerationRows.at(0);
 			if (claimedGeneration == null) throw new Error('Failed to move the claimed Hanami common generation to generating');
 
@@ -544,7 +545,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 	}
 
 	private async heartbeatGeneration(claim: Extract<ClaimResult, { kind: 'claimed' }>, budget: GenerationBudget): Promise<boolean> {
-		const rows = await this.runWithOperationBudget(budget, async () => await this.db.query(`
+		const rows = await this.runWithOperationBudget(budget, async () => hanamiReturningRows(await this.db.query(`
 			UPDATE "hanami_common_feed_state" s
 			SET "generationLeaseExpiresAt" = clock_timestamp() + ($5::text || ' milliseconds')::interval,
 				"updatedAt" = clock_timestamp()
@@ -569,7 +570,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 			claim.generationFence,
 			String(this.config.hanamiGenerationLeaseMs),
 			this.databaseDeadlineAt(budget),
-		]) as Array<{ generation_fence: string }>);
+		]) as Array<{ generation_fence: string }>));
 		return rows.length === 1;
 	}
 
@@ -774,16 +775,16 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 				]);
 			}
 
-			const generationUpdateRows = await this.deadlineQuery<Array<{ generation_fence: string }>>(queryRunner, workerLease, `
+			const generationUpdateRows = hanamiReturningRows(await this.deadlineQuery<Array<{ generation_fence: string }>>(queryRunner, workerLease, `
 				UPDATE "hanami_common_generation"
 				SET "sourceAsOf" = $3::jsonb
 				WHERE "id" = $1 AND "status" = 'generating' AND "generationFence" = $2::bigint
 				RETURNING "generationFence"::text AS generation_fence
-			`, [claim.generationId, claim.generationFence, JSON.stringify(source.sourceAsOf)]);
+			`, [claim.generationId, claim.generationFence, JSON.stringify(source.sourceAsOf)]));
 			if (generationUpdateRows.length !== 1) throw new HanamiCommonLeaseLostError();
 			this.assertOperationBudget(workerLease);
 
-			const extensionRows = await this.deadlineQuery<Array<{ generation_fence: string }>>(queryRunner, workerLease, `
+			const extensionRows = hanamiReturningRows(await this.deadlineQuery<Array<{ generation_fence: string }>>(queryRunner, workerLease, `
 				UPDATE "hanami_common_feed_state" s
 				SET "generationLeaseExpiresAt" = clock_timestamp() + ($5::text || ' milliseconds')::interval,
 					"updatedAt" = clock_timestamp()
@@ -805,7 +806,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 				claim.generationFence,
 				String(this.config.hanamiGenerationLeaseMs),
 				this.databaseDeadlineAt(workerLease),
-			]);
+			]));
 			if (extensionRows.length !== 1) throw new HanamiCommonLeaseLostError();
 		});
 	}
@@ -897,18 +898,18 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 
 			if (publicationGuard.lost_ordinal) {
 				this.assertOperationBudget(workerLease);
-				const obsoleteGenerationRows = await publicationQuery<Array<{ generation_fence: string }>>(`
+				const obsoleteGenerationRows = hanamiReturningRows(await publicationQuery<Array<{ generation_fence: string }>>(`
 					UPDATE "hanami_common_generation"
 					SET "status" = 'obsolete', "finishedAt" = clock_timestamp()
 					WHERE "id" = $1 AND "status" = 'generating' AND "generationFence" = $2::bigint
 					RETURNING "generationFence"::text AS generation_fence
-				`, [claim.generationId, claim.generationFence]);
-				const obsoleteSnapshotRows = await publicationQuery<Array<{ ordinal: string }>>(`
+				`, [claim.generationId, claim.generationFence]));
+				const obsoleteSnapshotRows = hanamiReturningRows(await publicationQuery<Array<{ ordinal: string }>>(`
 					UPDATE "hanami_trend_snapshot"
 					SET "status" = 'obsolete'
 					WHERE "commonGenerationId" = $1 AND "status" = 'pending'
 					RETURNING "ordinal"::text AS ordinal
-				`, [claim.generationId]);
+				`, [claim.generationId]));
 				if (obsoleteGenerationRows.length !== 1 || obsoleteSnapshotRows.length !== 1) throw new HanamiCommonLeaseLostError();
 
 				await this.configureOperationDeadline(queryRunner, workerLease);
@@ -1015,23 +1016,23 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 				}
 			}
 
-			const snapshotReadyRows = await publicationQuery<Array<{ ordinal: string }>>(`
+			const snapshotReadyRows = hanamiReturningRows(await publicationQuery<Array<{ ordinal: string }>>(`
 				UPDATE "hanami_trend_snapshot"
 				SET "status" = 'ready', "itemCount" = $2
 				WHERE "commonGenerationId" = $1 AND "status" = 'pending'
 				RETURNING "ordinal"::text AS ordinal
-			`, [claim.generationId, trendTerms.length]);
+			`, [claim.generationId, trendTerms.length]));
 			if (snapshotReadyRows.length !== 1) throw new HanamiCommonLeaseLostError();
 
-			const generationReadyRows = await publicationQuery<Array<{ generation_fence: string }>>(`
+			const generationReadyRows = hanamiReturningRows(await publicationQuery<Array<{ generation_fence: string }>>(`
 				UPDATE "hanami_common_generation"
 				SET "status" = 'ready', "checksum" = $3, "finishedAt" = clock_timestamp()
 				WHERE "id" = $1 AND "status" = 'generating' AND "generationFence" = $2::bigint
 				RETURNING "generationFence"::text AS generation_fence
-			`, [claim.generationId, claim.generationFence, prepared.checksum]);
+			`, [claim.generationId, claim.generationFence, prepared.checksum]));
 			if (generationReadyRows.length !== 1) throw new HanamiCommonLeaseLostError();
 
-			const stateReadyRows = await publicationQuery<Array<{ latest_sequence: string; earliest_retained_sequence: string }>>(`
+			const stateReadyRows = hanamiReturningRows(await publicationQuery<Array<{ latest_sequence: string; earliest_retained_sequence: string }>>(`
 				UPDATE "hanami_common_feed_state" s
 				SET "epochId" = COALESCE(s."epochId", $5),
 					"latestReadyGenerationId" = $2,
@@ -1079,7 +1080,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 				state.latest_sequence,
 				state.earliest_retained_sequence,
 				this.databaseDeadlineAt(workerLease),
-			]);
+			]));
 			if (stateReadyRows.length !== 1) throw new HanamiCommonLeaseLostError();
 
 			return { kind: 'published' };
@@ -1124,18 +1125,18 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 
 				if (!this.isExactLiveClaim(state, generation, claim) || snapshot?.status !== 'pending') return { kind: 'stale' };
 
-				const failedGenerationRows = await this.deadlineQuery<Array<{ generation_fence: string }>>(queryRunner, budget, `
+				const failedGenerationRows = hanamiReturningRows(await this.deadlineQuery<Array<{ generation_fence: string }>>(queryRunner, budget, `
 					UPDATE "hanami_common_generation"
 					SET "status" = 'failed', "finishedAt" = clock_timestamp()
 					WHERE "id" = $1 AND "status" = 'generating' AND "generationFence" = $2::bigint
 					RETURNING "generationFence"::text AS generation_fence
-				`, [claim.generationId, claim.generationFence]);
-				const failedSnapshotRows = await this.deadlineQuery<Array<{ ordinal: string }>>(queryRunner, budget, `
+				`, [claim.generationId, claim.generationFence]));
+				const failedSnapshotRows = hanamiReturningRows(await this.deadlineQuery<Array<{ ordinal: string }>>(queryRunner, budget, `
 					UPDATE "hanami_trend_snapshot"
 					SET "status" = 'failed'
 					WHERE "commonGenerationId" = $1 AND "status" = 'pending'
 					RETURNING "ordinal"::text AS ordinal
-				`, [claim.generationId]);
+				`, [claim.generationId]));
 				if (failedGenerationRows.length !== 1 || failedSnapshotRows.length !== 1) throw new HanamiCommonLeaseLostError();
 
 				const clearRows = await this.clearClaim(queryRunner, claim, budget);
@@ -1149,7 +1150,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 	}
 
 	private async clearClaim(queryRunner: QueryRunner, claim: Extract<ClaimResult, { kind: 'claimed' }>, budget: GenerationBudget): Promise<number> {
-		const rows = await this.deadlineQuery<Array<{ generation_fence: string }>>(queryRunner, budget, `
+		const rows = hanamiReturningRows(await this.deadlineQuery<Array<{ generation_fence: string }>>(queryRunner, budget, `
 			UPDATE "hanami_common_feed_state"
 			SET "generatingGenerationId" = NULL,
 				"generationLeaseOwner" = NULL,
@@ -1161,7 +1162,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 				AND "generationFence" = $4::bigint
 				AND "generationLeaseExpiresAt" > clock_timestamp()
 			RETURNING "generationFence"::text AS generation_fence
-		`, [COMMON_STATE_ID, claim.generationId, claim.leaseOwner, claim.generationFence]);
+		`, [COMMON_STATE_ID, claim.generationId, claim.leaseOwner, claim.generationFence]));
 		return rows.length;
 	}
 

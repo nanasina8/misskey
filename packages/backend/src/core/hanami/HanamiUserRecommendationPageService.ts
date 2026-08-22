@@ -9,6 +9,7 @@ import type { DataSource, QueryRunner } from 'typeorm';
 import type { Config } from '@/config.js';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
+import { hanamiReturningRows } from '@/core/hanami/HanamiReturningRows.js';
 import type { MiLocalUser } from '@/models/User.js';
 import { IdService } from '@/core/IdService.js';
 import { RoleService } from '@/core/RoleService.js';
@@ -328,12 +329,12 @@ export class HanamiUserRecommendationPageService {
 				}))) ]);
 			}
 
-			const updated = await queryRunner.query(`
+			const updated = hanamiReturningRows(await queryRunner.query(`
 				UPDATE "hanami_user_recommendation_batch"
 				SET "ordinal" = $4::bigint, "status" = 'ready', "finishedAt" = clock_timestamp(), "itemCount" = $5
 				WHERE "id" = $1 AND "userId" = $2 AND "epochId" = $3 AND "status" = 'pending'
 				RETURNING "id"
-			`, [batchId, userId, epochId, nextOrdinal, rows.length]) as Array<{ id: string }>;
+			`, [batchId, userId, epochId, nextOrdinal, rows.length]) as Array<{ id: string }>);
 			if (updated.length !== 1) throw new Error('Hanami recommendation batch publication lost its claim');
 			await queryRunner.query(`
 				UPDATE "hanami_user_recommendation_state"
