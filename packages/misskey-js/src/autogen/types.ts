@@ -4183,11 +4183,6 @@ export type components = {
             /** @enum {string} */
             exploreMediaFilter: 'all' | 'hideSensitive' | 'hideMedia';
             hanamiRecommendationEnabled?: boolean;
-            /** @enum {string} */
-            hanamiRecommendationStrength?: 'low' | 'normal' | 'high' | 'veryHigh';
-            hanamiRecommendationAutoInjectEnabled?: boolean;
-            /** @enum {string} */
-            hanamiRecommendationAutoInjectStrength?: 'low' | 'normal' | 'high';
             hanamiRecommendationAxes?: {
                 /** @enum {string} */
                 globalPopular?: 'off' | 'low' | 'normal' | 'high';
@@ -9963,7 +9958,7 @@ export interface operations {
             content: {
                 'application/json': {
                     /** @enum {string} */
-                    queue: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver';
+                    queue: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver' | 'hanamiGeneration';
                     /** @enum {string} */
                     state: '*' | 'completed' | 'wait' | 'active' | 'paused' | 'prioritized' | 'delayed' | 'failed';
                 };
@@ -10150,7 +10145,7 @@ export interface operations {
             content: {
                 'application/json': {
                     /** @enum {string} */
-                    queue: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver';
+                    queue: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver' | 'hanamiGeneration';
                     state: ('active' | 'wait' | 'delayed' | 'completed' | 'failed' | 'paused')[];
                     search?: string;
                 };
@@ -10218,7 +10213,7 @@ export interface operations {
             content: {
                 'application/json': {
                     /** @enum {string} */
-                    queue: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver';
+                    queue: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver' | 'hanamiGeneration';
                 };
             };
         };
@@ -10281,7 +10276,7 @@ export interface operations {
             content: {
                 'application/json': {
                     /** @enum {string} */
-                    queue: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver';
+                    queue: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver' | 'hanamiGeneration';
                 };
             };
         };
@@ -10294,7 +10289,7 @@ export interface operations {
                 content: {
                     'application/json': {
                         /** @enum {string} */
-                        name: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver';
+                        name: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver' | 'hanamiGeneration';
                         qualifiedName: string;
                         counts: {
                             [key: string]: number;
@@ -10384,7 +10379,7 @@ export interface operations {
                 content: {
                     'application/json': {
                         /** @enum {string} */
-                        name: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver';
+                        name: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver' | 'hanamiGeneration';
                         counts: {
                             [key: string]: number;
                         };
@@ -10448,7 +10443,7 @@ export interface operations {
             content: {
                 'application/json': {
                     /** @enum {string} */
-                    queue: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver';
+                    queue: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver' | 'hanamiGeneration';
                     jobId: string;
                 };
             };
@@ -10512,7 +10507,7 @@ export interface operations {
             content: {
                 'application/json': {
                     /** @enum {string} */
-                    queue: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver';
+                    queue: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver' | 'hanamiGeneration';
                     jobId: string;
                 };
             };
@@ -10576,7 +10571,7 @@ export interface operations {
             content: {
                 'application/json': {
                     /** @enum {string} */
-                    queue: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver';
+                    queue: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver' | 'hanamiGeneration';
                     jobId: string;
                 };
             };
@@ -10643,7 +10638,7 @@ export interface operations {
             content: {
                 'application/json': {
                     /** @enum {string} */
-                    queue: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver';
+                    queue: 'system' | 'endedPollNotification' | 'postScheduledNote' | 'deliver' | 'inbox' | 'db' | 'relationship' | 'objectStorage' | 'userWebhookDeliver' | 'systemWebhookDeliver' | 'hanamiGeneration';
                     jobId: string;
                 };
             };
@@ -28024,11 +28019,6 @@ export interface operations {
                     /** @enum {string} */
                     exploreMediaFilter?: 'all' | 'hideSensitive' | 'hideMedia';
                     hanamiRecommendationEnabled?: boolean;
-                    /** @enum {string} */
-                    hanamiRecommendationStrength?: 'low' | 'normal' | 'high' | 'veryHigh';
-                    hanamiRecommendationAutoInjectEnabled?: boolean;
-                    /** @enum {string} */
-                    hanamiRecommendationAutoInjectStrength?: 'low' | 'normal' | 'high';
                     hanamiShowRecommendationReason?: boolean;
                     hanamiRecommendationAxes?: {
                         /** @enum {string} */
@@ -30672,20 +30662,13 @@ export interface operations {
         requestBody: {
             content: {
                 'application/json': {
-                    /** @default 10 */
                     limit?: number;
-                    /** Format: misskey:id */
-                    sinceId?: string;
-                    sinceDate?: number;
-                    /** Format: misskey:id */
-                    untilId?: string;
-                    untilDate?: number;
+                    cursor?: string;
                     /** @default false */
-                    allowPartial?: boolean;
+                    refresh?: boolean;
+                    refreshToken?: string;
                     /** @default false */
                     withFiles?: boolean;
-                    /** @default true */
-                    withRenotes?: boolean;
                 };
             };
         };
@@ -30696,7 +30679,20 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    'application/json': components['schemas']['Note'][];
+                    'application/json': {
+                        items: {
+                            feedEntryId: string;
+                            batchId: string;
+                            note: components['schemas']['Note'];
+                        }[];
+                        nextCursor: string | null;
+                        hasMore: boolean;
+                        /** @enum {string} */
+                        mode: 'personalized' | 'common';
+                        generationPending: boolean;
+                        feedEpochId: string;
+                        headBatchId: string;
+                    };
                 };
             };
             /** @description Client error */
@@ -30750,12 +30746,11 @@ export interface operations {
         requestBody: {
             content: {
                 'application/json': {
-                    noteIds: string[];
-                    /**
-                     * @default rec
-                     * @enum {string}
-                     */
-                    kind?: 'rec' | 'home';
+                    items: {
+                        feedEntryId: string;
+                        /** Format: misskey:id */
+                        noteId: string;
+                    }[];
                 };
             };
         };
@@ -30824,6 +30819,9 @@ export interface operations {
                 'application/json': {
                     /** @default 10 */
                     limit?: number;
+                    /** @default false */
+                    history?: boolean;
+                    cursor?: string;
                 };
             };
         };
@@ -30835,10 +30833,19 @@ export interface operations {
                 };
                 content: {
                     'application/json': {
-                        term: string;
-                        score: number;
-                        distinctAuthors: number;
-                    }[];
+                        items: {
+                            trendEntryId: string;
+                            snapshotId: string;
+                            /** Format: date-time */
+                            snapshotGeneratedAt: string;
+                            term: string;
+                            score: number;
+                            distinctAuthors: number;
+                            representativeNote: components['schemas']['Note'] | null;
+                        }[];
+                        nextCursor: string | null;
+                        hasMore: boolean;
+                    };
                 };
             };
             /** @description Client error */
@@ -35993,6 +36000,12 @@ export interface operations {
                 'application/json': {
                     /** @default 10 */
                     limit?: number;
+                    cursor?: string;
+                    /** @default false */
+                    history?: boolean;
+                    /** @default false */
+                    refresh?: boolean;
+                    refreshToken?: string;
                 };
             };
         };
@@ -36004,10 +36017,18 @@ export interface operations {
                 };
                 content: {
                     'application/json': {
-                        user: components['schemas']['UserDetailed'];
-                        reason: string;
-                        mutualCount: number;
-                    }[];
+                        items: {
+                            recommendationEntryId: string;
+                            batchId: string;
+                            /** Format: date-time */
+                            batchGeneratedAt: string;
+                            user: components['schemas']['UserDetailed'];
+                            reason: string;
+                            mutualCount: number;
+                        }[];
+                        nextCursor: string | null;
+                        hasMore: boolean;
+                    };
                 };
             };
             /** @description Client error */

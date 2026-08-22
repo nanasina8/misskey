@@ -145,6 +145,7 @@ const muteWords = { type: 'array', items: { oneOf: [
 
 export const paramDef = {
 	type: 'object',
+	additionalProperties: false,
 	properties: {
 		name: { ...nameSchema, nullable: true },
 		description: { ...descriptionSchema, nullable: true },
@@ -195,9 +196,6 @@ export const paramDef = {
 		injectFeaturedNote: { type: 'boolean' },
 		exploreMediaFilter: { type: 'string', enum: ['all', 'hideSensitive', 'hideMedia'] },
 		hanamiRecommendationEnabled: { type: 'boolean' },
-		hanamiRecommendationStrength: { type: 'string', enum: ['low', 'normal', 'high', 'veryHigh'] },
-		hanamiRecommendationAutoInjectEnabled: { type: 'boolean' },
-		hanamiRecommendationAutoInjectStrength: { type: 'string', enum: ['low', 'normal', 'high'] },
 		hanamiShowRecommendationReason: { type: 'boolean' },
 		hanamiRecommendationAxes: {
 			type: 'object', nullable: false,
@@ -407,9 +405,6 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (typeof ps.injectFeaturedNote === 'boolean') profileUpdates.injectFeaturedNote = ps.injectFeaturedNote;
 			if (ps.exploreMediaFilter !== undefined) profileUpdates.exploreMediaFilter = ps.exploreMediaFilter;
 			if (typeof ps.hanamiRecommendationEnabled === 'boolean') profileUpdates.hanamiRecommendationEnabled = ps.hanamiRecommendationEnabled;
-			if (ps.hanamiRecommendationStrength !== undefined) profileUpdates.hanamiRecommendationStrength = ps.hanamiRecommendationStrength;
-			if (typeof ps.hanamiRecommendationAutoInjectEnabled === 'boolean') profileUpdates.hanamiRecommendationAutoInjectEnabled = ps.hanamiRecommendationAutoInjectEnabled;
-			if (ps.hanamiRecommendationAutoInjectStrength !== undefined) profileUpdates.hanamiRecommendationAutoInjectStrength = ps.hanamiRecommendationAutoInjectStrength;
 			if (typeof ps.hanamiShowRecommendationReason === 'boolean') profileUpdates.hanamiShowRecommendationReason = ps.hanamiShowRecommendationReason;
 			if (ps.hanamiRecommendationAxes !== undefined) {
 				// 既知の軸キーのみ採用（未知キーは無視＝廃止軸 lowExposure の保存値もここで自然に消える）。

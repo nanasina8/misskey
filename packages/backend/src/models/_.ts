@@ -93,8 +93,24 @@ import { MiHanamiForYouRelation } from '@/models/HanamiForYouRelation.js';
 import { MiHanamiNoteEmbedding } from '@/models/HanamiNoteEmbedding.js';
 import { MiHanamiForYouUserCentroid } from '@/models/HanamiForYouUserCentroid.js';
 import { MiHanamiForYouUserAux } from '@/models/HanamiForYouUserAux.js';
+import { MiHanamiCommonCandidateEntry } from '@/models/HanamiCommonCandidateEntry.js';
+import { MiHanamiCommonFeedEntry } from '@/models/HanamiCommonFeedEntry.js';
+import { MiHanamiCommonFeedState } from '@/models/HanamiCommonFeedState.js';
+import { MiHanamiCommonGeneration } from '@/models/HanamiCommonGeneration.js';
 import { MiHanamiRecommendationEvent } from '@/models/HanamiRecommendationEvent.js';
 import { MiHanamiForYouInteractionDaily } from '@/models/HanamiForYouInteractionDaily.js';
+import { MiHanamiTrendSnapshot } from '@/models/HanamiTrendSnapshot.js';
+import { MiHanamiTrendSnapshotEntry } from '@/models/HanamiTrendSnapshotEntry.js';
+import { MiHanamiTrendSnapshotRepresentativeNote } from '@/models/HanamiTrendSnapshotRepresentativeNote.js';
+import { MiHanamiUserFeedBatch } from '@/models/HanamiUserFeedBatch.js';
+import { MiHanamiUserFeedEntry } from '@/models/HanamiUserFeedEntry.js';
+import { MiHanamiUserFeedEpoch } from '@/models/HanamiUserFeedEpoch.js';
+import { MiHanamiUserFeedRefresh } from '@/models/HanamiUserFeedRefresh.js';
+import { MiHanamiUserFeedState } from '@/models/HanamiUserFeedState.js';
+import { MiHanamiUserRecommendationBatch } from '@/models/HanamiUserRecommendationBatch.js';
+import { MiHanamiUserRecommendationEntry } from '@/models/HanamiUserRecommendationEntry.js';
+import { MiHanamiUserRecommendationRefresh } from '@/models/HanamiUserRecommendationRefresh.js';
+import { MiHanamiUserRecommendationState } from '@/models/HanamiUserRecommendationState.js';
 import type { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity.js';
 
 export interface MiRepository<T extends ObjectLiteral> {
@@ -193,6 +209,22 @@ export {
 	MiHanamiNoteEmbedding,
 	MiHanamiForYouUserCentroid,
 	MiHanamiForYouUserAux,
+	MiHanamiCommonGeneration,
+	MiHanamiCommonCandidateEntry,
+	MiHanamiCommonFeedEntry,
+	MiHanamiCommonFeedState,
+	MiHanamiTrendSnapshot,
+	MiHanamiTrendSnapshotEntry,
+	MiHanamiTrendSnapshotRepresentativeNote,
+	MiHanamiUserFeedEpoch,
+	MiHanamiUserFeedState,
+	MiHanamiUserFeedBatch,
+	MiHanamiUserFeedEntry,
+	MiHanamiUserFeedRefresh,
+	MiHanamiUserRecommendationState,
+	MiHanamiUserRecommendationBatch,
+	MiHanamiUserRecommendationEntry,
+	MiHanamiUserRecommendationRefresh,
 	MiHanamiRecommendationEvent,
 	MiHanamiForYouInteractionDaily,
 };
@@ -286,5 +318,21 @@ export type HanamiForYouRelationsRepository = Repository<MiHanamiForYouRelation>
 export type HanamiNoteEmbeddingsRepository = Repository<MiHanamiNoteEmbedding> & MiRepository<MiHanamiNoteEmbedding>;
 export type HanamiForYouUserCentroidsRepository = Repository<MiHanamiForYouUserCentroid> & MiRepository<MiHanamiForYouUserCentroid>;
 export type HanamiForYouUserAuxRepository = Repository<MiHanamiForYouUserAux> & MiRepository<MiHanamiForYouUserAux>;
+export type HanamiCommonGenerationsRepository = Repository<MiHanamiCommonGeneration> & MiRepository<MiHanamiCommonGeneration>;
+export type HanamiCommonCandidateEntriesRepository = Repository<MiHanamiCommonCandidateEntry> & MiRepository<MiHanamiCommonCandidateEntry>;
+export type HanamiCommonFeedEntriesRepository = Repository<MiHanamiCommonFeedEntry> & MiRepository<MiHanamiCommonFeedEntry>;
+export type HanamiCommonFeedStateRepository = Repository<MiHanamiCommonFeedState> & MiRepository<MiHanamiCommonFeedState>;
+export type HanamiTrendSnapshotsRepository = Repository<MiHanamiTrendSnapshot> & MiRepository<MiHanamiTrendSnapshot>;
+export type HanamiTrendSnapshotEntriesRepository = Repository<MiHanamiTrendSnapshotEntry> & MiRepository<MiHanamiTrendSnapshotEntry>;
+export type HanamiTrendSnapshotRepresentativeNotesRepository = Repository<MiHanamiTrendSnapshotRepresentativeNote> & MiRepository<MiHanamiTrendSnapshotRepresentativeNote>;
+export type HanamiUserFeedEpochsRepository = Repository<MiHanamiUserFeedEpoch> & MiRepository<MiHanamiUserFeedEpoch>;
+export type HanamiUserFeedStatesRepository = Repository<MiHanamiUserFeedState> & MiRepository<MiHanamiUserFeedState>;
+export type HanamiUserFeedBatchesRepository = Repository<MiHanamiUserFeedBatch> & MiRepository<MiHanamiUserFeedBatch>;
+export type HanamiUserFeedEntriesRepository = Repository<MiHanamiUserFeedEntry> & MiRepository<MiHanamiUserFeedEntry>;
+export type HanamiUserFeedRefreshesRepository = Repository<MiHanamiUserFeedRefresh> & MiRepository<MiHanamiUserFeedRefresh>;
+export type HanamiUserRecommendationStatesRepository = Repository<MiHanamiUserRecommendationState> & MiRepository<MiHanamiUserRecommendationState>;
+export type HanamiUserRecommendationBatchesRepository = Repository<MiHanamiUserRecommendationBatch> & MiRepository<MiHanamiUserRecommendationBatch>;
+export type HanamiUserRecommendationEntriesRepository = Repository<MiHanamiUserRecommendationEntry> & MiRepository<MiHanamiUserRecommendationEntry>;
+export type HanamiUserRecommendationRefreshesRepository = Repository<MiHanamiUserRecommendationRefresh> & MiRepository<MiHanamiUserRecommendationRefresh>;
 export type HanamiRecommendationEventsRepository = Repository<MiHanamiRecommendationEvent> & MiRepository<MiHanamiRecommendationEvent>;
 export type HanamiForYouInteractionDailyRepository = Repository<MiHanamiForYouInteractionDaily> & MiRepository<MiHanamiForYouInteractionDaily>;

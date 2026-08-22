@@ -246,6 +246,9 @@ describe('UserEntityService', () => {
 			expect(actual.birthday).toBe('2000-01-01');
 			// is detail and me
 			expect(actual.achievements).toEqual(achievements);
+			expect(actual).not.toHaveProperty('hanamiRecommendationStrength');
+			expect(actual).not.toHaveProperty('hanamiRecommendationAutoInjectEnabled');
+			expect(actual).not.toHaveProperty('hanamiRecommendationAutoInjectStrength');
 		});
 
 		describe('packManyによるpreloadがある時、preloadが無い時とpackの結果が同じになるか見たい', () => {

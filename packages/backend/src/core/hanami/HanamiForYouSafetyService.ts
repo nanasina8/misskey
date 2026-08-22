@@ -3,12 +3,13 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { Brackets, type SelectQueryBuilder } from 'typeorm';
+import { Brackets, type QueryRunner, type SelectQueryBuilder } from 'typeorm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import type { NotesRepository } from '@/models/_.js';
-import type { MiNote } from '@/models/Note.js';
+import { MiNote } from '@/models/Note.js';
+import { MiUserProfile } from '@/models/UserProfile.js';
 import type { MiLocalUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { QueryService } from '@/core/QueryService.js';
@@ -18,6 +19,14 @@ import { isUserRelated } from '@/misc/is-user-related.js';
 import { isInstanceMuted } from '@/misc/is-instance-muted.js';
 import { removeMutedUsersReactions } from '@/misc/reactions-mute.js';
 import { checkWordMute } from '@/misc/check-word-mute.js';
+import { pureRenoteSql } from '@/misc/is-renote.js';
+import type { HanamiPersonalFeedCandidate, HanamiPersonalFeedComputationInput } from '@/core/hanami/HanamiUserFeedContracts.js';
+import type { HanamiTimelinePackingInput, HanamiTimelinePackingOutput } from '@/core/hanami/HanamiTimelineContracts.js';
+
+export type HanamiPersonalGenerationSafetyInput = Pick<HanamiPersonalFeedComputationInput, 'userId' | 'signal'> & {
+	readonly candidates: readonly HanamiPersonalFeedCandidate[];
+	readonly queryRunner?: QueryRunner;
+};
 
 /**
  * はなみ For You の safety filter 中央化（canonical spec §8）。
@@ -58,6 +67,124 @@ export class HanamiForYouSafetyService {
 		}
 	}
 
+	private throwIfAborted(signal?: AbortSignal): void {
+		if (signal?.aborted !== true) return;
+		if (signal.reason !== undefined) throw signal.reason;
+		const error = new Error('The operation was aborted');
+		error.name = 'AbortError';
+		throw error;
+	}
+
+	private noteQueryBuilder(queryRunner?: QueryRunner): SelectQueryBuilder<MiNote> {
+		return queryRunner == null
+			? this.notesRepository.createQueryBuilder('note')
+			: queryRunner.manager.getRepository(MiNote).createQueryBuilder('note');
+	}
+
+	private async generationMediaFilter(userId: string, signal: AbortSignal, queryRunner?: QueryRunner): Promise<string> {
+		this.throwIfAborted(signal);
+		if (queryRunner == null) {
+			const profile = await this.cacheService.userProfileCache.fetch(userId);
+			this.throwIfAborted(signal);
+			return profile.exploreMediaFilter;
+		}
+
+		const row = await queryRunner.manager.getRepository(MiUserProfile).createQueryBuilder('profile')
+			.select('profile.exploreMediaFilter', 'exploreMediaFilter')
+			.where('profile.userId = :userId', { userId })
+			.limit(1)
+			.getRawOne<{ exploreMediaFilter: string }>();
+		this.throwIfAborted(signal);
+		if (row == null || typeof row.exploreMediaFilter !== 'string') {
+			throw new Error(`Hanami generation user profile is missing: ${userId}`);
+		}
+		return row.exploreMediaFilter;
+	}
+
+	private applyHardAuthorAndTargetSafety(query: SelectQueryBuilder<MiNote>): void {
+		query
+			.andWhere('user.isSuspended = FALSE')
+			.andWhere('user.isDeleted = FALSE');
+		query.andWhere(new Brackets(qb => {
+			qb.where('note.replyId IS NULL').orWhere(new Brackets(target => {
+				target.where('reply.id IS NOT NULL')
+					.andWhere('reply.visibility IN (\'public\', \'home\')')
+					.andWhere('replyUser.id IS NOT NULL')
+					.andWhere('replyUser.isSuspended = FALSE')
+					.andWhere('replyUser.isDeleted = FALSE');
+			}));
+		}));
+		query.andWhere(new Brackets(qb => {
+			qb.where('note.renoteId IS NULL').orWhere(new Brackets(target => {
+				target.where('renote.id IS NOT NULL')
+					.andWhere('renote.visibility IN (\'public\', \'home\')')
+					.andWhere('renoteUser.id IS NOT NULL')
+					.andWhere('renoteUser.isSuspended = FALSE')
+					.andWhere('renoteUser.isDeleted = FALSE');
+			}));
+		}));
+	}
+
+	private generationEligibilityQuery(noteIds: readonly string[], queryRunner?: QueryRunner): SelectQueryBuilder<MiNote> {
+		const query = this.noteQueryBuilder(queryRunner)
+			.select('note.id', 'id')
+			.addSelect('note.userId', 'authorId')
+			.where('note.id IN (:...noteIds)', { noteIds })
+			.andWhere('note.channelId IS NULL')
+			.andWhere('note.visibility IN (\'public\', \'home\')')
+			.andWhere(`NOT (${pureRenoteSql('note')})`)
+			.innerJoin('note.user', 'user')
+			.leftJoin('note.reply', 'reply')
+			.leftJoin('note.renote', 'renote')
+			.leftJoin('reply.user', 'replyUser')
+			.leftJoin('renote.user', 'renoteUser');
+
+		this.applyHardAuthorAndTargetSafety(query);
+		this.queryService.generateBlockedHostQueryForNote(query);
+		this.queryService.generateSuspendedUserQueryForNote(query);
+		return query;
+	}
+
+	/**
+	 * 共通世代向けのユーザー非依存hard eligibility。作者IDも同じsnapshotで解決する。
+	 */
+	@bindThis
+	public async filterCommonEligibleNotes(noteIds: readonly string[], signal?: AbortSignal, queryRunner?: QueryRunner): Promise<ReadonlyMap<string, string>> {
+		this.throwIfAborted(signal);
+		const uniqueNoteIds = [...new Set(noteIds.filter(noteId => noteId.length > 0))];
+		if (uniqueNoteIds.length === 0) return new Map();
+
+		const query = this.generationEligibilityQuery(uniqueNoteIds, queryRunner);
+		const rows = await query.getRawMany<{ id: string; authorId: string }>();
+		this.throwIfAborted(signal);
+		return new Map(rows
+			.filter(row => row.id.length > 0 && row.authorId.length > 0)
+			.map(row => [row.id, row.authorId]));
+	}
+
+	/**
+	 * Personal-generation safety over IDs and immutable candidate metadata only.
+	 * User-specific relationship/word checks and packing belong to Phase 5 scan-ahead.
+	 */
+	@bindThis
+	public async filterPersonalEligibleCandidates(input: HanamiPersonalGenerationSafetyInput): Promise<readonly HanamiPersonalFeedCandidate[]> {
+		this.throwIfAborted(input.signal);
+		const noteIds = [...new Set(input.candidates.map(candidate => candidate.noteId).filter(noteId => noteId.length > 0))];
+		if (noteIds.length === 0) return [];
+
+		const mediaFilter = await this.generationMediaFilter(input.userId, input.signal, input.queryRunner);
+
+		const query = this.generationEligibilityQuery(noteIds, input.queryRunner);
+		this.applyMediaFilter(query, mediaFilter);
+		const rows = await query.getRawMany<{ id: string; authorId: string }>();
+		this.throwIfAborted(input.signal);
+
+		const authorByNoteId = new Map(rows
+			.filter(row => row.id.length > 0 && row.authorId.length > 0)
+			.map(row => [row.id, row.authorId]));
+		return input.candidates.filter(candidate => authorByNoteId.get(candidate.noteId) === candidate.authorId);
+	}
+
 	/**
 	 * interleave の【前段】: noteベースのグローバル安全＋ユーザーのメディア設定を通る候補 id の Set を返す。
 	 * 個別ユーザー項目(mute/block/word/instance)は含めない（後段 filterAndPack の責務）。
@@ -81,18 +208,8 @@ export class HanamiForYouSafetyService {
 			.leftJoin('reply.user', 'replyUser')
 			.leftJoin('renote.user', 'renoteUser');
 
-		query.andWhere(new Brackets(qb => {
-			qb.where('note.replyId IS NULL').orWhere('reply.id IS NULL').orWhere('reply.visibility IN (\'public\', \'home\')');
-		}));
-		query.andWhere(new Brackets(qb => {
-			qb.where('note.renoteId IS NULL').orWhere('renote.id IS NULL').orWhere('renote.visibility IN (\'public\', \'home\')');
-		}));
-		query.andWhere(new Brackets(qb => {
-			qb.where('note.renoteId IS NULL')
-				.orWhere('note.text IS NOT NULL')
-				.orWhere('note.fileIds != \'{}\'')
-				.orWhere('note.hasPoll = TRUE');
-		}));
+		this.applyHardAuthorAndTargetSafety(query);
+		query.andWhere(`NOT (${pureRenoteSql('note')})`);
 		if (withFiles) query.andWhere('note.fileIds != \'{}\'');
 
 		this.applyMediaFilter(query, profile.exploreMediaFilter);
@@ -131,21 +248,11 @@ export class HanamiForYouSafetyService {
 			.leftJoinAndSelect('reply.user', 'replyUser')
 			.leftJoinAndSelect('renote.user', 'renoteUser');
 
-		// reply・renote 元の可視性（public/home のみ。§8）。元が削除済(join が NULL)なら wrapper を過剰除外しない（suspended helper と同様 id IS NULL を許可）。
-		query.andWhere(new Brackets(qb => {
-			qb.where('note.replyId IS NULL').orWhere('reply.id IS NULL').orWhere('reply.visibility IN (\'public\', \'home\')');
-		}));
-		query.andWhere(new Brackets(qb => {
-			qb.where('note.renoteId IS NULL').orWhere('renote.id IS NULL').orWhere('renote.visibility IN (\'public\', \'home\')');
-		}));
+		// reply・renote 元が削除されたraceも含め、対象Note・作者が現存しhard safetyを通る場合だけ残す。
+		this.applyHardAuthorAndTargetSafety(query);
 
 		// 純粋RN除外（引用RN・本文/メディア/投票つきは元ノートとして許可。§8）。
-		query.andWhere(new Brackets(qb => {
-			qb.where('note.renoteId IS NULL')
-				.orWhere('note.text IS NOT NULL')
-				.orWhere('note.fileIds != \'{}\'')
-				.orWhere('note.hasPoll = TRUE');
-		}));
+		query.andWhere(`NOT (${pureRenoteSql('note')})`);
 		if (withFiles) query.andWhere('note.fileIds != \'{}\'');
 		this.applyMediaFilter(query, profile.exploreMediaFilter); // メディアはユーザー設定に従う。CW は落とさない（クライアント折りたたみ）。
 
@@ -185,5 +292,111 @@ export class HanamiForYouSafetyService {
 
 		await Promise.all(packed.map(note => removeMutedUsersReactions(note, userIdsWhoMeMuting)));
 		return packed.slice(0, limit);
+	}
+
+	@bindThis
+	public async filterAndPackPublic(orderedNoteIds: string[], me: MiLocalUser | null): Promise<Packed<'Note'>[]> {
+		if (orderedNoteIds.length === 0) return [];
+		if (me != null) return await this.filterAndPack(orderedNoteIds, orderedNoteIds.length, me, false);
+
+		const query = this.notesRepository.createQueryBuilder('note')
+			.where('note.id IN (:...noteIds)', { noteIds: orderedNoteIds })
+			.andWhere('note.channelId IS NULL')
+			.andWhere(new Brackets(qb => {
+				qb.where('note.visibility = \'public\'').orWhere('note.visibility = \'home\'');
+			}))
+			.innerJoinAndSelect('note.user', 'user')
+			.leftJoinAndSelect('note.reply', 'reply')
+			.leftJoinAndSelect('note.renote', 'renote')
+			.leftJoinAndSelect('reply.user', 'replyUser')
+			.leftJoinAndSelect('renote.user', 'renoteUser');
+		this.applyHardAuthorAndTargetSafety(query);
+		query.andWhere(`NOT (${pureRenoteSql('note')})`);
+		this.queryService.generateBlockedHostQueryForNote(query);
+		this.queryService.generateSuspendedUserQueryForNote(query);
+
+		const fetched = await query.getMany();
+		const safeMap = new Map(fetched.map(note => [note.id, note]));
+		const ordered = orderedNoteIds.flatMap(id => {
+			const note = safeMap.get(id);
+			return note == null ? [] : [note];
+		});
+		const packed = await this.noteEntityService.packMany(ordered, null, { withReactionAndUserPairCache: true });
+		return packed.filter(note => note.isHidden !== true);
+	}
+
+	/**
+	 * Applies display-time safety while retaining each durable feed occurrence.
+	 * The legacy Note-ID API above remains unchanged until all callers migrate.
+	 */
+	@bindThis
+	public async filterAndPackPersistedEntries(input: HanamiTimelinePackingInput): Promise<HanamiTimelinePackingOutput> {
+		if (input.entries.length === 0 || input.limit <= 0) return [];
+
+		const [userIdsWhoMeMuting, userIdsWhoBlockingMe, userIdsWhoMeBlocking, profile] = await Promise.all([
+			this.cacheService.userMutingsCache.fetch(input.me.id),
+			this.cacheService.userBlockedCache.fetch(input.me.id),
+			this.cacheService.userBlockingCache.fetch(input.me.id),
+			this.cacheService.userProfileCache.fetch(input.me.id),
+		]);
+		const userMutedInstances = new Set(profile.mutedInstances);
+		const mutedWords = [...(profile.mutedWords ?? []), ...(profile.hardMutedWords ?? [])];
+		const uniqueNoteIds = [...new Set(input.entries.map(entry => entry.noteId))];
+
+		const query = this.notesRepository.createQueryBuilder('note')
+			.where('note.id IN (:...noteIds)', { noteIds: uniqueNoteIds })
+			.andWhere('note.channelId IS NULL')
+			.andWhere(new Brackets(qb => {
+				qb.where('note.visibility = \'public\'').orWhere('note.visibility = \'home\'');
+			}))
+			.innerJoinAndSelect('note.user', 'user')
+			.leftJoinAndSelect('note.reply', 'reply')
+			.leftJoinAndSelect('note.renote', 'renote')
+			.leftJoinAndSelect('reply.user', 'replyUser')
+			.leftJoinAndSelect('renote.user', 'renoteUser');
+
+		this.applyHardAuthorAndTargetSafety(query);
+		query.andWhere(`NOT (${pureRenoteSql('note')})`);
+		if (input.withFiles) query.andWhere('note.fileIds != \'{}\'');
+		this.applyMediaFilter(query, profile.exploreMediaFilter);
+		this.queryService.generateBlockedHostQueryForNote(query);
+		this.queryService.generateSuspendedUserQueryForNote(query);
+
+		let candidates = (await query.getMany()).filter(note => {
+			if (isUserRelated(note, userIdsWhoBlockingMe)) return false;
+			if (isUserRelated(note, userIdsWhoMeBlocking)) return false;
+			if (isUserRelated(note, userIdsWhoMeMuting)) return false;
+			if (isInstanceMuted(note, userMutedInstances)) return false;
+			return true;
+		});
+
+		if (mutedWords.length > 0) {
+			const muted = await Promise.all(candidates.map(async note => (
+				await checkWordMute(note, input.me, mutedWords)
+				|| (note.renote != null && await checkWordMute(note.renote, input.me, mutedWords))
+				|| (note.reply != null && await checkWordMute(note.reply, input.me, mutedWords))
+			)));
+			candidates = candidates.filter((_, index) => !muted[index]);
+		}
+
+		const safeByNoteId = new Map(candidates.map(note => [note.id, note]));
+		const orderedOccurrences = input.entries.flatMap(entry => {
+			const note = safeByNoteId.get(entry.noteId);
+			return note == null ? [] : [{ entry, note }];
+		}).slice(0, input.limit);
+		const packed = await this.noteEntityService.packMany(
+			orderedOccurrences.map(occurrence => occurrence.note),
+			input.me,
+			{ withReactionAndUserPairCache: true },
+		);
+		if (packed.length !== orderedOccurrences.length) {
+			throw new Error('Hanami persisted-entry packing returned an unexpected Note count');
+		}
+
+		await Promise.all(packed.map(note => removeMutedUsersReactions(note, userIdsWhoMeMuting)));
+		return packed.map((note, index) => ({
+			entry: orderedOccurrences[index]!.entry,
+			note,
+		}));
 	}
 }

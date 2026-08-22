@@ -8,35 +8,65 @@ import { HanamiRecommendationService } from '@/core/HanamiRecommendationService.
 
 // For You-only 化後の HanamiRecommendationService は周辺ユーティリティのみ（score 混合・home 注入は廃止＝§6）。
 // 配信本体のロジックは HanamiForYouInterleave / HanamiForYouService 側でテストする。
-function createService(profile: object): HanamiRecommendationService {
-	const cacheService = { userProfileCache: { fetch: jest.fn(async () => profile) } };
-	return new HanamiRecommendationService(
-		{} as never, // redis
-		cacheService as never,
-		{} as never, // hanamiTrendService
-		{} as never, // hanamiUserRecommendationService
-		{} as never, // hanamiForYouProvenanceService
+function createService() {
+	const transaction = {
+		zadd: jest.fn(),
+		zremrangebyscore: jest.fn(),
+		expire: jest.fn(),
+		exec: jest.fn(async () => [[null, 1]]),
+	};
+	transaction.zadd.mockReturnValue(transaction);
+	transaction.zremrangebyscore.mockReturnValue(transaction);
+	transaction.expire.mockReturnValue(transaction);
+	const redis = {
+		zrangebyscore: jest.fn(async (key: string) => key.includes(':served:') ? ['served-1'] : ['seen-1']),
+		multi: jest.fn(() => transaction),
+	};
+	const trend = {
+		getTrendingTerms: jest.fn(async () => [{ term: 'term', score: 3, distinctAuthors: 2, ignored: true }]),
+	};
+	const userRecommendation = {
+		getFollowCandidates: jest.fn(async () => [{ userId: 'user-2', reason: 'mutual', mutualCount: 4, ignored: true }]),
+		recordShown: jest.fn(async () => undefined),
+	};
+	const service = new HanamiRecommendationService(
+		redis as never,
+		trend as never,
+		userRecommendation as never,
+		{} as never,
 	);
+	return { redis, service, transaction, trend, userRecommendation };
 }
 
 describe('HanamiRecommendationService (For You-only utilities)', () => {
-	test('getAutoInjectPreset returns the strength preset when enabled and auto-inject is on', async () => {
-		const service = createService({ hanamiRecommendationEnabled: true, hanamiRecommendationAutoInjectEnabled: true, hanamiRecommendationAutoInjectStrength: 'high' });
-		expect(await service.getAutoInjectPreset('user-1')).toEqual({ homeNotesPerInjection: 4, injectCount: 2 });
+	test('retains served utilities without auto-inject or legacy seen writers', async () => {
+		const { redis, service } = createService();
+
+		expect(await service.getServedSeenForExclusion('user-1')).toEqual({
+			served: new Set(['served-1']),
+			seen: new Set(['seen-1']),
+		});
+		await service.recordServed('user-1', ['note-1']);
+
+		expect(redis.multi).toHaveBeenCalledTimes(1);
+		expect('getAutoInjectPreset' in service).toBe(false);
+		expect('recordSeen' in service).toBe(false);
+		expect('recordHomeSeen' in service).toBe(false);
 	});
 
-	test('getAutoInjectPreset returns null when recommendation is disabled', async () => {
-		const service = createService({ hanamiRecommendationEnabled: false, hanamiRecommendationAutoInjectEnabled: true, hanamiRecommendationAutoInjectStrength: 'low' });
-		expect(await service.getAutoInjectPreset('user-1')).toBeNull();
-	});
+	test('retains the trend and user recommendation endpoint wrappers', async () => {
+		const { service, trend, userRecommendation } = createService();
 
-	test('getAutoInjectPreset returns null when auto-inject is disabled', async () => {
-		const service = createService({ hanamiRecommendationEnabled: true, hanamiRecommendationAutoInjectEnabled: false, hanamiRecommendationAutoInjectStrength: 'low' });
-		expect(await service.getAutoInjectPreset('user-1')).toBeNull();
-	});
+		expect(await service.getFollowCandidates('user-1', 5)).toEqual([
+			{ userId: 'user-2', reason: 'mutual', mutualCount: 4 },
+		]);
+		await service.recordFollowCandidatesShown('user-1', ['user-2']);
+		expect(await service.getTrendingTerms(5)).toEqual([
+			{ term: 'term', score: 3, distinctAuthors: 2 },
+		]);
 
-	test('getAutoInjectPreset falls back to the low preset for an unknown strength', async () => {
-		const service = createService({ hanamiRecommendationEnabled: true, hanamiRecommendationAutoInjectEnabled: true, hanamiRecommendationAutoInjectStrength: 'bogus' });
-		expect(await service.getAutoInjectPreset('user-1')).toEqual({ homeNotesPerInjection: 10, injectCount: 1 });
+		expect(userRecommendation.getFollowCandidates).toHaveBeenCalledWith('user-1', 5);
+		expect(userRecommendation.recordShown).toHaveBeenCalledWith('user-1', ['user-2']);
+		expect(trend.getTrendingTerms).toHaveBeenCalledWith(5);
 	});
 });

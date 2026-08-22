@@ -98,7 +98,25 @@ import { MiHanamiForYouUserCentroid } from '@/models/HanamiForYouUserCentroid.js
 import { MiHanamiForYouUserAux } from '@/models/HanamiForYouUserAux.js';
 import { MiHanamiRecommendationEvent } from '@/models/HanamiRecommendationEvent.js';
 import { MiHanamiForYouInteractionDaily } from '@/models/HanamiForYouInteractionDaily.js';
+import { MiHanamiCommonGeneration } from '@/models/HanamiCommonGeneration.js';
+import { MiHanamiCommonCandidateEntry } from '@/models/HanamiCommonCandidateEntry.js';
+import { MiHanamiCommonFeedEntry } from '@/models/HanamiCommonFeedEntry.js';
+import { MiHanamiCommonFeedState } from '@/models/HanamiCommonFeedState.js';
+import { MiHanamiTrendSnapshot } from '@/models/HanamiTrendSnapshot.js';
+import { MiHanamiTrendSnapshotEntry } from '@/models/HanamiTrendSnapshotEntry.js';
+import { MiHanamiTrendSnapshotRepresentativeNote } from '@/models/HanamiTrendSnapshotRepresentativeNote.js';
+import { MiHanamiUserFeedEpoch } from '@/models/HanamiUserFeedEpoch.js';
+import { MiHanamiUserFeedState } from '@/models/HanamiUserFeedState.js';
+import { MiHanamiUserFeedBatch } from '@/models/HanamiUserFeedBatch.js';
+import { MiHanamiUserFeedEntry } from '@/models/HanamiUserFeedEntry.js';
+import { MiHanamiUserFeedRefresh } from '@/models/HanamiUserFeedRefresh.js';
+import { MiHanamiUserRecommendationState } from '@/models/HanamiUserRecommendationState.js';
+import { MiHanamiUserRecommendationBatch } from '@/models/HanamiUserRecommendationBatch.js';
+import { MiHanamiUserRecommendationEntry } from '@/models/HanamiUserRecommendationEntry.js';
+import { MiHanamiUserRecommendationRefresh } from '@/models/HanamiUserRecommendationRefresh.js';
 
+// Keep the global int8 -> Number parser unchanged for legacy code. Hanami entity bigint metadata now carries a runtime
+// transformer guard that throws on hydration, so callers must use raw SQL with ::text aliases whenever they need those values.
 pg.types.setTypeParser(20, Number);
 
 export const dbLogger = new MisskeyLogger('db');
@@ -274,6 +292,24 @@ export const entities = [
 	MiHanamiNoteEmbedding,
 	MiHanamiForYouUserCentroid,
 	MiHanamiForYouUserAux,
+	// WP1 Hanami entities stay registered for metadata. Their bigint columns now hard-fail during TypeORM hydration, so
+	// callers must keep using raw SQL with ::text aliases instead of consuming lossy entity values.
+	MiHanamiCommonGeneration,
+	MiHanamiCommonCandidateEntry,
+	MiHanamiCommonFeedEntry,
+	MiHanamiCommonFeedState,
+	MiHanamiTrendSnapshot,
+	MiHanamiTrendSnapshotEntry,
+	MiHanamiTrendSnapshotRepresentativeNote,
+	MiHanamiUserFeedEpoch,
+	MiHanamiUserFeedState,
+	MiHanamiUserFeedBatch,
+	MiHanamiUserFeedEntry,
+	MiHanamiUserFeedRefresh,
+	MiHanamiUserRecommendationState,
+	MiHanamiUserRecommendationBatch,
+	MiHanamiUserRecommendationEntry,
+	MiHanamiUserRecommendationRefresh,
 	MiHanamiRecommendationEvent,
 	MiHanamiForYouInteractionDaily,
 	...charts,
@@ -282,6 +318,7 @@ export const entities = [
 const log = process.env.NODE_ENV !== 'production';
 
 export function createPostgresDataSource(config: Config) {
+	const migrationManagedTestDatabase = process.env.MISSKEY_TEST_DB_MIGRATIONS === '1';
 	return new DataSource({
 		type: 'postgres',
 		host: config.db.host,
@@ -310,8 +347,8 @@ export function createPostgresDataSource(config: Config) {
 				})),
 			},
 		} : {}),
-		synchronize: process.env.NODE_ENV === 'test',
-		dropSchema: process.env.NODE_ENV === 'test',
+		synchronize: process.env.NODE_ENV === 'test' && !migrationManagedTestDatabase,
+		dropSchema: process.env.NODE_ENV === 'test' && !migrationManagedTestDatabase,
 		cache: !config.db.disableCache && process.env.NODE_ENV !== 'test' ? { // dbをcloseしても何故かredisのコネクションが内部的に残り続けるようで、テストの際に支障が出るため無効にする(キャッシュも含めてテストしたいため本当は有効にしたいが...)
 			type: 'ioredis',
 			options: {

@@ -247,6 +247,7 @@ export const queueTypes = [
 	'objectStorage',
 	'userWebhookDeliver',
 	'systemWebhookDeliver',
+	'hanamiGeneration',
 ] as const;
 
 // See: packages/backend/src/core/ReversiService.ts@L410

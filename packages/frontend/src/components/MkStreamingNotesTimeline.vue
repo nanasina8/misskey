@@ -5,22 +5,25 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <component :is="prefer.s.enablePullToRefresh ? MkPullToRefresh : 'div'" :refresher="() => reloadTimeline()">
-	<MkLoading v-if="paginator.fetching.value"/>
+	<MkLoading v-if="fetching"/>
 
-	<MkError v-else-if="paginator.error.value" @retry="paginator.init()"/>
-
-	<div v-else-if="paginator.items.value.length === 0" key="_empty_">
-		<slot name="empty"><MkResult type="empty" :text="i18n.ts.noNotes"/></slot>
-	</div>
+	<MkError v-else-if="error" @retry="retryTimeline"/>
 
 	<div v-else ref="rootEl">
-		<div v-if="paginator.queuedAheadItemsCount.value > 0" :class="$style.new">
+		<div v-if="generationPending" :class="$style.generationPending">
+			<i class="ti ti-loader-2"></i> {{ i18n.ts._hana.hanamiTimelineGenerationPending }}
+		</div>
+		<div v-if="queuedAheadItemsCount > 0" :class="$style.new">
 			<div :class="$style.newBg1"></div>
 			<div :class="$style.newBg2"></div>
 			<button class="_button" :class="$style.newButton" @click="releaseQueue()"><i class="ti ti-circle-arrow-up"></i> {{ i18n.ts.newNote }}</button>
 		</div>
+		<div v-if="items.length === 0" key="_empty_">
+			<slot name="empty"><MkResult type="empty" :text="i18n.ts.noNotes"/></slot>
+		</div>
 		<component
 			:is="prefer.s.animation ? TransitionGroup : 'div'"
+			v-else
 			:class="$style.notes"
 			:enterActiveClass="$style.transition_x_enterActive"
 			:leaveActiveClass="$style.transition_x_leaveActive"
@@ -29,26 +32,26 @@ SPDX-License-Identifier: AGPL-3.0-only
 			:moveClass="$style.transition_x_move"
 			tag="div"
 		>
-			<template v-for="(note, i) in paginator.items.value" :key="note.id">
-				<div v-if="showDateSeparators && i > 0 && isSeparatorNeeded(paginator.items.value[i -1].createdAt, note.createdAt)" :data-scroll-anchor="note.id">
+			<template v-for="(item, i) in items" :key="itemKey(item)">
+				<div v-if="showDateSeparators && i > 0 && isSeparatorNeeded(itemNote(items[i - 1]).createdAt, itemNote(item).createdAt)" :data-scroll-anchor="itemKey(item)">
 					<div :class="$style.date">
-						<span><i class="ti ti-chevron-up"></i> {{ getSeparatorInfo(paginator.items.value[i -1].createdAt, note.createdAt)?.prevText }}</span>
+						<span><i class="ti ti-chevron-up"></i> {{ getSeparatorInfo(itemNote(items[i - 1]).createdAt, itemNote(item).createdAt)?.prevText }}</span>
 						<span style="height: 1em; width: 1px; background: var(--MI_THEME-divider);"></span>
-						<span>{{ getSeparatorInfo(paginator.items.value[i -1].createdAt, note.createdAt)?.nextText }} <i class="ti ti-chevron-down"></i></span>
+						<span>{{ getSeparatorInfo(itemNote(items[i - 1]).createdAt, itemNote(item).createdAt)?.nextText }} <i class="ti ti-chevron-down"></i></span>
 					</div>
-					<MkNote :class="$style.note" :note="note" :withHardMute="true"/>
+					<MkNote :class="$style.note" :note="itemNote(item)" :hanamiFeedEntryId="itemFeedEntryId(item)" :withHardMute="true"/>
 				</div>
-				<div v-else-if="note._shouldInsertAd_" :data-scroll-anchor="note.id">
-					<MkNote :class="$style.note" :note="note" :withHardMute="true"/>
+				<div v-else-if="itemNote(item)._shouldInsertAd_" :data-scroll-anchor="itemKey(item)">
+					<MkNote :class="$style.note" :note="itemNote(item)" :hanamiFeedEntryId="itemFeedEntryId(item)" :withHardMute="true"/>
 					<div :class="$style.ad">
 						<MkAd :preferForms="['horizontal', 'horizontal-big']"/>
 					</div>
 				</div>
-				<MkNote v-else :class="$style.note" :note="note" :withHardMute="true" :data-scroll-anchor="note.id"/>
+				<MkNote v-else :class="$style.note" :note="itemNote(item)" :hanamiFeedEntryId="itemFeedEntryId(item)" :withHardMute="true" :data-scroll-anchor="itemKey(item)"/>
 			</template>
 		</component>
-		<button v-show="paginator.canFetchOlder.value" key="_more_" v-appear="prefer.s.enableInfiniteScroll ? paginator.fetchOlder : null" :disabled="paginator.fetchingOlder.value" class="_button" :class="$style.more" @click="paginator.fetchOlder">
-			<div v-if="!paginator.fetchingOlder.value">{{ i18n.ts.loadMore }}</div>
+		<button v-show="canFetchOlder" key="_more_" v-appear="prefer.s.enableInfiniteScroll ? fetchOlder : null" :disabled="fetchingOlder" class="_button" :class="$style.more" @click="fetchOlder">
+			<div v-if="!fetchingOlder">{{ i18n.ts.loadMore }}</div>
 			<MkLoading v-else :inline="true"/>
 		</button>
 	</div>
@@ -56,7 +59,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, watch, onUnmounted, provide, useTemplateRef, TransitionGroup, onMounted, shallowRef, ref, markRaw } from 'vue';
+import { computed, watch, onUnmounted, provide, useTemplateRef, TransitionGroup, onMounted, ref, markRaw } from 'vue';
 import * as Misskey from 'misskey-js';
 import { useInterval } from '@@/js/use-interval.js';
 import { useDocumentVisibility } from '@@/js/use-document-visibility.js';
@@ -72,11 +75,12 @@ import { instance } from '@/instance.js';
 import { prefer } from '@/preferences.js';
 import { store } from '@/store.js';
 import MkNote from '@/components/MkNote.vue';
-import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
-import { globalEvents, useGlobalEvent } from '@/events.js';
+import { useGlobalEvent } from '@/events.js';
 import { isSeparatorNeeded, getSeparatorInfo } from '@/utility/timeline-date-separate.js';
 import { Paginator } from '@/utility/paginator.js';
+import { HanamiTimelinePaginator } from '@/utility/hanami-timeline-paginator.js';
+import type { HanamiTimelineItem } from '@/utility/hanami-timeline-paginator.js';
 
 const props = withDefaults(defineProps<{
 	src: BasicTimelineType | 'mentions' | 'directs' | 'list' | 'antenna' | 'channel' | 'role';
@@ -102,12 +106,14 @@ const props = withDefaults(defineProps<{
 provide('inTimeline', true);
 provide('tl_withSensitive', computed(() => props.withSensitive));
 provide('inChannel', computed(() => props.src === 'channel'));
-// はなみTLでは MkNote が表示確認を報告する。For You 推薦は rec seen として扱う。
-provide('hanamiTimeline', computed(() => props.src === 'hanami'));
 
 const showDateSeparators = computed(() => props.src !== 'hanami' || prefer.r.showHanamiTimelineDateSeparators.value);
 
-let paginator: IPaginator<Misskey.entities.Note>;
+const hanamiParams = computed(() => ({
+	withFiles: props.onlyFiles ? true : undefined,
+}));
+let paginator: IPaginator<Misskey.entities.Note> | null = null;
+let hanamiPaginator: HanamiTimelinePaginator | null = null;
 
 if (props.src === 'antenna') {
 	paginator = markRaw(new Paginator('antennas/notes', {
@@ -125,16 +131,7 @@ if (props.src === 'antenna') {
 		useShallowRef: true,
 	}));
 } else if (props.src === 'hanami') {
-	paginator = markRaw(new Paginator('notes/hanami-timeline', {
-		computedParams: computed(() => ({
-			withRenotes: props.withRenotes,
-			withFiles: props.onlyFiles ? true : undefined,
-			allowPartial: true,
-		})),
-		useShallowRef: true,
-		// はなみTL = For You-only（canonical spec §9）。時系列でなく ranked ページのため home anchor は無い。
-		// untilId は次ページ要求トリガとしてのみ送られ、重複排除はサーバ側の served/seen が担う（cursorAnchor 不要）。
-	}));
+	hanamiPaginator = markRaw(new HanamiTimelinePaginator(hanamiParams));
 } else if (props.src === 'local') {
 	paginator = markRaw(new Paginator('notes/local-timeline', {
 		computedParams: computed(() => ({
@@ -199,12 +196,39 @@ if (props.src === 'antenna') {
 	throw new Error('Unrecognized timeline type: ' + props.src);
 }
 
-onMounted(() => {
-	paginator.init();
+type TimelineItem = Misskey.entities.Note | HanamiTimelineItem;
 
-	if (paginator.computedParams) {
-		watch(paginator.computedParams, () => {
-			paginator.reload();
+const items = computed<TimelineItem[]>(() => hanamiPaginator?.items.value ?? paginator?.items.value ?? []);
+const fetching = computed(() => hanamiPaginator?.fetching.value ?? paginator?.fetching.value ?? false);
+const fetchingOlder = computed(() => hanamiPaginator?.fetchingOlder.value ?? paginator?.fetchingOlder.value ?? false);
+const canFetchOlder = computed(() => hanamiPaginator?.canFetchOlder.value ?? paginator?.canFetchOlder.value ?? false);
+const error = computed(() => hanamiPaginator?.error.value ?? (paginator?.error.value ? true : null));
+const generationPending = computed(() => hanamiPaginator?.generationPending.value ?? false);
+const queuedAheadItemsCount = computed(() => paginator?.queuedAheadItemsCount.value ?? 0);
+
+function isHanamiItem(item: TimelineItem): item is HanamiTimelineItem {
+	return 'feedEntryId' in item && 'note' in item;
+}
+
+function itemNote(item: TimelineItem): Misskey.entities.Note & Partial<MisskeyEntity> {
+	return isHanamiItem(item) ? item.note : item;
+}
+
+function itemKey(item: TimelineItem): string {
+	return isHanamiItem(item) ? item.feedEntryId : item.id;
+}
+
+function itemFeedEntryId(item: TimelineItem): string | undefined {
+	return isHanamiItem(item) ? item.feedEntryId : undefined;
+}
+
+onMounted(() => {
+	void (hanamiPaginator?.init() ?? paginator!.init());
+
+	const computedParams = hanamiPaginator?.computedParams ?? paginator?.computedParams;
+	if (computedParams) {
+		watch(computedParams, () => {
+			void reinitTimeline();
 		}, { immediate: false, deep: true });
 	}
 });
@@ -220,7 +244,7 @@ function isTop() {
 let scrollContainer: HTMLElement | null = null;
 
 function onScrollContainerScroll() {
-	if (isTop()) {
+	if (isTop() && paginator != null) {
 		paginator.releaseQueue();
 	}
 }
@@ -263,10 +287,10 @@ const POLLING_INTERVAL =
 	prefer.s.pollingInterval === 3 ? MIN_POLLING_INTERVAL :
 	MIN_POLLING_INTERVAL;
 
-if (!store.s.realtimeMode) {
+if (props.src !== 'hanami' && !store.s.realtimeMode) {
 	// TODO: 先頭のノートの作成日時が1日以上前であれば流速が遅いTLと見做してインターバルを通常より延ばす
 	useInterval(async () => {
-		paginator.fetchNewer({
+		paginator!.fetchNewer({
 			toQueue: !isTop() || isPausingUpdate,
 		});
 	}, POLLING_INTERVAL, {
@@ -275,22 +299,28 @@ if (!store.s.realtimeMode) {
 	});
 
 	useGlobalEvent('notePosted', (note) => {
-		paginator.fetchNewer({
+		paginator!.fetchNewer({
 			toQueue: !isTop() || isPausingUpdate,
 		});
 	});
 }
 
 useGlobalEvent('noteDeleted', (noteId) => {
-	paginator.removeItem(noteId);
+	if (hanamiPaginator != null) {
+		hanamiPaginator.removeNote(noteId);
+	} else {
+		paginator!.removeItem(noteId);
+	}
 });
 
 function releaseQueue() {
+	if (paginator == null) return;
 	paginator.releaseQueue();
 	scrollToTop(rootEl.value!);
 }
 
 function prepend(note: Misskey.entities.Note & MisskeyEntity) {
+	if (paginator == null) return;
 	adInsertionCounter++;
 
 	if (instance.notesPerOneAd > 0 && adInsertionCounter % instance.notesPerOneAd === 0) {
@@ -312,12 +342,11 @@ function prepend(note: Misskey.entities.Note & MisskeyEntity) {
 	}
 }
 
-const stream = store.s.realtimeMode ? useStream() : null;
+const stream = store.s.realtimeMode && props.src !== 'hanami' ? useStream() : null;
 
 const connections = {
 	antenna: null as Misskey.IChannelConnection<Misskey.Channels['antenna']> | null,
 	homeTimeline: null as Misskey.IChannelConnection<Misskey.Channels['homeTimeline']> | null,
-	hanamiTimeline: null as Misskey.IChannelConnection<Misskey.Channels['hanamiTimeline']> | null,
 	localTimeline: null as Misskey.IChannelConnection<Misskey.Channels['localTimeline']> | null,
 	hybridTimeline: null as Misskey.IChannelConnection<Misskey.Channels['hybridTimeline']> | null,
 	globalTimeline: null as Misskey.IChannelConnection<Misskey.Channels['globalTimeline']> | null,
@@ -342,12 +371,6 @@ function connectChannel() {
 		});
 		connections.main = stream.useChannel('main');
 		connections.homeTimeline.on('note', prepend);
-	} else if (props.src === 'hanami') {
-		connections.hanamiTimeline = stream.useChannel('hanamiTimeline', {
-			withRenotes: props.withRenotes,
-			withFiles: props.onlyFiles ? true : undefined,
-		});
-		connections.hanamiTimeline.on('note', prepend);
 	} else if (props.src === 'local') {
 		connections.localTimeline = stream.useChannel('localTimeline', {
 			withRenotes: props.withRenotes,
@@ -412,30 +435,40 @@ function disconnectChannel() {
 	}
 }
 
-if (store.s.realtimeMode) {
+if (store.s.realtimeMode && props.src !== 'hanami') {
 	connectChannel();
 }
 
 watch(() => [props.list, props.antenna, props.channel, props.role, props.withRenotes], () => {
-	if (store.s.realtimeMode) {
+	if (store.s.realtimeMode && props.src !== 'hanami') {
 		disconnectChannel();
 		connectChannel();
 	}
 });
-watch(() => props.withSensitive, reloadTimeline);
+watch(() => props.withSensitive, () => {
+	void reinitTimeline();
+});
 
 onUnmounted(() => {
 	disconnectChannel();
 });
 
-function reloadTimeline() {
-	return new Promise<void>((res) => {
-		adInsertionCounter = 0;
+async function reinitTimeline(): Promise<void> {
+	adInsertionCounter = 0;
+	await (hanamiPaginator?.init() ?? paginator!.reload());
+}
 
-		paginator.reload().then(() => {
-			res();
-		});
-	});
+async function reloadTimeline(): Promise<void> {
+	adInsertionCounter = 0;
+	await (hanamiPaginator?.refresh() ?? paginator!.reload());
+}
+
+async function retryTimeline(): Promise<void> {
+	await (hanamiPaginator?.retry() ?? paginator!.init());
+}
+
+async function fetchOlder(): Promise<void> {
+	await (hanamiPaginator?.fetchOlder() ?? paginator!.fetchOlder());
 }
 
 defineExpose({
@@ -481,6 +514,15 @@ defineExpose({
 .notes {
 	container-type: inline-size;
 	background: var(--MI_THEME-panel);
+}
+
+.generationPending {
+	padding: 8px 12px;
+	border-bottom: solid 0.5px var(--MI_THEME-divider);
+	background: var(--MI_THEME-panel);
+	color: color(from var(--MI_THEME-fg) srgb r g b / 0.65);
+	font-size: 0.82em;
+	text-align: center;
 }
 
 .note:not(:empty) {

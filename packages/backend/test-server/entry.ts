@@ -7,6 +7,7 @@ import { ServerService } from '@/server/ServerService.js';
 import { loadConfig } from '@/config.js';
 import { NestLogger } from '@/NestLogger.js';
 import { INestApplicationContext } from '@nestjs/common';
+import { DataSource } from 'typeorm';
 
 const config = loadConfig();
 const originEnv = JSON.stringify(process.env);
@@ -21,6 +22,7 @@ let serverService: ServerService;
  */
 async function launch() {
 	await killTestServer();
+	if (process.env.MISSKEY_TEST_DB_MIGRATIONS === '1') await initializeMigratedTestDatabase();
 
 	console.log('starting application...');
 
@@ -36,6 +38,27 @@ async function launch() {
 	// ジョブキューが動くとテスト結果の確認に支障が出ることがあるので意図的に動かさないでいる
 
 	console.log('application initialized.');
+}
+
+async function initializeMigratedTestDatabase(): Promise<void> {
+	const db = new DataSource({
+		type: 'postgres',
+		host: config.db.host,
+		port: config.db.port,
+		username: config.db.user,
+		password: config.db.pass,
+		database: config.db.db,
+		extra: config.db.extra,
+		migrations: ['migration/*.js'],
+		migrationsTransactionMode: 'all',
+	});
+	try {
+		await db.initialize();
+		await db.dropDatabase();
+		await db.runMigrations();
+	} finally {
+		if (db.isInitialized) await db.destroy();
+	}
 }
 
 /**

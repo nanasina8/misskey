@@ -11,6 +11,17 @@ import { type FastifyServerOptions } from 'fastify';
 import type * as Sentry from '@sentry/node';
 import type * as SentryVue from '@sentry/vue';
 import type { RedisOptions } from 'ioredis';
+import { validateHanamiCursorSigningKeys } from '@/core/hanami/HanamiFeedCodec.js';
+import type { HanamiCursorSigningKey } from '@/core/hanami/HanamiFeedCodecTypes.js';
+
+const HANAMI_CURSOR_SIGNING_KEYS_JSON_ENV = 'HANAMI_CURSOR_SIGNING_KEYS_JSON';
+const MAX_SAFE_CONFIG_INT = 2_147_483_647;
+const MAX_USER_HIBERNATION_DAYS = 100_000_000;
+
+type HanamiCursorSigningKeySource = {
+	id: string;
+	secret: string;
+};
 
 type RedisOptionsSource = Partial<RedisOptions> & {
 	host: string;
@@ -127,7 +138,16 @@ type Source = {
 			disableQueryTruncation?: boolean,
 			enableQueryParamLogging?: boolean,
 		}
-	}
+	};
+	hanamiCursorSigningKeys?: HanamiCursorSigningKeySource[];
+	hanamiGenerationSyncWaitMs?: number;
+	userHibernationDays?: number;
+	hanamiCommonGenerationIntervalMs?: number;
+	hanamiGenerationWorkerTimeoutMs?: number;
+	hanamiGenerationLeaseMs?: number;
+	hanamiGenerationMaxAttempts?: number;
+	hanamiGenerationReconcileIntervalMs?: number;
+	hanamiGenerationQueueConcurrency?: number;
 };
 
 export type Config = {
@@ -238,9 +258,42 @@ export type Config = {
 	} | undefined;
 
 	pidFile: string;
+	hanamiCursorSigningKeys: HanamiCursorSigningKey[];
+	hanamiGenerationSyncWaitMs: number;
+	userHibernationDays: number;
+	hanamiCommonGenerationIntervalMs: number;
+	hanamiGenerationWorkerTimeoutMs: number;
+	hanamiGenerationLeaseMs: number;
+	hanamiGenerationMaxAttempts: number;
+	hanamiGenerationReconcileIntervalMs: number;
+	hanamiGenerationQueueConcurrency: number;
 };
 
 export type FulltextSearchProvider = 'sqlLike' | 'sqlPgroonga' | 'meilisearch';
+
+export type HanamiConfigSource = Partial<Pick<Source,
+	| 'hanamiCursorSigningKeys'
+	| 'hanamiGenerationSyncWaitMs'
+	| 'userHibernationDays'
+	| 'hanamiCommonGenerationIntervalMs'
+	| 'hanamiGenerationWorkerTimeoutMs'
+	| 'hanamiGenerationLeaseMs'
+	| 'hanamiGenerationMaxAttempts'
+	| 'hanamiGenerationReconcileIntervalMs'
+	| 'hanamiGenerationQueueConcurrency'
+>>;
+
+export type HanamiConfigValues = Pick<Config,
+	| 'hanamiCursorSigningKeys'
+	| 'hanamiGenerationSyncWaitMs'
+	| 'userHibernationDays'
+	| 'hanamiCommonGenerationIntervalMs'
+	| 'hanamiGenerationWorkerTimeoutMs'
+	| 'hanamiGenerationLeaseMs'
+	| 'hanamiGenerationMaxAttempts'
+	| 'hanamiGenerationReconcileIntervalMs'
+	| 'hanamiGenerationQueueConcurrency'
+>;
 
 const _filename = fileURLToPath(import.meta.url);
 const _dirname = dirname(_filename);
@@ -272,6 +325,7 @@ export function loadConfig(): Config {
 		: { 'src/boot.ts': { file: null } };
 
 	const config = yaml.load(fs.readFileSync(path, 'utf-8')) as Source;
+	const hanamiConfig = resolveHanamiConfig(config, process.env);
 
 	const url = tryCreateUrl(config.url ?? process.env.MISSKEY_URL ?? '');
 	const version = meta.version;
@@ -357,6 +411,7 @@ export function loadConfig(): Config {
 		import: config.import,
 		pidFile: config.pidFile,
 		logging: config.logging,
+		...hanamiConfig,
 	};
 }
 
@@ -384,4 +439,102 @@ function convertRedisOptions(options: RedisOptionsSource, host: string): RedisOp
 			return false;
 		},
 	};
+}
+
+export function resolveHanamiConfig(config: HanamiConfigSource, env: NodeJS.ProcessEnv = process.env): HanamiConfigValues {
+	const hanamiCursorSigningKeys = readHanamiCursorSigningKeys(config.hanamiCursorSigningKeys, env[HANAMI_CURSOR_SIGNING_KEYS_JSON_ENV]);
+	const hanamiGenerationSyncWaitMs = readConfigInt('hanamiGenerationSyncWaitMs', config.hanamiGenerationSyncWaitMs, 2000, { min: 0 });
+	const userHibernationDays = readConfigInt('userHibernationDays', config.userHibernationDays, 50, { min: 1, max: MAX_USER_HIBERNATION_DAYS });
+	const hanamiCommonGenerationIntervalMs = readConfigInt('hanamiCommonGenerationIntervalMs', config.hanamiCommonGenerationIntervalMs, 600000, { min: 1 });
+	const hanamiGenerationWorkerTimeoutMs = readConfigInt('hanamiGenerationWorkerTimeoutMs', config.hanamiGenerationWorkerTimeoutMs, 60000, { min: 1 });
+	const hanamiGenerationLeaseMs = readConfigInt('hanamiGenerationLeaseMs', config.hanamiGenerationLeaseMs, 75000, { min: 1 });
+	const hanamiGenerationMaxAttempts = readConfigInt('hanamiGenerationMaxAttempts', config.hanamiGenerationMaxAttempts, 3, { min: 1 });
+	const hanamiGenerationReconcileIntervalMs = readConfigInt('hanamiGenerationReconcileIntervalMs', config.hanamiGenerationReconcileIntervalMs, 5000, { min: 1 });
+	const hanamiGenerationQueueConcurrency = readConfigInt('hanamiGenerationQueueConcurrency', config.hanamiGenerationQueueConcurrency, 4, { min: 1 });
+
+	if (hanamiGenerationLeaseMs <= hanamiGenerationWorkerTimeoutMs) {
+		throw new Error(`Invalid config: hanamiGenerationLeaseMs (${hanamiGenerationLeaseMs}) must be greater than hanamiGenerationWorkerTimeoutMs (${hanamiGenerationWorkerTimeoutMs}).`);
+	}
+
+	return {
+		hanamiCursorSigningKeys,
+		hanamiGenerationSyncWaitMs,
+		userHibernationDays,
+		hanamiCommonGenerationIntervalMs,
+		hanamiGenerationWorkerTimeoutMs,
+		hanamiGenerationLeaseMs,
+		hanamiGenerationMaxAttempts,
+		hanamiGenerationReconcileIntervalMs,
+		hanamiGenerationQueueConcurrency,
+	};
+}
+
+export function readHanamiCursorSigningKeys(
+	yamlValue: Source['hanamiCursorSigningKeys'],
+	envValue = process.env[HANAMI_CURSOR_SIGNING_KEYS_JSON_ENV],
+): HanamiCursorSigningKey[] {
+	if (envValue != null) {
+		return parseHanamiCursorSigningKeysJson(envValue);
+	}
+
+	return validateHanamiCursorSigningKeysSource(yamlValue, 'hanamiCursorSigningKeys is required and must be a YAML list with 1 or 2 entries.');
+}
+
+function parseHanamiCursorSigningKeysJson(value: string): HanamiCursorSigningKey[] {
+	let parsed: unknown;
+
+	try {
+		parsed = JSON.parse(value);
+	} catch {
+		throw new Error(`Invalid config: ${HANAMI_CURSOR_SIGNING_KEYS_JSON_ENV} must be valid JSON containing a 1-2 item signing-key array.`);
+	}
+
+	if (!Array.isArray(parsed) || parsed.some((entry) => (
+		typeof entry !== 'object'
+		|| entry === null
+		|| typeof (entry as Record<string, unknown>).id !== 'string'
+		|| typeof (entry as Record<string, unknown>).secret !== 'string'
+	))) {
+		throw new Error(`Invalid config: ${HANAMI_CURSOR_SIGNING_KEYS_JSON_ENV} must be a JSON array of 1 or 2 {id,secret} objects.`);
+	}
+
+	return validateHanamiCursorSigningKeysSource(parsed as HanamiCursorSigningKeySource[], `${HANAMI_CURSOR_SIGNING_KEYS_JSON_ENV} failed validation`);
+}
+
+function validateHanamiCursorSigningKeysSource(value: Source['hanamiCursorSigningKeys'], missingMessage: string): HanamiCursorSigningKey[] {
+	if (!Array.isArray(value)) {
+		throw new Error(`Invalid config: ${missingMessage}`);
+	}
+
+	try {
+		validateHanamiCursorSigningKeys(value);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(`Invalid config: ${message}.`);
+	}
+
+	return value.map((key) => ({ id: key.id, secret: key.secret }));
+}
+
+export function readConfigInt(name: string, value: number | undefined, defaultValue: number, opts: {
+	min?: number;
+	max?: number;
+}): number {
+	const resolved = value ?? defaultValue;
+
+	if (!Number.isFinite(resolved) || !Number.isSafeInteger(resolved)) {
+		throw new Error(`Invalid config: ${name} must be a finite safe integer (received ${String(resolved)}).`);
+	}
+
+	const max = opts.max ?? MAX_SAFE_CONFIG_INT;
+
+	if (opts.min != null && resolved < opts.min) {
+		throw new Error(`Invalid config: ${name} must be >= ${opts.min} (received ${resolved}).`);
+	}
+
+	if (resolved > max) {
+		throw new Error(`Invalid config: ${name} must be <= ${max} (received ${resolved}).`);
+	}
+
+	return resolved;
 }

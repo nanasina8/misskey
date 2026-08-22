@@ -246,6 +246,15 @@ type AdminGetUserIpsRequest = operations['admin___get-user-ips']['requestBody'][
 type AdminGetUserIpsResponse = operations['admin___get-user-ips']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type AdminHanamiTasteRebuildRequest = operations['admin___hanami___taste-rebuild']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiTasteRebuildResponse = operations['admin___hanami___taste-rebuild']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiTasteRebuildStatusResponse = operations['admin___hanami___taste-rebuild-status']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type AdminInviteCreateRequest = operations['admin___invite___create']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -682,17 +691,6 @@ export type Channels = {
     homeTimeline: {
         params: {
             withRenotes?: boolean;
-            withFiles?: boolean;
-        };
-        events: {
-            note: (payload: Note) => void;
-        };
-        receives: null;
-    };
-    hanamiTimeline: {
-        params: {
-            withRenotes?: boolean;
-            withReplies?: boolean;
             withFiles?: boolean;
         };
         events: {
@@ -1585,6 +1583,9 @@ declare namespace entities {
         AdminGetTableStatsResponse,
         AdminGetUserIpsRequest,
         AdminGetUserIpsResponse,
+        AdminHanamiTasteRebuildRequest,
+        AdminHanamiTasteRebuildResponse,
+        AdminHanamiTasteRebuildStatusResponse,
         AdminInviteCreateRequest,
         AdminInviteCreateResponse,
         AdminInviteListRequest,
@@ -1939,6 +1940,7 @@ declare namespace entities {
         IGalleryLikesResponse,
         IGalleryPostsRequest,
         IGalleryPostsResponse,
+        IHanamiTasteClustersResponse,
         IImportAntennasRequest,
         IImportBlockingRequest,
         IImportFollowingRequest,
@@ -1981,6 +1983,8 @@ declare namespace entities {
         IUpdateResponse,
         IUpdateEmailRequest,
         IUpdateEmailResponse,
+        IUpdateHanamiTasteClusterRequest,
+        IUpdateHanamiTasteClusterResponse,
         IWebhooksCreateRequest,
         IWebhooksCreateResponse,
         IWebhooksDeleteRequest,
@@ -2621,6 +2625,9 @@ type IGalleryPostsRequest = operations['i___gallery___posts']['requestBody']['co
 type IGalleryPostsResponse = operations['i___gallery___posts']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type IHanamiTasteClustersResponse = operations['i___hanami-taste-clusters']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type IImportAntennasRequest = operations['i___import-antennas']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -2800,6 +2807,12 @@ type IUpdateEmailRequest = operations['i___update-email']['requestBody']['conten
 
 // @public (undocumented)
 type IUpdateEmailResponse = operations['i___update-email']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type IUpdateHanamiTasteClusterRequest = operations['i___update-hanami-taste-cluster']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type IUpdateHanamiTasteClusterResponse = operations['i___update-hanami-taste-cluster']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type IUpdateRequest = operations['i___update']['requestBody']['content']['application/json'];
@@ -3401,7 +3414,7 @@ type QueueStats = {
 type QueueStatsLog = QueueStats[];
 
 // @public (undocumented)
-export const queueTypes: readonly ["system", "endedPollNotification", "postScheduledNote", "deliver", "inbox", "db", "relationship", "objectStorage", "userWebhookDeliver", "systemWebhookDeliver"];
+export const queueTypes: readonly ["system", "endedPollNotification", "postScheduledNote", "deliver", "inbox", "db", "relationship", "objectStorage", "userWebhookDeliver", "systemWebhookDeliver", "hanamiGeneration"];
 
 // @public (undocumented)
 type RenoteMuteCreateRequest = operations['renote-mute___create']['requestBody']['content']['application/json'];
@@ -3922,8 +3935,8 @@ type VerifyEmailRequest = operations['verify-email']['requestBody']['content']['
 //
 // src/entities.ts:55:2 - (ae-forgotten-export) The symbol "ModerationLogPayloads" needs to be exported by the entry point index.d.ts
 // src/streaming.ts:57:3 - (ae-forgotten-export) The symbol "ReconnectingWebSocket" needs to be exported by the entry point index.d.ts
-// src/streaming.types.ts:237:4 - (ae-forgotten-export) The symbol "ReversiUpdateKey" needs to be exported by the entry point index.d.ts
-// src/streaming.types.ts:247:4 - (ae-forgotten-export) The symbol "ReversiUpdateSettings" needs to be exported by the entry point index.d.ts
+// src/streaming.types.ts:226:4 - (ae-forgotten-export) The symbol "ReversiUpdateKey" needs to be exported by the entry point index.d.ts
+// src/streaming.types.ts:236:4 - (ae-forgotten-export) The symbol "ReversiUpdateSettings" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)
 

@@ -12,6 +12,19 @@ function serviceWith(db: Record<string, unknown>): HanamiForYouBatchService {
 }
 
 describe('Hanami For You interaction daily rollup', () => {
+	it('cleans durable served and seen retention by refreshed occurredAt', async () => {
+		const db = { query: jest.fn(async (_sql: string, _parameters?: unknown[]) => []) };
+		const service = serviceWith(db);
+
+		await service.cleanupEvents();
+
+		expect(db.query).toHaveBeenNthCalledWith(1,
+			expect.stringContaining(`"eventType" IN ('served','seen') AND "occurredAt" < $1`),
+			[expect.any(Date)],
+		);
+		expect(db.query.mock.calls[0]![0]).not.toContain('"createdAt" <');
+	});
+
 	it('uses UTC day buckets at the four relation decay boundaries', () => {
 		const now = new Date('2026-07-19T15:30:00.000Z');
 		expect(hanamiRelationDecayForUtcDay('2026-06-19', now)).toBe(0.9);

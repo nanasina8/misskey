@@ -210,12 +210,14 @@ const headerActions = computed(() => {
 		handler: (ev) => {
 			const menuItems: MenuItem[] = [];
 
-			menuItems.push({
-				type: 'switch',
-				icon: 'ti ti-repeat',
-				text: i18n.ts.showRenotes,
-				ref: withRenotes,
-			});
+			if (src.value !== 'hanami') {
+				menuItems.push({
+					type: 'switch',
+					icon: 'ti ti-repeat',
+					text: i18n.ts.showRenotes,
+					ref: withRenotes,
+				});
+			}
 
 			if (isBasicTimeline(src.value) && hasWithReplies(src.value)) {
 				menuItems.push({

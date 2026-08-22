@@ -9,5 +9,8 @@ describe('Streaming', () => {
 		mainChannel.on('notification', notification => {
 			expectType<Misskey.entities.Notification>(notification);
 		});
+
+		// @ts-expect-error The Hanami timeline has no compatibility streaming channel.
+		stream.useChannel('hanamiTimeline');
 	});
 });

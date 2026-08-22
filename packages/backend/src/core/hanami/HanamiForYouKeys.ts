@@ -3,13 +3,14 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-// はなみ For You の Redis キー前缀とラベル（canonical spec §7.2）。
-// served/seen/authorServed/homeSeen/fof:shown を1か所で定義する。
+// はなみ For You の Redis キー前缀とラベル（canonical spec §7.2/§7.3）。
 
 export const HANAMI_SERVED_KEY_PREFIX = 'hanami:rec:served:';
-export const HANAMI_AUTHOR_SERVED_KEY_PREFIX = 'hanami:rec:authorServed:';
 export const HANAMI_SEEN_KEY_PREFIX = 'hanami:rec:seen:';
-export const HANAMI_HOME_SEEN_KEY_PREFIX = 'hanami:rec:homeSeen:';
+export const HANAMI_SERVED_CACHE_TTL_SECONDS = 30 * 60;
+export const HANAMI_SERVED_CACHE_TTL_MS = HANAMI_SERVED_CACHE_TTL_SECONDS * 1000;
+export const HANAMI_SEEN_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
+export const HANAMI_SEEN_CACHE_TTL_MS = HANAMI_SEEN_CACHE_TTL_SECONDS * 1000;
 export const HANAMI_FOF_SHOWN_KEY_PREFIX = 'hanami:fof:shown:';
 // reactionSimilar（興味マッチ新着）: 10分tickで事前計算するユーザー別 zset。
 // member = `${noteId}:${authorId}:${clusterId | 'r'}` / score = max(cos_cluster, cos_recent) × 鮮度。

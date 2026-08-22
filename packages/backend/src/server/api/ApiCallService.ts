@@ -63,7 +63,8 @@ export class ApiCallService implements OnApplicationShutdown {
 		}, 1000 * 60 * 60);
 	}
 
-	#sendApiError(reply: FastifyReply, err: ApiError): void {
+	#sendApiError(reply: FastifyReply, cause: unknown): void {
+		const err = cause instanceof ApiError ? cause : new ApiError();
 		let statusCode = err.httpStatusCode;
 		if (err.httpStatusCode === 401) {
 			reply.header('WWW-Authenticate', 'Bearer realm="Misskey"');
@@ -175,7 +176,7 @@ export class ApiCallService implements OnApplicationShutdown {
 					reply.header('Cache-Control', `public, max-age=${endpoint.meta.cacheSec}`);
 				}
 				this.send(reply, res);
-			}).catch((err: ApiError) => {
+			}).catch((err: unknown) => {
 				this.#sendApiError(reply, err);
 			});
 
@@ -203,46 +204,61 @@ export class ApiCallService implements OnApplicationShutdown {
 		}
 
 		const [path, cleanup] = await createTemp();
-		await stream.pipeline(multipartData.file, fs.createWriteStream(path));
+		try {
+			await stream.pipeline(multipartData.file, fs.createWriteStream(path));
 
-		// ファイルサイズが制限を超えていた場合
-		// なお truncated はストリームを読み切ってからでないと機能しないため、stream.pipeline より後にある必要がある
-		if (multipartData.file.truncated) {
-			cleanup();
-			reply.code(413);
-			reply.send();
-			return;
-		}
+			// ファイルサイズが制限を超えていた場合
+			// なお truncated はストリームを読み切ってからでないと機能しないため、stream.pipeline より後にある必要がある
+			if (multipartData.file.truncated) {
+				reply.code(413);
+				reply.send();
+				return;
+			}
 
-		const fields = {} as Record<string, unknown>;
-		for (const [k, v] of Object.entries(multipartData.fields)) {
-			fields[k] = typeof v === 'object' && 'value' in v ? v.value : undefined;
-		}
+			const fields = {} as Record<string, unknown>;
+			for (const [k, v] of Object.entries(multipartData.fields)) {
+				fields[k] = typeof v === 'object' && 'value' in v ? v.value : undefined;
+			}
 
-		// https://datatracker.ietf.org/doc/html/rfc6750.html#section-2.1 (case sensitive)
-		const token = request.headers.authorization?.startsWith('Bearer ')
-			? request.headers.authorization.slice(7)
-			: fields['i'];
-		if (token != null && typeof token !== 'string') {
-			reply.code(400);
-			return;
-		}
-		this.authenticateService.authenticate(token).then(([user, app]) => {
-			this.call(endpoint, user, app, fields, {
-				name: multipartData.filename,
-				path: path,
-			}, request).then((res) => {
-				this.send(reply, res);
-			}).catch((err: ApiError) => {
+			// https://datatracker.ietf.org/doc/html/rfc6750.html#section-2.1 (case sensitive)
+			const token = request.headers.authorization?.startsWith('Bearer ')
+				? request.headers.authorization.slice(7)
+				: fields['i'];
+			if (token != null && typeof token !== 'string') {
+				reply.code(400);
+				reply.send();
+				return;
+			}
+
+			let user: MiLocalUser | null;
+			let app: MiAccessToken | null;
+			try {
+				[user, app] = await this.authenticateService.authenticate(token);
+			} catch (err) {
+				this.#sendAuthenticationError(reply, err);
+				return;
+			}
+
+			try {
+				const result = await this.call(endpoint, user, app, fields, {
+					name: multipartData.filename,
+					path,
+				}, request);
+				this.send(reply, result);
+			} catch (err) {
 				this.#sendApiError(reply, err);
-			});
+			}
 
 			if (user) {
 				this.logIp(request, user);
 			}
-		}).catch(err => {
-			this.#sendAuthenticationError(reply, err);
-		});
+		} finally {
+			try {
+				cleanup();
+			} catch (err) {
+				this.logger.warn('Failed to clean up multipart temporary file', { path, e: err });
+			}
+		}
 	}
 
 	@bindThis
@@ -291,11 +307,19 @@ export class ApiCallService implements OnApplicationShutdown {
 	}
 
 	@bindThis
+	private stripCredentialParam(data: any): any {
+		if (typeof data !== 'object' || data === null || Array.isArray(data)) return data;
+		if (!Object.hasOwn(data, 'i')) return data;
+		const { i: _credential, ...rest } = data as Record<string, unknown>;
+		return rest;
+	}
+
+	@bindThis
 	private async call(
 		ep: IEndpoint & { exec: any },
 		user: MiLocalUser | null | undefined,
 		token: MiAccessToken | null | undefined,
-		data: any,
+		rawData: any,
 		file: {
 			name: string;
 			path: string;
@@ -303,6 +327,11 @@ export class ApiCallService implements OnApplicationShutdown {
 		request: FastifyRequest<{ Body: Record<string, unknown> | undefined, Querystring: Record<string, unknown> }>,
 	) {
 		const isSecure = user != null && token == null;
+
+		// `i` はボディに載る認証情報であってendpointのパラメータではない。
+		// paramDefが `additionalProperties: false` を指定していると素通しでは必ず弾かれるため、
+		// 検証へ渡す前にここで落とす。エラーログ・Sentryへトークンを載せない効果もある。
+		const data = this.stripCredentialParam(rawData);
 
 		if (ep.meta.secure && !isSecure) {
 			throw new ApiError(accessDenied);
@@ -413,10 +442,16 @@ export class ApiCallService implements OnApplicationShutdown {
 		}
 
 		if (user != null) {
-			await this.userService.updateLastActiveDate(user)
-				.catch((err: Error) => {
-					this.logger.error(`Failed to update activity for user ${user.id}`, { e: err });
+			try {
+				await this.userService.updateLastActiveDate(user);
+			} catch (err) {
+				this.logger.error(`Failed to update activity for user ${user.id} during API call ${ep.name}`, {
+					ep: ep.name,
+					userId: user.id,
+					e: err,
 				});
+				throw err;
+			}
 		}
 
 		// Cast non JSON input

@@ -22,10 +22,17 @@ import MainStreamConnection from './stream/Connection.js';
 import { ChannelsService } from './stream/ChannelsService.js';
 import type * as http from 'node:http';
 
+type ActiveConnection = {
+	lastActive: number;
+	closed: boolean;
+	terminationRequested: boolean;
+	terminateOnce: () => void;
+};
+
 @Injectable()
 export class StreamingApiServerService {
 	#wss: WebSocket.WebSocketServer;
-	#connections = new Map<WebSocket.WebSocket, number>();
+	#connections = new Map<WebSocket.WebSocket, ActiveConnection>();
 	#cleanConnectionsIntervalId: NodeJS.Timeout | null = null;
 
 	constructor(
@@ -54,12 +61,17 @@ export class StreamingApiServerService {
 
 		server.on('upgrade', async (request, socket, head) => {
 			if (request.url == null) {
-				socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
-				socket.destroy();
+				this.rejectUpgrade(socket, 'HTTP/1.1 400 Bad Request\r\n\r\n');
 				return;
 			}
 
-			const q = new URL(request.url, `http://${request.headers.host}`).searchParams;
+			let q: URLSearchParams;
+			try {
+				q = new URL(request.url, `http://${request.headers.host}`).searchParams;
+			} catch {
+				this.rejectUpgrade(socket, 'HTTP/1.1 400 Bad Request\r\n\r\n');
+				return;
+			}
 
 			let user: MiLocalUser | null = null;
 			let app: MiAccessToken | null = null;
@@ -79,23 +91,38 @@ export class StreamingApiServerService {
 				}
 			} catch (e) {
 				if (e instanceof AuthenticationError) {
-					socket.write([
+					this.rejectUpgrade(socket, [
 						'HTTP/1.1 401 Unauthorized',
 						'WWW-Authenticate: Bearer realm="Misskey", error="invalid_token", error_description="Failed to authenticate"',
 					].join('\r\n') + '\r\n\r\n');
 				} else {
-					socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+					this.rejectUpgrade(socket, 'HTTP/1.1 500 Internal Server Error\r\n\r\n');
 				}
-				socket.destroy();
 				return;
 			}
 
 			if (user?.isSuspended) {
-				socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
-				socket.destroy();
+				this.rejectUpgrade(socket, 'HTTP/1.1 403 Forbidden\r\n\r\n');
 				return;
 			}
 
+			if (user) {
+				try {
+					await this.usersService.updateLastActiveDate(user);
+				} catch (err) {
+					this.apiLoggerService.logger.error(`Failed to update activity for user ${user.id} during websocket upgrade`, {
+						userId: user.id,
+						e: err,
+					});
+					this.rejectUpgrade(socket, 'HTTP/1.1 500 Internal Server Error\r\n\r\n');
+					return;
+				}
+			}
+
+			if (socket.destroyed || !socket.writable) return;
+
+			// stream.init() はDB/cacheを叩くため、ハンドシェイク後に走らせるとその間クライアントが送る
+			// `connect` フレームを listener 不在で取りこぼす。必ずupgradeより前に完了させる。
 			const stream = new MainStreamConnection(
 				this.channelsService,
 				this.notificationService,
@@ -104,14 +131,38 @@ export class StreamingApiServerService {
 				this.channelMutingService,
 				user, app,
 			);
+			try {
+				await stream.init();
+			} catch (err) {
+				stream.dispose();
+				this.apiLoggerService.logger.error('Failed to initialize websocket stream', { userId: user?.id, e: err });
+				this.rejectUpgrade(socket, 'HTTP/1.1 500 Internal Server Error\r\n\r\n');
+				return;
+			}
 
-			await stream.init();
+			if (socket.destroyed || !socket.writable) {
+				stream.dispose();
+				return;
+			}
 
-			this.#wss.handleUpgrade(request, socket, head, (ws) => {
-				this.#wss.emit('connection', ws, request, {
-					stream, user, app,
+			let callbackInvoked = false;
+			try {
+				this.#wss.handleUpgrade(request, socket, head, (connection) => {
+					callbackInvoked = true;
+					this.#wss.emit('connection', connection, request, { stream, user, app });
 				});
-			});
+			} catch (err) {
+				stream.dispose();
+				this.apiLoggerService.logger.error('Failed to upgrade websocket connection', { userId: user?.id, e: err });
+				this.rejectUpgrade(socket, 'HTTP/1.1 500 Internal Server Error\r\n\r\n');
+				return;
+			}
+
+			if (!callbackInvoked) {
+				stream.dispose();
+				this.apiLoggerService.logger.error('Websocket upgrade completed without a connection callback', { userId: user?.id });
+				this.rejectUpgrade(socket, 'HTTP/1.1 500 Internal Server Error\r\n\r\n');
+			}
 		});
 
 		const globalEv = new EventEmitter();
@@ -121,61 +172,124 @@ export class StreamingApiServerService {
 			globalEv.emit('message', parsed);
 		});
 
-		this.#wss.on('connection', async (connection: WebSocket.WebSocket, request: http.IncomingMessage, ctx: {
+		this.#wss.on('connection', (connection: WebSocket.WebSocket, request: http.IncomingMessage, ctx: {
 			stream: MainStreamConnection,
 			user: MiLocalUser | null;
 			app: MiAccessToken | null
 		}) => {
-			const { stream, user, app } = ctx;
-
-			const ev = new EventEmitter();
-
-			function onRedisMessage(data: any): void {
-				ev.emit(data.channel, data.message);
-			}
-
-			globalEv.on('message', onRedisMessage);
-
-			await stream.listen(ev, connection);
-
-			this.#connections.set(connection, Date.now());
-
-			const userUpdateIntervalId = user ? setInterval(() => {
-				void this.usersService.updateLastActiveDate(user).catch((err: Error) => {
-					this.apiLoggerService.logger.error(`Failed to update activity for user ${user.id}`, { e: err });
-				});
-			}, 1000 * 60 * 5) : null;
-			if (user) {
-				void this.usersService.updateLastActiveDate(user).catch((err: Error) => {
-					this.apiLoggerService.logger.error(`Failed to update activity for user ${user.id}`, { e: err });
-				});
-			}
-
-			connection.once('close', () => {
-				ev.removeAllListeners();
-				stream.dispose();
-				globalEv.off('message', onRedisMessage);
-				this.#connections.delete(connection);
-				if (userUpdateIntervalId) clearInterval(userUpdateIntervalId);
-			});
-
-			connection.on('pong', () => {
-				this.#connections.set(connection, Date.now());
-			});
+			void this.startConnection(connection, request, ctx, globalEv);
 		});
 
 		// 一定期間通信が無いコネクションは実際には切断されている可能性があるため定期的にterminateする
 		this.#cleanConnectionsIntervalId = setInterval(() => {
 			const now = Date.now();
-			for (const [connection, lastActive] of this.#connections.entries()) {
-				if (now - lastActive > 1000 * 60 * 2) {
-					connection.terminate();
+			for (const [connection, state] of this.#connections.entries()) {
+				if (state.closed || state.terminationRequested) {
 					this.#connections.delete(connection);
+				} else if (now - state.lastActive > 1000 * 60 * 2) {
+					state.terminateOnce();
 				} else {
-					connection.ping();
+					try {
+						connection.ping();
+					} catch {
+						state.terminateOnce();
+					}
 				}
 			}
 		}, 1000 * 60);
+	}
+
+	private rejectUpgrade(socket: import('node:stream').Duplex, response: string): void {
+		if (socket.destroyed) return;
+		try {
+			if (socket.writable) socket.write(response);
+		} catch {
+			// The peer may close while authentication or activity work is in progress.
+		}
+		if (!socket.destroyed) socket.destroy();
+	}
+
+	private async startConnection(
+		connection: WebSocket.WebSocket,
+		_request: http.IncomingMessage,
+		ctx: { stream: MainStreamConnection; user: MiLocalUser | null; app: MiAccessToken | null },
+		globalEv: EventEmitter,
+	): Promise<void> {
+		const { stream, user } = ctx;
+		const ev = new EventEmitter();
+		let userUpdateIntervalId: NodeJS.Timeout | null = null;
+		let userUpdateInFlight = false;
+		let disposed = false;
+		const disposeOnce = (): void => {
+			if (disposed) return;
+			disposed = true;
+			stream.dispose();
+		};
+		const onRedisMessage = (data: any): void => {
+			ev.emit(data.channel, data.message);
+		};
+		const state: ActiveConnection = {
+			lastActive: Date.now(),
+			closed: false,
+			terminationRequested: false,
+			terminateOnce: () => {
+				if (state.closed || state.terminationRequested) return;
+				state.terminationRequested = true;
+				this.#connections.delete(connection);
+				try {
+					connection.terminate();
+				} catch {
+					onClose();
+				}
+			},
+		};
+		const onClose = (): void => {
+			if (state.closed) return;
+			state.closed = true;
+			this.#connections.delete(connection);
+			if (userUpdateIntervalId != null) clearInterval(userUpdateIntervalId);
+			ev.removeAllListeners();
+			globalEv.off('message', onRedisMessage);
+			connection.off('pong', onPong);
+			disposeOnce();
+		};
+		const onPong = (): void => {
+			if (!state.closed && !state.terminationRequested) state.lastActive = Date.now();
+		};
+
+		connection.once('close', onClose);
+		connection.on('pong', onPong);
+		globalEv.on('message', onRedisMessage);
+
+		try {
+			await stream.listen(ev, connection);
+		} catch (err) {
+			if (!state.closed) {
+				this.apiLoggerService.logger.error('Failed to start websocket stream listener', { userId: user?.id, e: err });
+				disposeOnce();
+				state.terminateOnce();
+			}
+			return;
+		}
+		if (state.closed || state.terminationRequested) return;
+
+		this.#connections.set(connection, state);
+		if (user) {
+			userUpdateIntervalId = setInterval(() => {
+				if (state.closed || state.terminationRequested || userUpdateInFlight) return;
+				userUpdateInFlight = true;
+				void this.usersService.updateLastActiveDate(user).catch((err: Error) => {
+					if (state.closed || state.terminationRequested) return;
+					this.apiLoggerService.logger.error(`Failed to update activity for user ${user.id} on websocket heartbeat`, {
+						userId: user.id,
+						e: err,
+					});
+					state.terminateOnce();
+				}).finally(() => {
+					userUpdateInFlight = false;
+				});
+			}, 1000 * 60 * 5);
+		}
 	}
 
 	@bindThis

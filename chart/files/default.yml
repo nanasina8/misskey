@@ -142,6 +142,23 @@ redis:
 #  ssl: true
 #  index: ''
 
+# Hanami cursor signing keys.
+# Non-Helm installs can keep using YAML here. Helm injects HANAMI_CURSOR_SIGNING_KEYS_JSON from a Secret instead.
+# The first key signs new cursors; the optional second key is kept only for verification during rotation.
+#hanamiCursorSigningKeys:
+#  - id: current
+#    secret: replace-with-at-least-32-utf8-bytes
+
+# Hanami persisted timeline generation defaults.
+hanamiGenerationSyncWaitMs: 2000
+userHibernationDays: 50
+hanamiCommonGenerationIntervalMs: 600000
+hanamiGenerationWorkerTimeoutMs: 60000
+hanamiGenerationLeaseMs: 75000
+hanamiGenerationMaxAttempts: 3
+hanamiGenerationReconcileIntervalMs: 5000
+hanamiGenerationQueueConcurrency: 4
+
 #   ┌───────────────┐
 #───┘ ID generation └───────────────────────────────────────────
 

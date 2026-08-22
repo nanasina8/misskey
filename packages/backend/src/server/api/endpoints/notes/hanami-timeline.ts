@@ -2,14 +2,10 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-// はなみTL = For You-only ページ（canonical spec §1/§9）。ホームTLは混ぜない（home は notes/timeline の責務）。
-// 7軸＋quota interleave。sinceId/sinceDate は空配列（For You は時系列でない＝§9/§14-D4。上から引っ張る追加挿入は stream channel が担う）。
-// untilId は互換入力（次ページ要求トリガ）としてのみ扱い、重複排除は served/seen で行う。
-
 import { Injectable } from '@nestjs/common';
 import { Endpoint } from '@/server/api/endpoint-base.js';
-import { RoleService } from '@/core/RoleService.js';
-import { HanamiForYouService } from '@/core/hanami/HanamiForYouService.js';
+import { validateHanamiRefreshTokenFormat } from '@/core/hanami/HanamiFeedCodec.js';
+import { HanamiTimelinePageService } from '@/core/hanami/HanamiTimelinePageService.js';
 import { ApiError } from '../../error.js';
 
 export const meta = {
@@ -19,37 +15,87 @@ export const meta = {
 	kind: 'read:account',
 
 	res: {
-		type: 'array',
+		type: 'object',
 		optional: false, nullable: false,
-		items: {
-			type: 'object',
-			optional: false, nullable: false,
-			ref: 'Note',
+		additionalProperties: false,
+		properties: {
+			items: {
+				type: 'array', optional: false, nullable: false,
+				items: {
+					type: 'object', optional: false, nullable: false,
+					additionalProperties: false,
+					properties: {
+						feedEntryId: { type: 'string', optional: false, nullable: false },
+						batchId: { type: 'string', optional: false, nullable: false },
+						note: { type: 'object', optional: false, nullable: false, ref: 'Note' },
+					},
+				},
+			},
+			nextCursor: { type: 'string', optional: false, nullable: true },
+			hasMore: { type: 'boolean', optional: false, nullable: false },
+			mode: { type: 'string', enum: ['personalized', 'common'], optional: false, nullable: false },
+			generationPending: { type: 'boolean', optional: false, nullable: false },
+			feedEpochId: { type: 'string', optional: false, nullable: false },
+			headBatchId: { type: 'string', optional: false, nullable: false },
 		},
 	},
 
 	errors: {
-		HanamiTlDisabled: {
+		hanamiTlDisabled: {
 			message: 'Hanami timeline has been disabled.',
 			code: 'HanamiTL_DISABLED',
 			id: 'ffa57e0f-d14e-48d6-a64c-8fbcba5635ab',
+			httpStatusCode: 403,
+		},
+		invalidCursor: {
+			message: 'Invalid Hanami timeline cursor.',
+			code: 'INVALID_CURSOR',
+			id: '0b737d4e-e23f-449c-bf73-ec51f7a8573e',
+			httpStatusCode: 400,
+		},
+		cursorExpired: {
+			message: 'Hanami timeline cursor has expired.',
+			code: 'CURSOR_EXPIRED',
+			id: 'b700843a-41a4-4962-b0a8-1a28c202a679',
+			httpStatusCode: 400,
+		},
+		refreshTokenExpired: {
+			message: 'Hanami refresh token has expired.',
+			code: 'REFRESH_TOKEN_EXPIRED',
+			id: '0bc81395-04fd-4d3f-9d08-b5c27bd3236c',
+			httpStatusCode: 400,
+		},
+		refreshRateLimited: {
+			message: 'Hanami timeline refresh rate limit exceeded.',
+			code: 'HANAMI_REFRESH_RATE_LIMITED',
+			id: 'b10e0254-3108-48ed-a821-26f3eb270ab1',
+			httpStatusCode: 429,
+		},
+		commonNotReady: {
+			message: 'Hanami common timeline is not ready.',
+			code: 'HANAMI_COMMON_NOT_READY',
+			id: '64e6e77c-19e0-4623-bc0e-31115f73e381',
+			kind: 'server',
+			httpStatusCode: 503,
+		},
+		invalidParam: {
+			message: 'Invalid param.',
+			code: 'INVALID_PARAM',
+			id: '3d81ceae-475f-4600-b2a8-2bc116157532',
+			httpStatusCode: 400,
 		},
 	},
 } as const;
 
 export const paramDef = {
 	type: 'object',
+	additionalProperties: false,
 	properties: {
-		limit: { type: 'integer', minimum: 1, maximum: 100, default: 10 },
-		// sinceId/sinceDate: For You は時系列でないため受けても空配列を返す（§9/§14-D4）。
-		sinceId: { type: 'string', format: 'misskey:id' },
-		sinceDate: { type: 'integer' },
-		// untilId/untilDate: 互換入力（次ページ要求トリガ）。重複排除は served/seen。
-		untilId: { type: 'string', format: 'misskey:id' },
-		untilDate: { type: 'integer' },
-		allowPartial: { type: 'boolean', default: false },
+		limit: { type: 'integer', minimum: 1 },
+		cursor: { type: 'string', minLength: 1, maxLength: 1024 },
+		refresh: { type: 'boolean', default: false },
+		refreshToken: { type: 'string' },
 		withFiles: { type: 'boolean', default: false },
-		withRenotes: { type: 'boolean', default: true },
 	},
 	required: [],
 } as const;
@@ -57,23 +103,42 @@ export const paramDef = {
 @Injectable()
 export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-disable-line import/no-default-export
 	constructor(
-		private roleService: RoleService,
-		private hanamiForYouService: HanamiForYouService,
+		private hanamiTimelinePageService: HanamiTimelinePageService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
-			const policies = await this.roleService.getUserPolicies(me.id);
-			if (!policies.hanamiTlAvailable) {
-				throw new ApiError(meta.errors.HanamiTlDisabled);
+			const cursor = ps.cursor ?? null;
+			const refreshToken = ps.refreshToken ?? null;
+			if ((ps.refresh && (cursor != null || refreshToken == null)) || (!ps.refresh && refreshToken != null)) {
+				throw new ApiError(meta.errors.invalidParam);
+			}
+			if (refreshToken != null) {
+				try {
+					validateHanamiRefreshTokenFormat(refreshToken);
+				} catch {
+					throw new ApiError(meta.errors.invalidParam);
+				}
 			}
 
-			// For You は時系列でない。「より新しい」ページは無い（§9/§14-D4）。
-			// 上から引っ張る(pull-to-refresh)時の追加挿入は For You stream channel が担う。
-			if (ps.sinceId != null || ps.sinceDate != null) return [];
-
-			return this.hanamiForYouService.getForYouPage(me, {
-				limit: ps.limit,
-				withFiles: ps.withFiles,
+			const result = await this.hanamiTimelinePageService.serve({
+				me,
+				request: {
+					limit: ps.limit ?? (cursor == null ? 15 : 30),
+					cursor,
+					refresh: ps.refresh,
+					refreshToken,
+					withFiles: ps.withFiles,
+				},
 			});
+			switch (result.kind) {
+				case 'ok': return { ...result.response, items: [...result.response.items] };
+				case 'roleDisabled': throw new ApiError(meta.errors.hanamiTlDisabled);
+				case 'invalidCursor': throw new ApiError(meta.errors.invalidCursor);
+				case 'cursorExpired': throw new ApiError(meta.errors.cursorExpired);
+				case 'commonNotReady': throw new ApiError(meta.errors.commonNotReady);
+				case 'invalidRefreshToken': throw new ApiError(meta.errors.invalidParam);
+				case 'refreshTokenExpired': throw new ApiError(meta.errors.refreshTokenExpired);
+				case 'refreshRateLimited': throw new ApiError(meta.errors.refreshRateLimited);
+			}
 		});
 	}
 }

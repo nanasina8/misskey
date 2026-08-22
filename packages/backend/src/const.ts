@@ -8,7 +8,6 @@ export const MAX_NOTE_TEXT_LENGTH = 3000;
 export const USER_ONLINE_THRESHOLD = 1000 * 60 * 10; // 10min
 export const USER_ACTIVE_THRESHOLD = 1000 * 60 * 60 * 24 * 3; // 3days
 export const USER_ACTIVITY_UPDATE_INTERVAL = 1000 * 60 * 5; // 5min
-export const USER_HIBERNATION_THRESHOLD = 1000 * 60 * 60 * 24 * 50; // 50days
 
 export const PER_NOTE_REACTION_USER_PAIR_CACHE_MAX = 24;
 

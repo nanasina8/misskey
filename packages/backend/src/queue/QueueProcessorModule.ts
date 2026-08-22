@@ -22,6 +22,11 @@ import { CheckModeratorsActivityProcessorService } from './processors/CheckModer
 import { CleanRemoteNotesProcessorService } from './processors/CleanRemoteNotesProcessorService.js';
 import { HanamiForYouBatchProcessorService } from './processors/HanamiForYouBatchProcessorService.js';
 import { HanamiTasteBatchProcessorService } from './processors/HanamiTasteBatchProcessorService.js';
+import { HanamiCommonGenerationProcessorService } from './processors/HanamiCommonGenerationProcessorService.js';
+import { HanamiGenerationReconcileProcessorService } from './processors/HanamiGenerationReconcileProcessorService.js';
+import { HanamiRecommendationEventCacheRepairProcessorService } from './processors/HanamiRecommendationEventCacheRepairProcessorService.js';
+import { HanamiTimelinePartitionMaintenanceProcessorService } from './processors/HanamiTimelinePartitionMaintenanceProcessorService.js';
+import { HanamiUserFeedGenerationProcessorService } from './processors/HanamiUserFeedGenerationProcessorService.js';
 import { CleanRemoteFilesProcessorService } from './processors/CleanRemoteFilesProcessorService.js';
 import { DeleteAccountProcessorService } from './processors/DeleteAccountProcessorService.js';
 import { DeleteDriveFilesProcessorService } from './processors/DeleteDriveFilesProcessorService.js';
@@ -95,6 +100,11 @@ import { HibernationSweepProcessorService } from './processors/HibernationSweepP
 		CleanRemoteNotesProcessorService,
 		HanamiForYouBatchProcessorService,
 		HanamiTasteBatchProcessorService,
+		HanamiCommonGenerationProcessorService,
+		HanamiGenerationReconcileProcessorService,
+		HanamiRecommendationEventCacheRepairProcessorService,
+		HanamiTimelinePartitionMaintenanceProcessorService,
+		HanamiUserFeedGenerationProcessorService,
 		QueueProcessorService,
 	],
 	exports: [

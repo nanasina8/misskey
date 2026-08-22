@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { DataSource } from 'typeorm';
-import { Inject, Injectable } from '@nestjs/common';
+import { DataSource, type QueryRunner } from 'typeorm';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
@@ -20,9 +20,25 @@ import { HanamiTrendService } from '@/core/hanami/HanamiTrendService.js';
 import { HanamiUserRecommendationService } from '@/core/hanami/HanamiUserRecommendationService.js';
 import { HanamiForYouBatchService } from '@/core/hanami/HanamiForYouBatchService.js';
 import { TASTE_EMBED_MODEL, TASTE_MATCH_WINDOW_MS } from '@/core/hanami/HanamiTasteClusterBatchService.js';
-import { HANAMI_TASTE_MATCH_KEY_PREFIX, HANAMI_TASTE_MATCH_META_KEY_PREFIX, HANAMI_FORYOU_ACTIVE_KEY_PREFIX, HANAMI_FORYOU_ACTIVE_TTL_SEC } from '@/core/hanami/HanamiForYouKeys.js';
+import {
+	HANAMI_TASTE_MATCH_KEY_PREFIX,
+	HANAMI_TASTE_MATCH_META_KEY_PREFIX,
+	HANAMI_FORYOU_ACTIVE_KEY_PREFIX,
+	HANAMI_FORYOU_ACTIVE_TTL_SEC,
+	HANAMI_SERVED_KEY_PREFIX,
+	HANAMI_SEEN_KEY_PREFIX,
+} from '@/core/hanami/HanamiForYouKeys.js';
 import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
 import { HanamiForYouSafetyService } from '@/core/hanami/HanamiForYouSafetyService.js';
+import {
+	HANAMI_GENERATION_CANDIDATE_LIMIT,
+	HanamiRecommendationService as HanamiGenerationRecommendationService,
+	type HanamiDurableServedSeen,
+} from '@/core/hanami/HanamiRecommendationService.js';
+import type {
+	HanamiPersonalFeedCandidate,
+	HanamiPersonalFeedComputationInput,
+} from '@/core/hanami/HanamiUserFeedContracts.js';
 import { HanamiRecommendationService } from '@/core/HanamiRecommendationService.js';
 import {
 	hanamiInterleave,
@@ -107,6 +123,8 @@ const AUX_TEXT_HEAVY_THRESHOLD = 0.2; // mediaReactionRate がこれ未満 = tex
 // 既出のソフト減点（軸内スコアへ乗算）。除外ではないので必ず再登場する。served=直近ほど深く沈める。
 const SERVED_SCORE_PENALTY = 0.5;
 const SEEN_SCORE_PENALTY = 0.7;
+const SERVED_TTL_MS = 30 * 60 * 1000;
+const SEEN_TTL_MS = 7 * DAY_MS;
 
 type ReasonBucket = 'cluster' | 'recent';
 type ReasonMeta = { source: HanamiAxis; sources: HanamiAxis[]; term?: string; clusterId?: number; bucket?: ReasonBucket };
@@ -118,6 +136,16 @@ type TasteMatchMeta = { totalHeat: number; heatOf: Map<number, number>; hasRecen
 type LegacyHanamiAxis = 'popular';
 type HanamiAxisServerConfig = Partial<Record<HanamiAxis | LegacyHanamiAxis, { available?: boolean; default?: boolean }>>;
 type HanamiAxisUserConfig = Partial<Record<HanamiAxis | LegacyHanamiAxis, HanamiAxisLevel | boolean>>;
+
+export type HanamiPersonalFeedCandidatePreparation = {
+	readonly confidence: HanamiConfidence;
+	readonly axisLevels: ReadonlyMap<HanamiAxis, HanamiAxisLevel>;
+	readonly candidates: readonly HanamiPersonalFeedCandidate[];
+};
+
+export type HanamiPersonalFeedGenerationContext = HanamiPersonalFeedComputationInput & {
+	readonly queryRunner: QueryRunner;
+};
 
 // 旧5軸設定からの互換解決。新キーがあれば新キーを優先し、無ければ旧キーを既定値として読む。
 const AXIS_CONFIG_KEYS: Record<HanamiAxis, readonly (HanamiAxis | LegacyHanamiAxis)[]> = {
@@ -140,6 +168,10 @@ const AXIS_TO_UI_REASON: Record<HanamiAxis, string> = {
 	catchup: 'catchup',
 	fof: 'fof',
 };
+
+export function refreshHanamiForYouActiveMarker(redisClient: Redis.Redis, userId: MiUser['id']): void {
+	redisClient.set(HANAMI_FORYOU_ACTIVE_KEY_PREFIX + userId, '1', 'EX', HANAMI_FORYOU_ACTIVE_TTL_SEC).catch(() => { /* 次回ページで再試行 */ });
+}
 
 /**
  * はなみTL For You-only サービング（canonical spec §3–§6/§9）。
@@ -173,7 +205,54 @@ export class HanamiForYouService {
 		private hanamiForYouProvenanceService: HanamiForYouProvenanceService,
 		private hanamiForYouSafetyService: HanamiForYouSafetyService,
 		private hanamiRecommendationService: HanamiRecommendationService,
+
+		@Optional()
+		private hanamiGenerationRecommendationService?: HanamiGenerationRecommendationService,
 	) {
+	}
+
+	private throwIfGenerationAborted(signal: AbortSignal): void {
+		if (!signal.aborted) return;
+		if (signal.reason !== undefined) throw signal.reason;
+		const error = new Error('The operation was aborted');
+		error.name = 'AbortError';
+		throw error;
+	}
+
+	private async generationBoundary<T>(input: HanamiPersonalFeedGenerationContext | undefined, operation: () => Promise<T>): Promise<T> {
+		if (input == null) return await operation();
+		this.throwIfGenerationAborted(input.signal);
+		const promise = Promise.resolve().then(operation);
+		const result = await new Promise<T>((resolve, reject) => {
+			let settled = false;
+			const finish = (callback: () => void): void => {
+				if (settled) return;
+				settled = true;
+				input.signal.removeEventListener('abort', onAbort);
+				callback();
+			};
+			const onAbort = (): void => finish(() => reject(input.signal.reason));
+			input.signal.addEventListener('abort', onAbort, { once: true });
+			void promise.then(
+				value => input.signal.aborted ? onAbort() : finish(() => resolve(value)),
+				error => input.signal.aborted ? onAbort() : finish(() => reject(error)),
+			);
+			if (input.signal.aborted) onAbort();
+		});
+		this.throwIfGenerationAborted(input.signal);
+		return result;
+	}
+
+	private generationNow(input?: HanamiPersonalFeedGenerationContext): number {
+		return input == null ? Date.now() : Date.parse(input.generatedAt);
+	}
+
+	private async generationDbQuery<T extends unknown[] = unknown[]>(generation: HanamiPersonalFeedGenerationContext | undefined, sql: string, parameters: unknown[] = []): Promise<T> {
+		return await this.generationBoundary(generation, async () => (
+			generation == null
+				? await this.db.query(sql, parameters) as T
+				: await generation.queryRunner.query(sql, parameters) as T
+		));
 	}
 
 	// ───────────────────────── エントリポイント ─────────────────────────
@@ -192,13 +271,13 @@ export class HanamiForYouService {
 		if (axisLevels.size === 0) return [];
 
 		// taste match バッチの対象ゲート用アクティブマーカー（fire-and-forget。served は TTL30分なので流用しない）。
-		this.redisClient.set(HANAMI_FORYOU_ACTIVE_KEY_PREFIX + me.id, '1', 'EX', HANAMI_FORYOU_ACTIVE_TTL_SEC).catch(() => { /* 次回ページで再試行 */ });
+		refreshHanamiForYouActiveMarker(this.redisClient, me.id);
 
 		const followings = await this.cacheService.userFollowingsCache.fetch(me.id);
 		const followeeIds = Object.keys(followings);
 
 		const alsRunId = await this.hanamiForYouBatchService.getLatestReadyRunId(ALS_RUN_KIND);
-		const confidence = await this.computeConfidence(me.id, followeeIds.length, alsRunId);
+		const confidence = await this.computeConfidence(me.id, followeeIds.length > 0, alsRunId);
 
 		// 既出（served/seen）は「除外」ではなく軸内スコアの弱い減点＝沈むが再登場（人気は再キュー）。§6/§9
 		const { served, seen } = await this.hanamiRecommendationService.getServedSeenForExclusion(me.id);
@@ -236,40 +315,277 @@ export class HanamiForYouService {
 		return notes;
 	}
 
+	/**
+	 * Generation-only candidate acquisition. Common-backed axes are supplied by
+	 * the caller from one pinned ready generation; this method never invokes
+	 * Featured or trend recomputation and never performs serving side effects.
+	 */
+	@bindThis
+	public async gatherPersonalFeedCandidates(
+		input: HanamiPersonalFeedGenerationContext,
+		commonCandidates: readonly HanamiPersonalFeedCandidate[],
+	): Promise<HanamiPersonalFeedCandidatePreparation> {
+		this.throwIfGenerationAborted(input.signal);
+		const profiles = await this.generationDbQuery<Array<Pick<MiUserProfile, 'hanamiRecommendationEnabled' | 'hanamiRecommendationAxes'>>>(input, `
+			SELECT p."hanamiRecommendationEnabled", p."hanamiRecommendationAxes"
+			FROM "user_profile" p
+			WHERE p."userId" = $1
+			LIMIT 1
+		`, [input.userId]);
+		const profile = profiles[0];
+		if (profile == null) throw new Error(`Hanami personal-generation profile is missing for user ${input.userId}`);
+		const axisLevels = this.resolveAxisLevels(profile);
+		if (!profile.hanamiRecommendationEnabled || axisLevels.size === 0) {
+			return { confidence: 'none', axisLevels, candidates: Object.freeze([]) };
+		}
+
+		const hasFollowing = await this.exists(
+			`SELECT 1 FROM following WHERE "followerId" = $1 LIMIT 1`,
+			[input.userId],
+			input,
+		);
+		const alsRunId = await this.getGenerationLatestReadyRunId(input);
+		const confidence = await this.computeConfidence(input.userId, hasFollowing, alsRunId, input);
+		const axisCandidates = await this.gatherGenerationCandidates(input, confidence, alsRunId, axisLevels, commonCandidates);
+
+		const candidates: HanamiPersonalFeedCandidate[] = [];
+		for (const axis of hanamiAxisOrder(confidence)) {
+			for (const candidate of axisCandidates.get(axis) ?? []) {
+				if (candidate.userId == null || !Number.isFinite(candidate.score)) continue;
+				candidates.push({
+					noteId: candidate.noteId,
+					authorId: candidate.userId,
+					axis,
+					origin: axis === 'globalPopular' || axis === 'trending' || axis === 'exploration'
+						? 'commonCandidate'
+						: 'personalCandidate',
+					score: candidate.score,
+					...(candidate.term !== undefined ? { term: candidate.term } : {}),
+					...(candidate.clusterId !== undefined ? { clusterId: candidate.clusterId } : {}),
+					...((candidate as ForYouCandidateWithReason).bucket !== undefined ? { bucket: (candidate as ForYouCandidateWithReason).bucket } : {}),
+				});
+			}
+		}
+		this.throwIfGenerationAborted(input.signal);
+		return { confidence, axisLevels, candidates: Object.freeze(candidates) };
+	}
+
+	/** Applies the existing taste, aux, and served/seen ranking after D safety. */
+	@bindThis
+	public async rankPersonalFeedCandidates(
+		input: HanamiPersonalFeedGenerationContext,
+		preparation: HanamiPersonalFeedCandidatePreparation,
+		safeCandidates: readonly HanamiPersonalFeedCandidate[],
+	): Promise<readonly HanamiPersonalFeedCandidate[]> {
+		this.throwIfGenerationAborted(input.signal);
+		if (safeCandidates.length === 0) return Object.freeze([]);
+		const recency = await this.getGenerationCandidateServedSeen(input, safeCandidates.map(candidate => candidate.noteId));
+		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>();
+		const original = new Map<string, HanamiPersonalFeedCandidate>();
+		for (const candidate of safeCandidates) {
+			if (!preparation.axisLevels.has(candidate.axis)) continue;
+			const list = axisCandidates.get(candidate.axis) ?? [];
+			list.push({
+				noteId: candidate.noteId,
+				userId: candidate.authorId,
+				score: candidate.score,
+				...(candidate.term !== undefined ? { term: candidate.term } : {}),
+				...(candidate.clusterId !== undefined ? { clusterId: candidate.clusterId } : {}),
+				...(candidate.bucket !== undefined ? { bucket: candidate.bucket } : {}),
+			} as ForYouCandidateWithReason);
+			axisCandidates.set(candidate.axis, list);
+			original.set(`${candidate.axis}\t${candidate.noteId}`, candidate);
+		}
+
+		await this.applyTasteAndBoost(input.userId, axisCandidates, input);
+		this.applyRecencyPenalty(axisCandidates, recency.served, recency.seen, true);
+
+		const ranked: HanamiPersonalFeedCandidate[] = [];
+		for (const axis of hanamiAxisOrder(preparation.confidence)) {
+			for (const candidate of axisCandidates.get(axis) ?? []) {
+				const source = original.get(`${axis}\t${candidate.noteId}`);
+				if (source == null || candidate.userId == null) continue;
+				ranked.push({
+					...source,
+					authorId: candidate.userId,
+					score: candidate.score,
+					...(candidate.clusterId !== undefined ? { clusterId: candidate.clusterId } : {}),
+					...((candidate as ForYouCandidateWithReason).bucket !== undefined ? { bucket: (candidate as ForYouCandidateWithReason).bucket } : {}),
+				});
+			}
+		}
+		this.throwIfGenerationAborted(input.signal);
+		return Object.freeze(ranked);
+	}
+
+	private async getGenerationLatestReadyRunId(input: HanamiPersonalFeedGenerationContext): Promise<string | null> {
+		const rows = await this.generationDbQuery<Array<{ id: string }>>(input, `
+			SELECT "id"
+			FROM "hanami_foryou_model_run"
+			WHERE "kind" = $1 AND "status" = 'ready'
+			ORDER BY "startedAt" DESC, "id" DESC
+			LIMIT 1
+		`, [ALS_RUN_KIND]);
+		return rows[0]?.id ?? null;
+	}
+
+	private async readGenerationCandidateRecencyRedis(
+		input: HanamiPersonalFeedGenerationContext,
+		key: string,
+		noteIds: readonly string[],
+		cutoff: number,
+	): Promise<readonly string[]> {
+		try {
+			const scores = await this.generationBoundary(input, async () => await this.redisClient.zmscore(key, ...noteIds));
+			const asOf = Date.parse(input.generatedAt);
+			return noteIds.filter((_noteId, index) => {
+				const value = scores[index];
+				if (value == null) return false;
+				const score = Number(value);
+				return Number.isFinite(score) && score >= cutoff && score <= asOf;
+			});
+		} catch {
+			this.throwIfGenerationAborted(input.signal);
+			return [];
+		}
+	}
+
+	private async getGenerationCandidateServedSeen(
+		input: HanamiPersonalFeedGenerationContext,
+		candidateNoteIds: readonly string[],
+	): Promise<{ served: Set<string>; seen: Set<string> }> {
+		if (this.hanamiGenerationRecommendationService == null) throw new Error('Hanami generation recommendation service is unavailable');
+		const noteIds = [...new Set(candidateNoteIds)];
+		if (noteIds.length > HANAMI_GENERATION_CANDIDATE_LIMIT) {
+			throw new RangeError(`Candidate Note count exceeds ${HANAMI_GENERATION_CANDIDATE_LIMIT}`);
+		}
+		if (noteIds.length === 0) return { served: new Set(), seen: new Set() };
+		const generatedAt = Date.parse(input.generatedAt);
+		const durable: HanamiDurableServedSeen = await this.generationBoundary(input, async () => (
+			await this.hanamiGenerationRecommendationService!.getDurableServedSeenForCandidates({
+				userId: input.userId,
+				generatedAt: input.generatedAt,
+				noteIds,
+				signal: input.signal,
+				queryRunner: input.queryRunner,
+			})
+		));
+		const servedIds = await this.readGenerationCandidateRecencyRedis(input, `${HANAMI_SERVED_KEY_PREFIX}${input.userId}`, noteIds, generatedAt - SERVED_TTL_MS);
+		const seenIds = await this.readGenerationCandidateRecencyRedis(input, `${HANAMI_SEEN_KEY_PREFIX}${input.userId}`, noteIds, generatedAt - SEEN_TTL_MS);
+		return {
+			served: new Set([...durable.served, ...servedIds]),
+			seen: new Set([...durable.seen, ...seenIds]),
+		};
+	}
+
+	private async gatherGenerationCandidates(
+		input: HanamiPersonalFeedGenerationContext,
+		confidence: HanamiConfidence,
+		alsRunId: string | null,
+		axisLevels: ReadonlyMap<HanamiAxis, HanamiAxisLevel>,
+		commonCandidates: readonly HanamiPersonalFeedCandidate[],
+	): Promise<Map<HanamiAxis, ForYouCandidate[]>> {
+		// Candidate-specific recency is applied once after safety filtering.
+		const noRecency = new Set<string>();
+		const commonByAxis = new Map<HanamiAxis, ForYouCandidate[]>();
+		for (const candidate of commonCandidates) {
+			if (candidate.origin !== 'commonCandidate') continue;
+			const list = commonByAxis.get(candidate.axis) ?? [];
+			list.push({
+				noteId: candidate.noteId,
+				userId: candidate.authorId,
+				score: candidate.score,
+				...(candidate.term !== undefined ? { term: candidate.term } : {}),
+			});
+			commonByAxis.set(candidate.axis, list);
+		}
+
+		const map = new Map<HanamiAxis, ForYouCandidate[]>();
+		const order = hanamiAxisOrder(confidence).filter(axis => axisLevels.has(axis));
+		for (const axis of order) {
+			try {
+				let candidates: ForYouCandidate[];
+				switch (axis) {
+					case 'globalPopular': {
+						const affinity = await this.applyAuthorAffinityRerank(input.userId, alsRunId, [...(commonByAxis.get(axis) ?? [])], input);
+						candidates = await this.applyTasteClusterOrdering(input.userId, affinity, noRecency, noRecency, input);
+						break;
+					}
+					case 'trending':
+					case 'exploration':
+						candidates = [...(commonByAxis.get(axis) ?? [])];
+						break;
+					case 'fof':
+						candidates = await this.fofCandidates(input.userId, false, input);
+						break;
+					case 'neighborTrending':
+						candidates = await this.neighborTrendingCandidates(input.userId, alsRunId, input);
+						break;
+					case 'reactionSimilar':
+						candidates = await this.reactionSimilarCandidates(input.userId, [], noRecency, noRecency, input);
+						break;
+					case 'catchup':
+						candidates = await this.catchupCandidates(input.userId, [], input);
+						break;
+				}
+				map.set(axis, candidates);
+			} catch {
+				this.throwIfGenerationAborted(input.signal);
+				map.set(axis, []);
+			}
+		}
+		this.throwIfGenerationAborted(input.signal);
+		return map;
+	}
+
 	// ───────────────────────── confidence（§10） ─────────────────────────
 
 	@bindThis
-	private async computeConfidence(meId: MiUser['id'], followeeCount: number, alsRunId: string | null): Promise<HanamiConfidence> {
-		const reactionRow = await this.db.query(
-			`SELECT count(*)::int AS c FROM note_reaction WHERE "userId" = $1`,
-			[meId],
-		) as { c: number }[];
-		const postRow = await this.db.query(
-			`SELECT count(*)::int AS c FROM note WHERE "userId" = $1 AND ("replyId" IS NOT NULL OR "renoteId" IS NOT NULL)`,
-			[meId],
-		) as { c: number }[];
-		const engagement = Number(reactionRow[0]?.c ?? 0) + Number(postRow[0]?.c ?? 0);
+	private async computeConfidence(meId: MiUser['id'], hasFollowing: boolean, alsRunId: string | null, generation?: HanamiPersonalFeedGenerationContext): Promise<HanamiConfidence> {
+		const rows = await this.generationDbQuery<Array<{ c: number }>>(generation, `
+			SELECT (
+				SELECT count(*) FROM (
+					SELECT r.id FROM note_reaction r
+					WHERE r."userId" = $1
+					ORDER BY r.id DESC
+					LIMIT ${CONFIDENCE_HIGH_ENGAGEMENT}
+				) reaction_threshold
+			) + (
+				SELECT count(*) FROM (
+					SELECT n.id FROM note n
+					WHERE n."userId" = $1 AND (n."replyId" IS NOT NULL OR n."renoteId" IS NOT NULL)
+					ORDER BY n.id DESC
+					LIMIT ${CONFIDENCE_HIGH_ENGAGEMENT}
+				) post_threshold
+			)::int AS c
+		`, [meId]);
+		const engagement = Number(rows[0]?.c ?? 0);
 
-		const hasFactor = alsRunId != null && await this.exists(
-			`SELECT 1 FROM "hanami_foryou_user_factor" WHERE "runId" = $1 AND "userId" = $2 LIMIT 1`,
-			[alsRunId, meId],
-		);
-		const hasCentroid = await this.exists(
-			`SELECT 1 FROM "hanami_foryou_user_centroid" WHERE "userId" = $1 LIMIT 1`,
-			[meId],
-		);
+		if (engagement >= CONFIDENCE_HIGH_ENGAGEMENT) {
+			const hasFactor = alsRunId != null && await this.exists(
+				`SELECT 1 FROM "hanami_foryou_user_factor" WHERE "runId" = $1 AND "userId" = $2 LIMIT 1`,
+				[alsRunId, meId],
+				generation,
+			);
+			const hasCentroid = await this.exists(
+				`SELECT 1 FROM "hanami_foryou_user_centroid" WHERE "userId" = $1 LIMIT 1`,
+				[meId],
+				generation,
+			);
+			if (hasFactor && hasCentroid) return 'high';
+		}
+		if (engagement >= CONFIDENCE_LOW_ENGAGEMENT || hasFollowing) return 'low';
 		const hasRelation = await this.exists(
 			`SELECT 1 FROM "hanami_foryou_relation" WHERE "userId" = $1 LIMIT 1`,
 			[meId],
+			generation,
 		);
-
-		if (engagement >= CONFIDENCE_HIGH_ENGAGEMENT && hasFactor && hasCentroid) return 'high';
-		if (engagement >= CONFIDENCE_LOW_ENGAGEMENT || followeeCount > 0 || hasRelation) return 'low';
+		if (hasRelation) return 'low';
 		return 'none';
 	}
 
-	private async exists(sql: string, params: unknown[]): Promise<boolean> {
-		const rows = await this.db.query(sql, params) as unknown[];
+	private async exists(sql: string, params: unknown[], generation?: HanamiPersonalFeedGenerationContext): Promise<boolean> {
+		const rows = await this.generationDbQuery(generation, sql, params);
 		return rows.length > 0;
 	}
 
@@ -297,7 +613,7 @@ export class HanamiForYouService {
 		return undefined;
 	}
 
-	private resolveAxisLevels(profile: MiUserProfile): Map<HanamiAxis, HanamiAxisLevel> {
+	private resolveAxisLevels(profile: Pick<MiUserProfile, 'hanamiRecommendationAxes'>): Map<HanamiAxis, HanamiAxisLevel> {
 		const serverCfg = (this.meta.hanamiRecommendationAxisConfig ?? {}) as HanamiAxisServerConfig;
 		const userCfg = (profile.hanamiRecommendationAxes ?? {}) as HanamiAxisUserConfig;
 		const out = new Map<HanamiAxis, HanamiAxisLevel>();
@@ -354,41 +670,43 @@ export class HanamiForYouService {
 	 * クラスタ別%枠（share ∝ size×userWeight、general は固定10%）の重み付き抽選で並べ替える。
 	 * クラスタ未生成・mean_vec 無し・埋め込み欠損は general 縮退（現行挙動と同一）で壊れない。
 	 */
-	private async applyTasteClusterOrdering(meId: MiUser['id'], candidates: ForYouCandidate[], served: ReadonlySet<string>, seen: ReadonlySet<string>): Promise<ForYouCandidate[]> {
+	private async applyTasteClusterOrdering(meId: MiUser['id'], candidates: ForYouCandidate[], served: ReadonlySet<string>, seen: ReadonlySet<string>, generation?: HanamiPersonalFeedGenerationContext): Promise<ForYouCandidate[]> {
 		if (candidates.length === 0) return candidates;
 
 		// 縮退パス（クラスタ未生成・mean_vec 無し）: applyRecencyPenalty が globalPopular をスキップするため、
 		// 既出のソフト減点はここで従来どおり適用する（さもないとクラスタの無いユーザーで同じ人気が再登場し続ける）。
 		const recencyPenaltyFallback = () => {
-			for (const c of candidates) {
-				if (served.has(c.noteId)) c.score *= SERVED_SCORE_PENALTY;
-				else if (seen.has(c.noteId)) c.score *= SEEN_SCORE_PENALTY;
+			if (generation == null) {
+				for (const c of candidates) {
+					if (served.has(c.noteId)) c.score *= SERVED_SCORE_PENALTY;
+					else if (seen.has(c.noteId)) c.score *= SEEN_SCORE_PENALTY;
+				}
 			}
-			return candidates.sort((a, b) => b.score - a.score);
+			return candidates.sort((a, b) => b.score - a.score || (a.noteId < b.noteId ? 1 : a.noteId > b.noteId ? -1 : 0));
 		};
 
-		const clusters = await this.db.query(
+		const clusters = await this.generationDbQuery<Array<{ clusterId: number; centroid: number[]; size: number; userWeight: number }>>(generation,
 			`SELECT "clusterId", centroid, size, "userWeight"
 			 FROM "hanami_foryou_user_taste_cluster" WHERE "userId" = $1 AND model = $2`,
 			[meId, TASTE_EMBED_MODEL],
-		) as { clusterId: number; centroid: number[]; size: number; userWeight: number }[];
+		);
 		if (clusters.length === 0) return recencyPenaltyFallback();
 
-		const stateRows = await this.db.query(
+		const stateRows = await this.generationDbQuery<Array<{ meanVec: number[] }>>(generation,
 			`SELECT "meanVec" FROM "hanami_foryou_taste_state" WHERE model = $1`,
 			[TASTE_EMBED_MODEL],
-		) as { meanVec: number[] }[];
+		);
 		const meanVec = stateRows[0]?.meanVec;
 		if (meanVec == null || meanVec.length === 0) return recencyPenaltyFallback();
 
-		const embRows = await this.db.query(
+		const embRows = await this.generationDbQuery<Array<{ noteId: string; embedding: number[] }>>(generation,
 			`SELECT "noteId", embedding FROM "hanami_note_embedding" WHERE model = $1 AND "noteId" = ANY($2)`,
 			[TASTE_EMBED_MODEL, candidates.map(c => c.noteId)],
-		) as { noteId: string; embedding: number[] }[];
+		);
 		const embByNote = new Map(embRows.map(r => [r.noteId, r.embedding]));
 
 		// メディア嗜好の較正材料（aux 未生成・反応実績ゼロなら null = 補正なし）。
-		const mediaCal = await this.computeMediaOddsCalibration(meId, candidates.map(c => c.noteId));
+		const mediaCal = await this.computeMediaOddsCalibration(meId, candidates.map(c => c.noteId), generation);
 
 		// バケツ分け: 最大類似クラスタ（τ未満・埋め込み無しは general、weight=0 クラスタは除外=「表示しない」）。
 		// 各バケツは fresh（未見）と shown（served/seen 済み）の二段。未見から先に抽選し、尽きたら既出が
@@ -520,20 +838,20 @@ export class HanamiForYouService {
 	 * キャプション→文体クラスタに誤マッチ）ため、taste とは独立にユーザーの顕示選好（反応実績）で
 	 * メディア比率を較正する。aux 未生成 or 窓内の反応実績ゼロなら null（補正なし）。
 	 */
-	private async computeMediaOddsCalibration(meId: MiUser['id'], noteIds: string[]): Promise<{ odds: number; mediaNoteIds: Set<string> } | null> {
+	private async computeMediaOddsCalibration(meId: MiUser['id'], noteIds: string[], generation?: HanamiPersonalFeedGenerationContext): Promise<{ odds: number; mediaNoteIds: Set<string> } | null> {
 		if (noteIds.length === 0) return null;
-		const auxRows = await this.db.query(
+		const auxRows = await this.generationDbQuery<Array<{ media: number; text: number }>>(generation,
 			`SELECT "mediaReactionRate" AS media, "textReactionRate" AS text FROM "hanami_foryou_user_aux" WHERE "userId" = $1`,
 			[meId],
-		) as { media: number; text: number }[];
+		);
 		const aux = auxRows[0];
 		// media/text とも 0 = 窓内に反応実績なし（嗜好不明）。補正しない。
 		if (aux == null || (Number(aux.media) <= 0 && Number(aux.text) <= 0)) return null;
 
-		const rows = await this.db.query(
+		const rows = await this.generationDbQuery<Array<{ id: string }>>(generation,
 			`SELECT id FROM note WHERE id = ANY($1) AND "fileIds" <> '{}'`,
 			[noteIds],
-		) as { id: string }[];
+		);
 		const mediaNoteIds = new Set(rows.map(r => r.id));
 
 		const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
@@ -547,16 +865,16 @@ export class HanamiForYouService {
 	 * popular軸のサーブ時パーソナライズ: ALS内積（被覆ほぼ100%）＋関係値（被覆〜20%）の
 	 * 大きい方を作者親和度として score ×= (1 + β·aff)。素材が無ければ素通し。
 	 */
-	private async applyAuthorAffinityRerank(meId: MiUser['id'], alsRunId: string | null, candidates: ForYouCandidate[]): Promise<ForYouCandidate[]> {
+	private async applyAuthorAffinityRerank(meId: MiUser['id'], alsRunId: string | null, candidates: ForYouCandidate[], generation?: HanamiPersonalFeedGenerationContext): Promise<ForYouCandidate[]> {
 		if (candidates.length === 0) return candidates;
 
 		const authorByNote = new Map<string, string>();
 		const missing = candidates.filter(c => c.userId == null).map(c => c.noteId);
 		if (missing.length > 0) {
-			const rows = await this.db.query(
+			const rows = await this.generationDbQuery<Array<{ id: string; userId: string }>>(generation,
 				'SELECT id, "userId" FROM note WHERE id = ANY($1)',
 				[missing],
-			) as { id: string; userId: string }[];
+			);
 			for (const r of rows) authorByNote.set(r.id, r.userId);
 		}
 		const authorOf = (c: ForYouCandidate) => c.userId ?? authorByNote.get(c.noteId);
@@ -565,16 +883,16 @@ export class HanamiForYouService {
 
 		const alsByAuthor = new Map<string, number>();
 		if (alsRunId != null) {
-			const uf = await this.db.query(
+			const uf = await this.generationDbQuery<Array<{ factor: number[] }>>(generation,
 				'SELECT factor FROM "hanami_foryou_user_factor" WHERE "runId" = $1 AND "userId" = $2 LIMIT 1',
 				[alsRunId, meId],
-			) as { factor: number[] }[];
+			);
 			const userFactor = uf[0]?.factor;
 			if (userFactor != null && userFactor.length > 0) {
-				const rows = await this.db.query(
+				const rows = await this.generationDbQuery<Array<{ authorId: string; factor: number[] }>>(generation,
 					'SELECT "authorId", factor FROM "hanami_foryou_author_factor" WHERE "runId" = $1 AND "authorId" = ANY($2)',
 					[alsRunId, authorIds],
-				) as { authorId: string; factor: number[] }[];
+				);
 				for (const row of rows) {
 					let dot = 0;
 					const len = Math.min(userFactor.length, row.factor.length);
@@ -586,10 +904,10 @@ export class HanamiForYouService {
 
 		const relByAuthor = new Map<string, number>();
 		{
-			const rows = await this.db.query(
+			const rows = await this.generationDbQuery<Array<{ id: string; relScore: number }>>(generation,
 				'SELECT "otherUserId" AS id, "relScore" FROM "hanami_foryou_relation" WHERE "userId" = $1 AND "otherUserId" = ANY($2) AND "relScore" > 0',
 				[meId, authorIds],
-			) as { id: string; relScore: number }[];
+			);
 			for (const r of rows) relByAuthor.set(r.id, Number(r.relScore));
 		}
 
@@ -663,43 +981,45 @@ export class HanamiForYouService {
 	}
 
 	/** fof: friends-of-follows（§4）。既存実装が bot/suspended/deleted を除外済。ALS taste 再ランクは後段。 */
-	private async fofCandidates(meId: MiUser['id'], withFiles: boolean): Promise<ForYouCandidate[]> {
-		const fof = await this.hanamiUserRecommendationService.getFoFNoteIds(meId, FOF_POOL, { withFiles });
+	private async fofCandidates(meId: MiUser['id'], withFiles: boolean, generation?: HanamiPersonalFeedGenerationContext): Promise<ForYouCandidate[]> {
+		const fof = generation == null
+			? await this.hanamiUserRecommendationService.getFoFNoteIds(meId, FOF_POOL, { withFiles })
+			: await this.generationBoundary(generation, async () => await this.hanamiUserRecommendationService.getPersonalFeedFoFNoteIds(generation, FOF_POOL));
 		const max = fof[0]?.score || 1;
 		return fof.map(({ noteId, userId, score }) => ({ noteId, userId, score: score / max }));
 	}
 
 	/** neighborTrending: ALS taste 近傍が"今"反応してる投稿（§4）。48h 窓。ALS run 未生成なら skip。 */
-	private async neighborTrendingCandidates(meId: MiUser['id'], alsRunId: string | null): Promise<ForYouCandidate[]> {
+	private async neighborTrendingCandidates(meId: MiUser['id'], alsRunId: string | null, generation?: HanamiPersonalFeedGenerationContext): Promise<ForYouCandidate[]> {
 		if (alsRunId == null) return [];
-		const neighbors = await this.db.query(
-			`SELECT "neighborUserId" AS id, "score" FROM "hanami_foryou_neighbor_user" WHERE "runId" = $1 AND "userId" = $2 ORDER BY "rank" ASC`,
+		const neighbors = await this.generationDbQuery<Array<{ id: string; score: number }>>(generation,
+			`SELECT "neighborUserId" AS id, "score" FROM "hanami_foryou_neighbor_user" WHERE "runId" = $1 AND "userId" = $2 ORDER BY "rank" ASC, "neighborUserId" ASC LIMIT 100`,
 			[alsRunId, meId],
-		) as { id: string; score: number }[];
+		);
 		if (neighbors.length === 0) return [];
 		const neighborIds = neighbors.map(n => n.id);
-		const sinceId = this.idService.gen(Date.now() - NEIGHBOR_TRENDING_WINDOW_MS);
-		const rows = await this.db.query(
+		const sinceId = this.idService.gen(this.generationNow(generation) - NEIGHBOR_TRENDING_WINDOW_MS);
+		const rows = await this.generationDbQuery<Array<{ noteId: string; userId: string; c: number }>>(generation,
 			`SELECT n.id AS "noteId", n."userId" AS "userId", count(*)::int AS c
 			 FROM note_reaction r
 			 JOIN note n ON n.id = r."noteId"
 			 WHERE r."userId" = ANY($1) AND r.id >= $2
 			   AND n.visibility IN ('public','home') AND n."channelId" IS NULL AND n."userId" <> $3
 			 GROUP BY n.id, n."userId"
-			 ORDER BY c DESC
+			 ORDER BY c DESC, n.id DESC
 			 LIMIT $4`,
 			[neighborIds, sinceId, meId, NEIGHBOR_NOTE_POOL],
-		) as { noteId: string; userId: string; c: number }[];
+		);
 		const max = rows[0]?.c || 1;
 		return rows.map(r => ({ noteId: r.noteId, userId: r.userId, score: r.c / max }));
 	}
 
-	private async readTasteMatchMeta(meId: MiUser['id']): Promise<TasteMatchMeta> {
+	private async readTasteMatchMeta(meId: MiUser['id'], generation?: HanamiPersonalFeedGenerationContext): Promise<TasteMatchMeta> {
 		const fallback = { totalHeat: 0, heatOf: new Map<number, number>(), hasRecentVec: false };
 		const hgetall = (this.redisClient as unknown as { hgetall?: (key: string) => Promise<Record<string, string>> }).hgetall;
 		if (typeof hgetall !== 'function') return fallback;
 		try {
-			const raw = await hgetall.call(this.redisClient, HANAMI_TASTE_MATCH_META_KEY_PREFIX + meId);
+			const raw = await this.generationBoundary(generation, async () => await hgetall.call(this.redisClient, HANAMI_TASTE_MATCH_META_KEY_PREFIX + meId));
 			const totalHeatRaw = Number(raw.totalHeat);
 			const totalHeat = Number.isFinite(totalHeatRaw) && totalHeatRaw > 0 ? totalHeatRaw : 0;
 			const heatOf = new Map<number, number>();
@@ -711,6 +1031,7 @@ export class HanamiForYouService {
 			}
 			return { totalHeat, heatOf, hasRecentVec: raw.hasRecentVec === '1' };
 		} catch {
+			if (generation != null) this.throwIfGenerationAborted(generation.signal);
 			return fallback;
 		}
 	}
@@ -721,24 +1042,38 @@ export class HanamiForYouService {
 	 * 人気条件なし＝リアクションゼロの投稿でも内容が興味に合えば出る（旧 ALS 発見作者方式は廃止）。
 	 * フォロー中の作者はホームTL/catchup の領分なので除外（この軸は「未知との出会い」担当）。
 	 */
-	private async reactionSimilarCandidates(meId: MiUser['id'], followeeIds: string[], served: ReadonlySet<string>, seen: ReadonlySet<string>): Promise<ForYouCandidate[]> {
-		const raw = await this.redisClient.zrevrange(HANAMI_TASTE_MATCH_KEY_PREFIX + meId, 0, TASTE_MATCH_POOL - 1, 'WITHSCORES');
+	private async reactionSimilarCandidates(meId: MiUser['id'], followeeIds: string[], served: ReadonlySet<string>, seen: ReadonlySet<string>, generation?: HanamiPersonalFeedGenerationContext): Promise<ForYouCandidate[]> {
+		const redisRaw = await this.generationBoundary(generation, async () => await this.redisClient.zrevrange(HANAMI_TASTE_MATCH_KEY_PREFIX + meId, 0, TASTE_MATCH_POOL - 1, 'WITHSCORES'));
+		const raw = redisRaw.slice(0, TASTE_MATCH_POOL * 2);
 		if (raw.length === 0) return [];
+		const followees = generation == null
+			? new Set(followeeIds)
+			: new Set((await this.generationDbQuery<Array<{ id: string }>>(generation, `
+				SELECT f."followeeId" AS id
+				FROM following f
+				WHERE f."followerId" = $1
+					AND f."followeeId" = ANY($2::varchar[])
+				ORDER BY f."followeeId" ASC
+				LIMIT $3
+			`, [
+				meId,
+				[...new Set(raw.flatMap((value, index) => index % 2 === 0 ? [value.split(':')[1]] : []).filter((value): value is string => value != null))],
+				TASTE_MATCH_POOL,
+			])).map(row => row.id));
 
 		// share 計算と userWeight 失効チェック用（クラスタ再構築後〜次スイープ≦10分の間、旧 clusterId が
 		// zset に残り得る → 現行クラスタに無い id は捨てる）。
-		const clusters = await this.db.query(
+		const clusters = await this.generationDbQuery<Array<{ clusterId: number; size: number; userWeight: number }>>(generation,
 			`SELECT "clusterId", size, "userWeight" FROM "hanami_foryou_user_taste_cluster" WHERE "userId" = $1 AND model = $2`,
 			[meId, TASTE_EMBED_MODEL],
-		) as { clusterId: number; size: number; userWeight: number }[];
+		);
 		if (clusters.length === 0) return [];
 		const clusterOf = new Map(clusters.map(c => [c.clusterId, c]));
-		const meta = await this.readTasteMatchMeta(meId);
+		const meta = await this.readTasteMatchMeta(meId, generation);
 
-		const followees = new Set(followeeIds);
 		// 窓外ガード（v0.7 R2-H1）: バッチが止まった/対象から外れたユーザーの zset は最大 TTL48h 残る。
 		// 24h 窓より古いノートはここで捨てる（バッチ健在なら no-op）。
-		const windowFloor = Date.now() - TASTE_MATCH_WINDOW_MS;
+		const windowFloor = this.generationNow(generation) - TASTE_MATCH_WINDOW_MS;
 
 		const buckets = new Map<ClusterLotteryBucket, { fresh: ClusterLotteryItem[]; shown: ClusterLotteryItem[] }>();
 		let total = 0;
@@ -800,22 +1135,61 @@ export class HanamiForYouService {
 			}
 			shareOf.set('r', recentShare);
 		}
-		const mediaCal = await this.computeMediaOddsCalibration(meId, [...buckets.values()].flatMap(b => [...b.fresh, ...b.shown].map(it => it.cand.noteId)));
+		const mediaCal = await this.computeMediaOddsCalibration(meId, [...buckets.values()].flatMap(b => [...b.fresh, ...b.shown].map(it => it.cand.noteId)), generation);
 		return this.drawClusterLottery(buckets, shareOf, mediaCal, total, () => 1);
 	}
 
 	/** catchup: フォロー＋高 affinity(関係値) の未読回収（§4）。7d 窓。未読判定は interleave の served/seen 除外に委譲。 */
-	private async catchupCandidates(meId: MiUser['id'], followeeIds: string[]): Promise<ForYouCandidate[]> {
-		const rel = await this.db.query(
-			`SELECT "otherUserId" AS id, "relScore" FROM "hanami_foryou_relation" WHERE "userId" = $1 ORDER BY "relScore" DESC LIMIT $2`,
+	private async catchupCandidates(meId: MiUser['id'], followeeIds: string[], generation?: HanamiPersonalFeedGenerationContext): Promise<ForYouCandidate[]> {
+		if (generation != null) {
+			const sinceId = this.idService.gen(this.generationNow(generation) - CATCHUP_WINDOW_MS);
+			const rows = await this.generationDbQuery<Array<{ noteId: string; userId: string; reactionCount: number; relScore: number; maxRel: number }>>(generation, `
+				WITH top_relation AS MATERIALIZED (
+					SELECT "otherUserId" AS id, "relScore"
+					FROM "hanami_foryou_relation"
+					WHERE "userId" = $1
+					ORDER BY "relScore" DESC, "otherUserId" ASC
+					LIMIT $2
+				)
+				SELECT n.id AS "noteId", n."userId" AS "userId", count(r.id)::int AS "reactionCount",
+					COALESCE(tr."relScore", 0)::float8 AS "relScore",
+					COALESCE((SELECT max("relScore") FROM top_relation), 1)::float8 AS "maxRel"
+				FROM note n
+				JOIN note_reaction r ON r."noteId" = n.id AND r.id >= $3
+				LEFT JOIN top_relation tr ON tr.id = n."userId"
+				WHERE n.id >= $3
+					AND n.visibility IN ('public','home') AND n."channelId" IS NULL AND n."userId" <> $1
+					AND (tr.id IS NOT NULL OR EXISTS (
+						SELECT 1 FROM following f
+						WHERE f."followerId" = $1 AND f."followeeId" = n."userId"
+						LIMIT 1
+					))
+					AND (n."replyId" IS NULL OR n."replyUserId" = n."userId")
+					AND (n."renoteId" IS NULL OR n.text IS NOT NULL OR n."hasPoll" = TRUE OR n."fileIds" <> '{}')
+				GROUP BY n.id, n."userId", tr."relScore"
+				ORDER BY count(r.id) DESC, n.id DESC
+				LIMIT $4
+			`, [meId, TOP_RELATION_OTHERS, sinceId, CATCHUP_NOTE_POOL]);
+			const maxReaction = Math.max(1, ...rows.map(row => Number(row.reactionCount)));
+			return rows
+				.map(row => ({
+					noteId: row.noteId,
+					userId: row.userId,
+					w: ((Number(row.relScore) / Math.max(1, Number(row.maxRel))) + 0.3) * (0.5 + (Number(row.reactionCount) / maxReaction)),
+				}))
+				.sort((a, b) => b.w - a.w || (a.noteId < b.noteId ? 1 : -1))
+				.map(row => ({ noteId: row.noteId, userId: row.userId, score: row.w }));
+		}
+		const rel = await this.generationDbQuery<Array<{ id: string; relScore: number }>>(generation,
+			`SELECT "otherUserId" AS id, "relScore" FROM "hanami_foryou_relation" WHERE "userId" = $1 ORDER BY "relScore" DESC, "otherUserId" ASC LIMIT $2`,
 			[meId, TOP_RELATION_OTHERS],
-		) as { id: string; relScore: number }[];
+		);
 		const relScore = new Map(rel.map(r => [r.id, Number(r.relScore)]));
 		const sourceIds = [...new Set([...followeeIds, ...rel.map(r => r.id)])];
 		if (sourceIds.length === 0) return [];
 		const maxRel = Math.max(1, ...relScore.values());
-		const sinceId = this.idService.gen(Date.now() - CATCHUP_WINDOW_MS);
-		const rows = await this.db.query(
+		const sinceId = this.idService.gen(this.generationNow(generation) - CATCHUP_WINDOW_MS);
+		const rows = await this.generationDbQuery<Array<{ noteId: string; userId: string; reactionCount: number }>>(generation,
 			`SELECT n.id AS "noteId", n."userId" AS "userId", count(r.id)::int AS "reactionCount"
 			 FROM note n
 			 JOIN note_reaction r ON r."noteId" = n.id AND r.id >= $2
@@ -827,7 +1201,7 @@ export class HanamiForYouService {
 			 ORDER BY count(r.id) DESC, n.id DESC
 			 LIMIT $4`,
 			[sourceIds, sinceId, meId, CATCHUP_NOTE_POOL],
-		) as { noteId: string; userId: string; reactionCount: number }[];
+		);
 		const maxReaction = Math.max(1, ...rows.map(r => Number(r.reactionCount)));
 		// 近い人ほど優先（relScore）しつつ、7日以内に実際に反応が伸びた量も見る。
 		return rows
@@ -872,16 +1246,16 @@ export class HanamiForYouService {
 	}
 
 	/** 既出（served/seen）を軸内スコアの弱い減点として反映し再ソートする（除外・tier ゲートは廃止＝決定論）。 */
-	private applyRecencyPenalty(map: Map<HanamiAxis, ForYouCandidate[]>, served: Set<string>, seen: Set<string>): void {
+	private applyRecencyPenalty(map: Map<HanamiAxis, ForYouCandidate[]>, served: Set<string>, seen: Set<string>, includeTasteAxes = false): void {
 		for (const [axis, list] of map.entries()) {
 			// globalPopular / reactionSimilar は taste cluster 枠が既出を「未見優先の二段抽選」で内包処理済み。
 			// ここで再ソートするとクラスタ別%枠の並びが壊れる（A3）。
-			if (axis === 'globalPopular' || axis === 'reactionSimilar') continue;
+			if (!includeTasteAxes && (axis === 'globalPopular' || axis === 'reactionSimilar')) continue;
 			for (const c of list) {
 				if (served.has(c.noteId)) c.score *= SERVED_SCORE_PENALTY;
 				else if (seen.has(c.noteId)) c.score *= SEEN_SCORE_PENALTY;
 			}
-			list.sort((a, b) => b.score - a.score);
+			list.sort((a, b) => b.score - a.score || (a.noteId < b.noteId ? 1 : a.noteId > b.noteId ? -1 : 0));
 		}
 	}
 
@@ -892,16 +1266,16 @@ export class HanamiForYouService {
 	 * 主役は quota/軸内score。ここは微補正（タイブレーク程度）＝§14-D7。exploration は多様性枠なので掛けない。
 	 * centroid/aux が未生成なら no-op（cold-start。バッチが回れば自然に効き始める）。
 	 */
-	private async applyTasteAndBoost(meId: MiUser['id'], axisCandidates: Map<HanamiAxis, ForYouCandidate[]>): Promise<void> {
-		const auxRows = await this.db.query(
+	private async applyTasteAndBoost(meId: MiUser['id'], axisCandidates: Map<HanamiAxis, ForYouCandidate[]>, generation?: HanamiPersonalFeedGenerationContext): Promise<void> {
+		const auxRows = await this.generationDbQuery<Array<{ hist: Record<string, number>; media: number }>>(generation,
 			`SELECT "activeHourHist" AS hist, "mediaReactionRate" AS media FROM "hanami_foryou_user_aux" WHERE "userId" = $1`,
 			[meId],
-		) as { hist: Record<string, number>; media: number }[];
+		);
 		const aux = auxRows[0] ?? null;
-		const centRows = await this.db.query(
+		const centRows = await this.generationDbQuery<Array<{ centroid: number[] }>>(generation,
 			`SELECT "centroid" FROM "hanami_foryou_user_centroid" WHERE "userId" = $1 AND "model" = $2`,
 			[meId, FORYOU_EMBEDDING_MODEL],
-		) as { centroid: number[] }[];
+		);
 		const centroid = centRows[0]?.centroid ?? null;
 		if (aux == null && centroid == null) return; // cold-start: 何も持っていない
 
@@ -912,10 +1286,10 @@ export class HanamiForYouService {
 
 		const embMap = new Map<string, number[]>();
 		if (centroid != null) {
-			const embRows = await this.db.query(
+			const embRows = await this.generationDbQuery<Array<{ id: string; emb: number[] }>>(generation,
 				`SELECT "noteId" AS id, "embedding" AS emb FROM "hanami_note_embedding" WHERE "model" = $1 AND "noteId" = ANY($2)`,
 				[FORYOU_EMBEDDING_MODEL, idList],
-			) as { id: string; emb: number[] }[];
+			);
 			for (const r of embRows) embMap.set(r.id, r.emb);
 		}
 
@@ -923,18 +1297,18 @@ export class HanamiForYouService {
 		let peakHours = new Set<number>();
 		let textHeavy = false;
 		if (aux != null) {
-			const metaRows = await this.db.query(
+			const metaRows = await this.generationDbQuery<Array<{ id: string; hasMedia: boolean; hasText: boolean }>>(generation,
 				`SELECT n.id AS id,
 				        (n."fileIds" <> '{}') AS "hasMedia", (n.text IS NOT NULL) AS "hasText"
 				 FROM note n WHERE n.id = ANY($1)`,
 				[idList],
-			) as { id: string; hasMedia: boolean; hasText: boolean }[];
+			);
 			for (const r of metaRows) {
 				const hr = (this.idService.parse(r.id).date.getUTCHours() + 9) % 24;
 				noteMeta.set(r.id, { hr, hasMedia: r.hasMedia, hasText: r.hasText });
 			}
 			const hist = aux.hist ?? {};
-			peakHours = new Set(Object.entries(hist).map(([h, c]) => [Number(h), Number(c)] as [number, number]).sort((a, b) => b[1] - a[1]).slice(0, AUX_PEAK_HOURS).map(e => e[0]));
+			peakHours = new Set(Object.entries(hist).map(([h, c]) => [Number(h), Number(c)] as [number, number]).sort((a, b) => b[1] - a[1] || a[0] - b[0]).slice(0, AUX_PEAK_HOURS).map(e => e[0]));
 			textHeavy = Number(aux.media) < AUX_TEXT_HEAVY_THRESHOLD;
 		}
 
@@ -960,7 +1334,7 @@ export class HanamiForYouService {
 				}
 				c.score *= mult;
 			}
-			list.sort((a, b) => b.score - a.score);
+			list.sort((a, b) => b.score - a.score || (a.noteId < b.noteId ? 1 : a.noteId > b.noteId ? -1 : 0));
 		}
 	}
 

@@ -1,3 +1,9 @@
 url: https://example.tld/
 image: okteto.dev/misskey
 environment: production
+hanami:
+  cursorSigningKeysSecret:
+    # Existing Kubernetes Secret that stores the JSON array for HANAMI_CURSOR_SIGNING_KEYS_JSON.
+    existingSecretName: ""
+    # Secret data key that contains the JSON array string.
+    secretKey: ""

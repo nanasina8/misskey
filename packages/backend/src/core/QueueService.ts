@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { randomUUID } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { createHash, randomUUID } from 'node:crypto';
+import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import { MetricsTime, type JobType } from 'bullmq';
 import { parse as parseRedisInfo } from 'redis-info';
 import type { IActivity } from '@/core/activitypub/type.js';
@@ -22,6 +22,12 @@ import { type UserWebhookPayload } from './UserWebhookService.js';
 import type {
 	DbJobData,
 	DeliverJobData,
+	HanamiCommonGenerationJobData,
+	HanamiCommonGenerationTickJobData,
+	HanamiGenerationReconcileJobData,
+	HanamiRecommendationEventCacheRepairJobData,
+	HanamiRecommendationEventCacheReplayContinuationJobData,
+	HanamiUserFeedGenerationJobData,
 	RelationshipJobData,
 	SystemWebhookDeliverJobData,
 	ThinUser,
@@ -31,6 +37,7 @@ import type {
 	DbQueue,
 	DeliverQueue,
 	EndedPollNotificationQueue,
+	HanamiGenerationQueue,
 	PostScheduledNoteQueue,
 	InboxQueue,
 	ObjectStorageQueue,
@@ -55,9 +62,48 @@ export const QUEUE_TYPES = [
 	'objectStorage',
 	'userWebhookDeliver',
 	'systemWebhookDeliver',
+	'hanamiGeneration',
 ] as const;
 
-const REPEATABLE_SYSTEM_JOB_DEF = [{
+const HANAMI_GENERATION_JOB_OPTIONS = {
+	attempts: 1,
+	removeOnComplete: {
+		age: 3600 * 24 * 7,
+	},
+	removeOnFail: {
+		age: 3600 * 24 * 7,
+	},
+} satisfies Bull.JobsOptions;
+
+const HANAMI_USER_FEED_GENERATION_JOB_OPTIONS = {
+	attempts: 1,
+	// PostgreSQL owns retries. Removing each delivery lets reconciliation enqueue
+	// the same durable batch again after a failed attempt or expired lease.
+	removeOnComplete: true,
+	removeOnFail: true,
+} satisfies Bull.JobsOptions;
+
+const HANAMI_RECOMMENDATION_EVENT_CACHE_REPAIR_JOB_OPTIONS = {
+	attempts: 3,
+	backoff: {
+		type: 'exponential',
+		delay: 1000,
+	},
+	removeOnComplete: true,
+	removeOnFail: true,
+} satisfies Bull.JobsOptions;
+
+const HANAMI_RECOMMENDATION_EVENT_CACHE_REPLAY_INTERVAL_MS = 60_000;
+
+type RepeatableSystemJobDefinition = {
+	name: string;
+	pattern: string;
+	tz?: string;
+	attempts?: number;
+	backoff?: Bull.BackoffOptions;
+};
+
+const REPEATABLE_SYSTEM_JOB_DEF: RepeatableSystemJobDefinition[] = [{
 	name: 'tickCharts',
 	pattern: '55 * * * *',
 }, {
@@ -102,10 +148,19 @@ const REPEATABLE_SYSTEM_JOB_DEF = [{
 	name: 'hanamiTasteCluster',
 	// taste-clustered popular: evidence整理＋ユーザーごとk-means再構築（spec v0.2 §1.2-1.4）。
 	pattern: '40 4 * * *',
+}, {
+	name: 'maintainHanamiTimelinePartitions',
+	pattern: '17 0 * * *',
+	tz: 'UTC',
+	attempts: 3,
+	backoff: {
+		type: 'exponential',
+		delay: 60000,
+	},
 }];
 
 @Injectable()
-export class QueueService {
+export class QueueService implements OnModuleInit {
 	constructor(
 		@Inject(DI.config)
 		private config: Config,
@@ -120,14 +175,21 @@ export class QueueService {
 		@Inject('queue:objectStorage') public objectStorageQueue: ObjectStorageQueue,
 		@Inject('queue:userWebhookDeliver') public userWebhookDeliverQueue: UserWebhookDeliverQueue,
 		@Inject('queue:systemWebhookDeliver') public systemWebhookDeliverQueue: SystemWebhookDeliverQueue,
-	) {
-		for (const def of REPEATABLE_SYSTEM_JOB_DEF) {
-			this.systemQueue.upsertJobScheduler(def.name, {
+		@Inject('queue:hanamiGeneration') public hanamiGenerationQueue?: HanamiGenerationQueue,
+	) {}
+
+	@bindThis
+	public async onModuleInit(): Promise<void> {
+		await Promise.all(REPEATABLE_SYSTEM_JOB_DEF.map(async (def) => {
+			await this.systemQueue.upsertJobScheduler(def.name, {
 				pattern: def.pattern,
+				...(def.tz != null ? { tz: def.tz } : {}),
 				immediately: false,
 			}, {
 				name: def.name,
 				opts: {
+					...(def.attempts != null ? { attempts: def.attempts } : {}),
+					...(def.backoff != null ? { backoff: def.backoff } : {}),
 					// 期限ではなくcountで設定したいが、ジョブごとではなくキュー全体でカウントされるため、高頻度で実行されるジョブによって低頻度で実行されるジョブのログが消えることになる
 					removeOnComplete: {
 						age: 3600 * 24 * 7, // keep up to 7 days
@@ -137,15 +199,140 @@ export class QueueService {
 					},
 				},
 			});
-		}
+		}));
 
 		// 古いバージョンで作成され現在使われなくなったrepeatableジョブをクリーンアップ
-		this.systemQueue.getJobSchedulers().then(schedulers => {
-			for (const scheduler of schedulers) {
-				if (!REPEATABLE_SYSTEM_JOB_DEF.some(def => def.name === scheduler.key)) {
-					this.systemQueue.removeJobScheduler(scheduler.key);
-				}
-			}
+		const schedulers = await this.systemQueue.getJobSchedulers();
+		await Promise.all(schedulers
+			.filter(scheduler => !REPEATABLE_SYSTEM_JOB_DEF.some(def => def.name === scheduler.key))
+			.map(async scheduler => await this.systemQueue.removeJobScheduler(scheduler.key)));
+
+		if (this.hanamiGenerationQueue == null) return;
+
+		const schedulerStart = Date.now();
+		const nextBoundary = (intervalMs: number): Date => new Date((Math.floor(schedulerStart / intervalMs) + 1) * intervalMs);
+		// BullMQ >= 5.19 runs a new `every` scheduler immediately. Epoch-aligned
+		// start dates keep ticks delayed; seed and reconcile are explicitly enqueued below.
+		await Promise.all([
+			this.hanamiGenerationQueue.upsertJobScheduler('hanamiCommonGenerationTick', {
+				every: this.config.hanamiCommonGenerationIntervalMs,
+				startDate: nextBoundary(this.config.hanamiCommonGenerationIntervalMs),
+				immediately: false,
+			}, {
+				name: 'hanamiCommonGenerationTick',
+				data: { reason: 'scheduled' },
+				opts: HANAMI_GENERATION_JOB_OPTIONS,
+			}),
+			this.hanamiGenerationQueue.upsertJobScheduler('hanamiGenerationReconcile', {
+				every: this.config.hanamiGenerationReconcileIntervalMs,
+				startDate: nextBoundary(this.config.hanamiGenerationReconcileIntervalMs),
+				immediately: false,
+			}, {
+				name: 'hanamiGenerationReconcile',
+				data: {},
+				opts: HANAMI_GENERATION_JOB_OPTIONS,
+			}),
+			this.hanamiGenerationQueue.upsertJobScheduler('hanamiRecommendationEventCacheReplay', {
+				every: HANAMI_RECOMMENDATION_EVENT_CACHE_REPLAY_INTERVAL_MS,
+				startDate: nextBoundary(HANAMI_RECOMMENDATION_EVENT_CACHE_REPLAY_INTERVAL_MS),
+				immediately: false,
+			}, {
+				name: 'hanamiRecommendationEventCacheReplay',
+				data: {},
+				opts: HANAMI_RECOMMENDATION_EVENT_CACHE_REPAIR_JOB_OPTIONS,
+			}),
+		]);
+		await Promise.all([
+			this.enqueueHanamiCommonGenerationSeed(),
+			this.enqueueHanamiGenerationReconcile(),
+		]);
+	}
+
+	private getHanamiGenerationQueue(): HanamiGenerationQueue {
+		if (this.hanamiGenerationQueue == null) {
+			throw new Error('Hanami generation queue is not available');
+		}
+		return this.hanamiGenerationQueue;
+	}
+
+	@bindThis
+	public enqueueHanamiCommonGenerationSeed() {
+		const data: HanamiCommonGenerationTickJobData = { reason: 'seed' };
+		const intervalBucket = Math.floor(Date.now() / this.config.hanamiCommonGenerationIntervalMs);
+		return this.getHanamiGenerationQueue().add('hanamiCommonGenerationTick', data, {
+			...HANAMI_GENERATION_JOB_OPTIONS,
+			jobId: `hanamiCommonGenerationSeed-${intervalBucket}`,
+			// A failed delivery must not suppress another process's startup seed.
+			removeOnFail: true,
+		});
+	}
+
+	@bindThis
+	public enqueueHanamiCommonGeneration(generationId: string) {
+		if (typeof generationId !== 'string' || generationId.trim().length === 0) {
+			throw new TypeError('generationId must be a nonempty string');
+		}
+		const data: HanamiCommonGenerationJobData = { generationId };
+		return this.getHanamiGenerationQueue().add('hanamiCommonGeneration', data, HANAMI_GENERATION_JOB_OPTIONS);
+	}
+
+	@bindThis
+	public enqueueHanamiUserFeedGeneration(batchId: string) {
+		if (typeof batchId !== 'string' || batchId.trim().length === 0) {
+			throw new TypeError('batchId must be a nonempty string');
+		}
+		const data: HanamiUserFeedGenerationJobData = { batchId };
+		return this.getHanamiGenerationQueue().add('hanamiUserFeedGeneration', data, {
+			...HANAMI_USER_FEED_GENERATION_JOB_OPTIONS,
+			jobId: `hanamiUserFeedGeneration-${batchId}`,
+		});
+	}
+
+	@bindThis
+	public enqueueHanamiGenerationReconcile() {
+		const data: HanamiGenerationReconcileJobData = {};
+		return this.getHanamiGenerationQueue().add('hanamiGenerationReconcile', data, HANAMI_GENERATION_JOB_OPTIONS);
+	}
+
+	@bindThis
+	public enqueueHanamiRecommendationEventCacheRepair(eventIds: readonly string[]) {
+		if (!Array.isArray(eventIds) || eventIds.length === 0 || eventIds.length > 100
+			|| eventIds.some(id => typeof id !== 'string' || id.length === 0 || id.length > 32)) {
+			throw new TypeError('eventIds must contain 1 to 100 nonempty event IDs');
+		}
+		const normalizedEventIds = [...new Set(eventIds)].sort();
+		const data: HanamiRecommendationEventCacheRepairJobData = { eventIds: normalizedEventIds };
+		const digest = createHash('sha256').update(JSON.stringify(normalizedEventIds)).digest('hex');
+		return this.getHanamiGenerationQueue().add('hanamiRecommendationEventCacheRepair', data, {
+			...HANAMI_RECOMMENDATION_EVENT_CACHE_REPAIR_JOB_OPTIONS,
+			jobId: `hanamiRecommendationEventCacheRepair-${digest}`,
+		});
+	}
+
+	@bindThis
+	public enqueueHanamiRecommendationEventCacheReplay(data: HanamiRecommendationEventCacheReplayContinuationJobData) {
+		const asOf = Date.parse(data.asOf);
+		const fromOccurredAt = Date.parse(data.fromOccurredAt);
+		const cursorOccurredAt = Date.parse(data.cursor.occurredAt);
+		if (!Number.isFinite(asOf) || !Number.isFinite(fromOccurredAt) || !Number.isFinite(cursorOccurredAt)
+			|| fromOccurredAt > cursorOccurredAt || cursorOccurredAt > asOf
+			|| typeof data.ownerToken !== 'string' || data.ownerToken.length === 0 || data.ownerToken.length > 64
+			|| typeof data.cursor.eventId !== 'string' || data.cursor.eventId.length === 0 || data.cursor.eventId.length > 32) {
+			throw new TypeError('Invalid Hanami recommendation event cache replay continuation');
+		}
+		const normalized: HanamiRecommendationEventCacheReplayContinuationJobData = {
+			asOf: new Date(asOf).toISOString(),
+			fromOccurredAt: new Date(fromOccurredAt).toISOString(),
+			ownerToken: data.ownerToken,
+			cursor: {
+				occurredAt: new Date(cursorOccurredAt).toISOString(),
+				eventId: data.cursor.eventId,
+			},
+		};
+		const digest = createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
+		return this.getHanamiGenerationQueue().add('hanamiRecommendationEventCacheReplay', normalized, {
+			...HANAMI_RECOMMENDATION_EVENT_CACHE_REPAIR_JOB_OPTIONS,
+			jobId: `hanamiRecommendationEventCacheReplay-${digest}`,
 		});
 	}
 
@@ -823,6 +1010,7 @@ export class QueueService {
 			case 'objectStorage': return this.objectStorageQueue;
 			case 'userWebhookDeliver': return this.userWebhookDeliverQueue;
 			case 'systemWebhookDeliver': return this.systemWebhookDeliverQueue;
+			case 'hanamiGeneration': return this.getHanamiGenerationQueue();
 			default: throw new Error(`Unrecognized queue type: ${type}`);
 		}
 	}

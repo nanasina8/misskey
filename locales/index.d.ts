@@ -13359,6 +13359,10 @@ export interface Locale extends ILocale {
          */
         "showHanamiTimelineDateSeparatorsDescription": string;
         /**
+         * おすすめを更新しています。現在の内容を表示しています。
+         */
+        "hanamiTimelineGenerationPending": string;
+        /**
          * いつでも花びらを降らせる
          */
         "flowerEffect": string;
@@ -13376,65 +13380,25 @@ export interface Locale extends ILocale {
         "takingTooLongToLoad": string;
         "_recommendation": {
             /**
-             * はなみTL おすすめ
+             * はなみTL For You
              */
             "title": string;
             /**
-             * Fediverse 全体のおすすめノートを、はなみタイムラインに混ぜて表示します。
+             * はなみタイムラインは、あなた向けに選ばれたおすすめ投稿だけを表示するFor Youフィードです。
              */
             "description": string;
             /**
-             * はなみTLにおすすめを表示する
+             * For Youフィードを有効にする
              */
             "enable": string;
             /**
-             * フォロー中の人のノートの間に、人気の投稿や埋もれた投稿などを混ぜて表示します。
+             * あなた向けのおすすめ投稿だけをはなみタイムラインに表示します。フォロー中のアカウントの投稿は混在しません。
              */
             "enableDescription": string;
             /**
              * おすすめの量
              */
             "amount": string;
-            /**
-             * 少なめ
-             */
-            "amountLow": string;
-            /**
-             * ふつう
-             */
-            "amountNormal": string;
-            /**
-             * 多め
-             */
-            "amountHigh": string;
-            /**
-             * とても多め
-             */
-            "amountVeryHigh": string;
-            /**
-             * 新着にもおすすめを自動挿入する
-             */
-            "autoInject": string;
-            /**
-             * フォロー中のノートが一定数流れた後だけおすすめを追加します。通常の読み込み時の混合量とは別にOFFにできます。
-             */
-            "autoInjectDescription": string;
-            /**
-             * 自動挿入の量
-             */
-            "autoInjectAmount": string;
-            /**
-             * 少なめ
-             */
-            "autoInjectAmountLow": string;
-            /**
-             * ふつう
-             */
-            "autoInjectAmountNormal": string;
-            /**
-             * 多め
-             */
-            "autoInjectAmountHigh": string;
             /**
              * 種類ごとの量を調整
              */

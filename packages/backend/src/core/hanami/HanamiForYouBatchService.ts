@@ -800,7 +800,7 @@ export class HanamiForYouBatchService {
 		const servedSeenCutoff = new Date(Date.now() - HANAMI_EVENT_TTL_SERVED_SEEN_MS);
 		const personalCutoff = new Date(Date.now() - HANAMI_EVENT_TTL_PERSONAL_MS);
 		await this.db.query(
-			`DELETE FROM "hanami_recommendation_event" WHERE "eventType" IN ('served','seen') AND "createdAt" < $1`,
+			`DELETE FROM "hanami_recommendation_event" WHERE "eventType" IN ('served','seen') AND "occurredAt" < $1`,
 			[servedSeenCutoff],
 		);
 			await this.db.query(

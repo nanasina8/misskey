@@ -118,7 +118,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private perUserPvChart: PerUserPvChart,
 		private apiLoggerService: ApiLoggerService,
 	) {
-		super(meta, paramDef, async (ps, me, _1, _2, _3, ip) => {
+		super(meta, paramDef, async (ps, me, _1, _2, ip) => {
 			// ログイン時にusers/showできなくなってしまう
 			//if (this.serverSettings.ugcVisibilityForVisitor === 'none' && me == null) {
 			//	throw new ApiError(meta.errors.noSuchUser);

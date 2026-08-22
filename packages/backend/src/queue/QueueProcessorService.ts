@@ -47,10 +47,23 @@ import { AggregateRetentionProcessorService } from './processors/AggregateRetent
 import { CleanRemoteNotesProcessorService } from './processors/CleanRemoteNotesProcessorService.js';
 import { HanamiForYouBatchProcessorService } from './processors/HanamiForYouBatchProcessorService.js';
 import { HanamiTasteBatchProcessorService } from './processors/HanamiTasteBatchProcessorService.js';
+import { HanamiCommonGenerationProcessorService } from './processors/HanamiCommonGenerationProcessorService.js';
+import { HanamiGenerationReconcileProcessorService } from './processors/HanamiGenerationReconcileProcessorService.js';
+import { HanamiUserFeedGenerationProcessorService } from './processors/HanamiUserFeedGenerationProcessorService.js';
+import { HanamiTimelinePartitionMaintenanceProcessorService } from './processors/HanamiTimelinePartitionMaintenanceProcessorService.js';
+import { HanamiRecommendationEventCacheRepairProcessorService } from './processors/HanamiRecommendationEventCacheRepairProcessorService.js';
 import { HibernationSweepProcessorService } from './processors/HibernationSweepProcessorService.js';
 import { QueueLoggerService } from './QueueLoggerService.js';
 import { QUEUE, baseWorkerOptions } from './const.js';
 import { ImportNotesProcessorService } from './processors/ImportNotesProcessorService.js';
+import type {
+	HanamiCommonGenerationJobData,
+	HanamiCommonGenerationTickJobData,
+	HanamiGenerationReconcileJobData,
+	HanamiRecommendationEventCacheRepairJobData,
+	HanamiRecommendationEventCacheReplayJobData,
+	HanamiUserFeedGenerationJobData,
+} from './types.js';
 
 // ref. https://github.com/misskey-dev/misskey/pull/7635#issue-971097019
 function httpRelatedBackoff(attemptsMade: number) {
@@ -78,6 +91,14 @@ function getJobInfo(job: Bull.Job | undefined, increment = false): string {
 	return `id=${job.id} attempts=${currentAttempts}/${maxAttempts} age=${formated}`;
 }
 
+function queueErrorSummary(error: unknown): { name: string; message: string } {
+	if (error instanceof Error) return error;
+	return {
+		name: 'NonError',
+		message: typeof error === 'string' ? error : 'Queue emitted a non-Error value',
+	};
+}
+
 @Injectable()
 export class QueueProcessorService implements OnApplicationShutdown {
 	private logger: Logger;
@@ -91,6 +112,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 	private objectStorageQueueWorker: Bull.Worker;
 	private endedPollNotificationQueueWorker: Bull.Worker;
 	private postScheduledNoteQueueWorker: Bull.Worker;
+	private hanamiGenerationQueueWorker: Bull.Worker;
 
 	constructor(
 		@Inject(DI.config)
@@ -135,13 +157,17 @@ export class QueueProcessorService implements OnApplicationShutdown {
 		private cleanRemoteNotesProcessorService: CleanRemoteNotesProcessorService,
 		private hanamiForYouBatchProcessorService: HanamiForYouBatchProcessorService,
 		private hanamiTasteBatchProcessorService: HanamiTasteBatchProcessorService,
+		private hanamiTimelinePartitionMaintenanceProcessorService: HanamiTimelinePartitionMaintenanceProcessorService,
 		private hibernationSweepProcessorService: HibernationSweepProcessorService,
+		private hanamiCommonGenerationProcessorService: HanamiCommonGenerationProcessorService,
+		private hanamiUserFeedGenerationProcessorService: HanamiUserFeedGenerationProcessorService,
+		private hanamiGenerationReconcileProcessorService: HanamiGenerationReconcileProcessorService,
+		private hanamiRecommendationEventCacheRepairProcessorService: HanamiRecommendationEventCacheRepairProcessorService,
 	) {
 		this.logger = this.queueLoggerService.logger;
 
-		function renderError(e?: Error) {
-			// 何故かeがundefinedで来ることがある
-			if (!e) return '?';
+		function renderError(e: unknown) {
+			if (!(e instanceof Error)) return queueErrorSummary(e);
 
 			if (e instanceof Bull.UnrecoverableError || e.name === 'AbortError') {
 				return `${e.name}: ${e.message}`;
@@ -183,6 +209,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 					case 'hanamiTasteSweep': return this.hanamiTasteBatchProcessorService.processSweep(job);
 					case 'hanamiTasteCluster': return this.hanamiTasteBatchProcessorService.processCluster(job);
 					case 'hanamiTasteRebuild': return this.hanamiTasteBatchProcessorService.processRebuild(job);
+					case 'maintainHanamiTimelinePartitions': return this.hanamiTimelinePartitionMaintenanceProcessorService.process();
 					default: throw new Error(`unrecognized job type ${job.name} for system`);
 				}
 			};
@@ -203,16 +230,69 @@ export class QueueProcessorService implements OnApplicationShutdown {
 			this.systemQueueWorker
 				.on('active', (job) => logger.debug(`active id=${job.id}`))
 				.on('completed', (job, result) => logger.debug(`completed(${result}) id=${job.id}`))
-				.on('failed', (job, err: Error) => {
-					logger.error(`failed(${err.name}: ${err.message}) id=${job?.id ?? '?'}`, { job: renderJob(job), e: renderError(err) });
+				.on('failed', (job, err: unknown) => {
+					const error = queueErrorSummary(err);
+					logger.error(`failed(${error.name}: ${error.message}) id=${job?.id ?? '?'}`, { job: renderJob(job), e: renderError(err) });
 					if (config.sentryForBackend) {
-						Sentry.captureMessage(`Queue: System: ${job?.name ?? '?'}: ${err.name}: ${err.message}`, {
+						Sentry.captureMessage(`Queue: System: ${job?.name ?? '?'}: ${error.name}: ${error.message}`, {
 							level: 'error',
 							extra: { job, err },
 						});
 					}
 				})
-				.on('error', (err: Error) => logger.error(`error ${err.name}: ${err.message}`, { e: renderError(err) }))
+				.on('error', (err: unknown) => {
+					const error = queueErrorSummary(err);
+					logger.error(`error ${error.name}: ${error.message}`, { e: renderError(err) });
+				})
+				.on('stalled', (jobId) => logger.warn(`stalled id=${jobId}`));
+		}
+		//#endregion
+
+		//#region hanami common generation
+		{
+			const processer = (job: Bull.Job) => {
+				switch (job.name) {
+					case 'hanamiCommonGenerationTick': return this.hanamiCommonGenerationProcessorService.processTick(job as Bull.Job<HanamiCommonGenerationTickJobData, unknown, 'hanamiCommonGenerationTick'>);
+					case 'hanamiCommonGeneration': return this.hanamiCommonGenerationProcessorService.processGeneration(job as Bull.Job<HanamiCommonGenerationJobData, unknown, 'hanamiCommonGeneration'>);
+					case 'hanamiUserFeedGeneration': return this.hanamiUserFeedGenerationProcessorService.process(job as Bull.Job<HanamiUserFeedGenerationJobData, unknown, 'hanamiUserFeedGeneration'>);
+					case 'hanamiGenerationReconcile': return this.hanamiGenerationReconcileProcessorService.process(job as Bull.Job<HanamiGenerationReconcileJobData, unknown, 'hanamiGenerationReconcile'>);
+					case 'hanamiRecommendationEventCacheRepair': return this.hanamiRecommendationEventCacheRepairProcessorService.process(job as Bull.Job<HanamiRecommendationEventCacheRepairJobData, unknown, 'hanamiRecommendationEventCacheRepair'>);
+					case 'hanamiRecommendationEventCacheReplay': return this.hanamiRecommendationEventCacheRepairProcessorService.processReplay(job as Bull.Job<HanamiRecommendationEventCacheReplayJobData, unknown, 'hanamiRecommendationEventCacheReplay'>);
+					default: throw new Error(`unrecognized job type ${job.name} for hanamiGeneration`);
+				}
+			};
+
+			this.hanamiGenerationQueueWorker = new Bull.Worker(QUEUE.HANAMI_GENERATION, (job) => {
+				if (this.config.sentryForBackend) {
+					return Sentry.startSpan({ name: 'Queue: HanamiGeneration: ' + job.name }, () => processer(job));
+				} else {
+					return processer(job);
+				}
+			}, {
+				...baseWorkerOptions(this.config, QUEUE.HANAMI_GENERATION),
+				autorun: false,
+				concurrency: this.config.hanamiGenerationQueueConcurrency,
+			});
+
+			const logger = this.logger.createSubLogger('hanami-generation');
+
+			this.hanamiGenerationQueueWorker
+				.on('active', (job) => logger.debug(`active id=${job.id}`))
+				.on('completed', (job, result) => logger.debug(`completed(${result}) id=${job.id}`))
+				.on('failed', (job, err: unknown) => {
+					const error = queueErrorSummary(err);
+					logger.error(`failed(${error.name}: ${error.message}) id=${job?.id ?? '?'}`, { job: renderJob(job), e: renderError(err) });
+					if (config.sentryForBackend) {
+						Sentry.captureMessage(`Queue: HanamiGeneration: ${job?.name ?? '?'}: ${error.name}: ${error.message}`, {
+							level: 'error',
+							extra: { job, err },
+						});
+					}
+				})
+				.on('error', (err: unknown) => {
+					const error = queueErrorSummary(err);
+					logger.error(`error ${error.name}: ${error.message}`, { e: renderError(err) });
+				})
 				.on('stalled', (jobId) => logger.warn(`stalled id=${jobId}`));
 		}
 		//#endregion
@@ -573,6 +653,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 			this.objectStorageQueueWorker.run(),
 			this.endedPollNotificationQueueWorker.run(),
 			this.postScheduledNoteQueueWorker.run(),
+			this.hanamiGenerationQueueWorker.run(),
 		]);
 	}
 
@@ -589,6 +670,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 			this.objectStorageQueueWorker.close(),
 			this.endedPollNotificationQueueWorker.close(),
 			this.postScheduledNoteQueueWorker.close(),
+			this.hanamiGenerationQueueWorker.close(),
 		]);
 	}
 

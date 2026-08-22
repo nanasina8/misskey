@@ -10,6 +10,19 @@ dbReplications: false
 redis:
   host: redis.test
   port: 6379
+hanamiCursorSigningKeys:
+  # Unsafe deterministic federation-test key. Do not reuse outside automated tests.
+  - id: federation-unsafe-current
+    secret: 'unsafe-federation-hanami-cursor-signing-secret-01'
+# Hanami persisted timeline generation defaults.
+hanamiGenerationSyncWaitMs: 2000
+userHibernationDays: 50
+hanamiCommonGenerationIntervalMs: 600000
+hanamiGenerationWorkerTimeoutMs: 60000
+hanamiGenerationLeaseMs: 75000
+hanamiGenerationMaxAttempts: 3
+hanamiGenerationReconcileIntervalMs: 5000
+hanamiGenerationQueueConcurrency: 4
 id: 'aidx'
 proxyBypassHosts:
   - api.deepl.com

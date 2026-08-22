@@ -216,24 +216,6 @@ export class MiUserProfile {
 	})
 	public hanamiRecommendationEnabled: boolean;
 
-	@Column('varchar', {
-		length: 32, default: 'high',
-		comment: 'はなみTLおすすめの量: low | normal | high | veryHigh',
-	})
-	public hanamiRecommendationStrength: string;
-
-	@Column('boolean', {
-		default: true,
-		comment: 'はなみTLの新着ストリームにおすすめノートを自動挿入するか（ユーザー設定）',
-	})
-	public hanamiRecommendationAutoInjectEnabled: boolean;
-
-	@Column('varchar', {
-		length: 32, default: 'low',
-		comment: 'はなみTLおすすめ自動挿入の量: low | normal | high',
-	})
-	public hanamiRecommendationAutoInjectStrength: string;
-
 	@Column('jsonb', {
 		default: {},
 		comment: 'はなみTLおすすめ軸のユーザー別の量（off/low/normal/high。旧booleanはtrue=normal/false=offとして扱う）',

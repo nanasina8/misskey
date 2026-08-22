@@ -5,11 +5,10 @@
 
 import { Injectable } from '@nestjs/common';
 import { Endpoint } from '@/server/api/endpoint-base.js';
-import { HanamiRecommendationService } from '@/core/HanamiRecommendationService.js';
+import { HanamiForYouProvenanceService, HanamiInvalidFeedEntryError } from '@/core/hanami/HanamiForYouProvenanceService.js';
+import { ApiError } from '../../error.js';
 
-// フロントが「実際に表示確認した」ノートを記録する。
-// kind=rec: おすすめノートの seen（served の長TTL側・仕様5の2段階）。
-// kind=home: はなみTLに表示されたホーム由来ノート（catchup軸の「見逃し」判定と一般の再推薦除外に使う）。
+// フロントが「実際に表示確認した」永続 feed entry を記録する。
 export const meta = {
 	tags: ['notes'],
 
@@ -19,35 +18,55 @@ export const meta = {
 	res: {
 		type: 'object',
 		optional: false, nullable: false,
+		additionalProperties: false,
 		properties: {
 			ok: { type: 'boolean', optional: false, nullable: false },
+		},
+	},
+
+	errors: {
+		invalidFeedEntry: {
+			message: 'Invalid Hanami feed entry.',
+			code: 'INVALID_FEED_ENTRY',
+			id: '58419e1c-46ab-4306-8dc7-c668c1668d75',
+			httpStatusCode: 400,
 		},
 	},
 } as const;
 
 export const paramDef = {
 	type: 'object',
+	additionalProperties: false,
 	properties: {
-		noteIds: {
+		items: {
 			type: 'array',
-			items: { type: 'string', format: 'misskey:id' },
+			minItems: 1,
 			maxItems: 100,
+			items: {
+				type: 'object',
+				additionalProperties: false,
+				properties: {
+					feedEntryId: { type: 'string', minLength: 1, maxLength: 512 },
+					noteId: { type: 'string', format: 'misskey:id' },
+				},
+				required: ['feedEntryId', 'noteId'],
+			},
 		},
-		kind: { type: 'string', enum: ['rec', 'home'], default: 'rec' },
 	},
-	required: ['noteIds'],
+	required: ['items'],
 } as const;
 
 @Injectable()
 export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-disable-line import/no-default-export
 	constructor(
-		private hanamiRecommendationService: HanamiRecommendationService,
+		private hanamiForYouProvenanceService: HanamiForYouProvenanceService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
-			if (ps.kind === 'home') {
-				await this.hanamiRecommendationService.recordHomeSeen(me.id, ps.noteIds);
-			} else {
-				await this.hanamiRecommendationService.recordSeen(me.id, ps.noteIds);
+			try {
+				await this.hanamiForYouProvenanceService.recordSeenFeedEntries(me.id, ps.items);
+			} catch (error) {
+				if (error instanceof HanamiInvalidFeedEntryError) throw new ApiError(meta.errors.invalidFeedEntry);
+				throw error;
 			}
 			return { ok: true };
 		});

@@ -137,6 +137,52 @@ export type PostScheduledNoteJobData = {
 	noteDraftId: string;
 };
 
+export type HanamiCommonGenerationTickJobData = {
+	reason: 'scheduled' | 'seed';
+};
+
+export type HanamiCommonGenerationJobData = {
+	generationId: string;
+};
+
+export type HanamiUserFeedGenerationJobData = {
+	batchId: string;
+};
+
+export type HanamiGenerationReconcileJobData = Record<string, never>;
+
+export type HanamiRecommendationEventCacheRepairJobData = {
+	eventIds: string[];
+};
+
+export type HanamiRecommendationEventCacheReplayCursor = {
+	occurredAt: string;
+	eventId: string;
+};
+
+export type HanamiRecommendationEventCacheReplayContinuationJobData = {
+	asOf: string;
+	fromOccurredAt: string;
+	ownerToken: string;
+	cursor: HanamiRecommendationEventCacheReplayCursor;
+};
+
+export type HanamiRecommendationEventCacheReplayJobData =
+	| Record<string, never>
+	| HanamiRecommendationEventCacheReplayContinuationJobData;
+
+export type HanamiGenerationJobMap = {
+	hanamiCommonGenerationTick: HanamiCommonGenerationTickJobData;
+	hanamiCommonGeneration: HanamiCommonGenerationJobData;
+	hanamiUserFeedGeneration: HanamiUserFeedGenerationJobData;
+	hanamiGenerationReconcile: HanamiGenerationReconcileJobData;
+	hanamiRecommendationEventCacheRepair: HanamiRecommendationEventCacheRepairJobData;
+	hanamiRecommendationEventCacheReplay: HanamiRecommendationEventCacheReplayJobData;
+};
+
+export type HanamiGenerationJobName = keyof HanamiGenerationJobMap;
+export type HanamiGenerationJobData = HanamiGenerationJobMap[HanamiGenerationJobName];
+
 export type SystemWebhookDeliverJobData<T extends SystemWebhookEventType = SystemWebhookEventType> = {
 	type: T;
 	content: SystemWebhookPayload<T>;

@@ -93,7 +93,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private driveFileEntityService: DriveFileEntityService,
 		private driveService: DriveService,
 	) {
-		super(meta, paramDef, async (ps, me, _, file, cleanup, ip, headers) => {
+		super(meta, paramDef, async (ps, me, _, file, ip, headers) => {
 			// Get 'name' parameter
 			let name = ps.name ?? file!.name ?? null;
 			if (name != null) {
@@ -132,8 +132,6 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					if (err.id === 'bd71c601-f9b0-4808-9137-a330647ced9b') throw new ApiError(meta.errors.unallowedFileType);
 				}
 				throw new ApiError();
-			} finally {
-				cleanup!();
 			}
 		});
 	}

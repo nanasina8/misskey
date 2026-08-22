@@ -75,18 +75,40 @@ import { SearchService } from './SearchService.js';
 import { HanamiSearchService } from './hanamisearch/HanamiSearchService.js';
 import { ClipService } from './ClipService.js';
 import { FeaturedService } from './FeaturedService.js';
-import { HanamiRecommendationService } from './HanamiRecommendationService.js';
+import { HanamiRecommendationService as LegacyHanamiRecommendationService } from './HanamiRecommendationService.js';
 import { HanamiTrendService } from './hanami/HanamiTrendService.js';
+import { HanamiTrendSnapshotService } from './hanami/HanamiTrendSnapshotService.js';
 import { HanamiTokenizerService } from './hanami/tokenize/HanamiTokenizerService.js';
 import { HanamiUserRecommendationService } from './hanami/HanamiUserRecommendationService.js';
-import { HanamiReactionSimilarService } from './hanami/HanamiReactionSimilarService.js';
-import { HanamiCatchupService } from './hanami/HanamiCatchupService.js';
 import { HanamiForYouProvenanceService } from './hanami/HanamiForYouProvenanceService.js';
 import { HanamiForYouBatchService } from './hanami/HanamiForYouBatchService.js';
 import { HanamiTasteClusterBatchService } from './hanami/HanamiTasteClusterBatchService.js';
 import { HanamiForYouService } from './hanami/HanamiForYouService.js';
 import { HanamiForYouSafetyService } from './hanami/HanamiForYouSafetyService.js';
 import { HanamiRecentActService } from './hanami/HanamiRecentActService.js';
+import { HanamiCommonComputationService } from './hanami/HanamiCommonComputationService.js';
+import { HanamiCommonGenerationService } from './hanami/HanamiCommonGenerationService.js';
+import { HanamiCommonHeadQueries } from './hanami/HanamiCommonHeadQueries.js';
+import { HanamiFeedLifecycleService } from './hanami/HanamiFeedLifecycleService.js';
+import { HanamiPersistedFeedReadService } from './hanami/HanamiPersistedFeedReadService.js';
+import { HanamiPersonalFeedComputationService } from './hanami/HanamiPersonalFeedComputationService.js';
+import { HanamiRecommendationService as HanamiGenerationRecommendationService } from './hanami/HanamiRecommendationService.js';
+import { HanamiUserFeedGenerationService } from './hanami/HanamiUserFeedGenerationService.js';
+import { HanamiUserFeedRequestService } from './hanami/HanamiUserFeedRequestService.js';
+import {
+	HANAMI_COMMON_COMPUTATION,
+	HANAMI_COMMON_GENERATION_LIFECYCLE,
+	HANAMI_COMMON_GENERATION_READ,
+} from './hanami/HanamiCommonGenerationContracts.js';
+import {
+	HANAMI_PERSISTED_FEED_READ,
+	HANAMI_PERSONAL_FEED_COMPUTATION,
+	HANAMI_USER_FEED_GENERATION_LIFECYCLE,
+	HANAMI_USER_FEED_REQUEST,
+} from './hanami/HanamiUserFeedContracts.js';
+import { HanamiTimelinePageService } from './hanami/HanamiTimelinePageService.js';
+import { HanamiTimelinePartitionService } from './hanami/HanamiTimelinePartitionService.js';
+import { HanamiUserRecommendationPageService } from './hanami/HanamiUserRecommendationPageService.js';
 import { FanoutTimelineService } from './FanoutTimelineService.js';
 import { ChannelFollowingService } from './ChannelFollowingService.js';
 import { ChatService } from './ChatService.js';
@@ -237,18 +259,24 @@ const $SearchService: Provider = { provide: 'SearchService', useExisting: Search
 const $HanamiSearchService: Provider = { provide: 'HanamiSearchService', useExisting: HanamiSearchService };
 const $ClipService: Provider = { provide: 'ClipService', useExisting: ClipService };
 const $FeaturedService: Provider = { provide: 'FeaturedService', useExisting: FeaturedService };
-const $HanamiRecommendationService: Provider = { provide: 'HanamiRecommendationService', useExisting: HanamiRecommendationService };
+const $HanamiRecommendationService: Provider = { provide: 'HanamiRecommendationService', useExisting: LegacyHanamiRecommendationService };
 const $HanamiTrendService: Provider = { provide: 'HanamiTrendService', useExisting: HanamiTrendService };
 const $HanamiTokenizerService: Provider = { provide: 'HanamiTokenizerService', useExisting: HanamiTokenizerService };
 const $HanamiUserRecommendationService: Provider = { provide: 'HanamiUserRecommendationService', useExisting: HanamiUserRecommendationService };
-const $HanamiReactionSimilarService: Provider = { provide: 'HanamiReactionSimilarService', useExisting: HanamiReactionSimilarService };
-const $HanamiCatchupService: Provider = { provide: 'HanamiCatchupService', useExisting: HanamiCatchupService };
 const $HanamiForYouProvenanceService: Provider = { provide: 'HanamiForYouProvenanceService', useExisting: HanamiForYouProvenanceService };
 const $HanamiForYouBatchService: Provider = { provide: 'HanamiForYouBatchService', useExisting: HanamiForYouBatchService };
 const $HanamiTasteClusterBatchService: Provider = { provide: 'HanamiTasteClusterBatchService', useExisting: HanamiTasteClusterBatchService };
 const $HanamiForYouService: Provider = { provide: 'HanamiForYouService', useExisting: HanamiForYouService };
 const $HanamiForYouSafetyService: Provider = { provide: 'HanamiForYouSafetyService', useExisting: HanamiForYouSafetyService };
 const $HanamiRecentActService: Provider = { provide: 'HanamiRecentActService', useExisting: HanamiRecentActService };
+const $HanamiTimelinePartitionService: Provider = { provide: 'HanamiTimelinePartitionService', useExisting: HanamiTimelinePartitionService };
+const $HanamiCommonComputation: Provider = { provide: HANAMI_COMMON_COMPUTATION, useExisting: HanamiCommonComputationService };
+const $HanamiCommonGenerationLifecycle: Provider = { provide: HANAMI_COMMON_GENERATION_LIFECYCLE, useExisting: HanamiCommonGenerationService };
+const $HanamiCommonGenerationRead: Provider = { provide: HANAMI_COMMON_GENERATION_READ, useExisting: HanamiCommonGenerationService };
+const $HanamiPersonalFeedComputation: Provider = { provide: HANAMI_PERSONAL_FEED_COMPUTATION, useExisting: HanamiPersonalFeedComputationService };
+const $HanamiUserFeedRequest: Provider = { provide: HANAMI_USER_FEED_REQUEST, useExisting: HanamiUserFeedRequestService };
+const $HanamiUserFeedGenerationLifecycle: Provider = { provide: HANAMI_USER_FEED_GENERATION_LIFECYCLE, useExisting: HanamiUserFeedGenerationService };
+const $HanamiPersistedFeedRead: Provider = { provide: HANAMI_PERSISTED_FEED_READ, useExisting: HanamiPersistedFeedReadService };
 const $FanoutTimelineService: Provider = { provide: 'FanoutTimelineService', useExisting: FanoutTimelineService };
 const $FanoutTimelineEndpointService: Provider = { provide: 'FanoutTimelineEndpointService', useExisting: FanoutTimelineEndpointService };
 const $ChannelFollowingService: Provider = { provide: 'ChannelFollowingService', useExisting: ChannelFollowingService };
@@ -404,18 +432,29 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		HanamiSearchService,
 		ClipService,
 		FeaturedService,
-		HanamiRecommendationService,
+		LegacyHanamiRecommendationService,
 		HanamiTrendService,
+		HanamiTrendSnapshotService,
 		HanamiTokenizerService,
 		HanamiUserRecommendationService,
-		HanamiReactionSimilarService,
-		HanamiCatchupService,
 		HanamiForYouProvenanceService,
 		HanamiForYouBatchService,
 		HanamiTasteClusterBatchService,
 		HanamiForYouService,
 		HanamiForYouSafetyService,
 		HanamiRecentActService,
+		HanamiTimelinePageService,
+		HanamiTimelinePartitionService,
+		HanamiUserRecommendationPageService,
+		HanamiCommonComputationService,
+		HanamiCommonGenerationService,
+		HanamiCommonHeadQueries,
+		HanamiFeedLifecycleService,
+		HanamiGenerationRecommendationService,
+		HanamiPersonalFeedComputationService,
+		HanamiUserFeedRequestService,
+		HanamiUserFeedGenerationService,
+		HanamiPersistedFeedReadService,
 		FanoutTimelineService,
 		FanoutTimelineEndpointService,
 		ChannelFollowingService,
@@ -571,14 +610,20 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		$HanamiTrendService,
 		$HanamiTokenizerService,
 		$HanamiUserRecommendationService,
-		$HanamiReactionSimilarService,
-		$HanamiCatchupService,
 		$HanamiForYouProvenanceService,
 		$HanamiForYouBatchService,
 		$HanamiTasteClusterBatchService,
 		$HanamiForYouService,
 		$HanamiForYouSafetyService,
 		$HanamiRecentActService,
+		$HanamiTimelinePartitionService,
+		$HanamiCommonComputation,
+		$HanamiCommonGenerationLifecycle,
+		$HanamiCommonGenerationRead,
+		$HanamiPersonalFeedComputation,
+		$HanamiUserFeedRequest,
+		$HanamiUserFeedGenerationLifecycle,
+		$HanamiPersistedFeedRead,
 		$FanoutTimelineService,
 		$FanoutTimelineEndpointService,
 		$ChannelFollowingService,
@@ -731,18 +776,36 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		HanamiSearchService,
 		ClipService,
 		FeaturedService,
-		HanamiRecommendationService,
+		LegacyHanamiRecommendationService,
 		HanamiTrendService,
+		HanamiTrendSnapshotService,
 		HanamiTokenizerService,
 		HanamiUserRecommendationService,
-		HanamiReactionSimilarService,
-		HanamiCatchupService,
 		HanamiForYouProvenanceService,
 		HanamiForYouBatchService,
 		HanamiTasteClusterBatchService,
 		HanamiForYouService,
 		HanamiForYouSafetyService,
 		HanamiRecentActService,
+		HanamiTimelinePageService,
+		HanamiTimelinePartitionService,
+		HanamiUserRecommendationPageService,
+		HanamiCommonComputationService,
+		HanamiCommonGenerationService,
+		HanamiCommonHeadQueries,
+		HanamiFeedLifecycleService,
+		HanamiGenerationRecommendationService,
+		HanamiPersonalFeedComputationService,
+		HanamiUserFeedRequestService,
+		HanamiUserFeedGenerationService,
+		HanamiPersistedFeedReadService,
+		HANAMI_COMMON_COMPUTATION,
+		HANAMI_COMMON_GENERATION_LIFECYCLE,
+		HANAMI_COMMON_GENERATION_READ,
+		HANAMI_PERSONAL_FEED_COMPUTATION,
+		HANAMI_USER_FEED_REQUEST,
+		HANAMI_USER_FEED_GENERATION_LIFECYCLE,
+		HANAMI_PERSISTED_FEED_READ,
 		FanoutTimelineService,
 		FanoutTimelineEndpointService,
 		ChannelFollowingService,
@@ -896,14 +959,13 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		$HanamiTrendService,
 		$HanamiTokenizerService,
 		$HanamiUserRecommendationService,
-		$HanamiReactionSimilarService,
-		$HanamiCatchupService,
 		$HanamiForYouProvenanceService,
 		$HanamiForYouBatchService,
 		$HanamiTasteClusterBatchService,
 		$HanamiForYouService,
 		$HanamiForYouSafetyService,
 		$HanamiRecentActService,
+		$HanamiTimelinePartitionService,
 		$FanoutTimelineService,
 		$FanoutTimelineEndpointService,
 		$ChannelFollowingService,

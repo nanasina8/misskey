@@ -54,6 +54,8 @@ const TREND_NOTE_POPULAR_EXCLUDE_TOP = 100; // グローバル人気上位は po
 const TREND_NOTE_FRESHNESS_HALF_LIFE_MS = 1000 * 60 * 60 * 12; // 鮮度半減期 12h
 const TREND_NOTES_PER_TERM_FETCH = 40; // 用語ごとに評価する最近ノート数
 const TREND_NOTES_RESULT_MAX = 200;
+const TREND_SNAPSHOT_TERM_MAX = 30;
+const TREND_FEED_TERM_MAX = 8;
 const TRENDING_NOTES_CACHE_KEY = 'hanami:trend:noteIds';
 const TRENDING_NOTES_CACHE_TTL_SECONDS = 30;
 const TRENDING_NOTES_EMPTY_CACHE_TTL_SECONDS = 5;
@@ -68,6 +70,17 @@ const trendEpoch = new Date('2023-01-01T00:00:00Z').getTime();
 
 export type TrendingTerm = { term: string; score: number; distinctAuthors: number };
 type TrendingTermCandidate = TrendingTerm & { proper: boolean };
+
+export type HanamiTrendComputationBundle = {
+	readonly computedAt: string;
+	readonly terms: readonly (TrendingTerm & {
+		readonly representativeNoteIds: readonly string[];
+	})[];
+	readonly noteCandidates: readonly {
+		readonly noteId: string;
+		readonly term: string;
+	}[];
+};
 
 /**
  * 急上昇トレンド（[[hanami-tl-osusume-redesign]] step7/8）。
@@ -162,7 +175,7 @@ export class HanamiTrendService {
 	 * 二次: 直近スパンの実 distinct author / エンゲージ合算で floor をかけ、spike×エンゲージ加重で最終スコア化。
 	 */
 	@bindThis
-	private async getTrendingTermCandidatesWithCache(): Promise<TrendingTermCandidate[]> {
+	private async getTrendingTermCandidatesWithCache(featuredScores?: ReadonlyMap<string, number>): Promise<TrendingTermCandidate[]> {
 		const cached = await this.redisClient.get(TRENDING_TERMS_CACHE_KEY);
 		if (cached != null) {
 			return JSON.parse(cached) as TrendingTermCandidate[];
@@ -220,7 +233,7 @@ export class HanamiTrendService {
 		}
 		const [evalRes, globalScores] = await Promise.all([
 			evalPipe.exec(),
-			this.featuredService.getGlobalNotesScoresWithCache(),
+			featuredScores ?? this.featuredService.getGlobalNotesScoresWithCache(),
 		]);
 
 		type EvaluatedTerm = TrendingTerm & {
@@ -313,12 +326,7 @@ export class HanamiTrendService {
 		};
 	}
 
-	/**
-	 * 急上昇用語。spike×エンゲージ加重スコアで並べ、distinct author / エンゲージ floor で足切り済み。
-	 */
-	@bindThis
-	public async getTrendingTerms(limit: number): Promise<TrendingTerm[]> {
-		const out = await this.getTrendingTermCandidatesWithCache();
+	private selectTrendingTerms(out: readonly TrendingTermCandidate[], limit: number): TrendingTerm[] {
 		if (out.length <= limit) return out.map(this.asTrendingTerm);
 
 		// 固有名詞を一定割合確保する（値上げ/突破 等の普通名詞でフィードが埋め尽くされるのを防ぐ）。
@@ -341,6 +349,99 @@ export class HanamiTrendService {
 	}
 
 	/**
+	 * 急上昇用語。spike×エンゲージ加重スコアで並べ、distinct author / エンゲージ floor で足切り済み。
+	 */
+	@bindThis
+	public async getTrendingTerms(limit: number): Promise<TrendingTerm[]> {
+		const out = await this.getTrendingTermCandidatesWithCache();
+		return this.selectTrendingTerms(out, limit);
+	}
+
+	private async rankNotesForTerms(terms: readonly TrendingTerm[], globalScores: ReadonlyMap<string, number>, now: number): Promise<Map<string, string[]>> {
+		if (terms.length === 0) return new Map();
+
+		const pipe = this.redisClient.pipeline();
+		for (const term of terms) pipe.zrange(this.notesKey(term.term), 0, TREND_NOTES_PER_TERM_FETCH, 'REV', 'WITHSCORES');
+		const res = await pipe.exec();
+
+		// バンドパス上限: グローバル人気上位（popular軸が拾う範囲）を除外する。
+		const popularTop = new Set(
+			Array.from(globalScores.entries())
+				.filter(([noteId, score]) => noteId.length > 0 && Number.isFinite(score))
+				.sort((a, b) => b[1] - a[1])
+				.slice(0, TREND_NOTE_POPULAR_EXCLUDE_TOP)
+				.map(([id]) => id));
+
+		const out = new Map<string, string[]>();
+		for (let i = 0; i < terms.length; i++) {
+			const raw = (res?.[i]?.[1] ?? []) as string[];
+			const items: { noteId: string; score: number; rank: number }[] = [];
+			for (let j = 0; j < raw.length; j += 2) {
+				const noteId = raw[j];
+				const postedAt = Number(raw[j + 1]);
+				const engagement = globalScores.get(noteId) ?? 0;
+				if (noteId.length === 0 || !Number.isFinite(postedAt) || !Number.isFinite(engagement)) continue;
+				if (engagement < TREND_NOTE_MIN_ENGAGEMENT) continue;
+				if (popularTop.has(noteId)) continue;
+				const freshness = Math.pow(0.5, Math.max(0, now - postedAt) / TREND_NOTE_FRESHNESS_HALF_LIFE_MS);
+				items.push({ noteId, score: engagement * freshness, rank: j / 2 });
+			}
+			items.sort((a, b) => b.score - a.score || a.rank - b.rank);
+			out.set(terms[i].term, items.map(item => item.noteId));
+		}
+		return out;
+	}
+
+	/**
+	 * 永続snapshotと共通trending候補を、同じ用語集計・Featured観測から一度に作る。
+	 */
+	@bindThis
+	public async computeTrendBundle(featuredScores?: ReadonlyMap<string, number>): Promise<HanamiTrendComputationBundle> {
+		const globalScores = featuredScores ?? await this.featuredService.getGlobalNotesScoresWithCache();
+		const candidates = await this.getTrendingTermCandidatesWithCache(globalScores);
+		const snapshotTerms = this.selectTrendingTerms(candidates, TREND_SNAPSHOT_TERM_MAX);
+		const feedTerms = this.selectTrendingTerms(candidates, TREND_FEED_TERM_MAX);
+		const termsToFetch = [...snapshotTerms];
+		const fetchedTerms = new Set(termsToFetch.map(term => term.term));
+		for (const term of feedTerms) {
+			if (fetchedTerms.has(term.term)) continue;
+			fetchedTerms.add(term.term);
+			termsToFetch.push(term);
+		}
+
+		const now = Date.now();
+		const rankedByTerm = await this.rankNotesForTerms(termsToFetch, globalScores, now);
+
+		const terms = snapshotTerms.map(term => ({
+			...term,
+			representativeNoteIds: rankedByTerm.get(term.term) ?? [],
+		}));
+
+		const noteCandidates: { noteId: string; term: string }[] = [];
+		const seen = new Set<string>();
+		let index = 0;
+		let progressed = true;
+		while (progressed) {
+			progressed = false;
+			for (const term of feedTerms) {
+				const noteId = rankedByTerm.get(term.term)?.[index];
+				if (noteId == null) continue;
+				progressed = true;
+				if (seen.has(noteId)) continue;
+				seen.add(noteId);
+				noteCandidates.push({ noteId, term: term.term });
+			}
+			index++;
+		}
+
+		return {
+			computedAt: new Date(now).toISOString(),
+			terms,
+			noteCandidates,
+		};
+	}
+
+	/**
 	 * 急上昇用語に紐づく注入候補ノートID。用語間でラウンドロビンして多様性を出す。
 	 * ノートは「時刻順」ではなく エンゲージ×鮮度 のハイブリッド順。
 	 * - floor: エンゲージ < TREND_NOTE_MIN_ENGAGEMENT のノートは出さない（単語を含むだけの不人気投稿を機械的に乗せない）
@@ -350,65 +451,14 @@ export class HanamiTrendService {
 	 */
 	@bindThis
 	public async getTrendingNoteIds(limit: number): Promise<{ noteId: string; term: string }[]> {
+		const legacyLimit = Math.max(0, Math.min(limit, TREND_NOTES_RESULT_MAX));
 		const cached = await this.redisClient.get(TRENDING_NOTES_CACHE_KEY);
 		if (cached != null) {
-			return (JSON.parse(cached) as { noteId: string; term: string }[]).slice(0, limit);
+			return (JSON.parse(cached) as { noteId: string; term: string }[]).slice(0, legacyLimit);
 		}
 
-		const terms = await this.getTrendingTerms(8);
-		if (terms.length === 0) {
-			await this.redisClient.set(TRENDING_NOTES_CACHE_KEY, '[]', 'EX', TRENDING_NOTES_EMPTY_CACHE_TTL_SECONDS);
-			return [];
-		}
-
-		const pipe = this.redisClient.pipeline();
-		for (const t of terms) pipe.zrange(this.notesKey(t.term), 0, TREND_NOTES_PER_TERM_FETCH, 'REV', 'WITHSCORES');
-		const [res, globalScores] = await Promise.all([
-			pipe.exec(),
-			this.featuredService.getGlobalNotesScoresWithCache(),
-		]);
-
-		// バンドパス上限: グローバル人気上位（popular軸が拾う範囲）を除外する。
-		const popularTop = new Set(
-			Array.from(globalScores.entries())
-				.sort((a, b) => b[1] - a[1])
-				.slice(0, TREND_NOTE_POPULAR_EXCLUDE_TOP)
-				.map(([id]) => id));
-
-		const now = Date.now();
-		const perTerm = terms.map((t, i) => {
-			const raw = (res?.[i]?.[1] ?? []) as string[];
-			const items: { noteId: string; score: number }[] = [];
-			for (let j = 0; j < raw.length; j += 2) {
-				const noteId = raw[j];
-				const postedAt = Number(raw[j + 1]);
-				const eng = globalScores.get(noteId) ?? 0;
-				if (eng < TREND_NOTE_MIN_ENGAGEMENT) continue;
-				if (popularTop.has(noteId)) continue;
-				const freshness = Math.pow(0.5, Math.max(0, now - postedAt) / TREND_NOTE_FRESHNESS_HALF_LIFE_MS);
-				items.push({ noteId, score: eng * freshness });
-			}
-			items.sort((a, b) => b.score - a.score);
-			return { term: t.term, ids: items.map(it => it.noteId) };
-		});
-
-		const out: { noteId: string; term: string }[] = [];
-		const seen = new Set<string>();
-		let idx = 0;
-		let progressed = true;
-		while (out.length < TREND_NOTES_RESULT_MAX && progressed) {
-			progressed = false;
-			for (const { term, ids } of perTerm) {
-				const id = ids[idx];
-				if (id == null) continue;
-				progressed = true;
-				if (seen.has(id)) continue;
-				seen.add(id);
-				out.push({ noteId: id, term });
-				if (out.length >= TREND_NOTES_RESULT_MAX) break;
-			}
-			idx++;
-		}
+		const bundle = await this.computeTrendBundle();
+		const out = bundle.noteCandidates.slice(0, TREND_NOTES_RESULT_MAX).map(candidate => ({ ...candidate }));
 
 		await this.redisClient.set(
 			TRENDING_NOTES_CACHE_KEY,
@@ -416,6 +466,6 @@ export class HanamiTrendService {
 			'EX',
 			out.length > 0 ? TRENDING_NOTES_CACHE_TTL_SECONDS : TRENDING_NOTES_EMPTY_CACHE_TTL_SECONDS);
 
-		return out.slice(0, limit);
+		return out.slice(0, legacyLimit);
 	}
 }

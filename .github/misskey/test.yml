@@ -22,6 +22,19 @@ hanamisearch:
   host: 127.0.0.1
   port: 17701
   index: 'test-hanami'
+hanamiCursorSigningKeys:
+  # Unsafe deterministic test key. Do not reuse outside automated tests.
+  - id: test-unsafe-current
+    secret: 'unsafe-test-hanami-cursor-signing-secret-0000001'
+# Hanami persisted timeline generation defaults.
+hanamiGenerationSyncWaitMs: 2000
+userHibernationDays: 50
+hanamiCommonGenerationIntervalMs: 600000
+hanamiGenerationWorkerTimeoutMs: 60000
+hanamiGenerationLeaseMs: 75000
+hanamiGenerationMaxAttempts: 3
+hanamiGenerationReconcileIntervalMs: 5000
+hanamiGenerationQueueConcurrency: 4
 id: aidx
 
 proxyRemoteFiles: true

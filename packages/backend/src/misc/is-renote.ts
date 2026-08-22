@@ -32,10 +32,10 @@ export function isRenote(note: MiNote): note is Renote {
 /**
  * 「純RN（引用でないリノート）」のSQL述語。isRenote && !isQuote のSQL版で、
  * 生SQLを書く全箇所で共有する（コピーすると追記側と削除側の定義がズレて嗜好データが壊れる）。
- * replyId は純RNでは常に NULL のため判定に含めない。
+ * isQuote と同期し、返信先を持つリノートも引用として除外する。
  */
 export function pureRenoteSql(alias: string): string {
-	return `${alias}."renoteId" IS NOT NULL AND ${alias}.text IS NULL AND ${alias}.cw IS NULL AND ${alias}."hasPoll" = FALSE AND COALESCE(cardinality(${alias}."fileIds"), 0) = 0`;
+	return `${alias}."renoteId" IS NOT NULL AND ${alias}."replyId" IS NULL AND ${alias}.text IS NULL AND ${alias}.cw IS NULL AND ${alias}."hasPoll" = FALSE AND COALESCE(cardinality(${alias}."fileIds"), 0) = 0`;
 }
 
 export function isQuote(note: Renote): note is Quote {

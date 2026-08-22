@@ -1,5 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
+{{- $hanamiCursorSigningKeysSecretName := required "Set .Values.hanami.cursorSigningKeysSecret.existingSecretName to an existing Secret containing HANAMI_CURSOR_SIGNING_KEYS_JSON." .Values.hanami.cursorSigningKeysSecret.existingSecretName }}
+{{- $hanamiCursorSigningKeysSecretKey := required "Set .Values.hanami.cursorSigningKeysSecret.secretKey to the Secret key containing HANAMI_CURSOR_SIGNING_KEYS_JSON." .Values.hanami.cursorSigningKeysSecret.secretKey }}
 metadata:
   name: {{ include "misskey.fullname" . }}
   labels:
@@ -20,6 +22,11 @@ spec:
           env:
             - name: NODE_ENV
               value: {{ .Values.environment }}
+            - name: HANAMI_CURSOR_SIGNING_KEYS_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $hanamiCursorSigningKeysSecretName }}
+                  key: {{ $hanamiCursorSigningKeysSecretKey }}
           volumeMounts:
             - name: {{ include "misskey.fullname" . }}-configuration
               mountPath: /misskey/.config

@@ -32,18 +32,6 @@
 					<template #caption>{{ i18n.ts._hana._recommendation.showReasonDescription }}</template>
 				</MkSwitch>
 
-				<MkSwitch v-model="recommendationForm.state.autoInjectEnabled" :disabled="!recommendationForm.state.enabled">
-					<template #label>{{ recommendationI18n.autoInject }}</template>
-					<template #caption>{{ recommendationI18n.autoInjectDescription }}</template>
-				</MkSwitch>
-
-				<MkRadios v-model="recommendationForm.state.autoInjectStrength" :disabled="!recommendationForm.state.enabled || !recommendationForm.state.autoInjectEnabled">
-					<template #label>{{ recommendationI18n.autoInjectAmount }}</template>
-					<option value="low">{{ recommendationI18n.autoInjectAmountLow }}</option>
-					<option value="normal">{{ recommendationI18n.autoInjectAmountNormal }}</option>
-					<option value="high">{{ recommendationI18n.autoInjectAmountHigh }}</option>
-				</MkRadios>
-
 				<div class="_gaps_s">
 					<div :class="$style.presetLabel"><i class="ti ti-wand"></i> {{ recommendationI18n.presets }}</div>
 					<div :class="$style.presetRow">
@@ -157,30 +145,19 @@ const showHanamiTimelineDateSeparators = prefer.model('showHanamiTimelineDateSep
 type AxisKey = 'globalPopular' | 'neighborTrending' | 'reactionSimilar' | 'catchup' | 'trending' | 'fof' | 'exploration';
 type LegacyAxisKey = 'popular';
 type AxisLevel = 'off' | 'low' | 'normal' | 'high';
-type RecommendationAutoInjectStrength = 'low' | 'normal' | 'high';
 type PresetKey = 'balanced' | 'popular' | 'close' | 'discover' | 'topic';
 type ExploreMediaFilter = 'all' | 'hideSensitive' | 'hideMedia';
 type RecommendationFormState = {
 	enabled: boolean;
-	autoInjectEnabled: boolean;
-	autoInjectStrength: RecommendationAutoInjectStrength;
 	showReason: boolean;
 } & Record<AxisKey, AxisLevel>;
 type RecommendationAccount = typeof $i & {
 	exploreMediaFilter?: ExploreMediaFilter;
 	hanamiRecommendationEnabled?: boolean;
-	hanamiRecommendationAutoInjectEnabled?: boolean;
-	hanamiRecommendationAutoInjectStrength?: RecommendationAutoInjectStrength;
 	hanamiRecommendationAxes?: Partial<Record<AxisKey | LegacyAxisKey, AxisLevel | boolean>>;
 	hanamiShowRecommendationReason?: boolean;
 };
 type RecommendationI18n = typeof i18n.ts._hana._recommendation & {
-	autoInject: string;
-	autoInjectDescription: string;
-	autoInjectAmount: string;
-	autoInjectAmountLow: string;
-	autoInjectAmountNormal: string;
-	autoInjectAmountHigh: string;
 	presets: string;
 	presetBalanced: string;
 	presetPopular: string;
@@ -291,8 +268,6 @@ const axisAvailable = Object.fromEntries(AXES.map(ax => [ax, axisServerValue(ax)
 const exploreMediaFilter = ref<ExploreMediaFilter>(account.exploreMediaFilter ?? 'all');
 const recommendationForm = useForm<RecommendationFormState>({
 	enabled: account.hanamiRecommendationEnabled ?? true,
-	autoInjectEnabled: account.hanamiRecommendationAutoInjectEnabled ?? true,
-	autoInjectStrength: account.hanamiRecommendationAutoInjectStrength ?? 'low',
 	showReason: account.hanamiShowRecommendationReason ?? false,
 	globalPopular: axisInitial('globalPopular'),
 	exploration: axisInitial('exploration'),
@@ -334,8 +309,6 @@ function applyPreset(name: PresetKey) {
 function buildAccountPatch(state: RecommendationFormState) {
 	return {
 		hanamiRecommendationEnabled: state.enabled,
-		hanamiRecommendationAutoInjectEnabled: state.autoInjectEnabled,
-		hanamiRecommendationAutoInjectStrength: state.autoInjectStrength,
 		hanamiShowRecommendationReason: state.showReason,
 		hanamiRecommendationAxes: {
 			globalPopular: state.globalPopular,

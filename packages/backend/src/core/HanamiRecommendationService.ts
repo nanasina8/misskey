@@ -8,44 +8,25 @@ import * as Redis from 'ioredis';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import type { MiUser } from '@/models/User.js';
-import { CacheService } from '@/core/CacheService.js';
 import { HanamiTrendService } from '@/core/hanami/HanamiTrendService.js';
 import { HanamiUserRecommendationService } from '@/core/hanami/HanamiUserRecommendationService.js';
 import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
 import {
 	HANAMI_SERVED_KEY_PREFIX as SERVED_KEY_PREFIX,
 	HANAMI_SEEN_KEY_PREFIX as SEEN_KEY_PREFIX,
-	HANAMI_HOME_SEEN_KEY_PREFIX as HOME_SEEN_KEY_PREFIX,
+	HANAMI_SERVED_CACHE_TTL_MS as SERVED_TTL_MS,
+	HANAMI_SERVED_CACHE_TTL_SECONDS as SERVED_TTL_SECONDS,
+	HANAMI_SEEN_CACHE_TTL_MS as SEEN_TTL_MS,
 } from '@/core/hanami/HanamiForYouKeys.js';
 
 // 既出除外（served）: 配信時に短期間だけ再表示を抑制する（短TTL）。長期 dedup は seen（フロント確認後）。
-const SERVED_TTL_SECONDS = 60 * 30; // 30分
-const SERVED_TTL_MS = SERVED_TTL_SECONDS * 1000;
-
-// 既出除外（seen）: フロントが実表示を確認したら積む長期側。
-const SEEN_TTL_SECONDS = 60 * 60 * 24 * 7; // 7日
-const SEEN_TTL_MS = SEEN_TTL_SECONDS * 1000;
-
-// homeSeen: 互換のため残す seen 報告経路（kind=home）。For You-only では基本未使用（フロントは rec 報告）。
-const HOME_SEEN_TTL_SECONDS = 60 * 60 * 24 * 7; // 7日
-
-// 新着ストリームへの auto-inject の頻度プリセット（For You feed 自身の realtime 挿入。§14-D5）。
-const AUTO_INJECT_PRESET = {
-	low: { homeNotesPerInjection: 10, injectCount: 1 },
-	normal: { homeNotesPerInjection: 6, injectCount: 1 },
-	high: { homeNotesPerInjection: 4, injectCount: 2 },
-} as const;
-
-export type HanamiAutoInjectStrength = keyof typeof AUTO_INJECT_PRESET;
-export type HanamiAutoInjectPreset = (typeof AUTO_INJECT_PRESET)[HanamiAutoInjectStrength];
 
 /**
  * はなみTL の周辺ユーティリティ（canonical spec）。
  *
  * For You-only 化に伴い、旧 score 混合・home 注入・候補生成・スロット注入は **廃止**（§6）。
  * 配信本体は HanamiForYouService（7軸＋quota interleave＋safety）に移管済。本サービスに残すのは:
- *  - served/seen/homeSeen の Redis 記録（HanamiForYouService と seen endpoint が使う。seen は PG provenance も二重書き）
- *  - auto-inject プリセット解決（stream channel が使う）
+ *  - legacy dynamic-feed served Redis recording and served/seen exclusion reads
  *  - フォロー候補・テキストトレンドの薄いラッパ（各 endpoint が使う）
  */
 @Injectable()
@@ -54,25 +35,12 @@ export class HanamiRecommendationService {
 		@Inject(DI.redis)
 		private redisClient: Redis.Redis,
 
-		private cacheService: CacheService,
 		private hanamiTrendService: HanamiTrendService,
 		private hanamiUserRecommendationService: HanamiUserRecommendationService,
 		private hanamiForYouProvenanceService: HanamiForYouProvenanceService,
 	) {
-	}
-
-	// ───────────────────────── auto-inject 設定解決 ─────────────────────────
-
-	private getAutoInjectStrength(strength: string): HanamiAutoInjectStrength {
-		return Object.prototype.hasOwnProperty.call(AUTO_INJECT_PRESET, strength) ? strength as HanamiAutoInjectStrength : 'low';
-	}
-
-	/** stream channel 用。はなみTL ON/OFF と auto-inject ON/OFF を見てプリセットを返す（off なら null）。 */
-	@bindThis
-	public async getAutoInjectPreset(meId: MiUser['id']): Promise<HanamiAutoInjectPreset | null> {
-		const profile = await this.cacheService.userProfileCache.fetch(meId);
-		if (!profile.hanamiRecommendationEnabled || !profile.hanamiRecommendationAutoInjectEnabled) return null;
-		return AUTO_INJECT_PRESET[this.getAutoInjectStrength(profile.hanamiRecommendationAutoInjectStrength)];
+		// Kept as a constructor dependency until legacy direct-instantiation callers cut over.
+		void this.hanamiForYouProvenanceService;
 	}
 
 	// ───────────────────────── served / seen ─────────────────────────
@@ -97,19 +65,6 @@ export class HanamiRecommendationService {
 	@bindThis
 	public async recordServed(userId: MiUser['id'], noteIds: string[]): Promise<void> {
 		await this.recordZset(`${SERVED_KEY_PREFIX}${userId}`, noteIds, SERVED_TTL_SECONDS, SERVED_TTL_MS);
-	}
-
-	@bindThis
-	public async recordSeen(userId: MiUser['id'], noteIds: string[]): Promise<void> {
-		await this.recordZset(`${SEEN_KEY_PREFIX}${userId}`, noteIds, SEEN_TTL_SECONDS, SEEN_TTL_MS);
-		// PG provenance（§7.2）: seen も best-effort で二重書き（For You では rec として扱う）。
-		void this.hanamiForYouProvenanceService.recordSeenEvents(userId, noteIds);
-	}
-
-	/** 互換用 seen 報告（kind=home）。For You-only では基本未使用だが endpoint 契約を壊さないため残す。 */
-	@bindThis
-	public async recordHomeSeen(userId: MiUser['id'], noteIds: string[]): Promise<void> {
-		await this.recordZset(`${HOME_SEEN_KEY_PREFIX}${userId}`, noteIds, HOME_SEEN_TTL_SECONDS, SEEN_TTL_MS);
 	}
 
 	@bindThis

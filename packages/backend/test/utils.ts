@@ -612,12 +612,24 @@ export async function initTestDb(justBorrow = false, initEntities?: any[]) {
 		username: config.db.user,
 		password: config.db.pass,
 		database: config.db.db,
-		synchronize: !justBorrow,
-		dropSchema: !justBorrow,
+		synchronize: !justBorrow && process.env.MISSKEY_TEST_DB_MIGRATIONS !== '1',
+		dropSchema: !justBorrow && process.env.MISSKEY_TEST_DB_MIGRATIONS !== '1',
 		entities: initEntities ?? entities,
 	});
 
 	await db.initialize();
+	if (!justBorrow && process.env.MISSKEY_TEST_DB_MIGRATIONS === '1') {
+		const tables = await db.query(`
+			SELECT schemaname, tablename
+			FROM pg_tables
+			WHERE schemaname = current_schema()
+				AND tablename NOT IN ('migrations', 'typeorm_metadata')
+		`);
+		const quoteIdent = (value: string): string => `"${value.replaceAll('"', '""')}"`;
+		if (tables.length > 0) {
+			await db.query(`TRUNCATE ${tables.map((table: { schemaname: string; tablename: string }) => `${quoteIdent(table.schemaname)}.${quoteIdent(table.tablename)}`).join(', ')} RESTART IDENTITY CASCADE`);
+		}
+	}
 
 	return db;
 }

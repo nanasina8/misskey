@@ -8,7 +8,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	v-if="!hardMuted && !hideByPlugin && muted === false"
 	ref="rootEl"
 	v-hotkey="keymap"
-	v-appear="(hanamiRecommended || inHanamiTimeline) ? onNoteAppear : null"
+	v-appear="hanamiFeedEntryId != null ? onNoteAppear : null"
 	:class="[$style.root, { [$style.showActionsOnlyHover]: prefer.s.showNoteActionsOnlyHover, [$style.skipRender]: prefer.s.skipNoteRender }]"
 	tabindex="0"
 >
@@ -251,6 +251,7 @@ import { globalEvents } from '@/events.js';
 
 const props = withDefaults(defineProps<{
 	note: Misskey.entities.Note;
+	hanamiFeedEntryId?: string;
 	pinned?: boolean;
 	mock?: boolean;
 	withHardMute?: boolean;
@@ -268,8 +269,6 @@ const emit = defineEmits<{
 const inTimeline = inject<boolean>('inTimeline', false);
 const tl_withSensitive = inject<Ref<boolean>>('tl_withSensitive', ref(true));
 const inChannel = inject('inChannel', null);
-// はなみTL内では全ノートの表示を homeSeen として報告する（catchup軸の「見逃し」判定の根拠）。
-const inHanamiTimeline = inject<Ref<boolean> | boolean>('hanamiTimeline', false);
 const currentClip = inject<Ref<Misskey.entities.Clip> | null>('currentClip', null);
 
 let note = deepClone(props.note);
@@ -297,8 +296,6 @@ const isRenote = Misskey.note.isPureRenote(note);
 const appearNote = getAppearNote(note) ?? note;
 
 // はなみTL おすすめの内部マーカーと理由ラベル。
-// _hanamiRecommended は理由表示OFFでも付くため、seen 報告はこの内部マーカーで行う。
-// _hanamiReason はユーザー設定ON時だけ表示用に付く。
 const hanamiRecommendationMeta = computed(() => props.note as {
 	_hanamiRecommended?: boolean;
 	_hanamiReason?: { reason: string; term?: string; clusterId?: number; bucket?: 'cluster' | 'recent' };
@@ -337,11 +334,7 @@ const hanamiReasonIcon = computed(() => {
 });
 
 function onNoteAppear() {
-	if (hanamiRecommended.value) {
-		reportHanamiSeen(note.id, 'rec');
-	} else if (typeof inHanamiTimeline === 'boolean' ? inHanamiTimeline : inHanamiTimeline.value) {
-		reportHanamiSeen(note.id, 'home');
-	}
+	if (props.hanamiFeedEntryId != null) reportHanamiSeen(props.hanamiFeedEntryId, props.note.id);
 }
 
 const { $note: $appearNote, subscribe: subscribeToNoteCapture, unsubscribe: unsubscribeFromNoteCapture } = useNoteCapture({

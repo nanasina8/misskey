@@ -488,20 +488,6 @@ export const packedMeDetailedOnlySchema = {
 			type: 'boolean',
 			nullable: false, optional: true,
 		},
-		hanamiRecommendationStrength: {
-			type: 'string',
-			enum: ['low', 'normal', 'high', 'veryHigh'],
-			nullable: false, optional: true,
-		},
-		hanamiRecommendationAutoInjectEnabled: {
-			type: 'boolean',
-			nullable: false, optional: true,
-		},
-		hanamiRecommendationAutoInjectStrength: {
-			type: 'string',
-			enum: ['low', 'normal', 'high'],
-			nullable: false, optional: true,
-		},
 		hanamiRecommendationAxes: {
 			type: 'object',
 			nullable: false, optional: true,

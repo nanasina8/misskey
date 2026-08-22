@@ -12,6 +12,8 @@ import { allSettled } from '@/misc/promise-tracker.js';
 import {
 	DeliverJobData,
 	EndedPollNotificationJobData,
+	HanamiGenerationJobData,
+	HanamiGenerationJobName,
 	InboxJobData,
 	RelationshipJobData,
 	UserWebhookDeliverJobData,
@@ -21,6 +23,7 @@ import {
 import type { Provider } from '@nestjs/common';
 
 export type SystemQueue = Bull.Queue<Record<string, unknown>>;
+export type HanamiGenerationQueue = Bull.Queue<HanamiGenerationJobData, unknown, HanamiGenerationJobName>;
 export type EndedPollNotificationQueue = Bull.Queue<EndedPollNotificationJobData>;
 export type PostScheduledNoteQueue = Bull.Queue<PostScheduledNoteJobData>;
 export type DeliverQueue = Bull.Queue<DeliverJobData>;
@@ -34,6 +37,12 @@ export type SystemWebhookDeliverQueue = Bull.Queue<SystemWebhookDeliverJobData>;
 const $system: Provider = {
 	provide: 'queue:system',
 	useFactory: (config: Config) => new Bull.Queue(QUEUE.SYSTEM, baseQueueOptions(config, QUEUE.SYSTEM)),
+	inject: [DI.config],
+};
+
+const $hanamiGeneration: Provider = {
+	provide: 'queue:hanamiGeneration',
+	useFactory: (config: Config) => new Bull.Queue<HanamiGenerationJobData, unknown, HanamiGenerationJobName>(QUEUE.HANAMI_GENERATION, baseQueueOptions(config, QUEUE.HANAMI_GENERATION)),
 	inject: [DI.config],
 };
 
@@ -96,6 +105,7 @@ const $systemWebhookDeliver: Provider = {
 	],
 	providers: [
 		$system,
+		$hanamiGeneration,
 		$endedPollNotification,
 		$postScheduledNote,
 		$deliver,
@@ -108,6 +118,7 @@ const $systemWebhookDeliver: Provider = {
 	],
 	exports: [
 		$system,
+		$hanamiGeneration,
 		$endedPollNotification,
 		$postScheduledNote,
 		$deliver,
@@ -122,6 +133,7 @@ const $systemWebhookDeliver: Provider = {
 export class QueueModule implements OnApplicationShutdown {
 	constructor(
 		@Inject('queue:system') public systemQueue: SystemQueue,
+		@Inject('queue:hanamiGeneration') public hanamiGenerationQueue: HanamiGenerationQueue,
 		@Inject('queue:endedPollNotification') public endedPollNotificationQueue: EndedPollNotificationQueue,
 		@Inject('queue:postScheduledNote') public postScheduledNoteQueue: PostScheduledNoteQueue,
 		@Inject('queue:deliver') public deliverQueue: DeliverQueue,
@@ -139,6 +151,7 @@ export class QueueModule implements OnApplicationShutdown {
 		// And then close all queues
 		await Promise.all([
 			this.systemQueue.close(),
+			this.hanamiGenerationQueue.close(),
 			this.endedPollNotificationQueue.close(),
 			this.postScheduledNoteQueue.close(),
 			this.deliverQueue.close(),

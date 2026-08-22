@@ -146,6 +146,23 @@ fulltextSearch:
 #  index: ''
 #  scope: local
 
+# Hanami cursor signing keys.
+# The first key signs new cursors; the optional second key is kept only for verification during rotation.
+# Replace these placeholders before startup. Validation intentionally rejects secrets shorter than 32 UTF-8 bytes.
+hanamiCursorSigningKeys:
+  - id: replace-before-startup
+    secret: replace-me
+
+# Hanami persisted timeline generation defaults.
+hanamiGenerationSyncWaitMs: 2000
+userHibernationDays: 50
+hanamiCommonGenerationIntervalMs: 600000
+hanamiGenerationWorkerTimeoutMs: 60000
+hanamiGenerationLeaseMs: 75000
+hanamiGenerationMaxAttempts: 3
+hanamiGenerationReconcileIntervalMs: 5000
+hanamiGenerationQueueConcurrency: 4
+
 #   ┌───────────────┐
 #───┘ ID generation └───────────────────────────────────────────
 

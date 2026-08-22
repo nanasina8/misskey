@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { isQuote, isRenote } from '@/misc/is-renote.js';
+import { isQuote, isRenote, pureRenoteSql } from '@/misc/is-renote.js';
 import { MiNote } from '@/models/Note.js';
 
 const base: MiNote = {
@@ -75,6 +75,12 @@ describe('misc:is-renote', () => {
 		const note: MiNote = { ...base, renoteId: 'some-renote-id', replyId: 'some-reply-id' };
 		expect(isRenote(note)).toBe(true);
 		expect(isQuote(note as any)).toBe(true);
+	});
+
+	test('pure-renote SQL excludes reply-only quotes in sync with isQuote', () => {
+		const sql = pureRenoteSql('note');
+		expect(sql).toContain('note."renoteId" IS NOT NULL');
+		expect(sql).toContain('note."replyId" IS NULL');
 	});
 
 	test('note with renoteId and poll should be Quote', () => {

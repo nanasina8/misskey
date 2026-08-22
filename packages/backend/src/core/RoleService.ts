@@ -5,18 +5,18 @@
 
 import { Inject, Injectable } from '@nestjs/common';
 import * as Redis from 'ioredis';
-import { In } from 'typeorm';
+import { In, type EntityManager } from 'typeorm';
 import { ModuleRef } from '@nestjs/core';
 import type {
 	MiMeta,
-	MiRole,
-	MiRoleAssignment,
 	RoleAssignmentsRepository,
 	RolesRepository,
 	UsersRepository,
 } from '@/models/_.js';
 import { MemoryKVCache, MemorySingleCache } from '@/misc/cache.js';
-import type { MiUser } from '@/models/User.js';
+import { MiUser } from '@/models/User.js';
+import { MiRole } from '@/models/Role.js';
+import { MiRoleAssignment } from '@/models/RoleAssignment.js';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import { CacheService } from '@/core/CacheService.js';
@@ -355,10 +355,25 @@ export class RoleService implements OnApplicationShutdown, OnModuleInit {
 	public async getUserRoles(userId: MiUser['id']) {
 		const roles = await this.rolesCache.fetch(() => this.rolesRepository.findBy({}));
 		const assigns = await this.getUserAssigns(userId);
-		const assignedRoles = roles.filter(r => assigns.map(x => x.roleId).includes(r.id));
 		const user = roles.some(r => r.target === 'conditional') ? await this.cacheService.findUserById(userId) : null;
-		const matchedCondRoles = roles.filter(r => r.target === 'conditional' && this.evalCond(user!, assignedRoles, r.condFormula));
-		return [...assignedRoles, ...matchedCondRoles];
+		return this.resolveUserRoles(roles, assigns, user);
+	}
+
+	private async getUserRolesWithManager(manager: EntityManager, userId: MiUser['id']): Promise<MiRole[]> {
+		const roles = await manager.getRepository(MiRole).findBy({});
+		const now = Date.now();
+		const assigns = await manager.getRepository(MiRoleAssignment).findBy({ userId });
+		const activeAssigns = assigns.filter(assignment => assignment.expiresAt == null || assignment.expiresAt.getTime() > now);
+		const user = roles.some(role => role.target === 'conditional')
+			? await manager.getRepository(MiUser).findOneByOrFail({ id: userId })
+			: null;
+		return this.resolveUserRoles(roles, activeAssigns, user);
+	}
+
+	private resolveUserRoles(roles: readonly MiRole[], assigns: readonly MiRoleAssignment[], user: MiUser | null): MiRole[] {
+		const assignedRoles = roles.filter(role => assigns.some(assignment => assignment.roleId === role.id));
+		const matchedConditionalRoles = roles.filter(role => role.target === 'conditional' && this.evalCond(user!, assignedRoles, role.condFormula));
+		return [...assignedRoles, ...matchedConditionalRoles];
 	}
 
 	/**
@@ -384,12 +399,17 @@ export class RoleService implements OnApplicationShutdown, OnModuleInit {
 	}
 
 	@bindThis
-	public async getUserPolicies(userId: MiUser['id'] | null): Promise<RolePolicies> {
+	public async getUserPolicies(userId: MiUser['id'] | null, manager?: EntityManager): Promise<RolePolicies> {
+		const roles = userId == null
+			? []
+			: manager == null
+				? await this.getUserRoles(userId)
+				: await this.getUserRolesWithManager(manager, userId);
+		return this.aggregatePolicies(roles);
+	}
+
+	private aggregatePolicies(roles: readonly MiRole[]): RolePolicies {
 		const basePolicies = { ...DEFAULT_POLICIES, ...this.meta.policies };
-
-		if (userId == null) return basePolicies;
-
-		const roles = await this.getUserRoles(userId);
 
 		function calc<T extends keyof RolePolicies>(name: T, aggregate: (values: RolePolicies[T][]) => RolePolicies[T]) {
 			if (roles.length === 0) return basePolicies[name];

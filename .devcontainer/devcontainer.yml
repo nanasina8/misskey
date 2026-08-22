@@ -135,6 +135,21 @@ hanamisearch:
   index: 'hanami'
   scope: global
 
+# Unsafe deterministic development key. Do not reuse outside local/dev environments.
+hanamiCursorSigningKeys:
+  - id: dev-unsafe-current
+    secret: 'unsafe-dev-hanami-cursor-signing-secret-00000001'
+
+# Hanami persisted timeline generation defaults.
+hanamiGenerationSyncWaitMs: 2000
+userHibernationDays: 50
+hanamiCommonGenerationIntervalMs: 600000
+hanamiGenerationWorkerTimeoutMs: 60000
+hanamiGenerationLeaseMs: 75000
+hanamiGenerationMaxAttempts: 3
+hanamiGenerationReconcileIntervalMs: 5000
+hanamiGenerationQueueConcurrency: 4
+
 #   ┌───────────────┐
 #───┘ ID generation └───────────────────────────────────────────
 

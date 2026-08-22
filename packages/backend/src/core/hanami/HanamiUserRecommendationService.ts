@@ -9,16 +9,20 @@ import * as Redis from 'ioredis';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import type { FollowingsRepository, FollowRequestsRepository, NoteReactionsRepository, NotesRepository, UsersRepository } from '@/models/_.js';
+import { MiNote } from '@/models/Note.js';
+import { MiNoteReaction } from '@/models/NoteReaction.js';
 import type { MiUser } from '@/models/User.js';
 import { CacheService } from '@/core/CacheService.js';
 import { IdService } from '@/core/IdService.js';
 import { HANAMI_FOF_SHOWN_KEY_PREFIX as SHOWN_KEY_PREFIX } from '@/core/hanami/HanamiForYouKeys.js';
+import type { HanamiPersonalFeedGenerationContext } from '@/core/hanami/HanamiForYouService.js';
 
 const DAY_MS = 1000 * 60 * 60 * 24;
 
 // ───── seed（FoF探索の起点になる自分のフォロイー）の選び方（[[hanami-rec-redesign-v2]] 案1） ─────
 // 全フォロイーは「除外」には全数使うが、FoF 探索 seed は重み上位 MAX_SEED_FOLLOWEES 件に絞る。
 const MAX_SEED_FOLLOWEES = 200;
+const GENERATION_SEED_WINDOW = 500;
 // FoF 探索で走査する following 行の上限。
 const MAX_FOF_SCAN = 4000;
 // mutual / followback 判定用に取得する自分のフォロワー上限。
@@ -66,6 +70,7 @@ const SHOWN_HARD_MS = DAY_MS * 3;
 // 7日窓: この間の表示回数に応じてソフト減点。窓を抜ければ満点に回復（記録の保持上限も兼ねる）。
 const SHOWN_SOFT_MS = DAY_MS * 7;
 const SHOWN_TTL_SECONDS = 60 * 60 * 24 * 7;
+const MAX_SHOWN_EVENTS = 5000;
 // 7日窓内の表示回数あたりの減衰: score × 1/(1 + K×count)。回数が多いほど強く沈める（要望: 7日単位で強化）。
 const SHOWN_SOFT_K = 0.7;
 
@@ -146,6 +151,23 @@ type FoFNoteRow = {
 	authorNoteRank: number | string;
 };
 
+type GenerationSeedRow = {
+	id: string;
+	withReplies: boolean;
+	mutual: boolean;
+};
+
+type GenerationFoFCandidateRow = {
+	id: string;
+	followersCount: number | string;
+	host: string | null;
+	isLocked: boolean;
+	score: number | string;
+	mutualCount: number | string;
+	seedIds: string[];
+	followsMe: boolean;
+};
+
 /**
  * 仲間内（FoF / フォロー候補）推薦（[[hanami-tl-osusume-redesign]] step9/10、改善は [[hanami-rec-redesign-v2]] 案1-3）。
  *
@@ -182,6 +204,62 @@ export class HanamiUserRecommendationService {
 		private cacheService: CacheService,
 		private idService: IdService,
 	) {
+	}
+
+	private throwIfGenerationAborted(signal: AbortSignal): void {
+		if (!signal.aborted) return;
+		if (signal.reason !== undefined) throw signal.reason;
+		const error = new Error('The operation was aborted');
+		error.name = 'AbortError';
+		throw error;
+	}
+
+	private async generationBoundary<T>(input: HanamiPersonalFeedGenerationContext | undefined, operation: () => Promise<T>): Promise<T> {
+		if (input == null) return await operation();
+		this.throwIfGenerationAborted(input.signal);
+		const promise = Promise.resolve().then(operation);
+		const result = await new Promise<T>((resolve, reject) => {
+			let settled = false;
+			const finish = (callback: () => void): void => {
+				if (settled) return;
+				settled = true;
+				input.signal.removeEventListener('abort', onAbort);
+				callback();
+			};
+			const onAbort = (): void => finish(() => reject(input.signal.reason));
+			input.signal.addEventListener('abort', onAbort, { once: true });
+			void promise.then(
+				value => input.signal.aborted ? onAbort() : finish(() => resolve(value)),
+				error => input.signal.aborted ? onAbort() : finish(() => reject(error)),
+			);
+			if (input.signal.aborted) onAbort();
+		});
+		this.throwIfGenerationAborted(input.signal);
+		return result;
+	}
+
+	private generationNow(input?: HanamiPersonalFeedGenerationContext): number {
+		return input == null ? Date.now() : Date.parse(input.generatedAt);
+	}
+
+	private noteQuery(generation: HanamiPersonalFeedGenerationContext | undefined, alias: string) {
+		return generation == null
+			? this.notesRepository.createQueryBuilder(alias)
+			: generation.queryRunner.manager.getRepository(MiNote).createQueryBuilder(alias);
+	}
+
+	private reactionQuery(generation: HanamiPersonalFeedGenerationContext | undefined, alias: string) {
+		return generation == null
+			? this.noteReactionsRepository.createQueryBuilder(alias)
+			: generation.queryRunner.manager.getRepository(MiNoteReaction).createQueryBuilder(alias);
+	}
+
+	private async noteSql<T extends unknown[]>(generation: HanamiPersonalFeedGenerationContext | undefined, sql: string, parameters: unknown[]): Promise<T> {
+		return await this.generationBoundary(generation, async () => (
+			generation == null
+				? await this.notesRepository.query(sql, parameters) as T
+				: await generation.queryRunner.query(sql, parameters) as T
+		));
 	}
 
 	private clamp(v: number, min: number, max: number): number {
@@ -298,9 +376,12 @@ export class HanamiUserRecommendationService {
 	// 直近 SHOWN_SOFT_MS（7日）の露出ログから、ユーザーごとに { 表示回数, 最終表示時刻 } を集計する。
 	// 古いメンバーは ZRANGEBYSCORE の下限で除外＝7日を抜けた人は満点（新顔）に戻る。
 	@bindThis
-	private async getShownStats(meId: MiUser['id']): Promise<Map<string, { count: number; lastAt: number }>> {
-		const cutoff = Date.now() - SHOWN_SOFT_MS;
-		const raw = await this.redisClient.zrangebyscore(`${SHOWN_KEY_PREFIX}${meId}`, cutoff, '+inf', 'WITHSCORES');
+	private async getShownStats(meId: MiUser['id'], generation?: HanamiPersonalFeedGenerationContext): Promise<Map<string, { count: number; lastAt: number }>> {
+		const now = this.generationNow(generation);
+		const cutoff = now - SHOWN_SOFT_MS;
+		const raw = await this.generationBoundary(generation, async () => generation == null
+			? await this.redisClient.zrangebyscore(`${SHOWN_KEY_PREFIX}${meId}`, cutoff, '+inf', 'WITHSCORES')
+			: await this.redisClient.zrevrangebyscore(`${SHOWN_KEY_PREFIX}${meId}`, now, cutoff, 'WITHSCORES', 'LIMIT', 0, MAX_SHOWN_EVENTS));
 		const stats = new Map<string, { count: number; lastAt: number }>();
 		for (let i = 0; i < raw.length; i += 2) {
 			const member = raw[i];
@@ -343,22 +424,22 @@ export class HanamiUserRecommendationService {
 	}
 
 	@bindThis
-	private async getSeedInteractionSignals(meId: MiUser['id'], followeeIds: MiUser['id'][]): Promise<Map<string, ActivitySignal>> {
+	private async getSeedInteractionSignals(meId: MiUser['id'], followeeIds: MiUser['id'][], generation?: HanamiPersonalFeedGenerationContext): Promise<Map<string, ActivitySignal>> {
 		if (followeeIds.length === 0) return new Map();
 
 		const cacheKey = `${SEED_SIGNALS_CACHE_KEY_PREFIX}${meId}`;
-		const cached = await this.redisClient.get(cacheKey);
+		const cached = await this.generationBoundary(generation, async () => await this.redisClient.get(cacheKey));
 		if (cached != null) return this.reviveSeedSignals(cached);
 
 		const followeeSet = new Set(followeeIds);
-		const sinceId = this.idService.gen(Date.now() - ACTIVITY_LOOKBACK_MS);
-		const now = Date.now();
+		const now = this.generationNow(generation);
+		const sinceId = this.idService.gen(now - ACTIVITY_LOOKBACK_MS);
 		const signals = new Map<string, ActivitySignal>();
 
 		// userId/replyUserId/renoteUserId をORで跨ぐとどのインデックスも効かず直近14日の全ノートを
 		// PK範囲スキャンするため、インデックスが効く3クエリに分割する
 		// （userId=me は (userId,id) 複合、replyUserId/renoteUserId=me は専用の部分インデックス）。
-		const noteSelect = () => this.notesRepository.createQueryBuilder('note')
+		const noteSelect = () => this.noteQuery(generation, 'note')
 			.select('note.id', 'id')
 			.addSelect('note.userId', 'userId')
 			.addSelect('note.replyUserId', 'replyUserId')
@@ -368,20 +449,21 @@ export class HanamiUserRecommendationService {
 			.orderBy('note.id', 'DESC')
 			.limit(SEED_INTERACTION_EVENT_FETCH_LIMIT);
 
-		const [myEngagementRows, replyToMeRows, renoteOfMeRows] = await Promise.all([
-			noteSelect()
+		const loadMyEngagementRows = async () => await this.generationBoundary(generation, async () => await noteSelect()
 				.andWhere('note.userId = :meId', { meId })
 				.andWhere(new Brackets(qb => {
 					qb.where('note.replyUserId IS NOT NULL').orWhere('note.renoteUserId IS NOT NULL');
 				}))
-				.getRawMany<{ id: string; userId: string; replyUserId: string | null; renoteUserId: string | null }>(),
-			noteSelect()
+				.getRawMany<{ id: string; userId: string; replyUserId: string | null; renoteUserId: string | null }>());
+		const loadReplyToMeRows = async () => await this.generationBoundary(generation, async () => await noteSelect()
 				.andWhere('note.replyUserId = :meId', { meId })
-				.getRawMany<{ id: string; userId: string; replyUserId: string | null; renoteUserId: string | null }>(),
-			noteSelect()
+				.getRawMany<{ id: string; userId: string; replyUserId: string | null; renoteUserId: string | null }>());
+		const loadRenoteOfMeRows = async () => await this.generationBoundary(generation, async () => await noteSelect()
 				.andWhere('note.renoteUserId = :meId', { meId })
-				.getRawMany<{ id: string; userId: string; replyUserId: string | null; renoteUserId: string | null }>(),
-		]);
+				.getRawMany<{ id: string; userId: string; replyUserId: string | null; renoteUserId: string | null }>());
+		const [myEngagementRows, replyToMeRows, renoteOfMeRows] = generation == null
+			? await Promise.all([loadMyEngagementRows(), loadReplyToMeRows(), loadRenoteOfMeRows()])
+			: [await loadMyEngagementRows(), await loadReplyToMeRows(), await loadRenoteOfMeRows()];
 
 		// 同一ノートが複数クエリに該当し得る（自分への返信かつ自分のノートの引用RN等）ため id で重複排除。
 		const seenNoteIds = new Set<string>();
@@ -400,7 +482,7 @@ export class HanamiUserRecommendationService {
 
 		// リアクションも reaction.userId / note.userId のORを分割
 		// （自分が付けた分は note_reaction(userId,id) 複合、自分のノートに付いた分は note(userId,id)→noteId で引ける）。
-		const reactionSelect = () => this.noteReactionsRepository.createQueryBuilder('reaction')
+		const reactionSelect = () => this.reactionQuery(generation, 'reaction')
 			.select('reaction.id', 'id')
 			.addSelect('reaction.userId', 'reactionUserId')
 			.addSelect('note.userId', 'noteUserId')
@@ -410,14 +492,15 @@ export class HanamiUserRecommendationService {
 			.orderBy('reaction.id', 'DESC')
 			.limit(SEED_INTERACTION_EVENT_FETCH_LIMIT);
 
-		const [myReactionRows, receivedReactionRows] = await Promise.all([
-			reactionSelect()
+		const loadMyReactionRows = async () => await this.generationBoundary(generation, async () => await reactionSelect()
 				.andWhere('reaction.userId = :meId', { meId })
-				.getRawMany<{ id: string; reactionUserId: string; noteUserId: string }>(),
-			reactionSelect()
+				.getRawMany<{ id: string; reactionUserId: string; noteUserId: string }>());
+		const loadReceivedReactionRows = async () => await this.generationBoundary(generation, async () => await reactionSelect()
 				.andWhere('note.userId = :meId', { meId })
-				.getRawMany<{ id: string; reactionUserId: string; noteUserId: string }>(),
-		]);
+				.getRawMany<{ id: string; reactionUserId: string; noteUserId: string }>());
+		const [myReactionRows, receivedReactionRows] = generation == null
+			? await Promise.all([loadMyReactionRows(), loadReceivedReactionRows()])
+			: [await loadMyReactionRows(), await loadReceivedReactionRows()];
 
 		const seenReactionIds = new Set<string>();
 		for (const row of [...myReactionRows, ...receivedReactionRows]) {
@@ -430,18 +513,20 @@ export class HanamiUserRecommendationService {
 			}
 		}
 
-		await this.redisClient.set(cacheKey, this.serializeSeedSignals(signals), 'EX', SEED_SIGNALS_CACHE_TTL_SECONDS);
+		if (generation == null) {
+			await this.redisClient.set(cacheKey, this.serializeSeedSignals(signals), 'EX', SEED_SIGNALS_CACHE_TTL_SECONDS);
+		}
 		return signals;
 	}
 
 	@bindThis
-	private async getCandidateActivityMultipliers(userIds: MiUser['id'][]): Promise<Map<string, number>> {
+	private async getCandidateActivityMultipliers(userIds: MiUser['id'][], generation?: HanamiPersonalFeedGenerationContext): Promise<Map<string, number>> {
 		if (userIds.length === 0) return new Map();
-		const sinceId = this.idService.gen(Date.now() - ACTIVITY_LOOKBACK_MS);
-		const now = Date.now();
+		const now = this.generationNow(generation);
+		const sinceId = this.idService.gen(now - ACTIVITY_LOOKBACK_MS);
 		const signals = new Map<string, ActivitySignal>();
 
-		const noteRows = await this.notesRepository.createQueryBuilder('note')
+		const noteRows = await this.generationBoundary(generation, async () => await this.noteQuery(generation, 'note')
 			.select('note.id', 'id')
 			.addSelect('note.userId', 'userId')
 			.where('note.userId IN (:...userIds)', { userIds })
@@ -449,10 +534,10 @@ export class HanamiUserRecommendationService {
 			.andWhere('note.visibility IN (:...visibilities)', { visibilities: ['public', 'home', 'followers'] })
 			.orderBy('note.id', 'DESC')
 			.limit(CANDIDATE_ACTIVITY_EVENT_FETCH_LIMIT)
-			.getRawMany<{ id: string; userId: string }>();
+			.getRawMany<{ id: string; userId: string }>());
 		for (const row of noteRows) this.addActivity(signals, row.userId, row.id, now);
 
-		const reactionRows = await this.noteReactionsRepository.createQueryBuilder('reaction')
+		const reactionRows = await this.generationBoundary(generation, async () => await this.reactionQuery(generation, 'reaction')
 			.select('reaction.id', 'id')
 			.addSelect('reaction.userId', 'userId')
 			.innerJoin('reaction.note', 'note')
@@ -461,10 +546,10 @@ export class HanamiUserRecommendationService {
 			.andWhere('note.visibility IN (:...visibilities)', { visibilities: ['public', 'home', 'followers'] })
 			.orderBy('reaction.id', 'DESC')
 			.limit(CANDIDATE_ACTIVITY_EVENT_FETCH_LIMIT)
-			.getRawMany<{ id: string; userId: string }>();
+			.getRawMany<{ id: string; userId: string }>());
 		for (const row of reactionRows) this.addActivity(signals, row.userId, row.id, now);
 
-		const receivedReactionRows = await this.noteReactionsRepository.createQueryBuilder('reaction')
+		const receivedReactionRows = await this.generationBoundary(generation, async () => await this.reactionQuery(generation, 'reaction')
 			.select('reaction.id', 'id')
 			.addSelect('note.userId', 'userId')
 			.innerJoin('reaction.note', 'note')
@@ -473,10 +558,197 @@ export class HanamiUserRecommendationService {
 			.andWhere('note.visibility IN (:...visibilities)', { visibilities: ['public', 'home', 'followers'] })
 			.orderBy('reaction.id', 'DESC')
 			.limit(CANDIDATE_ACTIVITY_EVENT_FETCH_LIMIT)
-			.getRawMany<{ id: string; userId: string }>();
+			.getRawMany<{ id: string; userId: string }>());
 		for (const row of receivedReactionRows) this.addPassiveActivity(signals, row.userId, row.id, now);
 
 		return new Map(userIds.map(id => [id, this.getCandidateActivityMultiplier(signals.get(id), now)]));
+	}
+
+	private async getGenerationMutedInstances(generation: HanamiPersonalFeedGenerationContext): Promise<string[]> {
+		const rows = await this.noteSql<Array<{ mutedInstances: unknown }>>(generation, `
+			SELECT p."mutedInstances"
+			FROM "user_profile" p
+			WHERE p."userId" = $1
+			LIMIT 1
+		`, [generation.userId]);
+		const value = rows[0]?.mutedInstances;
+		return Array.isArray(value) ? value.filter((host): host is string => typeof host === 'string') : [];
+	}
+
+	private async filterGenerationCachedFoFNotes(notes: FoFNote[], generation: HanamiPersonalFeedGenerationContext): Promise<FoFNote[]> {
+		if (notes.length === 0) return [];
+		const candidateIds = [...new Set(notes.map(note => note.userId))];
+		const mutedInstances = await this.getGenerationMutedInstances(generation);
+		const rows = await this.noteSql<Array<{ id: string }>>(generation, `
+			SELECT u.id
+			FROM "user" u
+			WHERE u.id = ANY($2::varchar[])
+				AND u.id <> $1
+				AND u."isBot" = FALSE
+				AND u."isSuspended" = FALSE
+				AND u."isDeleted" = FALSE
+				AND u."isExplorable" = TRUE
+				AND (u.host IS NULL OR NOT (u.host = ANY($3::varchar[])))
+				AND NOT EXISTS (
+					SELECT 1 FROM following followed
+					WHERE followed."followerId" = $1 AND followed."followeeId" = u.id
+					LIMIT 1
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM follow_request pending
+					WHERE pending."followerId" = $1 AND pending."followeeId" = u.id
+					LIMIT 1
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM muting muted
+					WHERE muted."muterId" = $1 AND muted."muteeId" = u.id
+					LIMIT 1
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM blocking outgoing_block
+					WHERE outgoing_block."blockerId" = $1 AND outgoing_block."blockeeId" = u.id
+					LIMIT 1
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM blocking incoming_block
+					WHERE incoming_block."blockerId" = u.id AND incoming_block."blockeeId" = $1
+					LIMIT 1
+				)
+			ORDER BY u.id ASC
+			LIMIT $4
+		`, [generation.userId, candidateIds, mutedInstances, candidateIds.length]);
+		const eligible = new Set(rows.map(row => row.id));
+		return notes.filter(note => eligible.has(note.userId));
+	}
+
+	private async getGenerationFoFUserCandidates(
+		meId: MiUser['id'],
+		enrichLimit: number,
+		generation: HanamiPersonalFeedGenerationContext,
+	): Promise<Map<string, InternalFollowCandidate>> {
+		const seedWindow = (await this.noteSql<GenerationSeedRow[]>(generation, `
+			SELECT f."followeeId" AS id, f."withReplies" AS "withReplies",
+				EXISTS (
+					SELECT 1 FROM following reciprocal
+					WHERE reciprocal."followerId" = f."followeeId" AND reciprocal."followeeId" = $1
+					LIMIT 1
+				) AS mutual
+			FROM following f
+			WHERE f."followerId" = $1
+			ORDER BY f."followeeId" ASC
+			LIMIT $2
+		`, [meId, GENERATION_SEED_WINDOW])).slice(0, GENERATION_SEED_WINDOW);
+		if (seedWindow.length === 0) return new Map();
+
+		const now = this.generationNow(generation);
+		const seedInteractionSignals = await this.getSeedInteractionSignals(meId, seedWindow.map(seed => seed.id), generation);
+		const seeds = seedWindow
+			.map(seed => ({
+				id: seed.id,
+				weight: SEED_BASE_WEIGHT + (seed.mutual ? SEED_MUTUAL_BOOST : 0) + (seed.withReplies ? SEED_WITHREPLIES_BONUS : 0) + this.getSeedInteractionBoost(seedInteractionSignals.get(seed.id), now),
+			}))
+			.sort((a, b) => b.weight - a.weight || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+			.slice(0, MAX_SEED_FOLLOWEES);
+		const perSeedLimit = Math.ceil(MAX_FOF_SCAN / seeds.length);
+		const mutedInstances = await this.getGenerationMutedInstances(generation);
+		const rows = (await this.noteSql<GenerationFoFCandidateRow[]>(generation, `
+			WITH seed AS MATERIALIZED (
+				SELECT input.id, input.weight
+				FROM unnest($2::varchar[], $3::float8[]) AS input(id, weight)
+			), seed_edges AS MATERIALIZED (
+				SELECT seed.id AS "seedId", edge."followeeId" AS "candidateId", seed.weight
+				FROM seed
+				CROSS JOIN LATERAL (
+					SELECT f."followeeId"
+					FROM following f
+					WHERE f."followerId" = seed.id
+					ORDER BY f."followeeId" ASC
+					LIMIT $4
+				) edge
+			), fof_scan AS MATERIALIZED (
+				SELECT * FROM seed_edges
+				ORDER BY "candidateId" ASC, "seedId" ASC
+				LIMIT $5
+			), aggregated AS MATERIALIZED (
+				SELECT "candidateId" AS id, sum(weight)::float8 AS score, count(*)::int AS "mutualCount",
+					array_agg("seedId" ORDER BY "seedId" ASC) AS "seedIds"
+				FROM fof_scan
+				GROUP BY "candidateId"
+			)
+			SELECT u.id, u."followersCount", u.host, u."isLocked", candidate.score,
+				candidate."mutualCount", candidate."seedIds",
+				EXISTS (
+					SELECT 1 FROM following follows_me
+					WHERE follows_me."followerId" = u.id AND follows_me."followeeId" = $1
+					LIMIT 1
+				) AS "followsMe"
+			FROM aggregated candidate
+			JOIN "user" u ON u.id = candidate.id
+			WHERE u.id <> $1
+				AND u."isBot" = FALSE
+				AND u."isSuspended" = FALSE
+				AND u."isDeleted" = FALSE
+				AND u."isExplorable" = TRUE
+				AND (u.host IS NULL OR NOT (u.host = ANY($6::varchar[])))
+				AND NOT EXISTS (
+					SELECT 1 FROM following followed
+					WHERE followed."followerId" = $1 AND followed."followeeId" = u.id
+					LIMIT 1
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM follow_request pending
+					WHERE pending."followerId" = $1 AND pending."followeeId" = u.id
+					LIMIT 1
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM muting muted
+					WHERE muted."muterId" = $1 AND muted."muteeId" = u.id
+					LIMIT 1
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM blocking outgoing_block
+					WHERE outgoing_block."blockerId" = $1 AND outgoing_block."blockeeId" = u.id
+					LIMIT 1
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM blocking incoming_block
+					WHERE incoming_block."blockerId" = u.id AND incoming_block."blockeeId" = $1
+					LIMIT 1
+				)
+			ORDER BY candidate.score DESC, u.id ASC
+			LIMIT $7
+		`, [
+			meId,
+			seeds.map(seed => seed.id),
+			seeds.map(seed => seed.weight),
+			perSeedLimit,
+			MAX_FOF_SCAN,
+			mutedInstances,
+			enrichLimit,
+		])).slice(0, enrichLimit);
+		if (rows.length === 0) return new Map();
+
+		const shownStats = await this.getShownStats(meId, generation);
+		const activityMultipliers = await this.getCandidateActivityMultipliers(rows.map(row => row.id), generation);
+		const result = new Map<string, InternalFollowCandidate>();
+		for (const row of rows) {
+			const activityMultiplier = activityMultipliers.get(row.id) ?? CANDIDATE_ACTIVITY_MULTIPLIER_MIN;
+			const stat = shownStats.get(row.id);
+			const softPenalty = 1 / (1 + (SHOWN_SOFT_K * (stat?.count ?? 0)));
+			const score = Number(row.score) / Math.log10(Number(row.followersCount) + 10);
+			result.set(row.id, {
+				userId: row.id,
+				score: score * (row.followsMe ? FOLLOWBACK_BOOST : 1) * (row.isLocked ? LOCKED_PENALTY : 1) * activityMultiplier * softPenalty,
+				reason: 'fof',
+				mutualCount: Number(row.mutualCount),
+				host: row.host,
+				seedIds: Array.isArray(row.seedIds) ? row.seedIds : [],
+				lastShownAt: stat?.lastAt ?? null,
+				activityMultiplier,
+				followersCount: Number(row.followersCount),
+			});
+		}
+		return result;
 	}
 
 	/**
@@ -485,7 +757,9 @@ export class HanamiUserRecommendationService {
 	 * 既フォロー・自分・mute/block/被block・インスタンスミュート・bot/suspended/deleted/非explorable は除外。
 	 */
 	@bindThis
-	private async getFoFUserCandidates(meId: MiUser['id'], enrichLimit: number = FOF_CANDIDATE_POOL * FOF_USER_OVERFETCH): Promise<Map<string, InternalFollowCandidate>> {
+	private async getFoFUserCandidates(meId: MiUser['id'], enrichLimit: number = FOF_CANDIDATE_POOL * FOF_USER_OVERFETCH, generation?: HanamiPersonalFeedGenerationContext): Promise<Map<string, InternalFollowCandidate>> {
+		if (generation != null) return await this.getGenerationFoFUserCandidates(meId, enrichLimit, generation);
+
 		const followingMap = await this.cacheService.userFollowingsCache.fetch(meId);
 		const allFolloweeIds = Object.keys(followingMap);
 		if (allFolloweeIds.length === 0) return new Map();
@@ -500,7 +774,7 @@ export class HanamiUserRecommendationService {
 			this.getSeedInteractionSignals(meId, allFolloweeIds),
 		]);
 		const mutedInstances = new Set(profile.mutedInstances);
-		const now = Date.now();
+		const now = this.generationNow(generation);
 
 		// seed 重み付け → 上位を採用（slice の偏り解消）。
 		const weighted = allFolloweeIds.map(id => {
@@ -509,7 +783,7 @@ export class HanamiUserRecommendationService {
 			const interaction = this.getSeedInteractionBoost(seedInteractionSignals.get(id), now);
 			return { id, weight: SEED_BASE_WEIGHT + mutual + withReplies + interaction };
 		});
-		weighted.sort((a, b) => b.weight - a.weight);
+		weighted.sort((a, b) => b.weight - a.weight || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 		const seeds = weighted.slice(0, MAX_SEED_FOLLOWEES);
 		const seedWeight = new Map(seeds.map(s => [s.id, s.weight]));
 		const seedIds = seeds.map(s => s.id);
@@ -541,7 +815,7 @@ export class HanamiUserRecommendationService {
 
 		// 上位候補を overfetch して品質フィルタ＋正規化（品質落ち分を見込む）。プール幅は呼び出し側が指定。
 		const top = Array.from(raw.entries())
-			.sort((a, b) => b[1].score - a[1].score)
+			.sort((a, b) => b[1].score - a[1].score || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
 			.slice(0, enrichLimit);
 		const topIds = top.map(([id]) => id);
 
@@ -557,10 +831,7 @@ export class HanamiUserRecommendationService {
 			.andWhere('u.isExplorable = TRUE')
 			.getRawMany<{ id: string; followersCount: number; host: string | null; isLocked: boolean }>();
 
-		const [shownStats, activityMultipliers] = await Promise.all([
-			this.getShownStats(meId),
-			this.getCandidateActivityMultipliers(userRows.map(u => u.id)),
-		]);
+		const [shownStats, activityMultipliers] = await Promise.all([this.getShownStats(meId), this.getCandidateActivityMultipliers(userRows.map(u => u.id))]);
 		const result = new Map<string, InternalFollowCandidate>();
 		for (const u of userRows) {
 			if (u.host != null && mutedInstances.has(u.host)) continue;
@@ -652,7 +923,8 @@ export class HanamiUserRecommendationService {
 			if (remaining.length === 0) break;
 			const strict = remaining.filter(c => this.canPickStrict(c, usedSeedCounts, usedHostCounts));
 			const pool = strict.length > 0 ? strict : remaining;
-			pool.sort((a, b) => this.scoreForDiversityPick(b, usedSeedCounts, usedHostCounts, mode) - this.scoreForDiversityPick(a, usedSeedCounts, usedHostCounts, mode));
+			pool.sort((a, b) => this.scoreForDiversityPick(b, usedSeedCounts, usedHostCounts, mode) - this.scoreForDiversityPick(a, usedSeedCounts, usedHostCounts, mode)
+				|| (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
 			const next = pool[0];
 			selectedIds.add(next.userId);
 			this.rememberPicked(next, usedSeedCounts, usedHostCounts);
@@ -667,9 +939,9 @@ export class HanamiUserRecommendationService {
 		const now = Date.now();
 		const isHardExcluded = (c: InternalFollowCandidate): boolean => c.lastShownAt != null && (now - c.lastShownAt) <= SHOWN_HARD_MS;
 		// score にはソフト減点（7日窓の表示回数）が既に乗っているので、3〜7日の人はここで自然に下がる。
-		const eligible = candidates.filter(c => !isHardExcluded(c)).sort((a, b) => b.score - a.score);
+		const eligible = candidates.filter(c => !isHardExcluded(c)).sort((a, b) => b.score - a.score || (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
 		const hardExcluded = candidates.filter(isHardExcluded)
-			.sort((a, b) => (a.lastShownAt ?? 0) - (b.lastShownAt ?? 0));
+			.sort((a, b) => (a.lastShownAt ?? 0) - (b.lastShownAt ?? 0) || (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
 
 		const selectedIds = new Set<string>();
 		const usedSeedCounts = new Map<string, number>();
@@ -734,21 +1006,29 @@ export class HanamiUserRecommendationService {
 				score: opts.softPenaltyNoteIds?.has(note.noteId) === true ? note.score * FOF_NOTE_SERVED_PENALTY : note.score,
 			});
 		}
-		out.sort((a, b) => b.score - a.score);
+		out.sort((a, b) => b.score - a.score || (a.noteId < b.noteId ? 1 : a.noteId > b.noteId ? -1 : 0));
 		return out.slice(0, limit);
 	}
 
 	@bindThis
-	private async getFoFNotePool(meId: MiUser['id'], limit: number, withFiles: boolean): Promise<FoFNote[]> {
+	private async getFoFNotePool(meId: MiUser['id'], limit: number, withFiles: boolean, generation?: HanamiPersonalFeedGenerationContext): Promise<FoFNote[]> {
 		const cacheKey = this.getFoFNoteCacheKey(meId, limit, withFiles);
-		const cached = await this.redisClient.get(cacheKey);
+		const cached = await this.generationBoundary(generation, async () => await this.redisClient.get(cacheKey));
 		if (cached != null) {
+			let parsed: unknown = null;
 			try {
-				const parsed: unknown = JSON.parse(cached);
-				if (this.isFoFNoteArray(parsed)) return parsed;
+				parsed = JSON.parse(cached);
 			} catch {
 				// 壊れたキャッシュは無視して作り直す。
 			}
+			if (this.isFoFNoteArray(parsed)) {
+				if (generation == null) return parsed;
+				return await this.filterGenerationCachedFoFNotes(parsed.slice(0, limit * 2), generation);
+			}
+		}
+
+		if (generation != null) {
+			return await this.buildFoFNotePool(meId, limit, withFiles, generation);
 		}
 
 		const existing = this.fofNotePoolInflight.get(cacheKey);
@@ -781,16 +1061,16 @@ export class HanamiUserRecommendationService {
 	 * チャンネル投稿・純RNは除外、public/home のみ。
 	 */
 	@bindThis
-	private async buildFoFNotePool(meId: MiUser['id'], limit: number, withFiles: boolean): Promise<FoFNote[]> {
+	private async buildFoFNotePool(meId: MiUser['id'], limit: number, withFiles: boolean, generation?: HanamiPersonalFeedGenerationContext): Promise<FoFNote[]> {
 		// ノート候補はフォロー推薦の多様性選抜（上位40・リモートhub偏重で直近ノートがローカルDBに無いことが多い）を
 		// 通さず、品質フィルタ済みの広いFoF候補プール全体から引く。足りない時だけ候補ユーザー幅を広げ、
 		// 「実際に投稿がある人」を取りこぼさない。
-		const candidateMap = await this.getFoFUserCandidates(meId, FOF_NOTE_CANDIDATE_POOL_STEPS.at(-1)!);
+		const candidateMap = await this.getFoFUserCandidates(meId, FOF_NOTE_CANDIDATE_POOL_STEPS.at(-1)!, generation);
 		if (candidateMap.size === 0) return [];
 
 		// 土台スコア = 「サークル内親密度(c.score)」と「人気度(フォロワー数)」のブレンド。
 		// 人気枠(FOF_POPULAR_NOTE_RATIO)を混ぜることで、ローカルに投稿があるリモート人気アカも一定割合出す。
-		const allCandidates = [...candidateMap.values()].sort((a, b) => b.score - a.score);
+		const allCandidates = [...candidateMap.values()].sort((a, b) => b.score - a.score || (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
 		const cands = allCandidates;
 		const maxIntimacy = Math.max(1e-9, ...cands.map(c => c.score));
 		const maxPopularity = Math.max(1e-9, ...cands.map(c => Math.log10(c.followersCount + 10)));
@@ -801,8 +1081,8 @@ export class HanamiUserRecommendationService {
 		}));
 
 		// 窓を広げてDBにある過去投稿も対象に（無ければ諦める）。新鮮さはスコアで優先する。
-		const sinceId = this.idService.gen(Date.now() - FOF_NOTE_QUERY_LOOKBACK_MS);
-		const now = Date.now();
+		const now = this.generationNow(generation);
+		const sinceId = this.idService.gen(now - FOF_NOTE_QUERY_LOOKBACK_MS);
 		const queryLimit = this.getFoFNoteQueryLimit(limit);
 		let scored: FoFNote[] = [];
 
@@ -811,7 +1091,7 @@ export class HanamiUserRecommendationService {
 			if (userIds.length === 0) break;
 
 			const withFilesFilter = withFiles ? 'AND note."fileIds" != \'{}\'' : '';
-			const notes = await this.notesRepository.query(`
+			const notes = await this.noteSql<FoFNoteRow[]>(generation, `
 				SELECT
 					author_notes.id AS id,
 					author_notes."userId" AS "userId",
@@ -856,7 +1136,7 @@ export class HanamiUserRecommendationService {
 				) author_notes ON TRUE
 				ORDER BY author_notes.id DESC
 				LIMIT $4
-			`, [userIds, sinceId, FOF_NOTE_PER_AUTHOR_LIMIT, queryLimit]) as FoFNoteRow[];
+			`, [userIds, sinceId, FOF_NOTE_PER_AUTHOR_LIMIT, queryLimit]);
 
 			scored = notes.flatMap(n => {
 				const base = candBase.get(n.userId) ?? 0;
@@ -876,7 +1156,7 @@ export class HanamiUserRecommendationService {
 					score: base * (0.25 + recency) * vis * popularity * replyPenalty * authorRankPenalty,
 				}];
 			});
-			scored.sort((a, b) => b.score - a.score);
+			scored.sort((a, b) => b.score - a.score || (a.noteId < b.noteId ? 1 : a.noteId > b.noteId ? -1 : 0));
 
 			// 取得段階で作者ごとに上限を切っているので、十分な候補数が集まればプール拡張を止める。
 			if (scored.length >= limit * 2) break;
@@ -893,5 +1173,20 @@ export class HanamiUserRecommendationService {
 	public async getFoFNoteIds(meId: MiUser['id'], limit: number, opts: FoFNoteOptions = {}): Promise<FoFNote[]> {
 		const notes = await this.getFoFNotePool(meId, limit, opts.withFiles === true);
 		return this.applyFoFNoteRequestOptions(notes, limit, opts);
+	}
+
+	/** Generation-only FoF read. It never records shown/served state. */
+	@bindThis
+	public async getPersonalFeedFoFNoteIds(input: HanamiPersonalFeedGenerationContext, limit: number): Promise<FoFNote[]> {
+		this.throwIfGenerationAborted(input.signal);
+		try {
+			const pool = await this.getFoFNotePool(input.userId, limit, false, input);
+			const notes = this.applyFoFNoteRequestOptions(pool, limit, { withFiles: false });
+			this.throwIfGenerationAborted(input.signal);
+			return notes;
+		} catch (error) {
+			this.throwIfGenerationAborted(input.signal);
+			throw error;
+		}
 	}
 }
