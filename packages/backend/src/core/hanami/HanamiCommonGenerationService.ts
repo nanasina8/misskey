@@ -22,6 +22,7 @@ import {
 	type HanamiCommonGenerationReadPort,
 	type HanamiCommonGenerationRequestResult,
 	type HanamiCommonGenerationRunResult,
+	type HanamiCommonGenerationRunOptions,
 	type HanamiCommonSourceBundle,
 	type HanamiCommonTrigger,
 	type HanamiPersistedCommonCandidate,
@@ -243,7 +244,8 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 	}
 
 	@bindThis
-	public async runCommonGeneration(generationId: string): Promise<HanamiCommonGenerationRunResult> {
+	public async runCommonGeneration(generationId: string, options?: HanamiCommonGenerationRunOptions): Promise<HanamiCommonGenerationRunResult> {
+		const sourceAsOf = this.resolveSourceAsOf(options?.sourceAsOf);
 		const workerLease = this.startWorkerLease(generationId);
 		let claim: Extract<ClaimResult, { kind: 'claimed' }> | undefined;
 		try {
@@ -265,6 +267,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 				generationId,
 				generationFence: activeClaim.generationFence,
 				generatedAt: activeClaim.startedAt,
+				sourceAsOf,
 				signal: workerLease.controller.signal,
 			}));
 			this.assertOperationBudget(workerLease);
@@ -324,6 +327,13 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 		} finally {
 			workerLease.dispose();
 		}
+	}
+
+	private resolveSourceAsOf(value: Date | undefined): Date {
+		if (value != null && !(value instanceof Date)) throw new TypeError('sourceAsOf must be a valid finite Date');
+		const sourceAsOf = value == null ? new Date(Date.now()) : new Date(value.getTime());
+		if (!Number.isFinite(sourceAsOf.getTime())) throw new TypeError('sourceAsOf must be a valid finite Date');
+		return sourceAsOf;
 	}
 
 	@bindThis

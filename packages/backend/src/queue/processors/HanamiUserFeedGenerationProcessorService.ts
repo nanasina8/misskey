@@ -12,6 +12,7 @@ import {
 	type HanamiUserFeedGenerationLifecyclePort,
 	type HanamiUserFeedGenerationRunResult,
 } from '@/core/hanami/HanamiUserFeedContracts.js';
+import { QueueService } from '@/core/QueueService.js';
 import type { HanamiUserFeedGenerationJobData } from '../types.js';
 import { QueueLoggerService } from '../QueueLoggerService.js';
 
@@ -35,6 +36,7 @@ export class HanamiUserFeedGenerationProcessorService {
 	constructor(
 		@Inject(HANAMI_USER_FEED_GENERATION_LIFECYCLE)
 		private lifecycle: HanamiUserFeedGenerationLifecyclePort,
+		private queueService: QueueService,
 		private queueLoggerService: QueueLoggerService,
 	) {
 		this.logger = this.queueLoggerService.logger.createSubLogger('hanami-user-feed-generation');
@@ -48,6 +50,16 @@ export class HanamiUserFeedGenerationProcessorService {
 			}
 
 			const result = await this.lifecycle.runUserFeedGeneration(job.data.batchId);
+			if (result.kind === 'replaced') {
+				try {
+					await this.queueService.enqueueHanamiUserFeedGeneration(result.replacementBatchId);
+				} catch (error) {
+					this.logger.error('failed to enqueue replacement user feed batch', {
+						e: normalizeBullRejection(error),
+						replacementBatchId: result.replacementBatchId,
+					});
+				}
+			}
 			this.logger.info('hanami user feed generation delivery completed', {
 				batchId: job.data.batchId,
 				result: result.kind,

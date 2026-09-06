@@ -252,8 +252,11 @@ fulltextSearch:
 # The first key signs new cursors; the optional second key is kept only for verification during rotation.
 # The value must be shared by every worker and stay stable across deploys.
 # Generate with: node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
-# Secrets shorter than 32 UTF-8 bytes are rejected. Left commented out, `pnpm migrate` still runs,
-# but the server refuses to start until a real key is set.
+# Secrets shorter than 32 UTF-8 bytes are rejected, and ids must be unique.
+# Never ship a shared default here: this secret also derives the HMAC key that pseudonymizes ids in
+# admin/hanami/suggestion-events-export, so a publicly known value lets anyone holding an exported
+# dataset re-identify every user and note in it.
+# Left commented out, `pnpm migrate` still runs, but the server refuses to start until a real key is set.
 #hanamiCursorSigningKeys:
 #  - id: current
 #    secret: replace-with-at-least-32-utf8-bytes

@@ -64,6 +64,7 @@ export type HanamiCommonSourceBuildInput = {
 	readonly generationId: string;
 	readonly generationFence: string;
 	readonly generatedAt: string;
+	readonly sourceAsOf: Date;
 	readonly signal: AbortSignal;
 };
 
@@ -125,9 +126,13 @@ export const HANAMI_COMMON_GENERATION_LIFECYCLE = Symbol('HANAMI_COMMON_GENERATI
 
 export interface HanamiCommonGenerationLifecyclePort {
 	requestCommonGeneration(trigger: HanamiCommonTrigger): Promise<HanamiCommonGenerationRequestResult>;
-	runCommonGeneration(generationId: string): Promise<HanamiCommonGenerationRunResult>;
+	runCommonGeneration(generationId: string, options?: HanamiCommonGenerationRunOptions): Promise<HanamiCommonGenerationRunResult>;
 	findDispatchableCommonGeneration(): Promise<HanamiCommonGenerationDispatch | null>;
 }
+
+export type HanamiCommonGenerationRunOptions = {
+	readonly sourceAsOf?: Date;
+};
 
 export type HanamiReadyCommonHead = {
 	readonly epochId: string;

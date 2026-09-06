@@ -18,6 +18,7 @@ import {
 	type HanamiPersonalFeedComputationPort,
 	type HanamiPersonalFeedComputationResult,
 	type HanamiPersonalFeedItem,
+	HanamiInvalidPersonalSeedError,
 } from '@/core/hanami/HanamiUserFeedContracts.js';
 import { hanamiInterleave, type HanamiAxis, type ForYouCandidate } from '@/core/hanami/HanamiForYouInterleave.js';
 import {
@@ -26,6 +27,8 @@ import {
 } from '@/core/hanami/HanamiForYouService.js';
 import { HanamiForYouSafetyService } from '@/core/hanami/HanamiForYouSafetyService.js';
 import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
+import { createHanamiExactTextFingerprint, createHanamiStrictBotTemplateFingerprint } from '@/core/hanami/HanamiForYouTextNormalization.js';
+import { createHanamiQualityShadow, type HanamiRelationshipClass } from '@/core/hanami/HanamiForYouQualityContracts.js';
 
 const MAX_SEGMENTS = 7;
 const SEGMENT_SIZE = 30;
@@ -60,6 +63,31 @@ type GenerationRunnerScope = {
 };
 
 export const HANAMI_PERSONAL_FEED_ALGORITHM_VERSION = 'hanami-personal-v1';
+
+/** Pure old-head check: a new item cannot repair an existing upper excess. */
+export function hanamiHasUnhealablePersonalSeedHead(seed: readonly ForYouCandidate[], unknownSufficient: boolean): boolean {
+	for (const size of [10, 30, 210] as const) {
+		// Without W - 1 old entries no new-inclusive full W window exists yet.
+		if (seed.length < size - 1) continue;
+		const head = seed.slice(0, size - 1);
+		const authorLimit = size === 10 ? 1 : size === 30 ? 2 : 6;
+		const exceeds = (values: readonly string[], limit: number): boolean => {
+			const counts = new Map<string, number>();
+			for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+			return [...counts.values()].some(count => count > limit);
+		};
+		if (exceeds(head.flatMap(item => item.userId == null ? [] : [item.userId]), authorLimit)) return true;
+		if (size !== 30) continue;
+		if (exceeds(head.flatMap(item => item.exactTextFingerprint == null ? [] : [item.exactTextFingerprint]), 1)) return true;
+		if (exceeds(head.flatMap(item => item.isBot === true && item.userId != null && item.strictBotTemplateFingerprint != null
+			? [`${item.userId}\u0000${item.strictBotTemplateFingerprint}`] : []), 1)) return true;
+		const direct = head.filter(item => item.relationshipClass === 'directFollow').length;
+		const knownIncludingDirect = head.filter(item => item.relationshipClass === 'directFollow' || item.relationshipClass === 'known').length;
+		if (direct > 6 || knownIncludingDirect > 12) return true;
+		if (unknownSufficient && head.filter(item => item.relationshipClass === 'unknown').length < 14) return true;
+	}
+	return false;
+}
 
 @Injectable()
 export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedComputationPort {
@@ -277,9 +305,66 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 
 	private validateInput(input: HanamiPersonalFeedComputationInput): void {
 		if (input.userId.trim().length === 0) throw new TypeError('userId must not be empty');
+		if (input.epochId.trim().length === 0) throw new TypeError('epochId must not be empty');
 		if (input.baseCommonGenerationId.trim().length === 0) throw new TypeError('baseCommonGenerationId must not be empty');
 		if (!Number.isFinite(Date.parse(input.generatedAt))) throw new TypeError('generatedAt must be a valid ISO timestamp');
 		if (!Number.isFinite(Date.parse(input.databaseDeadlineAt))) throw new TypeError('databaseDeadlineAt must be a valid ISO timestamp');
+	}
+
+	/**
+	 * One bounded candidate lookup enriches transient constraints. Fingerprints
+	 * are derived only in memory from Note text; persisted entries retain Note IDs
+	 * only, so no fingerprint/text is written to reasonMetadata.
+	 */
+	private async enrichAndExcludeEpochCandidates(context: HanamiPersonalFeedGenerationContext, candidates: readonly HanamiPersonalFeedCandidate[]): Promise<{ candidates: readonly HanamiPersonalFeedCandidate[]; seed: readonly ForYouCandidate[] }> {
+		const ids = [...new Set(candidates.map(c => c.noteId))];
+		if (ids.length === 0) return { candidates, seed: [] };
+		const existingRows = await context.queryRunner.query(`
+			SELECT e."noteId" AS note_id FROM "hanami_user_feed_entry" e
+			JOIN "hanami_user_feed_batch" b ON b."id" = e."batchId" AND b."status" = 'ready'
+			WHERE e."userId" = $1 AND e."epochId" = $2 AND e."noteId" = ANY($3::varchar[])
+		`, [context.userId, context.epochId, ids]) as Array<{ note_id: string }>;
+		const seenRows = await context.queryRunner.query(`
+			SELECT DISTINCT e."noteId" AS note_id FROM "hanami_recommendation_event" e
+			WHERE e."userId" = $1 AND e."noteId" = ANY($2::varchar[]) AND e."eventType" = 'seen'
+				AND e."occurredAt" >= $3::timestamptz - INTERVAL '7 days' AND e."occurredAt" <= $3::timestamptz
+		`, [context.userId, ids, context.generatedAt]) as Array<{ note_id: string }>;
+		const excluded = new Set([...existingRows, ...seenRows].map(row => row.note_id));
+		const eligible = candidates.filter(candidate => !excluded.has(candidate.noteId));
+		const detailRows = await context.queryRunner.query(`
+			SELECT n.id AS note_id, n."userId" AS author_id, COALESCE(n.text, '') AS text, u."isBot" AS is_bot,
+				CASE WHEN EXISTS (SELECT 1 FROM following f WHERE f."followerId" = $1 AND f."followeeId" = n."userId") THEN 'directFollow'
+					WHEN EXISTS (SELECT 1 FROM following f WHERE (f."followerId" = $1 AND f."followeeId" = n."userId") OR (f."followerId" = n."userId" AND f."followeeId" = $1)) THEN 'known'
+					ELSE 'unknown' END AS relationship_class
+			FROM note n JOIN "user" u ON u.id = n."userId" WHERE n.id = ANY($2::varchar[])
+		`, [context.userId, eligible.map(c => c.noteId)]) as Array<{ note_id: string; author_id: string; text: string; is_bot: boolean; relationship_class: HanamiRelationshipClass }>;
+		const detail = new Map(detailRows.map(row => [row.note_id, row]));
+		const enriched = eligible.flatMap(candidate => {
+			const row = detail.get(candidate.noteId);
+			// Safety already established eligibility. A concurrently removed detail row
+			// is not a reason to invent a DB retry; retain legacy-compatible fields.
+			if (row == null) return [candidate];
+			const text = row.text;
+			return [{ ...candidate, authorId: row.author_id, relationshipClass: row.relationship_class,
+				exactTextFingerprint: createHanamiExactTextFingerprint(text),
+				...(row.is_bot ? { isBot: true, strictBotTemplateFingerprint: createHanamiStrictBotTemplateFingerprint(row.author_id, text) } : {}),
+				qualityShadow: createHanamiQualityShadow({ relationshipClass: row.relationship_class, standaloneValue: null, socialOnly: null }),
+			}];
+		});
+		const seedRows = await context.queryRunner.query(`
+			SELECT e."noteId" AS note_id, n."userId" AS author_id, COALESCE(n.text, '') AS text, u."isBot" AS is_bot,
+				CASE WHEN EXISTS (SELECT 1 FROM following f WHERE f."followerId" = $1 AND f."followeeId" = n."userId") THEN 'directFollow'
+					WHEN EXISTS (SELECT 1 FROM following f WHERE (f."followerId" = $1 AND f."followeeId" = n."userId") OR (f."followerId" = n."userId" AND f."followeeId" = $1)) THEN 'known'
+					ELSE 'unknown' END AS relationship_class
+			FROM "hanami_user_feed_entry" e JOIN "hanami_user_feed_batch" b ON b.id = e."batchId" AND b.status = 'ready'
+			JOIN note n ON n.id = e."noteId" JOIN "user" u ON u.id = n."userId"
+			WHERE e."userId" = $1 AND e."epochId" = $2 ORDER BY e."sequence" DESC LIMIT 210
+		`, [context.userId, context.epochId]) as Array<{ note_id: string; author_id: string; text: string; is_bot: boolean; relationship_class: HanamiRelationshipClass }>;
+		return { candidates: enriched, seed: seedRows.map(row => ({ noteId: row.note_id, userId: row.author_id, score: 0,
+			relationshipClass: row.relationship_class,
+			exactTextFingerprint: createHanamiExactTextFingerprint(row.text), isBot: row.is_bot,
+			...(row.is_bot ? { strictBotTemplateFingerprint: createHanamiStrictBotTemplateFingerprint(row.author_id, row.text) } : {}),
+		})) };
 	}
 
 	private commonCandidate(row: HanamiPersistedCommonCandidate, authorId: string): HanamiPersonalFeedCandidate {
@@ -294,6 +379,41 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 			score: row.baseScore,
 			...(term !== undefined ? { term } : {}),
 		};
+	}
+
+	/**
+	 * Final persisted-path exploration pool: this deliberately runs after safety
+	 * and the epoch/seen hard exclusions. One deterministic round takes the
+	 * author-diverse rounds preserve ranked candidate volume while keeping every
+	 * author at or below 5% of the pool. With fewer,
+	 * no mathematically valid exploration pool exists and only that axis is
+	 * omitted (other eligible axes are untouched).
+	 */
+	private finalExplorationDiversity(candidates: readonly HanamiPersonalFeedCandidate[]): readonly HanamiPersonalFeedCandidate[] {
+		const exploration = candidates.filter(candidate => candidate.axis === 'exploration');
+		const authors = new Map<string, HanamiPersonalFeedCandidate[]>();
+		for (const candidate of exploration) {
+			const list = authors.get(candidate.authorId) ?? [];
+			list.push(candidate);
+			authors.set(candidate.authorId, list);
+		}
+		// With fewer than twenty authors, even one candidate is >5%; omit this axis
+		// rather than claim a mathematically impossible diversity guarantee.
+		if (authors.size < 20) return candidates.filter(candidate => candidate.axis !== 'exploration');
+		// A complete round has one candidate per author. Retaining only complete
+		// rounds means the least-prolific eligible author sets the safe volume,
+		// while the bounded 500 candidate source remains recoverable when all
+		// authors have depth.
+		const lists = [...authors.values()];
+		const rounds = Math.min(
+			Math.max(1, Math.floor(COMMON_CANDIDATE_LIMITS.exploration / authors.size)),
+			...lists.map(list => list.length),
+		);
+		const selected: HanamiPersonalFeedCandidate[] = [];
+		for (let round = 0; round < rounds; round++) {
+			for (const list of lists) selected.push(list[round]!);
+		}
+		return candidates.filter(candidate => candidate.axis !== 'exploration').concat(selected);
 	}
 
 	private validateCommonCandidates(candidates: readonly HanamiPersistedCommonCandidate[]): void {
@@ -364,15 +484,28 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 		const rankedCandidates = await this.boundary(signal, async () => (
 			await this.hanamiForYouService.rankPersonalFeedCandidates(context, preparation, safeCandidates)
 		));
+		const constrained = await this.boundary(signal, async () => await this.enrichAndExcludeEpochCandidates(context, rankedCandidates));
 
+		const finalCandidates = this.finalExplorationDiversity(constrained.candidates);
+		// This is a refresh-wide eligibility fact, not a segment-local one. Reusing
+		// it for every interleave prevents later segments from silently dropping the
+		// 30-item unknown floor merely because earlier segments consumed candidates.
+		const unknownEligibleCount = new Set(finalCandidates
+			.filter(candidate => candidate.relationshipClass === 'unknown')
+			.map(candidate => candidate.noteId)).size;
+		const unknownSufficient = unknownEligibleCount >= 15;
+		if (hanamiHasUnhealablePersonalSeedHead(constrained.seed, unknownSufficient)) {
+			throw new HanamiInvalidPersonalSeedError();
+		}
 		const byAxis = new Map<HanamiAxis, HanamiPersonalFeedCandidate[]>();
-		for (const candidate of rankedCandidates) {
+		for (const candidate of finalCandidates) {
 			const list = byAxis.get(candidate.axis) ?? [];
 			list.push(candidate);
 			byAxis.set(candidate.axis, list);
 		}
 
 		const selectedNoteIds = new Set<string>();
+		const selectedHistory: ForYouCandidate[] = [];
 		const items: HanamiPersonalFeedItem[] = [];
 		const segmentLengths: number[] = [];
 		for (let segmentIndex = 0; segmentIndex < MAX_SEGMENTS; segmentIndex++) {
@@ -383,11 +516,16 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 			for (const [axis, candidates] of byAxis) {
 				const available = candidates.filter(candidate => !selectedNoteIds.has(candidate.noteId));
 				axisCandidates.set(axis, available.map(candidate => ({
+					...candidate,
 					noteId: candidate.noteId,
 					userId: candidate.authorId,
 					score: candidate.score,
 					...(candidate.term !== undefined ? { term: candidate.term } : {}),
 					...(candidate.clusterId !== undefined ? { clusterId: candidate.clusterId } : {}),
+					...(candidate.relationshipClass !== undefined ? { relationshipClass: candidate.relationshipClass } : {}),
+					...(candidate.exactTextFingerprint !== undefined ? { exactTextFingerprint: candidate.exactTextFingerprint } : {}),
+					...(candidate.isBot !== undefined ? { isBot: candidate.isBot } : {}),
+					...(candidate.strictBotTemplateFingerprint !== undefined ? { strictBotTemplateFingerprint: candidate.strictBotTemplateFingerprint } : {}),
 				})));
 				for (const candidate of available) sourceCandidateByKey.set(`${axis}\t${candidate.noteId}`, candidate);
 			}
@@ -397,13 +535,25 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 				limit: SEGMENT_SIZE,
 				axisCandidates,
 				axisLevels: preparation.axisLevels,
+				personalConstraints: true,
+				selectedVisible: selectedHistory,
+				followingSeedVisible: constrained.seed,
+				unknownSufficient,
 			}).slice(0, SEGMENT_SIZE);
 			if (interleaved.length === 0) break;
 
 			for (const selected of interleaved) {
 				const sourceCandidate = sourceCandidateByKey.get(`${selected.source}\t${selected.noteId}`);
 				if (sourceCandidate == null || selectedNoteIds.has(selected.noteId)) continue;
+				const transient: ForYouCandidate = {
+					noteId: sourceCandidate.noteId, userId: sourceCandidate.authorId, score: sourceCandidate.score,
+					...(sourceCandidate.relationshipClass !== undefined ? { relationshipClass: sourceCandidate.relationshipClass } : {}),
+					...(sourceCandidate.exactTextFingerprint !== undefined ? { exactTextFingerprint: sourceCandidate.exactTextFingerprint } : {}),
+					...(sourceCandidate.isBot !== undefined ? { isBot: sourceCandidate.isBot } : {}),
+					...(sourceCandidate.strictBotTemplateFingerprint !== undefined ? { strictBotTemplateFingerprint: sourceCandidate.strictBotTemplateFingerprint } : {}),
+				};
 				selectedNoteIds.add(selected.noteId);
+				selectedHistory.push(transient);
 				items.push(this.immutableItem({
 					noteId: selected.noteId,
 					source: selected.source,

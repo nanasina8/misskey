@@ -62,6 +62,7 @@ export * as 'admin/get-table-stats' from './endpoints/admin/get-table-stats.js';
 export * as 'admin/get-user-ips' from './endpoints/admin/get-user-ips.js';
 export * as 'admin/hanami/taste-rebuild' from './endpoints/admin/hanami/taste-rebuild.js';
 export * as 'admin/hanami/taste-rebuild-status' from './endpoints/admin/hanami/taste-rebuild-status.js';
+export * as 'admin/hanami/suggestion-events-export' from './endpoints/admin/hanami/suggestion-events-export.js';
 export * as 'admin/invite/create' from './endpoints/admin/invite/create.js';
 export * as 'admin/invite/list' from './endpoints/admin/invite/list.js';
 export * as 'admin/meta' from './endpoints/admin/meta.js';

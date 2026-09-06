@@ -28,6 +28,11 @@ export type ForYouCandidate = {
 	score: number;
 	term?: string; // trending の該当用語
 	clusterId?: number; // taste cluster 由来（globalPopular/reactionSimilar。provenance/インライン減らす用）
+	/** Generation-only fields. They are intentionally not emitted or persisted. */
+	relationshipClass?: import('./HanamiForYouQualityContracts.js').HanamiRelationshipClass;
+	exactTextFingerprint?: string;
+	strictBotTemplateFingerprint?: string;
+	isBot?: boolean;
 };
 
 // interleave 出力（配信順）。source=枠を消費した軸 / sources=寄与した全軸（§6.1-2）。
@@ -39,6 +44,11 @@ export type InterleavedCandidate = {
 	term?: string;
 	clusterId?: number;
 	fallbackOverflow?: boolean;
+	/** Transient constraint state; callers must not persist these fields. */
+	relationshipClass?: import('./HanamiForYouQualityContracts.js').HanamiRelationshipClass;
+	exactTextFingerprint?: string;
+	strictBotTemplateFingerprint?: string;
+	isBot?: boolean;
 };
 
 // confidence ごとの軸順（§10）。exploration は専用枠として末尾に足す（§6.1-9/§14-D1）。
@@ -68,6 +78,9 @@ const AXIS_LEVEL_WEIGHT: Record<HanamiAxisLevel, number> = {
 
 // 作者は原則1ページ AUTHOR_PER_PAGE_CAP 件まで（§6.1-5）。
 const AUTHOR_PER_PAGE_CAP = 2;
+// 未知(unknown)関係の下限は 30 件窓あたり 15 件（canonical spec §6.1 パーソナル制約）。
+const UNKNOWN_FLOOR_WINDOW = 30;
+const UNKNOWN_FLOOR_MIN = 15;
 
 export function hanamiAxisOrder(confidence: HanamiConfidence): HanamiAxis[] {
 	return [...AXIS_ORDER[confidence], 'exploration'];
@@ -129,6 +142,16 @@ export function hanamiInterleave(opts: {
 	limit: number;
 	axisCandidates: Map<HanamiAxis, ForYouCandidate[]>;
 	axisLevels?: ReadonlyMap<HanamiAxis, HanamiAxisLevel>;
+	/** Enables the stricter persisted personal-feed sliding constraints. Legacy/common callers retain §6.1 page caps. */
+	personalConstraints?: boolean;
+	/** Newer entries already selected for this visible refresh, in display order. */
+	selectedVisible?: readonly ForYouCandidate[];
+	/** Prior persisted entries, ordered by sequence DESC (old head first). */
+	followingSeedVisible?: readonly ForYouCandidate[];
+	/** Stable batch snapshot of unknown eligibility. If omitted, legacy callers use this invocation's candidates. */
+	unknownEligibleCount?: number;
+	/** Explicit batch snapshot; takes precedence over unknownEligibleCount. */
+	unknownSufficient?: boolean;
 }): InterleavedCandidate[] {
 	const { confidence, limit } = opts;
 	const order = hanamiAxisOrder(confidence);
@@ -153,20 +176,181 @@ export function hanamiInterleave(opts: {
 	const used = new Map<HanamiAxis, number>(order.map(a => [a, 0]));
 	const consumed = new Map<HanamiAxis, Set<number>>(order.map(a => [a, new Set<number>()]));
 	const authorCount = new Map<string, number>();
+	const unknownEligible = new Set([...opts.axisCandidates.values()].flat().filter(c => c.relationshipClass === 'unknown').map(c => c.noteId));
+	const unknownSufficient = opts.unknownSufficient ?? ((opts.unknownEligibleCount ?? unknownEligible.size) >= 15);
 	const selected = new Set<string>();
+	const selectedVisible = [...(opts.selectedVisible ?? [])];
+	const followingSeedVisible = [...(opts.followingSeedVisible ?? [])];
 	const out: InterleavedCandidate[] = [];
+	const constraintOut: ForYouCandidate[] = [];
 	let lastAuthor: string | null = null;
+	const asConstraintCandidate = (item: InterleavedCandidate): ForYouCandidate => ({
+		noteId: item.noteId, userId: item.userId, score: 0,
+		...(item.relationshipClass !== undefined ? { relationshipClass: item.relationshipClass } : {}),
+		...(item.exactTextFingerprint !== undefined ? { exactTextFingerprint: item.exactTextFingerprint } : {}),
+		...(item.isBot !== undefined ? { isBot: item.isBot } : {}),
+		...(item.strictBotTemplateFingerprint !== undefined ? { strictBotTemplateFingerprint: item.strictBotTemplateFingerprint } : {}),
+	});
+	// A bounded counter is incrementally slid across the at-most-W windows that can
+	// intersect one new item. This avoids rebuilding W slices and count maps per window.
+	const windowState = (size: 10 | 30 | 210) => {
+		const authorLimit = size === 10 ? 1 : size === 30 ? 2 : 6;
+		const authors = new Map<string, number>();
+		const exact = new Map<string, number>();
+		const templates = new Map<string, number>();
+		let direct = 0;
+		let knownIncludingDirect = 0;
+		let unknown = 0;
+		const change = (map: Map<string, number>, key: string, delta: 1 | -1): void => {
+			const before = map.get(key) ?? 0;
+			const after = before + delta;
+			if (after === 0) map.delete(key); else map.set(key, after);
+		};
+		const update = (item: ForYouCandidate, delta: 1 | -1): void => {
+			if (item.userId != null) change(authors, item.userId, delta);
+			if (size !== 30) return;
+			if (item.exactTextFingerprint != null) change(exact, item.exactTextFingerprint, delta);
+			if (item.isBot === true && item.userId != null && item.strictBotTemplateFingerprint != null) change(templates, `${item.userId}\u0000${item.strictBotTemplateFingerprint}`, delta);
+			if (item.relationshipClass === 'directFollow') direct += delta;
+			// directFollow is a subset of known for the cumulative relationship cap.
+			if (item.relationshipClass === 'directFollow' || item.relationshipClass === 'known') knownIncludingDirect += delta;
+			if (item.relationshipClass === 'unknown') unknown += delta;
+		};
+		const upperExcess = (): number => {
+			const excess = (map: ReadonlyMap<string, number>, limit: number): number => [...map.values()].reduce((total, count) => total + Math.max(0, count - limit), 0);
+			return excess(authors, authorLimit) + (size === 30
+				? excess(exact, 1) + excess(templates, 1) + Math.max(0, direct - 6) + Math.max(0, knownIncludingDirect - 12)
+				: 0);
+		};
+		const unknownDeficit = (): number => size === UNKNOWN_FLOOR_WINDOW && unknownSufficient ? Math.max(0, UNKNOWN_FLOOR_MIN - unknown) : 0;
+		return {
+			update,
+			valid: (full: boolean): boolean => upperExcess() === 0 && (!full || unknownDeficit() === 0),
+			upperExcess,
+		};
+	};
+	const affectedWindowsValid = (newCount: number, candidate: ForYouCandidate): boolean => {
+		const insertedAt = selectedVisible.length + newCount;
+		const total = insertedAt + 1 + followingSeedVisible.length;
+		const itemAt = (index: number): ForYouCandidate => index < selectedVisible.length ? selectedVisible[index]
+			: index < insertedAt ? constraintOut[index - selectedVisible.length]
+			: index === insertedAt ? candidate : followingSeedVisible[index - insertedAt - 1];
+		const baseItemAt = (index: number): ForYouCandidate => index < insertedAt ? itemAt(index) : followingSeedVisible[index - insertedAt];
+		for (const size of [10, 30, 210] as const) {
+			const first = Math.max(0, insertedAt - size + 1);
+			const last = Math.min(insertedAt, total - size);
+			if (first <= last) {
+				const state = windowState(size);
+				const withoutCandidate = windowState(size);
+				for (let i = first; i < first + size; i++) {
+					state.update(itemAt(i), 1);
+					if (i !== insertedAt) withoutCandidate.update(itemAt(i), 1);
+				}
+				for (let start = first; start <= last; start++) {
+					if (!state.valid(true)) {
+						// A legacy W-1 context may already be invalid, so permit a candidate that
+						// does not worsen the upper bounds. The unknown floor is a lower bound and
+						// can never be worsened by adding an item; it is steered during selection
+						// by unknownFloorPressure() and enforced by the final prefix validator.
+						if (state.upperExcess() > withoutCandidate.upperExcess()) return false;
+					}
+					if (start < last) {
+						state.update(itemAt(start), -1);
+						state.update(itemAt(start + size), 1);
+						withoutCandidate.update(itemAt(start), -1);
+						withoutCandidate.update(itemAt(start + size), 1);
+					}
+				}
+			} else { // Incomplete windows enforce irreversible upper bounds only.
+				const withCandidate = windowState(size);
+				const withoutCandidate = windowState(size);
+				for (let i = 0; i < total; i++) withCandidate.update(itemAt(i), 1);
+				for (let i = 0; i < total - 1; i++) withoutCandidate.update(baseItemAt(i), 1);
+				if (!withCandidate.valid(false) && withoutCandidate.valid(false)) return false;
+			}
+		}
+		return true;
+	};
+	const windowAllows = (candidate: ForYouCandidate): boolean => {
+		if (!opts.personalConstraints) return true;
+		const normalized = { ...candidate, userId: merged.get(candidate.noteId)?.userId ?? null };
+		return affectedWindowsValid(constraintOut.length, normalized);
+	};
+	// unknown 下限は上限制約と違って候補フィルタでは表現できない: 1件足しても unknown は減らないので
+	// affectedWindowsValid は常に通してしまう。そこで採用側で誘導する。
+	// 最終 validator と同じ「ここで止まったら」視点で、新規1件を含む各30件窓の確定 unknown 数を数え、
+	// 15件に届かない窓があれば unknown 候補を優先する。これを欠くと下限充足は運任せになり、
+	// 末尾の prefix validator が丸ごと切り落とす（＝空バッチで生成が失敗する）。
+	const unknownFloorPressure = (): boolean => {
+		if (!opts.personalConstraints || !unknownSufficient) return false;
+		const insertedAt = selectedVisible.length + constraintOut.length;
+		const total = insertedAt + 1 + followingSeedVisible.length;
+		const first = Math.max(0, insertedAt - (UNKNOWN_FLOOR_WINDOW - 1));
+		const last = Math.min(insertedAt, total - UNKNOWN_FLOOR_WINDOW);
+		if (first > last) return false;
+		// 採用枠 insertedAt 自身は未確定なので数から外す。残り29枠が15未満なら unknown が要る。
+		const isUnknownAt = (index: number): boolean => {
+			if (index === insertedAt) return false;
+			const item = index < selectedVisible.length ? selectedVisible[index]
+				: index < insertedAt ? constraintOut[index - selectedVisible.length]
+				: followingSeedVisible[index - insertedAt - 1];
+			return item?.relationshipClass === 'unknown';
+		};
+		let unknown = 0;
+		for (let index = first; index < first + UNKNOWN_FLOOR_WINDOW; index++) if (isUnknownAt(index)) unknown++;
+		if (unknown < UNKNOWN_FLOOR_MIN) return true;
+		for (let start = first; start < last; start++) {
+			if (isUnknownAt(start)) unknown--;
+			if (isUnknownAt(start + UNKNOWN_FLOOR_WINDOW)) unknown++;
+			if (unknown < UNKNOWN_FLOOR_MIN) return true;
+		}
+		return false;
+	};
 
 	const pushPick = (axis: HanamiAxis, c: ForYouCandidate, flags: { fallbackOverflow?: boolean } = {}): void => {
 		const m = merged.get(c.noteId)!;
 		selected.add(c.noteId);
 		used.set(axis, (used.get(axis) ?? 0) + 1);
-		if (m.userId != null) authorCount.set(m.userId, (authorCount.get(m.userId) ?? 0) + 1);
+		if (!opts.personalConstraints && m.userId != null) authorCount.set(m.userId, (authorCount.get(m.userId) ?? 0) + 1);
 		lastAuthor = m.userId ?? null;
 		out.push({
 			noteId: c.noteId, userId: m.userId, source: axis, sources: [...m.sources], term: m.term, clusterId: c.clusterId,
+			...(c.relationshipClass !== undefined ? { relationshipClass: c.relationshipClass } : {}),
+			...(c.exactTextFingerprint !== undefined ? { exactTextFingerprint: c.exactTextFingerprint } : {}),
+			...(c.isBot !== undefined ? { isBot: c.isBot } : {}),
+			...(c.strictBotTemplateFingerprint !== undefined ? { strictBotTemplateFingerprint: c.strictBotTemplateFingerprint } : {}),
 			...(flags.fallbackOverflow ? { fallbackOverflow: true } : {}),
 		});
+		constraintOut.push(asConstraintCandidate(out[out.length - 1]));
+	};
+
+	const scanPickIndex = (axis: HanamiAxis, allowSameAuthor: boolean, unknownOnly: boolean): number => {
+		const list = opts.axisCandidates.get(axis) ?? [];
+		const done = consumed.get(axis)!;
+		let chosenIdx = -1;
+		let fallbackIdx = -1;
+		for (let i = 0; i < list.length; i++) {
+			if (done.has(i)) continue;
+			const c = list[i];
+			if (selected.has(c.noteId)) { done.add(i); continue; } // 他軸で採用済 → 恒久スキップ
+			const author = merged.get(c.noteId)?.userId ?? null;
+			if (!opts.personalConstraints && author != null && (authorCount.get(author) ?? 0) >= AUTHOR_PER_PAGE_CAP) { done.add(i); continue; }
+			if (unknownOnly && c.relationshipClass !== 'unknown') continue;
+			if (!windowAllows(c)) continue;
+			if (fallbackIdx < 0) fallbackIdx = i;
+			if (author == null || author !== lastAuthor) { chosenIdx = i; break; }
+		}
+		return chosenIdx >= 0 ? chosenIdx : (allowSameAuthor ? fallbackIdx : -1);
+	};
+
+	// unknown 優先は「選好」であって強制ではない: unknown 候補が尽きた軸で採用を止めると
+	// ページが痩せるだけなので、取れなければ通常走査に落とす。
+	const nextPickIndex = (axis: HanamiAxis, allowSameAuthor: boolean): number => {
+		if (unknownFloorPressure()) {
+			const preferred = scanPickIndex(axis, allowSameAuthor, true);
+			if (preferred >= 0) return preferred;
+		}
+		return scanPickIndex(axis, allowSameAuthor, false);
 	};
 
 	// round-robin で out を target まで埋める（軸内スコア順・既出は減点済み）。
@@ -179,47 +363,16 @@ export function hanamiInterleave(opts: {
 			for (const axis of order) {
 				if (out.length >= target) break;
 				if ((used.get(axis) ?? 0) >= (cap.get(axis) ?? 0)) continue;
-				const list = opts.axisCandidates.get(axis) ?? [];
-				const done = consumed.get(axis)!;
-				let chosenIdx = -1;
-				let fallbackIdx = -1;
-				for (let i = 0; i < list.length; i++) {
-					if (done.has(i)) continue;
-					const c = list[i];
-					if (selected.has(c.noteId)) { done.add(i); continue; } // 他軸で採用済 → 恒久スキップ
-					const author = merged.get(c.noteId)?.userId ?? null;
-					// 作者上限超過 は恒久スキップ（authorCount は増加のみ）。
-					if (author != null && (authorCount.get(author) ?? 0) >= AUTHOR_PER_PAGE_CAP) { done.add(i); continue; }
-					if (fallbackIdx < 0) fallbackIdx = i;
-					if (author == null || author !== lastAuthor) { chosenIdx = i; break; }
-				}
-				const pickIdx = chosenIdx >= 0 ? chosenIdx : (round > 0 ? fallbackIdx : -1);
+				const pickIdx = nextPickIndex(axis, round > 0);
 				if (pickIdx >= 0) {
-					done.add(pickIdx);
-					pushPick(axis, list[pickIdx]);
+					consumed.get(axis)!.add(pickIdx);
+					pushPick(axis, (opts.axisCandidates.get(axis) ?? [])[pickIdx]);
 					pickedThisRound = true;
 				}
 			}
 			round++;
 			if (!pickedThisRound) break;
 		}
-	};
-
-	const nextPickIndex = (axis: HanamiAxis, allowSameAuthor: boolean): number => {
-		const list = opts.axisCandidates.get(axis) ?? [];
-		const done = consumed.get(axis)!;
-		let chosenIdx = -1;
-		let fallbackIdx = -1;
-		for (let i = 0; i < list.length; i++) {
-			if (done.has(i)) continue;
-			const c = list[i];
-			if (selected.has(c.noteId)) { done.add(i); continue; }
-			const author = merged.get(c.noteId)?.userId ?? null;
-			if (author != null && (authorCount.get(author) ?? 0) >= AUTHOR_PER_PAGE_CAP) { done.add(i); continue; }
-			if (fallbackIdx < 0) fallbackIdx = i;
-			if (author == null || author !== lastAuthor) { chosenIdx = i; break; }
-		}
-		return chosenIdx >= 0 ? chosenIdx : (allowSameAuthor ? fallbackIdx : -1);
 	};
 
 	const fillOverflow = (target: number): void => {
@@ -262,6 +415,27 @@ export function hanamiInterleave(opts: {
 	// 後段 safety filter の脱落に備え、通常capと同じ headroom まで余分に渡す。
 	const overflowTarget = Math.max(limit, headroom);
 	if (out.length < overflowTarget) fillOverflow(overflowTarget);
+	if (opts.personalConstraints) {
+		// Defensive final guard: retain the longest absolute-valid prefix. A later
+		// item can heal a lower-bound deficit at the old-head boundary, so validate
+		// each complete prefix as its final visible sequence rather than stopping at
+		// the first transitional prefix.
+		const prefixValid = (count: number): boolean => {
+			const visible = [...selectedVisible, ...constraintOut.slice(0, count), ...followingSeedVisible];
+			const newEnd = selectedVisible.length + count;
+			for (const size of [10, 30, 210] as const) {
+				for (let start = 0; start + size <= visible.length && start < newEnd; start++) {
+					const state = windowState(size);
+					for (let index = start; index < start + size; index++) state.update(visible[index], 1);
+					if (!state.valid(true)) return false;
+				}
+			}
+			return true;
+		};
+		let longestValid = 0;
+		for (let count = 1; count <= constraintOut.length; count++) if (prefixValid(count)) longestValid = count;
+		return out.slice(0, longestValid);
+	}
 
 	return out;
 }

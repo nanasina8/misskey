@@ -418,15 +418,23 @@ export class HanamiPersistedFeedReadService implements HanamiPersistedFeedReadPo
 		});
 	}
 
-	private validateReasonMetadata(value: unknown): { version: 1; term?: string; clusterId?: number; bucket?: 'cluster' | 'recent'; fallbackOverflow?: true } {
+	private validateReasonMetadata(value: unknown): import('./HanamiUserFeedContracts.js').HanamiUserFeedReasonMetadata {
 		if (typeof value !== 'object' || value == null || Array.isArray(value)) throw new Error('Invalid persisted Hanami reason metadata');
 		const metadata = value as Record<string, unknown>;
-		if (metadata.version !== 1) throw new Error('Invalid persisted Hanami reason metadata version');
+		if (metadata.version !== 1 && metadata.version !== 2) throw new Error('Invalid persisted Hanami reason metadata version');
 		if (metadata.term != null && typeof metadata.term !== 'string') throw new Error('Invalid persisted Hanami reason term');
 		if (metadata.clusterId != null && (!Number.isSafeInteger(metadata.clusterId) || (metadata.clusterId as number) < 0)) throw new Error('Invalid persisted Hanami reason clusterId');
 		if (metadata.bucket != null && metadata.bucket !== 'cluster' && metadata.bucket !== 'recent') throw new Error('Invalid persisted Hanami reason bucket');
 		if (metadata.fallbackOverflow != null && metadata.fallbackOverflow !== true) throw new Error('Invalid persisted Hanami fallbackOverflow');
-		return metadata as { version: 1; term?: string; clusterId?: number; bucket?: 'cluster' | 'recent'; fallbackOverflow?: true };
+		if (metadata.version === 2 && metadata.qualityShadow != null) {
+			const shadow = metadata.qualityShadow as Record<string, unknown>;
+			if (typeof shadow !== 'object' || shadow == null
+				|| !['directFollow', 'known', 'unknown'].includes(String(shadow.relationshipClass))
+				|| (shadow.standaloneValue !== null && typeof shadow.standaloneValue !== 'boolean')
+				|| (shadow.socialOnly !== null && typeof shadow.socialOnly !== 'boolean')
+				|| typeof shadow.ruleVersion !== 'string' || typeof shadow.modelVersion !== 'string') throw new Error('Invalid persisted Hanami quality shadow');
+		}
+		return metadata as import('./HanamiUserFeedContracts.js').HanamiUserFeedReasonMetadata;
 	}
 
 	private async withTransaction<T>(callback: (queryRunner: QueryRunner) => Promise<T>): Promise<T> {

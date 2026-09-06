@@ -17,7 +17,7 @@ import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import { IdService } from '@/core/IdService.js';
 import { HanamiTokenizerService } from '@/core/hanami/tokenize/HanamiTokenizerService.js';
-import * as mfm from 'mfm-js';
+import { extractMfmText } from '@/core/hanami/HanamiForYouTextNormalization.js';
 import { HANAMI_TASTE_MATCH_KEY_PREFIX, HANAMI_TASTE_MATCH_META_KEY_PREFIX, HANAMI_TASTE_MATCH_RAW_KEY_PREFIX, HANAMI_TASTE_MATCH_RAW_META_KEY_PREFIX, HANAMI_TASTE_MATCH_STATE_KEY_PREFIX, HANAMI_RECENT_ACT_KEY_PREFIX, HANAMI_FORYOU_ACTIVE_KEY_PREFIX } from '@/core/hanami/HanamiForYouKeys.js';
 import { pureRenoteSql } from '@/misc/is-renote.js';
 import type Logger from '@/logger.js';
@@ -32,23 +32,7 @@ const _dirname = Path.dirname(fileURLToPath(import.meta.url));
  * text/unicodeEmoji/hashtag のみ本文扱い。url/mention/emojiCode/code/math/search は落とす。
  * パース失敗時は素の text にフォールバック（下段の clean が記号を落とす）。純関数（unit test 用に export）。
  */
-export function extractMfmText(text: string): string {
-	try {
-		const out: string[] = [];
-		const walk = (nodes: mfm.MfmNode[]): void => {
-			for (const n of nodes) {
-				if (n.type === 'text') out.push(n.props.text);
-				else if (n.type === 'unicodeEmoji') out.push(n.props.emoji);
-				else if (n.type === 'hashtag') out.push(n.props.hashtag); // 話題語として本文扱い
-				else if ('children' in n && n.children != null) walk(n.children as mfm.MfmNode[]);
-			}
-		};
-		walk(mfm.parse(text));
-		return out.join(' ');
-	} catch {
-		return text;
-	}
-}
+export { extractMfmText } from '@/core/hanami/HanamiForYouTextNormalization.js';
 
 /** 「内容文字」（Letter/Number）だけを数える。絵文字連打・記号のみは0（v0.7 R3）。純関数（unit test 用に export）。 */
 export function contentCharCount(s: string): number {

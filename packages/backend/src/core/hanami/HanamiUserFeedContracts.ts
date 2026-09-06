@@ -127,15 +127,29 @@ export type HanamiPersonalFeedCandidate = {
 	readonly term?: string;
 	readonly clusterId?: number;
 	readonly bucket?: HanamiUserFeedReasonBucket;
+	/** Transient only: never serialized in reasonMetadata. */
+	readonly relationshipClass?: import('./HanamiForYouQualityContracts.js').HanamiRelationshipClass;
+	readonly exactTextFingerprint?: string;
+	readonly strictBotTemplateFingerprint?: string;
+	readonly isBot?: boolean;
+	readonly qualityShadow?: import('./HanamiForYouQualityContracts.js').HanamiQualityShadow;
 };
 
-export type HanamiUserFeedReasonMetadata = {
+export type HanamiUserFeedReasonMetadataV1 = {
 	readonly version: 1;
 	readonly term?: string;
 	readonly clusterId?: number;
 	readonly bucket?: HanamiUserFeedReasonBucket;
 	readonly fallbackOverflow?: true;
 };
+
+/** v2 deliberately carries only coarse, privacy-safe quality shadow fields. */
+export type HanamiUserFeedReasonMetadataV2 = Omit<HanamiUserFeedReasonMetadataV1, 'version'> & {
+	readonly version: 2;
+	readonly qualityShadow?: import('./HanamiForYouQualityContracts.js').HanamiQualityShadow;
+};
+
+export type HanamiUserFeedReasonMetadata = HanamiUserFeedReasonMetadataV1 | HanamiUserFeedReasonMetadataV2;
 
 export type HanamiPersonalFeedItem = {
 	readonly noteId: string;
@@ -147,6 +161,8 @@ export type HanamiPersonalFeedItem = {
 
 export type HanamiPersonalFeedComputationInput = {
 	readonly userId: string;
+	/** Active personal-feed epoch; constraints span all batches in this epoch. */
+	readonly epochId: string;
 	readonly baseCommonGenerationId: string;
 
 	/**
@@ -174,6 +190,17 @@ export type HanamiPersonalFeedComputationResult = {
 	readonly segmentLengths: readonly number[];
 };
 
+/**
+ * The persisted personal-feed head already makes a new-inclusive constraint
+ * window impossible. Callers may atomically rotate the epoch and retry.
+ */
+export class HanamiInvalidPersonalSeedError extends Error {
+	public constructor() {
+		super('Hanami personal-feed seed has an unhealable constraint violation');
+		this.name = 'HanamiInvalidPersonalSeedError';
+	}
+}
+
 export const HANAMI_PERSONAL_FEED_COMPUTATION = Symbol('HANAMI_PERSONAL_FEED_COMPUTATION');
 
 export interface HanamiPersonalFeedComputationPort {
@@ -194,6 +221,8 @@ export interface HanamiPersonalFeedComputationPort {
  * obsolete: batch was already obsolete or was invalidated by this run.
  * alreadyReady: publication had already committed.
  * published: this run atomically published the batch.
+ * replaced: an invalid personal seed atomically retired this batch's epoch and
+ *   installed an initial replacement batch in a fresh epoch.
  * failed: this attempt failed and was either returned to pending or terminalized.
  */
 export type HanamiUserFeedGenerationRunResult =
@@ -232,6 +261,14 @@ export type HanamiUserFeedGenerationRunResult =
 		readonly itemCount: number;
 		readonly feedEpochId: string;
 		readonly headSequence: string;
+	}
+	| {
+		readonly kind: 'replaced';
+		/** The claimed batch whose epoch was retired. */
+		readonly batchId: string;
+		readonly attempt: number;
+		/** Fresh initial batch committed with the replacement epoch. */
+		readonly replacementBatchId: string;
 	}
 	| {
 		readonly kind: 'failed';

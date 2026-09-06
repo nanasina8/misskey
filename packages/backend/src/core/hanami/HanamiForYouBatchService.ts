@@ -8,7 +8,6 @@ import { promisify } from 'node:util';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as Path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Inject, Injectable } from '@nestjs/common';
 import { DataSource, type QueryRunner } from 'typeorm';
 import { DI } from '@/di-symbols.js';
@@ -27,10 +26,9 @@ import {
 	HANAMI_EVENT_TTL_SERVED_SEEN_MS,
 	HANAMI_EVENT_TTL_PERSONAL_MS,
 } from './HanamiForYouKeys.js';
+import { HANAMI_PYTHON_THREAD_ENV, prepareHanamiPythonCommand, resolveHanamiRepoRoot } from './HanamiPythonRuntime.js';
 
 const execFileAsync = promisify(execFile);
-
-const _dirname = Path.dirname(fileURLToPath(import.meta.url));
 
 // canonical spec §10 の初期値。重みは実データから引き直す使い捨て。
 const RELATION_LOOKBACK_MS = 240 * 24 * 60 * 60 * 1000; // 関係値の集計窓（半減期120dに対し十分長く）
@@ -68,7 +66,11 @@ const CENTROID_TASTE_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
 const CENTROID_TASTE_PER_USER = 200;
 const CENTROID_MIN_EVIDENCE = 5; // evidence が薄いユーザの centroid は作らない（§7.3）
 const CENTROID_USER_LIMIT = 2000;
+const COLD_CENTROID_MAX_REACTIONS = 4;
+const COLD_CENTROID_PER_SOURCE = 3;
 const EMBEDDING_PROCESS_TIMEOUT_MS = 30 * 60 * 1000;
+const E5_SHADOW_MODEL = 'intfloat/multilingual-e5-small';
+const E5_SHADOW_VERSION = 'multilingual-e5-small/query-prefix-v1';
 
 type RelationAccumKey = string; // `${me}\t${other}`
 type RelationAccum = { out: number; in: number };
@@ -462,7 +464,9 @@ export class HanamiForYouBatchService {
 
 	@bindThis
 	public async runAlsBatch(logger: Logger): Promise<{ runId: string; status: 'ready' | 'failed' }> {
-		const runId = await this.createRun('als', { factors: ALS_FACTORS, iterations: ALS_ITERATIONS });
+		const startedAt = Date.now();
+		const startedCpu = process.cpuUsage();
+		const runId = await this.createRun('als', { factors: ALS_FACTORS, iterations: ALS_ITERATIONS, threadSettings: HANAMI_PYTHON_THREAD_ENV });
 		let tmpDir: string | null = null;
 		try {
 			// 1) user×author 反応行列を export。
@@ -515,7 +519,7 @@ export class HanamiForYouBatchService {
 				) as { id: string }[];
 			}
 			if (matrixRows.length === 0) {
-				await this.markRun(runId, 'failed');
+				await this.markRun(runId, 'failed', this.runMetrics(startedAt, startedCpu, { factors: ALS_FACTORS, iterations: ALS_ITERATIONS, processedCount: 0, backlog: 0 }));
 				return { runId, status: 'failed' };
 			}
 
@@ -538,21 +542,21 @@ export class HanamiForYouBatchService {
 			await writeFile(inputPath, JSON.stringify(input), 'utf8');
 
 			const scriptPath = process.env.HANAMI_FORYOU_ALS_SCRIPT
-				?? Path.resolve(_dirname, '../../../../../scripts/hanami-foryou/rec_als.py');
-			const python = process.env.HANAMI_FORYOU_PYTHON ?? 'python3';
-			await execFileAsync(python, [scriptPath, inputPath, outputPath], { timeout: ALS_PROCESS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
+				?? Path.join(resolveHanamiRepoRoot(), 'scripts/hanami-foryou/rec_als.py');
+			const command = prepareHanamiPythonCommand([scriptPath, inputPath, outputPath]);
+			await execFileAsync(command.file, command.args, { env: command.env, timeout: ALS_PROCESS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
 
 			// 3) 取り込み。
 			const out = JSON.parse(await readFile(outputPath, 'utf8')) as AlsOutput;
 			await this.ingestAlsOutput(runId, out);
 
 			// 4) ready swap ＋ 世代落とし。
-			await this.markRun(runId, 'ready');
+			await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { factors: ALS_FACTORS, iterations: ALS_ITERATIONS, processedCount: matrixRows.length, backlog: 0 }));
 			await this.pruneOldRuns('als');
 			return { runId, status: 'ready' };
 		} catch (err) {
 			logger.warn(`hanami foryou: ALS python unavailable/failed, marking run failed: ${(err as Error).message}`);
-			await this.markRun(runId, 'failed').catch(() => { /* ignore */ });
+			await this.markRun(runId, 'failed', this.runMetrics(startedAt, startedCpu, { factors: ALS_FACTORS, iterations: ALS_ITERATIONS, processedCount: 0 })).catch(() => { /* ignore */ });
 			return { runId, status: 'failed' };
 		} finally {
 			if (tmpDir != null) await rm(tmpDir, { recursive: true, force: true }).catch(() => { /* ignore */ });
@@ -596,8 +600,22 @@ export class HanamiForYouBatchService {
 	}
 
 	@bindThis
-	public async markRun(runId: string, status: 'ready' | 'failed'): Promise<void> {
-		await this.hanamiForYouModelRunsRepository.update({ id: runId }, { status, finishedAt: new Date() });
+	public async markRun(runId: string, status: 'ready' | 'failed', params?: Record<string, unknown>): Promise<void> {
+		await this.hanamiForYouModelRunsRepository.update({ id: runId }, {
+			status,
+			finishedAt: new Date(),
+			...(params == null ? {} : { params: params as never }),
+		});
+	}
+
+	private runMetrics(startedAt: number, startedCpu: NodeJS.CpuUsage, values: Record<string, unknown> = {}): Record<string, unknown> {
+		const cpu = process.cpuUsage(startedCpu);
+		return {
+			...values,
+			threadSettings: HANAMI_PYTHON_THREAD_ENV,
+			wallDurationMs: Date.now() - startedAt,
+			cpuDurationMicros: cpu.user + cpu.system,
+		};
 	}
 
 	/** kind ごとに status='ready' の最新 run id（serve 用）。 */
@@ -700,8 +718,11 @@ export class HanamiForYouBatchService {
 
 	@bindThis
 	public async runEmbeddingBatch(logger: Logger): Promise<{ runId: string; status: 'ready' | 'failed' }> {
-		const runId = await this.createRun('embedding', { model: EMBEDDING_MODEL });
+		const startedAt = Date.now();
+		const startedCpu = process.cpuUsage();
+		const runId = await this.createRun('embedding', { model: EMBEDDING_MODEL, threadSettings: HANAMI_PYTHON_THREAD_ENV });
 		let tmpDir: string | null = null;
+		let primaryReady = false;
 		try {
 			const now = Date.now();
 			// 増分: 埋め込み未生成の候補窓ノート。
@@ -732,9 +753,19 @@ export class HanamiForYouBatchService {
 				if (arr.length < CENTROID_TASTE_PER_USER) arr.push(t.text);
 			}
 			const tasteList = [...tasteByUser.entries()].filter(([, texts]) => texts.length >= CENTROID_MIN_EVIDENCE).slice(0, CENTROID_USER_LIMIT);
+			const coldRows = await this.collectColdCentroidSources(now);
+			const coldByUser = new Map<string, Map<string, { texts: string[]; fallback: boolean }>>();
+			for (const row of coldRows) {
+				let sources = coldByUser.get(row.uid);
+				if (sources == null) { sources = new Map(); coldByUser.set(row.uid, sources); }
+				let source = sources.get(row.source);
+				if (source == null) { source = { texts: [], fallback: row.source !== 'reaction' }; sources.set(row.source, source); }
+				if (source.texts.length < COLD_CENTROID_PER_SOURCE) source.texts.push(row.text);
+			}
+			const coldSourceCentroids = [...coldByUser].map(([uid, sources]) => [uid, [...sources.entries()].map(([name, source]) => [name, source.texts, source.fallback])]);
 
-			if (noteRows.length === 0 && tasteList.length === 0) {
-				await this.markRun(runId, 'ready');
+			if (noteRows.length === 0 && tasteList.length === 0 && coldSourceCentroids.length === 0) {
+				await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: EMBEDDING_MODEL, processedCount: 0, backlog: 0 }));
 				return { runId, status: 'ready' };
 			}
 
@@ -742,6 +773,7 @@ export class HanamiForYouBatchService {
 				model: EMBEDDING_MODEL,
 				notes: noteRows.map(r => [r.id, r.text]),
 				tasteByUser: tasteList.map(([uid, texts]) => [uid, texts]),
+				coldSourceCentroids,
 			};
 
 			tmpDir = await mkdtemp(Path.join(tmpdir(), 'hanami-embed-'));
@@ -750,26 +782,126 @@ export class HanamiForYouBatchService {
 			await writeFile(inputPath, JSON.stringify(input), 'utf8');
 
 			const scriptPath = process.env.HANAMI_FORYOU_CONTENT_SCRIPT
-				?? Path.resolve(_dirname, '../../../../../scripts/hanami-foryou/rec_content_cpu.py');
-			const python = process.env.HANAMI_FORYOU_PYTHON ?? 'python3';
-			await execFileAsync(python, [scriptPath, inputPath, outputPath], { timeout: EMBEDDING_PROCESS_TIMEOUT_MS, maxBuffer: 256 * 1024 * 1024 });
+				?? Path.join(resolveHanamiRepoRoot(), 'scripts/hanami-foryou/rec_content_cpu.py');
+			const command = prepareHanamiPythonCommand([scriptPath, inputPath, outputPath]);
+			await execFileAsync(command.file, command.args, { env: command.env, timeout: EMBEDDING_PROCESS_TIMEOUT_MS, maxBuffer: 256 * 1024 * 1024 });
 
 			const out = JSON.parse(await readFile(outputPath, 'utf8')) as {
-				model: string; dim: number;
+				model: string; dim: number; status?: string; error?: string;
 				embeddings: { noteId: string; vector: number[] }[];
 				centroids: { userId: string; vector: number[]; evidenceCount: number }[];
 			};
+			if (out.status === 'unavailable') throw new Error(`MiniLM unavailable: ${out.error ?? 'unknown error'}`);
 			await this.ingestEmbeddingOutput(out);
-			await this.markRun(runId, 'ready');
-			await this.pruneOldRuns('embedding');
+			await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: out.model, modelVersion: out.model, processedCount: out.embeddings.length + out.centroids.length, backlog: Math.max(0, noteRows.length - out.embeddings.length), coldCentroidUsers: coldSourceCentroids.length }));
+			primaryReady = true;
+			await this.pruneOldRuns('embedding').catch(() => undefined);
+			// Shadow diagnostics are strictly best-effort; an already-ready MiniLM run
+			// must never be reclassified because shadow setup or cleanup failed.
+			await this.runQualityShadow(noteRows, logger).catch(() => undefined);
 			return { runId, status: 'ready' };
 		} catch (err) {
+			if (primaryReady) return { runId, status: 'ready' };
 			logger.warn(`hanami foryou: MiniLM python unavailable/failed, marking run failed: ${(err as Error).message}`);
-			await this.markRun(runId, 'failed').catch(() => { /* ignore */ });
+			await this.markRun(runId, 'failed', this.runMetrics(startedAt, startedCpu, { model: EMBEDDING_MODEL, processedCount: 0 })).catch(() => { /* ignore */ });
 			return { runId, status: 'failed' };
 		} finally {
 			if (tmpDir != null) await rm(tmpDir, { recursive: true, force: true }).catch(() => { /* ignore */ });
 		}
+	}
+
+	/**
+	 * Cold users get at most three texts per bounded source in one set-based query.
+	 * Followed-post evidence first chooses one recent post per author, then caps the
+	 * author-diverse set; non-public, followers-only, specified and channel notes
+	 * never enter any source.
+	 */
+	private async collectColdCentroidSources(now: number): Promise<{ uid: string; source: string; text: string }[]> {
+		const sinceId = this.idService.gen(now - CENTROID_TASTE_WINDOW_MS);
+		return await this.db.query(
+			`WITH cold_users AS (
+				SELECT u.id
+				FROM "user" u
+				LEFT JOIN "hanami_foryou_user_centroid" c ON c."userId" = u.id AND c.model = $5
+				LEFT JOIN note_reaction r ON r."userId" = u.id AND r.id >= $2
+				WHERE u.host IS NULL AND u."isDeleted" = false AND u."isSuspended" = false
+				  AND (EXISTS (
+					SELECT 1 FROM note n WHERE n."userId" = u.id AND n.id >= $2
+					AND n.visibility IN ('public','home') AND n."channelId" IS NULL AND n.text IS NOT NULL
+				  ) OR EXISTS (
+					SELECT 1 FROM following f JOIN note n ON n."userId" = f."followeeId" AND n.id >= $2
+					WHERE f."followerId" = u.id AND n.visibility IN ('public','home') AND n."channelId" IS NULL AND n.text IS NOT NULL
+				  ) OR EXISTS (
+					SELECT 1 FROM note_reaction rr JOIN note n ON n.id = rr."noteId"
+					WHERE rr."userId" = u.id AND rr.id >= $2 AND n.visibility IN ('public','home') AND n."channelId" IS NULL AND n.text IS NOT NULL
+				  ))
+				GROUP BY u.id
+				HAVING count(r.id) <= $3
+				-- Oldest/no centroid first makes zero-reaction users eligible rather than
+				-- permanently trailing high-volume recent-reaction accounts.
+				ORDER BY min(c."updatedAt") ASC NULLS FIRST, max(r.id) DESC NULLS LAST, u.id ASC
+				LIMIT $1
+			),
+			reaction_ranked AS (
+				SELECT r."userId" AS uid, n.text, row_number() OVER (PARTITION BY r."userId" ORDER BY r.id DESC) AS rank
+				FROM cold_users cu JOIN note_reaction r ON r."userId" = cu.id AND r.id >= $2
+				JOIN note n ON n.id = r."noteId"
+				WHERE n.visibility IN ('public','home') AND n."channelId" IS NULL AND n.text IS NOT NULL
+			),
+			own_ranked AS (
+				SELECT n."userId" AS uid, n.text, row_number() OVER (PARTITION BY n."userId" ORDER BY n.id DESC) AS rank
+				FROM cold_users cu JOIN note n ON n."userId" = cu.id AND n.id >= $2
+				WHERE n.visibility IN ('public','home') AND n."channelId" IS NULL AND n.text IS NOT NULL
+			),
+			followed_one_per_author AS (
+				SELECT DISTINCT ON (f."followerId", n."userId") f."followerId" AS uid, n."userId" AS author, n.text, n.id
+				FROM cold_users cu JOIN following f ON f."followerId" = cu.id
+				JOIN note n ON n."userId" = f."followeeId" AND n.id >= $2
+				WHERE n.visibility IN ('public','home') AND n."channelId" IS NULL AND n.text IS NOT NULL
+				ORDER BY f."followerId", n."userId", n.id DESC
+			),
+			followed_ranked AS (
+				SELECT uid, text, row_number() OVER (PARTITION BY uid ORDER BY id DESC) AS rank FROM followed_one_per_author
+			)
+			SELECT uid, 'reaction' AS source, text FROM reaction_ranked WHERE rank <= $4
+			UNION ALL SELECT uid, 'own' AS source, text FROM own_ranked WHERE rank <= $4
+			UNION ALL SELECT uid, 'followed' AS source, text FROM followed_ranked WHERE rank <= $4`,
+			[CENTROID_USER_LIMIT, sinceId, COLD_CENTROID_MAX_REACTIONS, COLD_CENTROID_PER_SOURCE, EMBEDDING_MODEL],
+		) as { uid: string; source: string; text: string }[];
+	}
+
+	/** E5 is diagnostic-only: it writes no embedding table and is never read by ranking code. */
+	private async runQualityShadow(notes: { id: string; text: string }[], logger: Logger): Promise<void> {
+		const startedAt = Date.now();
+		const startedCpu = process.cpuUsage();
+		let runId: string | null = null;
+		let tmpDir: string | null = null;
+		try {
+			runId = await this.createRun('embedding-e5-shadow', { model: E5_SHADOW_MODEL, modelVersion: E5_SHADOW_VERSION, threadSettings: HANAMI_PYTHON_THREAD_ENV });
+			tmpDir = await mkdtemp(Path.join(tmpdir(), 'hanami-e5-shadow-'));
+			const inputPath = Path.join(tmpDir, 'input.json');
+			const outputPath = Path.join(tmpDir, 'output.json');
+			await writeFile(inputPath, JSON.stringify({ notes: notes.map(note => [note.id, note.text]) }), 'utf8');
+			const scriptPath = Path.join(resolveHanamiRepoRoot(), 'scripts/hanami-foryou/rec_quality_shadow_cpu.py');
+			const command = prepareHanamiPythonCommand([scriptPath, inputPath, outputPath]);
+			await execFileAsync(command.file, command.args, { env: command.env, timeout: EMBEDDING_PROCESS_TIMEOUT_MS, maxBuffer: 256 * 1024 * 1024 });
+			const out = JSON.parse(await readFile(outputPath, 'utf8')) as { status?: string; error?: string; model: string; version: string; dim: number; embeddings: unknown[] };
+			const status = out.status === 'unavailable' ? 'failed' : 'ready';
+			await this.markRun(runId, status, this.runMetrics(startedAt, startedCpu, { model: out.model, modelVersion: out.version, modelOutputDimension: out.dim, processedCount: out.embeddings.length, backlog: Math.max(0, notes.length - out.embeddings.length), shadowStatus: out.status ?? 'ok', shadowErrorCategory: out.status === 'unavailable' ? 'unavailable' : undefined }));
+		} catch (err) {
+			const category = this.shadowErrorCategory(err);
+			// Shadow diagnostics are optional, including their own logger/repository path.
+			try { logger.warn(`hanami foryou: E5 quality shadow unavailable: ${category}`); } catch { /* ignore */ }
+			if (runId != null) await this.markRun(runId, 'failed', this.runMetrics(startedAt, startedCpu, { model: E5_SHADOW_MODEL, modelVersion: E5_SHADOW_VERSION, processedCount: 0, shadowStatus: 'unavailable', shadowErrorCategory: category })).catch(() => undefined);
+		} finally {
+			if (tmpDir != null) await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+			await this.pruneOldRuns('embedding-e5-shadow').catch(() => undefined);
+		}
+	}
+
+	private shadowErrorCategory(err: unknown): 'Error' | 'TypeError' | 'SyntaxError' | 'AbortError' | 'unavailable' {
+		const name = err instanceof Error ? err.name : '';
+		return name === 'TypeError' || name === 'SyntaxError' || name === 'AbortError' ? name : 'Error';
 	}
 
 	private async ingestEmbeddingOutput(out: { model: string; dim: number; embeddings: { noteId: string; vector: number[] }[]; centroids: { userId: string; vector: number[]; evidenceCount: number }[] }): Promise<void> {

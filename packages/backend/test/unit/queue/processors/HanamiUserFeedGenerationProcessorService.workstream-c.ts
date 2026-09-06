@@ -16,16 +16,20 @@ function createHarness() {
 		runUserFeedGeneration: jest.fn<HanamiUserFeedGenerationLifecyclePort['runUserFeedGeneration']>(),
 		reconcileUserFeedGeneration: jest.fn<HanamiUserFeedGenerationLifecyclePort['reconcileUserFeedGeneration']>(),
 	};
+	const queueService = {
+		enqueueHanamiUserFeedGeneration: jest.fn(async () => undefined),
+	};
 	const logger = {
 		info: jest.fn(),
+		error: jest.fn(),
 	};
 	const queueLoggerService = {
 		logger: {
 			createSubLogger: jest.fn(() => logger),
 		},
 	};
-	const service = new HanamiUserFeedGenerationProcessorService(lifecycle, queueLoggerService as never);
-	return { service, lifecycle, logger, queueLoggerService };
+	const service = new HanamiUserFeedGenerationProcessorService(lifecycle, queueService as never, queueLoggerService as never);
+	return { service, lifecycle, queueService, logger, queueLoggerService };
 }
 
 function job(data: unknown) {
@@ -50,7 +54,7 @@ describe('HanamiUserFeedGenerationProcessorService workstream C', () => {
 	] satisfies HanamiUserFeedGenerationRunResult[];
 
 	test.each(runResults)('delegates the $kind delivery entirely to the DB lifecycle', async (result) => {
-		const { service, lifecycle, logger, queueLoggerService } = createHarness();
+		const { service, lifecycle, queueService, logger, queueLoggerService } = createHarness();
 		lifecycle.runUserFeedGeneration.mockResolvedValue(result);
 		const generationJob = job({ batchId: 'batch-01' });
 
@@ -64,6 +68,7 @@ describe('HanamiUserFeedGenerationProcessorService workstream C', () => {
 		});
 		expect(generationJob.log).toHaveBeenCalledWith(`user feed generation result: ${result.kind}`);
 		expect(generationJob.updateProgress).toHaveBeenCalledWith(100);
+		expect(queueService.enqueueHanamiUserFeedGeneration).not.toHaveBeenCalled();
 	});
 
 	test('tolerates duplicate deliveries by invoking the idempotent lifecycle with the same batch', async () => {
@@ -77,6 +82,40 @@ describe('HanamiUserFeedGenerationProcessorService workstream C', () => {
 
 		expect(lifecycle.runUserFeedGeneration).toHaveBeenNthCalledWith(1, 'batch-01');
 		expect(lifecycle.runUserFeedGeneration).toHaveBeenNthCalledWith(2, 'batch-01');
+	});
+
+	test('enqueues a replacement batch and never re-enqueues the replaced batch', async () => {
+		const { service, lifecycle, queueService, logger } = createHarness();
+		const result = { kind: 'replaced', batchId: 'batch-01', attempt: 1, replacementBatchId: 'batch-02' } as const;
+		lifecycle.runUserFeedGeneration.mockResolvedValue(result);
+		const generationJob = job({ batchId: 'batch-01' });
+
+		await expect(service.process(generationJob as never)).resolves.toEqual(result);
+
+		expect(queueService.enqueueHanamiUserFeedGeneration).toHaveBeenCalledTimes(1);
+		expect(queueService.enqueueHanamiUserFeedGeneration).toHaveBeenCalledWith('batch-02');
+		expect(queueService.enqueueHanamiUserFeedGeneration).not.toHaveBeenCalledWith('batch-01');
+		expect(logger.info).toHaveBeenCalledWith('hanami user feed generation delivery completed', {
+			batchId: 'batch-01',
+			result: 'replaced',
+		});
+	});
+
+	test('logs but ignores a queue enqueue rejection for replaced batches', async () => {
+		const { service, lifecycle, queueService, logger } = createHarness();
+		const enqueueFailure = new Error('queue unavailable');
+		queueService.enqueueHanamiUserFeedGeneration.mockRejectedValue(enqueueFailure);
+		const result = { kind: 'replaced', batchId: 'batch-01', attempt: 1, replacementBatchId: 'batch-02' } as const;
+		lifecycle.runUserFeedGeneration.mockResolvedValue(result);
+		const generationJob = job({ batchId: 'batch-01' });
+
+		await expect(service.process(generationJob as never)).resolves.toEqual(result);
+
+		expect(queueService.enqueueHanamiUserFeedGeneration).toHaveBeenCalledWith('batch-02');
+		expect(logger.error).toHaveBeenCalledWith('failed to enqueue replacement user feed batch', {
+			e: enqueueFailure,
+			replacementBatchId: 'batch-02',
+		});
 	});
 
 	test.each([

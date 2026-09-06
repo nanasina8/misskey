@@ -13,6 +13,7 @@ import {
 import {
 	HanamiPersonalFeedComputationService,
 	HANAMI_PERSONAL_FEED_ALGORITHM_VERSION,
+	hanamiHasUnhealablePersonalSeedHead,
 } from '@/core/hanami/HanamiPersonalFeedComputationService.js';
 import {
 	HanamiForYouService,
@@ -21,10 +22,14 @@ import {
 } from '@/core/hanami/HanamiForYouService.js';
 import { HanamiUserRecommendationService } from '@/core/hanami/HanamiUserRecommendationService.js';
 import type { HanamiCommonGenerationReadContext, HanamiPersistedCommonCandidate } from '@/core/hanami/HanamiCommonGenerationContracts.js';
+import {
+	HanamiInvalidPersonalSeedError,
+} from '@/core/hanami/HanamiUserFeedContracts.js';
 import type {
 	HanamiPersonalFeedCandidate,
 	HanamiPersonalFeedComputationInput,
 } from '@/core/hanami/HanamiUserFeedContracts.js';
+import { createHanamiExactTextFingerprint } from '@/core/hanami/HanamiForYouTextNormalization.js';
 
 const generatedAt = '2026-08-20T10:00:00.000Z';
 const databaseDeadlineAt = '2026-08-20T10:00:45.000Z';
@@ -32,6 +37,7 @@ const databaseDeadlineAt = '2026-08-20T10:00:45.000Z';
 function input(signal = new AbortController().signal): HanamiPersonalFeedComputationInput {
 	return {
 		userId: 'user-1',
+		epochId: 'epoch-1',
 		baseCommonGenerationId: 'common-generation-pinned',
 		generatedAt,
 		databaseDeadlineAt,
@@ -179,7 +185,7 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		const commonRows = [
 			commonRow('globalPopular', 'global'),
 			commonRow('trending', 'trend', { term: 'typescript' }),
-			commonRow('exploration', 'explore'),
+			...Array.from({ length: 20 }, (_, index) => commonRow('exploration', index === 0 ? 'explore' : `explore-${index}`)),
 		];
 		const personal = [
 			candidate('neighborTrending', 'neighbor'),
@@ -251,10 +257,12 @@ describe('Phase 4 workstream A personal feed computation', () => {
 	test.each(CONFIDENCE_CASES)('uses the current %s confidence axis order', async (confidence, expected) => {
 		const fixture = createComputation({
 			confidence,
-			candidates: HANAMI_FOR_YOU_AXES.map(axis => candidate(axis, `note-${axis}`)),
+			candidates: HANAMI_FOR_YOU_AXES.flatMap(axis => axis === 'exploration'
+				? Array.from({ length: 20 }, (_, index) => candidate(axis, `note-${axis}-${index}`))
+				: [candidate(axis, `note-${axis}`)]),
 		});
 		const result = await fixture.service.computePersonalFeed(input());
-		expect(firstSegmentSources(result)).toEqual(expected);
+		expect(firstSegmentSources(result).slice(0, expected.length)).toEqual(expected);
 	});
 
 	test('honors off/low/normal/high settings and preserves overflow reason metadata', async () => {
@@ -301,15 +309,15 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		expect(result.segmentLengths.reduce((sum, length) => sum + length, 0)).toBe(result.items.length);
 	});
 
-	test('deduplicates Notes across segments while resetting the two-per-author cap each segment', async () => {
+	test('deduplicates Notes across segments while retaining sliding author constraints', async () => {
 		const oneAuthor = createComputation({
 			confidence: 'none',
 			axisLevels: new Map([['globalPopular', 'normal']]),
 			candidates: candidates('globalPopular', 20, () => 'same-author'),
 		});
 		const authorResult = await oneAuthor.service.computePersonalFeed(input());
-		expect(authorResult.segmentLengths).toEqual([2, 2, 2, 2, 2, 2, 2]);
-		expect(new Set(authorResult.items.map(item => item.noteId)).size).toBe(14);
+		expect(authorResult.segmentLengths).toEqual([1]);
+		expect(new Set(authorResult.items.map(item => item.noteId)).size).toBe(1);
 
 		const duplicates = createComputation({
 			confidence: 'high',
@@ -338,6 +346,167 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		const shortResult = await short.service.computePersonalFeed(input());
 		expect(shortResult.items).toHaveLength(35);
 		expect(shortResult.segmentLengths).toEqual([30, 5]);
+	});
+
+	test('keeps a deterministic <=5% exploration pool with exactly twenty eligible authors', async () => {
+		const fixture = createComputation();
+		const diversity = fixture.service as unknown as { finalExplorationDiversity(values: readonly HanamiPersonalFeedCandidate[]): readonly HanamiPersonalFeedCandidate[] };
+		const exploration = Array.from({ length: 20 }, (_, index) => candidate('exploration', `explore-${index}`, `author-${index}`));
+		const result = diversity.finalExplorationDiversity(exploration);
+		const counts = new Map<string, number>();
+		for (const value of result) counts.set(value.authorId, (counts.get(value.authorId) ?? 0) + 1);
+		expect(result).toHaveLength(20);
+		expect(Math.max(...counts.values()) / result.length).toBeLessThanOrEqual(0.05);
+	});
+
+	test('keeps complete ranked exploration rounds deterministically', async () => {
+		const fixture = createComputation();
+		const diversity = fixture.service as unknown as { finalExplorationDiversity(values: readonly HanamiPersonalFeedCandidate[]): readonly HanamiPersonalFeedCandidate[] };
+		const exploration = Array.from({ length: 20 }, (_, author) => [
+			candidate('exploration', `author-${author}-high`, `author-${author}`, { score: 2 }),
+			candidate('exploration', `author-${author}-low`, `author-${author}`, { score: 1 }),
+		]).flat();
+		const result = diversity.finalExplorationDiversity(exploration);
+		expect(result.map(value => value.noteId)).toEqual([
+			...Array.from({ length: 20 }, (_, index) => `author-${index}-high`),
+			...Array.from({ length: 20 }, (_, index) => `author-${index}-low`),
+		]);
+		expect(Math.max(...Array.from(new Set(result.map(value => value.authorId))).map(author => result.filter(value => value.authorId === author).length)) / result.length).toBeLessThanOrEqual(0.05);
+	});
+
+	test('applies safety then epoch and seven-day seen exclusions before exploration diversity', async () => {
+		const exploration = Array.from({ length: 21 }, (_, index) => candidate('exploration', `explore-${index}`, `author-${index}`));
+		const global = candidate('globalPopular', 'global-survives', 'global-author');
+		const queryRunner = createQueryRunner(async (sql) => {
+			if (sql.includes("set_config('statement_timeout'")) return [{}];
+			if (sql.includes('AS before_deadline')) return [{ before_deadline: true }];
+			if (sql.includes('FROM "hanami_recommendation_event"')) return [{ note_id: 'explore-1' }];
+			if (sql.includes('AND e."noteId" = ANY')) return [{ note_id: 'explore-0' }];
+			return [];
+		});
+		const fixture = createComputation({
+			confidence: 'none',
+			axisLevels: new Map([['globalPopular', 'normal'], ['exploration', 'normal']]),
+			candidates: [global, ...exploration],
+			queryRunner,
+		});
+
+		const result = await fixture.service.computePersonalFeed(input());
+
+		const epochQueryOrder = fixture.driverQuery.mock.invocationCallOrder[
+			fixture.driverQuery.mock.calls.findIndex(call => String(call[0]).includes('AND e."noteId" = ANY'))
+		]!;
+		expect(fixture.safety.filterPersonalEligibleCandidates.mock.invocationCallOrder[0]).toBeLessThan(epochQueryOrder);
+		expect(result.items.some(item => item.noteId.startsWith('explore-'))).toBe(false);
+		expect(result.items.some(item => item.noteId === 'global-survives')).toBe(true);
+	});
+
+	test('omits insufficient exploration without removing non-exploration candidates', async () => {
+		const fixture = createComputation({
+			confidence: 'none',
+			axisLevels: new Map([['globalPopular', 'normal'], ['exploration', 'normal']]),
+			candidates: [candidate('globalPopular', 'global-survives'), ...Array.from({ length: 19 }, (_, index) => candidate('exploration', `explore-${index}`, `author-${index}`))],
+		});
+		const result = await fixture.service.computePersonalFeed(input());
+		expect(result.items.map(item => item.noteId)).toContain('global-survives');
+		expect(result.items.some(item => item.source === 'exploration')).toBe(false);
+	});
+
+	test('heals a legacy old-head unknown deficit before returning a personal prefix', async () => {
+		const candidatesForRun = Array.from({ length: 15 }, (_, index) => candidate('globalPopular', `new-unknown-${index}`, `new-author-${index}`));
+		const seed = [
+			...Array.from({ length: 14 }, (_, index) => ({ note_id: `old-unknown-${index}`, author_id: `old-unknown-author-${index}`, text: `old unknown ${index}`, is_bot: false, relationship_class: 'unknown' as const })),
+			...Array.from({ length: 12 }, (_, index) => ({ note_id: `old-known-${index}`, author_id: `old-known-author-${index}`, text: `old known ${index}`, is_bot: false, relationship_class: 'known' as const })),
+			...Array.from({ length: 3 }, (_, index) => ({ note_id: `old-neutral-${index}`, author_id: `old-neutral-author-${index}`, text: `old neutral ${index}`, is_bot: false, relationship_class: undefined })),
+		];
+		const queryRunner = createQueryRunner(async (sql, parameters) => {
+			if (sql.includes("set_config('statement_timeout'")) return [{}];
+			if (sql.includes('AS before_deadline')) return [{ before_deadline: true }];
+			if (sql.includes('ORDER BY e."sequence" DESC LIMIT 210')) return seed;
+			if (sql.includes('FROM note n JOIN "user" u')) return (parameters?.[1] as string[]).map(noteId => ({
+				note_id: noteId, author_id: `resolved-${noteId}`, text: noteId, is_bot: false, relationship_class: 'unknown',
+			}));
+			return [];
+		});
+		const fixture = createComputation({
+			confidence: 'none',
+			axisLevels: new Map([['globalPopular', 'normal']]),
+			candidates: candidatesForRun,
+			queryRunner,
+		});
+
+		const result = await fixture.service.computePersonalFeed(input());
+
+		expect(result.items).toHaveLength(15);
+		expect(result.items.every(item => item.noteId.startsWith('new-unknown-'))).toBe(true);
+		expect(fixture.driverQuery.mock.calls.some(call => String(call[0]).includes('ORDER BY e."sequence" DESC LIMIT 210'))).toBe(true);
+	});
+
+	test('throws the typed seed error only for mathematically unhealable old heads', async () => {
+		const makeSeed = (kind: 'exact' | 'combined') => Array.from({ length: 29 }, (_, index) => ({
+			note_id: `old-${kind}-${index}`, author_id: `old-author-${index}`, text: kind === 'exact' && index < 2 ? 'duplicate' : `old ${index}`,
+			is_bot: false, relationship_class: kind === 'combined' && index < 7 ? 'directFollow' as const : kind === 'combined' && index < 13 ? 'known' as const : 'unknown' as const,
+		}));
+		for (const kind of ['exact', 'combined'] as const) {
+			const queryRunner = createQueryRunner(async (sql, parameters) => {
+				if (sql.includes("set_config('statement_timeout'")) return [{}];
+				if (sql.includes('AS before_deadline')) return [{ before_deadline: true }];
+				if (sql.includes('ORDER BY e."sequence" DESC LIMIT 210')) return makeSeed(kind);
+				if (sql.includes('FROM note n JOIN "user" u')) return (parameters?.[1] as string[]).map(noteId => ({ note_id: noteId, author_id: `author-${noteId}`, text: noteId, is_bot: false, relationship_class: 'unknown' }));
+				return [];
+			});
+			const fixture = createComputation({ candidates: Array.from({ length: 15 }, (_, index) => candidate('globalPopular', `new-${kind}-${index}`)), queryRunner });
+			await expect(fixture.service.computePersonalFeed(input())).rejects.toBeInstanceOf(HanamiInvalidPersonalSeedError);
+		}
+	});
+
+	test('classifies only active unknown-floor and upper-cap seed heads as unhealable', () => {
+		const base = Array.from({ length: 29 }, (_, index) => ({ noteId: `old-${index}`, userId: `author-${index}`, score: 0, relationshipClass: index < 13 ? 'unknown' as const : undefined }));
+		expect(hanamiHasUnhealablePersonalSeedHead(base, true)).toBe(true);
+		expect(hanamiHasUnhealablePersonalSeedHead(base, false)).toBe(false);
+		const fourteenUnknown = base.map((item, index) => ({ ...item, relationshipClass: index < 14 ? 'unknown' as const : undefined }));
+		expect(hanamiHasUnhealablePersonalSeedHead(fourteenUnknown, true)).toBe(false);
+		expect(hanamiHasUnhealablePersonalSeedHead([], true)).toBe(false);
+	});
+
+	test('returns an ordinary empty result when candidates are exhausted', async () => {
+		const fixture = createComputation({ candidates: [] });
+		await expect(fixture.service.computePersonalFeed(input())).resolves.toMatchObject({ items: [], segmentLengths: [] });
+	});
+
+	test('propagates normalized transient fingerprints through computePersonalFeed without persisting them', async () => {
+		const global = Array.from({ length: 35 }, (_, index) => candidate('globalPopular', `global-${index}`, `author-global-${index}`));
+		const candidatesForRun = [
+			candidate('globalPopular', 'exact-fullwidth-mfm', 'author-exact-a', { exactTextFingerprint: createHanamiExactTextFingerprint('$[x2 Ｈｅｌｌｏ\nworld!\u200b]') }),
+			candidate('trending', 'exact-ascii-mfm', 'author-exact-b', { exactTextFingerprint: createHanamiExactTextFingerprint('Hello world!') }),
+			...global,
+		];
+		const queryRunner = createQueryRunner(async (sql, parameters) => {
+			if (sql.includes("set_config('statement_timeout'")) return [{}];
+			if (sql.includes('AS before_deadline')) return [{ before_deadline: true }];
+			if (sql.includes('COALESCE(n.text') && sql.includes('WHERE n.id = ANY($2::varchar[])')) {
+				return (parameters?.[1] as string[]).map(noteId => ({
+					note_id: noteId, author_id: `resolved-${noteId}`, is_bot: false, relationship_class: 'unknown',
+					text: noteId === 'exact-fullwidth-mfm' ? '$[x2 Ｈｅｌｌｏ\nworld!\u200b]' : noteId === 'exact-ascii-mfm' ? 'Hello world!' : noteId,
+				}));
+			}
+			return [];
+		});
+		const fixture = createComputation({ confidence: 'none', candidates: candidatesForRun, queryRunner });
+		expect(createHanamiExactTextFingerprint('$[x2 Ｈｅｌｌｏ\nworld!\u200b]')).toBe(createHanamiExactTextFingerprint('Hello world!'));
+
+		const result = await fixture.service.computePersonalFeed(input());
+
+		const detailQuery = fixture.driverQuery.mock.calls.find(call => String(call[0]).includes('FROM note n JOIN "user" u'));
+		expect(detailQuery).toBeDefined();
+		expect(detailQuery?.[1]?.[1]).toEqual(expect.arrayContaining(['exact-fullwidth-mfm', 'exact-ascii-mfm']));
+		expect(result.segmentLengths.length).toBeGreaterThan(1);
+		expect(fixture.forYou.rankPersonalFeedCandidates.mock.calls[0]![2]).toEqual(expect.arrayContaining([
+			expect.objectContaining({ noteId: 'exact-fullwidth-mfm', exactTextFingerprint: expect.any(String) }),
+			expect.objectContaining({ noteId: 'exact-ascii-mfm', exactTextFingerprint: expect.any(String) }),
+		]));
+		expect(result.items.every(item => !JSON.stringify(item.reasonMetadata).includes('exact-mfm-nfkc-v1'))).toBe(true);
+		expect(result.items.every(item => !JSON.stringify(item.reasonMetadata).includes('fingerprint'))).toBe(true);
 	});
 
 	test('propagates one signal and deadline without packing, serving writes, or legacy page execution', async () => {
@@ -369,7 +538,7 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		expect(fixture.driverQuery.mock.calls[1]![0]).toContain("set_config('statement_timeout'");
 		expect(fixture.driverQuery.mock.calls[1]![1]).toEqual([databaseDeadlineAt, '5000']);
 		expect(fixture.driverQuery.mock.calls.at(-1)?.[0]).toContain('clock_timestamp() < $1::timestamptz');
-		expect(fixture.driverQuery.mock.calls.filter(call => String(call[0]).includes("set_config('statement_timeout'"))).toHaveLength(2);
+		expect(fixture.driverQuery.mock.calls.filter(call => String(call[0]).includes("set_config('statement_timeout'"))).toHaveLength(6);
 		expect(fixture.queryRunner.commitTransaction).toHaveBeenCalledTimes(1);
 		expect(fixture.queryRunner.release).toHaveBeenCalledTimes(1);
 		expect(fixture.safety.filterAndPack).not.toHaveBeenCalled();

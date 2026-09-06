@@ -166,15 +166,16 @@ export class HanamiForYouProvenanceService {
 	/** Builds the persisted Phase 4 reason payload without Note entities or serving side effects. */
 	@bindThis
 	public buildReasonMetadata(
-		candidate: Pick<HanamiPersonalFeedCandidate, 'term' | 'clusterId' | 'bucket'>,
+		candidate: Pick<HanamiPersonalFeedCandidate, 'term' | 'clusterId' | 'bucket' | 'qualityShadow'>,
 		fallbackOverflow = false,
 	): HanamiUserFeedReasonMetadata {
 		return Object.freeze({
-			version: 1 as const,
+			version: candidate.qualityShadow == null ? 1 as const : 2 as const,
 			...(candidate.term !== undefined ? { term: candidate.term } : {}),
 			...(candidate.clusterId !== undefined ? { clusterId: candidate.clusterId } : {}),
 			...(candidate.bucket !== undefined ? { bucket: candidate.bucket } : {}),
 			...(fallbackOverflow ? { fallbackOverflow: true as const } : {}),
+			...(candidate.qualityShadow != null ? { qualityShadow: candidate.qualityShadow } : {}),
 		});
 	}
 

@@ -300,12 +300,18 @@ describe('HanamiCommonGenerationService', () => {
 	test('uses a PostgreSQL-derived deadline despite app wall-clock skew and retains it through staging', async () => {
 		const appWallClock = Date.parse('1999-01-01T00:00:00.000Z');
 		const databaseDeadline = '2026-08-20T00:01:00.123456Z';
+		const sourceAsOf = new Date('2026-06-17T20:57:56.000Z');
 		let sourceSignal: AbortSignal | undefined;
+		let observedSourceAsOf: Date | undefined;
 		const deadlineComputation: HanamiCommonComputationPort = {
 			...computation,
 			buildSourceBundle: async (input) => {
 				sourceSignal = input.signal;
-				return makeBundle();
+				observedSourceAsOf = input.sourceAsOf;
+				return {
+					...makeBundle(),
+					sourceAsOf: { ...makeBundle().sourceAsOf, capturedAt: input.sourceAsOf.toISOString() },
+				};
 			},
 		};
 		const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(appWallClock);
@@ -364,7 +370,7 @@ describe('HanamiCommonGenerationService', () => {
 		publication.publishGeneration = jest.fn(async (): Promise<{ kind: 'published' }> => ({ kind: 'published' }));
 
 		try {
-			await expect(service.runCommonGeneration('generation-id')).resolves.toEqual({
+			await expect(service.runCommonGeneration('generation-id', { sourceAsOf })).resolves.toEqual({
 				kind: 'published',
 				generationId: 'generation-id',
 				generationFence: '1',
@@ -381,6 +387,10 @@ describe('HanamiCommonGenerationService', () => {
 		expect(new Set(budgetCalls.map((call) => call.values[0]))).toEqual(new Set([databaseDeadline]));
 		const stagingCas = calls.find((call) => call.sql.includes('clock_timestamp() < $6::timestamptz'))!;
 		expect(stagingCas.values[5]).toBe(databaseDeadline);
+		expect(observedSourceAsOf).toEqual(sourceAsOf);
+		expect(observedSourceAsOf).not.toBe(sourceAsOf);
+		const sourceAsOfUpdate = calls.find((call) => call.sql.includes('SET "sourceAsOf"'))!;
+		expect(JSON.parse(sourceAsOfUpdate.values[2] as string).capturedAt).toBe(sourceAsOf.toISOString());
 		const partitionService = (service as unknown as {
 			partitionService: { ensureMonthAvailable: (date: Date, context?: { signal?: AbortSignal; databaseDeadlineAt?: string }) => Promise<void> };
 		}).partitionService;
@@ -389,6 +399,27 @@ describe('HanamiCommonGenerationService', () => {
 		expect(partitionCall[1]?.signal).toBe(sourceSignal);
 		expect(partitionCall[1]?.databaseDeadlineAt).toBe(databaseDeadline);
 		expect(runner.commitTransaction).toHaveBeenCalledTimes(2);
+	});
+
+	test('uses one run-scoped wall-clock source-as-of when omitted', () => {
+		jest.useFakeTimers({ now: new Date('2026-08-20T12:34:56.789Z') });
+		try {
+			const internals = makeService() as unknown as { resolveSourceAsOf(value: Date | undefined): Date };
+			const sourceAsOf = internals.resolveSourceAsOf(undefined);
+			expect(sourceAsOf).toEqual(new Date('2026-08-20T12:34:56.789Z'));
+			jest.advanceTimersByTime(1_000);
+			expect(sourceAsOf).toEqual(new Date('2026-08-20T12:34:56.789Z'));
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
+	test('rejects an invalid source-as-of before common-generation mutation', async () => {
+		const createQueryRunner = jest.fn();
+		const service = makeService({ createQueryRunner });
+
+		await expect(service.runCommonGeneration('generation-id', { sourceAsOf: new Date(Number.NaN) })).rejects.toThrow('sourceAsOf must be a valid finite Date');
+		expect(createQueryRunner).not.toHaveBeenCalled();
 	});
 
 	test('bounds a never-settling QueryRunner.connect without starting transaction work', async () => {

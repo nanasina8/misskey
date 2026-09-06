@@ -132,6 +132,7 @@ export const moderationLogTypes = [
 	'deleteGalleryPost',
 	'deleteChatRoom',
 	'updateProxyAccountDescription',
+	'exportHanamiSuggestionEvents',
 ] as const;
 
 export type ModerationLogPayloads = {
@@ -391,6 +392,11 @@ export type ModerationLogPayloads = {
 	updateProxyAccountDescription: {
 		before: string | null;
 		after: string | null;
+	};
+	exportHanamiSuggestionEvents: {
+		period: { startAt: string; endAt: string };
+		count: number;
+		exportId: string;
 	};
 };
 
