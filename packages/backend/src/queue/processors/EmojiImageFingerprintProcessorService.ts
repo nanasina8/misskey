@@ -48,15 +48,19 @@ export class EmojiImageFingerprintProcessorService {
 
 	public async processBackfill(job: Bull.Job<EmojiImageFingerprintBackfillJobData>): Promise<void> {
 		const startedAt = Date.now();
-		const rows = await this.emojisRepository.createQueryBuilder('emoji')
+		const scope = job.data.scope ?? 'all';
+		const builder = this.emojisRepository.createQueryBuilder('emoji')
 			.where('emoji."imageFingerprint" IS NULL')
-			.andWhere('emoji."imageFingerprintAttemptedAt" IS NULL')
+			.andWhere('emoji."imageFingerprintAttemptedAt" IS NULL');
+		if (scope === 'local') builder.andWhere('emoji.host IS NULL');
+		if (job.data.host != null) builder.andWhere('emoji.host = :host', { host: job.data.host });
+		const rows = await builder
 			.andWhere(job.data.cursor ? 'emoji.id > :cursor' : '1=1', job.data.cursor ? { cursor: job.data.cursor } : {})
 			.orderBy('emoji.id', 'ASC').take(100).getMany();
 		for (const emoji of rows) await this.queueService.createEmojiImageFingerprintJob({ emojiId: emoji.id, sourceUrl: emoji.publicUrl, host: emoji.host });
-		if (rows.length === 100) await this.queueService.createEmojiImageFingerprintBackfillJob({ cursor: rows.at(-1)!.id });
+		if (rows.length === 100) await this.queueService.createEmojiImageFingerprintBackfillJob({ scope, host: job.data.host, cursor: rows.at(-1)!.id });
 		this.queueLoggerService.logger.info('emoji-image-fingerprint-backfill', {
-			status: 'seeded', count: rows.length, pending: rows.length === 100 ? 'more' : 0,
+			status: 'seeded', scope, host: job.data.host ?? null, count: rows.length, pending: rows.length === 100 ? 'more' : 0,
 			cursor: job.data.cursor ?? null, durationMs: Date.now() - startedAt,
 		});
 	}

@@ -3,6 +3,33 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import * as Misskey from 'misskey-js';
+import { i18n } from '@/i18n.js';
+import * as os from '@/os.js';
+import { misskeyApi } from '@/utility/misskey-api.js';
+
+/**
+ * 照合状態の表示文字列。導出そのものはバックエンドが持っているので、ここは文言の選択だけ。
+ * failed のときだけ理由コードを添える。
+ */
+export function fingerprintStateLabel(
+	emoji: Pick<Misskey.entities.EmojiDetailedAdmin, 'imageFingerprintState' | 'imageFingerprintErrorCode'>,
+): string {
+	const labels = i18n.ts._customEmojisManager._fingerprint;
+	if (emoji.imageFingerprintState === 'failed' && emoji.imageFingerprintErrorCode != null) {
+		return `${labels.failed}(${emoji.imageFingerprintErrorCode})`;
+	}
+	return labels[emoji.imageFingerprintState];
+}
+
+/**
+ * 再照合を依頼する。実際の算出はキューで非同期に行われるので、ここでは受け付けた件数だけ返す。
+ */
+export async function refingerprint(params: Misskey.entities.AdminEmojiRefingerprintRequest): Promise<void> {
+	const result = await misskeyApi('admin/emoji/refingerprint', params);
+	os.toast(i18n.tsx._customEmojisManager._fingerprint.refingerprintQueued({ count: result.reset }));
+}
+
 export type RequestLogItem = {
 	failed: boolean;
 	url: string;

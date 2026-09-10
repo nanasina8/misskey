@@ -176,7 +176,7 @@ export const packedEmojiDetailedAdminSchema = {
 		},
 		imageFingerprintState: {
 			type: 'string',
-			optional: false, nullable: true,
+			optional: false, nullable: false,
 			enum: [...emojiImageFingerprintStates],
 		},
 		imageFingerprintErrorCode: {

@@ -824,25 +824,28 @@ describe('CustomEmojiService', () => {
 		});
 
 		describe('imageFingerprintState', () => {
-			test('filters the four remote states and excludes local emojis automatically', async () => {
+			test('filters each state, and pending/failed cover local emojis too', async () => {
 				await insert([
-					defaultData('local', { imageFingerprint: null, imageFingerprintAttemptedAt: null }),
+					defaultData('localpending', { imageFingerprint: null, imageFingerprintAttemptedAt: null }),
+					defaultData('localfailed', { imageFingerprint: null, imageFingerprintAttemptedAt: new Date() }),
 					defaultData('pending', { host: 'remote.example', imageFingerprint: null, imageFingerprintAttemptedAt: null }),
 					defaultData('failed', { host: 'remote.example', imageFingerprint: null, imageFingerprintAttemptedAt: new Date() }),
 					defaultData('matched', { host: 'remote.example', imageFingerprint: 'pix-v1:matched', imageFingerprintAttemptedAt: new Date() }),
 					defaultData('unmatched', { host: 'remote.example', imageFingerprint: 'pix-v1:unmatched', imageFingerprintAttemptedAt: new Date() }),
-					defaultData('matching-local', { imageFingerprint: 'pix-v1:matched', imageFingerprintAttemptedAt: new Date() }),
+					defaultData('matchinglocal', { imageFingerprint: 'pix-v1:matched', imageFingerprintAttemptedAt: new Date() }),
 				]);
 
-				for (const [state, expectedName] of [
-					['pending', 'emojipending'],
-					['failed', 'emojifailed'],
-					['matched', 'emojimatched'],
-					['unmatched', 'emojiunmatched'],
+				// ローカルが pending のままだとリモートは決して matched にならない。
+				// その状態を管理画面から絞り込めることが今回の要点。
+				for (const [state, expectedNames] of [
+					['pending', ['emojilocalpending', 'emojipending']],
+					['failed', ['emojilocalfailed', 'emojifailed']],
+					['ready', ['emojimatchinglocal']],
+					['matched', ['emojimatched']],
+					['unmatched', ['emojiunmatched']],
 				] as const) {
 					const actual = await call({ query: { imageFingerprintState: state } });
-					expect(actual.allCount).toBe(1);
-					expect(actual.emojis[0].name).toBe(expectedName);
+					expect(actual.emojis.map(x => x.name).sort()).toEqual([...expectedNames].sort());
 				}
 			});
 		});
@@ -858,7 +861,10 @@ describe('CustomEmojiService', () => {
 			[{ host: 'remote.example', imageFingerprint: null, imageFingerprintAttemptedAt: new Date() }, 'failed'],
 			[{ host: 'remote.example', imageFingerprint: 'pix-v1:unmatched', imageFingerprintAttemptedAt: new Date() }, 'unmatched'],
 			[{ host: 'remote.example', imageFingerprint: 'pix-v1:matched', imageFingerprintAttemptedAt: new Date() }, 'matched'],
-			[{ host: null, imageFingerprint: 'pix-v1:matched', imageFingerprintAttemptedAt: new Date() }, null],
+			// ローカルも対象にする。ここが pending のままだとリモートは構造的に matched にならない
+			[{ host: null, imageFingerprint: null, imageFingerprintAttemptedAt: null }, 'pending'],
+			[{ host: null, imageFingerprint: null, imageFingerprintAttemptedAt: new Date() }, 'failed'],
+			[{ host: null, imageFingerprint: 'pix-v1:matched', imageFingerprintAttemptedAt: new Date() }, 'ready'],
 		];
 
 		test.each(cases)('returns %s for the supplied emoji', (emoji, expected) => {

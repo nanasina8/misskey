@@ -166,7 +166,7 @@ import MkButton from '@/components/MkButton.vue';
 import MkInput from '@/components/MkInput.vue';
 import MkSelect from '@/components/MkSelect.vue';
 import MkGrid from '@/components/grid/MkGrid.vue';
-import { emptyStrToUndefined, gridSortOrderKeys } from '@/pages/admin/custom-emojis-manager.impl.js';
+import { emptyStrToUndefined, fingerprintStateLabel, gridSortOrderKeys, refingerprint } from '@/pages/admin/custom-emojis-manager.impl.js';
 import MkFolder from '@/components/MkFolder.vue';
 import XRegisterLogs from '@/pages/admin/custom-emojis-manager.logs.vue';
 import * as os from '@/os.js';
@@ -207,6 +207,22 @@ function setupGrid(): GridSetting {
 						action: async () => {
 							const targets = context.rangedRows.map(it => gridItems.value[it.index]);
 							await importEmojis(targets);
+						},
+					},
+					{
+						type: 'button',
+						text: i18n.ts._customEmojisManager._fingerprint.refingerprintSelection,
+						icon: 'ti ti-refresh',
+						action: () => refingerprint({ emojiIds: context.rangedRows.map(it => customEmojis.value[it.index].id) }),
+					},
+					{
+						type: 'button',
+						text: i18n.ts._customEmojisManager._fingerprint.refingerprintHost,
+						icon: 'ti ti-refresh',
+						action: () => {
+							// 相手サーバーへの負荷がホスト単位に収まるようにしている。全リモート一括は用意しない。
+							const host = customEmojis.value[context.rangedRows[0].index].host;
+							return host == null ? undefined : refingerprint({ host });
 						},
 					},
 				];
@@ -404,11 +420,7 @@ async function refreshCustomEmojis() {
 		name: it.name,
 		license: it.license,
 		host: it.host!,
-		fingerprintState: it.imageFingerprintState == null
-			? ''
-			: it.imageFingerprintState === 'failed' && it.imageFingerprintErrorCode != null
-				? `${i18n.ts._customEmojisManager._fingerprint.failed}(${it.imageFingerprintErrorCode})`
-				: i18n.ts._customEmojisManager._fingerprint[it.imageFingerprintState],
+		fingerprintState: fingerprintStateLabel(it),
 	}));
 }
 

@@ -55,6 +55,8 @@ import type {
 	AdminEmojiListResponse,
 	AdminEmojiListRemoteRequest,
 	AdminEmojiListRemoteResponse,
+	AdminEmojiRefingerprintRequest,
+	AdminEmojiRefingerprintResponse,
 	AdminEmojiRemoveAliasesBulkRequest,
 	AdminEmojiSetAliasesBulkRequest,
 	AdminEmojiSetCategoryBulkRequest,
@@ -716,6 +718,7 @@ export type Endpoints = {
 	'admin/emoji/import-zip': { req: AdminEmojiImportZipRequest; res: EmptyResponse };
 	'admin/emoji/list': { req: AdminEmojiListRequest; res: AdminEmojiListResponse };
 	'admin/emoji/list-remote': { req: AdminEmojiListRemoteRequest; res: AdminEmojiListRemoteResponse };
+	'admin/emoji/refingerprint': { req: AdminEmojiRefingerprintRequest; res: AdminEmojiRefingerprintResponse };
 	'admin/emoji/remove-aliases-bulk': { req: AdminEmojiRemoveAliasesBulkRequest; res: EmptyResponse };
 	'admin/emoji/set-aliases-bulk': { req: AdminEmojiSetAliasesBulkRequest; res: EmptyResponse };
 	'admin/emoji/set-category-bulk': { req: AdminEmojiSetCategoryBulkRequest; res: EmptyResponse };

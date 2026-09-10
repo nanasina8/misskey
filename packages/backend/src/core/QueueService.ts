@@ -213,14 +213,17 @@ export class QueueService implements OnModuleInit {
 			// 重複排除にならず、逆に保持されている間はfinally failedしたページからチェーンを再開できない。
 			// deduplicationキーは完了・最終失敗の時点で解放されるので、次の起動が取りこぼしを拾い直せる。
 			jobId: `emoji-image-fingerprint-backfill-${randomUUID()}`,
-			deduplication: { id: `emoji-image-fingerprint-backfill-${data.cursor ?? 'start'}` },
+			deduplication: { id: `emoji-image-fingerprint-backfill-${data.scope ?? 'all'}-${data.host ?? '*'}-${data.cursor ?? 'start'}` },
 		});
 	}
 
 	@bindThis
 	public async onModuleInit(): Promise<void> {
 		// Seed only queue work during startup; no image is fetched on request paths.
-		await this.createEmojiImageFingerprintBackfillJob();
+		// ローカル絵文字を先に播く。リモートの照合先はローカルの指紋なので、ここが埋まらないと
+		// リモートを何件処理しても matched は0件のままになる。件数もリモートとは桁違いに少ない。
+		await this.createEmojiImageFingerprintBackfillJob({ scope: 'local' });
+		await this.createEmojiImageFingerprintBackfillJob({ scope: 'all' });
 		await Promise.all(REPEATABLE_SYSTEM_JOB_DEF.map(async (def) => {
 			await this.systemQueue.upsertJobScheduler(def.name, {
 				pattern: def.pattern,

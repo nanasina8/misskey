@@ -434,7 +434,7 @@ export function emoji(params?: {
 		localOnly: params?.localOnly ?? false,
 		roleIdsThatCanBeUsedThisEmojiAsReaction: params?.roleIdsThatCanBeUsedThisEmojiAsReaction ?? [],
 		updatedAt: updatedAt,
-		imageFingerprintState: params?.imageFingerprintState ?? (host === null ? null : 'pending'),
+		imageFingerprintState: params?.imageFingerprintState ?? 'pending',
 		imageFingerprintErrorCode: params?.imageFingerprintErrorCode ?? null,
 	}
 }

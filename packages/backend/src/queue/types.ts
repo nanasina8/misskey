@@ -47,7 +47,12 @@ export type EmojiImageFingerprintJobData = {
 	sourceUrl: string;
 	host: string | null;
 };
-export type EmojiImageFingerprintBackfillJobData = { cursor?: string };
+/**
+ * scope: 'local' はローカル絵文字だけを対象にする。ローカルは件数が桁違いに少なく、
+ * かつ自ホストのストレージしか読まないので、全体走査より先に必ず完了させたい。
+ * リモートの照合はローカル側に指紋が入っていないと構造的に成立しないため。
+ */
+export type EmojiImageFingerprintBackfillJobData = { cursor?: string; scope?: 'local' | 'all'; host?: string };
 
 export type DbJobMap = {
 	deleteDriveFiles: DbJobDataWithUser;

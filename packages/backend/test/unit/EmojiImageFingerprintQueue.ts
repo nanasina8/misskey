@@ -131,7 +131,7 @@ describe('QueueService emoji image fingerprint jobs', () => {
 		// 保持されている間は最終失敗したページからチェーンを再開できなくなる。
 		expect(opts.jobId).toMatch(/^emoji-image-fingerprint-backfill-[0-9a-f-]{36}$/);
 		expect(add.mock.calls[1][2].jobId).not.toBe(opts.jobId);
-		expect(opts.deduplication).toEqual({ id: 'emoji-image-fingerprint-backfill-start' });
+		expect(opts.deduplication).toEqual({ id: 'emoji-image-fingerprint-backfill-all-*-start' });
 		expect(add.mock.calls[1][2].deduplication).toEqual(opts.deduplication);
 		expect(opts.jobId).not.toContain(':');
 		expect(opts.attempts).toBe(2);
@@ -148,8 +148,24 @@ describe('QueueService emoji image fingerprint jobs', () => {
 		expect(name).toBe('backfill');
 		expect(data).toEqual({ cursor: '9sometinyid' });
 		expect(opts.jobId).toMatch(/^emoji-image-fingerprint-backfill-[0-9a-f-]{36}$/);
-		expect(opts.deduplication).toEqual({ id: 'emoji-image-fingerprint-backfill-9sometinyid' });
+		expect(opts.deduplication).toEqual({ id: 'emoji-image-fingerprint-backfill-all-*-9sometinyid' });
 		expect(opts.jobId).not.toContain(':');
+	});
+
+	test('keys the local-scoped backfill separately so it never blocks on the full scan', async () => {
+		const add = jest.fn<(...args: any[]) => Promise<unknown>>(async () => ({}));
+		const service = makeService({ add });
+
+		await service.createEmojiImageFingerprintBackfillJob({ scope: 'local' });
+		await service.createEmojiImageFingerprintBackfillJob({ scope: 'all' });
+		await service.createEmojiImageFingerprintBackfillJob({ scope: 'all', host: 'remote.example' });
+
+		const [local, all, host] = add.mock.calls.map(([, , opts]) => opts.deduplication.id);
+		expect(local).toBe('emoji-image-fingerprint-backfill-local-*-start');
+		expect(all).toBe('emoji-image-fingerprint-backfill-all-*-start');
+		expect(host).toBe('emoji-image-fingerprint-backfill-all-remote.example-start');
+		// スコープが混ざると片方が他方を重複排除で潰してしまう
+		expect(new Set([local, all, host]).size).toBe(3);
 	});
 
 	test('no-ops when the fingerprint queue is not configured', async () => {

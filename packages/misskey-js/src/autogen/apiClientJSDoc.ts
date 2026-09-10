@@ -421,6 +421,17 @@ declare module '../api.js' {
      * 
      * **Credential required**: *Yes* / **Permission**: *write:admin:emoji*
      */
+    request<E extends 'admin/emoji/refingerprint', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * No description provided.
+     * 
+     * **Credential required**: *Yes* / **Permission**: *write:admin:emoji*
+     */
     request<E extends 'admin/emoji/remove-aliases-bulk', P extends Endpoints[E]['req']>(
       endpoint: E,
       params: P,
@@ -561,7 +572,7 @@ declare module '../api.js' {
 
     /**
      * No description provided.
-     *
+     * 
      * **Credential required**: *Yes* / **Permission**: *read:admin:account*
      */
     request<E extends 'admin/hanami/suggestion-events-export', P extends Endpoints[E]['req']>(

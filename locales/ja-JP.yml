@@ -3238,8 +3238,13 @@ _customEmojisManager:
     label: "照合状態"
     pending: "未処理"
     failed: "失敗"
+    ready: "指紋あり"
     unmatched: "一致なし"
     matched: "一致あり"
+    refingerprintSelection: "選択行を再照合"
+    refingerprintAllLocal: "ローカル絵文字を全て再照合"
+    refingerprintHost: "このホストを再照合"
+    refingerprintQueued: "{count}件を再照合の対象にしました。処理はキューで順次行われます。"
   _gridCommon:
     copySelectionRows: "選択行をコピー"
     copySelectionRanges: "選択範囲をコピー"

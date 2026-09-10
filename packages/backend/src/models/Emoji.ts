@@ -11,22 +11,28 @@ import { id } from './util/id.js';
  * JSONスキーマからも参照するため、core層ではなくエンティティ側に置く
  * （models/json-schema/* が core/* を読むと import が循環する）。
  */
-export const emojiImageFingerprintStates = ['pending', 'failed', 'unmatched', 'matched'] as const;
+export const emojiImageFingerprintStates = ['pending', 'failed', 'ready', 'unmatched', 'matched'] as const;
 export type EmojiImageFingerprintState = typeof emojiImageFingerprintStates[number];
 
 /**
- * リモート絵文字の照合状態を返す。ローカル絵文字は対象外なので null。
+ * 絵文字の照合状態を返す。
+ *
+ * pending / failed はローカル・リモート共通。指紋が取れている場合だけ、リモートは
+ * 対応するローカル絵文字の有無で matched / unmatched に分かれ、ローカルは ready になる。
+ *
+ * ローカルを対象外にしないこと。照合先はローカルの指紋なので、ローカルが pending のままだと
+ * リモートを何件処理しても matched は0件になる。その状態を管理画面から見えるようにするのが目的。
  *
  * localFingerprints には、一致するローカル絵文字が実在する指紋だけを渡すこと。
  */
 export function deriveEmojiImageFingerprintState(
 	emoji: Pick<MiEmoji, 'host' | 'imageFingerprint' | 'imageFingerprintAttemptedAt'>,
 	localFingerprints: ReadonlySet<string>,
-): EmojiImageFingerprintState | null {
-	if (emoji.host === null) return null;
+): EmojiImageFingerprintState {
 	if (emoji.imageFingerprint === null) {
 		return emoji.imageFingerprintAttemptedAt === null ? 'pending' : 'failed';
 	}
+	if (emoji.host === null) return 'ready';
 	return localFingerprints.has(emoji.imageFingerprint) ? 'matched' : 'unmatched';
 }
 

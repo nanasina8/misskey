@@ -31,6 +31,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<MkButton danger style="margin-right: auto" @click="onDeleteButtonClicked">
 					{{ i18n.ts.delete }} ({{ deleteItemsCount }})
 				</MkButton>
+				<MkButton @click="onRefingerprintAllLocalClicked">
+					{{ i18n.ts._customEmojisManager._fingerprint.refingerprintAllLocal }}
+				</MkButton>
 			</div>
 
 			<div :class="$style.center">
@@ -79,6 +82,8 @@ import {
 	emptyStrToEmptyArray,
 	emptyStrToNull,
 	emptyStrToUndefined,
+	fingerprintStateLabel,
+	refingerprint,
 	roleIdsParser,
 } from '@/pages/admin/custom-emojis-manager.impl.js';
 import MkGrid from '@/components/grid/MkGrid.vue';
@@ -108,6 +113,7 @@ type GridItem = {
 	publicUrl?: string | null;
 	originalUrl?: string | null;
 	type: string | null;
+	fingerprintState: string;
 };
 
 function setupGrid(): GridSetting {
@@ -147,6 +153,12 @@ function setupGrid(): GridSetting {
 						text: i18n.ts._customEmojisManager._gridCommon.copySelectionRows,
 						icon: 'ti ti-copy',
 						action: () => copyGridDataToClipboard(gridItems, context),
+					},
+					{
+						type: 'button',
+						text: i18n.ts._customEmojisManager._fingerprint.refingerprintSelection,
+						icon: 'ti ti-refresh',
+						action: () => refingerprint({ emojiIds: context.rangedRows.map(it => gridItems.value[it.index].id) }),
 					},
 					{
 						type: 'button',
@@ -227,6 +239,7 @@ function setupGrid(): GridSetting {
 					},
 				},
 			},
+			{ bindTo: 'fingerprintState', title: 'fingerprint', type: 'text', editable: false, width: 140 },
 			{ bindTo: 'type', type: 'text', editable: false, width: 90 },
 			{ bindTo: 'updatedAt', type: 'text', editable: false, width: 'auto' },
 			{ bindTo: 'publicUrl', type: 'text', editable: false, width: 180 },
@@ -458,6 +471,19 @@ function onGridCellValueChange(event: GridCellValueChangeEvent) {
 	}
 }
 
+/**
+ * ローカル絵文字は自ホストのストレージしか読まないので、全件まとめて洗い直しても外部に負荷は出ない。
+ * リモートの照合先はローカルの指紋なので、ここが埋まらないと照合は成立しない。
+ */
+async function onRefingerprintAllLocalClicked() {
+	const confirm = await os.confirm({
+		type: 'question',
+		text: i18n.ts._customEmojisManager._fingerprint.refingerprintAllLocal,
+	});
+	if (confirm.canceled) return;
+	await refingerprint({ scope: 'local' });
+}
+
 async function refreshCustomEmojis() {
 	const limit = searchQuery.value.limit;
 
@@ -512,6 +538,7 @@ function refreshGridItems() {
 		publicUrl: it.publicUrl,
 		originalUrl: it.originalUrl,
 		type: it.type,
+		fingerprintState: fingerprintStateLabel(it),
 	}));
 	originGridItems.value = JSON.parse(JSON.stringify(gridItems.value));
 }

@@ -3123,8 +3123,13 @@ _customEmojisManager:
     label: "Match status"
     pending: "Not processed"
     failed: "Failed"
+    ready: "Fingerprinted"
     unmatched: "No match"
     matched: "Matched"
+    refingerprintSelection: "Re-check selected rows"
+    refingerprintAllLocal: "Re-check all local emojis"
+    refingerprintHost: "Re-check this host"
+    refingerprintQueued: "Queued {count} emoji(s) for re-checking."
   _gridCommon:
     copySelectionRows: "Copy selected rows"
     copySelectionRanges: "Copy selection"

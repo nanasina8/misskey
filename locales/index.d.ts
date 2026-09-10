@@ -12147,6 +12147,10 @@ export interface Locale extends ILocale {
              */
             "failed": string;
             /**
+             * 指紋あり
+             */
+            "ready": string;
+            /**
              * 一致なし
              */
             "unmatched": string;
@@ -12154,6 +12158,22 @@ export interface Locale extends ILocale {
              * 一致あり
              */
             "matched": string;
+            /**
+             * 選択行を再照合
+             */
+            "refingerprintSelection": string;
+            /**
+             * ローカル絵文字を全て再照合
+             */
+            "refingerprintAllLocal": string;
+            /**
+             * このホストを再照合
+             */
+            "refingerprintHost": string;
+            /**
+             * {count}件を再照合の対象にしました。処理はキューで順次行われます。
+             */
+            "refingerprintQueued": ParameterizedString<"count">;
         };
         "_gridCommon": {
             /**

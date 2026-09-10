@@ -200,13 +200,15 @@ describe('EmojiImageFingerprintProcessorService', () => {
 			expect(builder.where).toHaveBeenCalledWith('emoji."imageFingerprint" IS NULL');
 			expect(builder.andWhere).toHaveBeenCalledWith('emoji."imageFingerprintAttemptedAt" IS NULL');
 			expect(builder.andWhere).toHaveBeenCalledWith('1=1', {});
+			// scope 未指定は全件なのでホスト条件は付かない
+			expect(builder.andWhere).not.toHaveBeenCalledWith('emoji.host IS NULL');
 			expect(builder.orderBy).toHaveBeenCalledWith('emoji.id', 'ASC');
 			expect(builder.take).toHaveBeenCalledWith(100);
 
 			expect(queueService.createEmojiImageFingerprintJob).toHaveBeenCalledTimes(100);
 			expect(queueService.createEmojiImageFingerprintJob).toHaveBeenNthCalledWith(1, { emojiId: 'e0', sourceUrl: 'https://example.com/e0.png', host: null });
 			expect(queueService.createEmojiImageFingerprintJob).toHaveBeenLastCalledWith({ emojiId: 'e99', sourceUrl: 'https://example.com/e99.png', host: null });
-			expect(queueService.createEmojiImageFingerprintBackfillJob).toHaveBeenCalledWith({ cursor: 'e99' });
+			expect(queueService.createEmojiImageFingerprintBackfillJob).toHaveBeenCalledWith({ scope: 'all', host: undefined, cursor: 'e99' });
 			expect(queueLoggerService.logger.info).toHaveBeenCalledWith('emoji-image-fingerprint-backfill', expect.objectContaining({ status: 'seeded', count: 100, pending: 'more', cursor: null, durationMs: expect.any(Number) }));
 		});
 
@@ -231,7 +233,32 @@ describe('EmojiImageFingerprintProcessorService', () => {
 			await processor.processBackfill({ data: { cursor: 'e42' } } as never);
 
 			expect(builder.andWhere).toHaveBeenCalledWith('emoji.id > :cursor', { cursor: 'e42' });
-			expect(queueService.createEmojiImageFingerprintBackfillJob).toHaveBeenCalledWith({ cursor: 'e99' });
+			expect(queueService.createEmojiImageFingerprintBackfillJob).toHaveBeenCalledWith({ scope: 'all', host: undefined, cursor: 'e99' });
+		});
+
+		test('scope local narrows to local emojis and keeps the scope while paging', async () => {
+			const rows = Array.from({ length: 100 }, (_, i) => emoji(`e${i}`));
+			const builder = makeQueryBuilder(rows);
+			const { processor, emojisRepository, queueService } = makeProcessor();
+			emojisRepository.createQueryBuilder.mockReturnValue(builder);
+
+			await processor.processBackfill({ data: { scope: 'local' } } as never);
+
+			// ローカルは自ホストのストレージしか読まず件数も桁違いに少ないので、全体走査と分けて先に完走させる
+			expect(builder.andWhere).toHaveBeenCalledWith('emoji.host IS NULL');
+			expect(queueService.createEmojiImageFingerprintBackfillJob).toHaveBeenCalledWith({ scope: 'local', host: undefined, cursor: 'e99' });
+		});
+
+		test('a host-scoped backfill filters by host and keeps it while paging', async () => {
+			const rows = Array.from({ length: 100 }, (_, i) => emoji(`e${i}`));
+			const builder = makeQueryBuilder(rows);
+			const { processor, emojisRepository, queueService } = makeProcessor();
+			emojisRepository.createQueryBuilder.mockReturnValue(builder);
+
+			await processor.processBackfill({ data: { host: 'remote.example' } } as never);
+
+			expect(builder.andWhere).toHaveBeenCalledWith('emoji.host = :host', { host: 'remote.example' });
+			expect(queueService.createEmojiImageFingerprintBackfillJob).toHaveBeenCalledWith({ scope: 'all', host: 'remote.example', cursor: 'e99' });
 		});
 
 		test('schedules nothing for an empty result set', async () => {

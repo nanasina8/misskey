@@ -47,6 +47,7 @@ export * as 'admin/emoji/delete-bulk' from './endpoints/admin/emoji/delete-bulk.
 export * as 'admin/emoji/import-zip' from './endpoints/admin/emoji/import-zip.js';
 export * as 'admin/emoji/list' from './endpoints/admin/emoji/list.js';
 export * as 'admin/emoji/list-remote' from './endpoints/admin/emoji/list-remote.js';
+export * as 'admin/emoji/refingerprint' from './endpoints/admin/emoji/refingerprint.js';
 export * as 'admin/emoji/remove-aliases-bulk' from './endpoints/admin/emoji/remove-aliases-bulk.js';
 export * as 'admin/emoji/set-aliases-bulk' from './endpoints/admin/emoji/set-aliases-bulk.js';
 export * as 'admin/emoji/set-category-bulk' from './endpoints/admin/emoji/set-category-bulk.js';

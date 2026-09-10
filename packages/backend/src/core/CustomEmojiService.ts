@@ -724,7 +724,8 @@ export class CustomEmojiService implements OnApplicationShutdown {
 				builder.andWhere('emoji.localOnly = :localOnly', { localOnly: q.localOnly });
 			}
 			if (q.imageFingerprintState) {
-				builder.andWhere('emoji.host IS NOT NULL');
+				// pending / failed はローカル・リモート共通。ready はローカル限定、
+				// matched / unmatched はリモート限定なので、それぞれ host 条件を自分で付ける。
 				switch (q.imageFingerprintState) {
 					case 'pending':
 						builder.andWhere('emoji."imageFingerprint" IS NULL AND emoji."imageFingerprintAttemptedAt" IS NULL');
@@ -732,11 +733,14 @@ export class CustomEmojiService implements OnApplicationShutdown {
 					case 'failed':
 						builder.andWhere('emoji."imageFingerprint" IS NULL AND emoji."imageFingerprintAttemptedAt" IS NOT NULL');
 						break;
+					case 'ready':
+						builder.andWhere('emoji.host IS NULL AND emoji."imageFingerprint" IS NOT NULL');
+						break;
 					case 'matched':
-						builder.andWhere('emoji."imageFingerprint" IS NOT NULL AND EXISTS (SELECT 1 FROM "emoji" "lf" WHERE "lf"."host" IS NULL AND "lf"."imageFingerprint" = emoji."imageFingerprint")');
+						builder.andWhere('emoji.host IS NOT NULL AND emoji."imageFingerprint" IS NOT NULL AND EXISTS (SELECT 1 FROM "emoji" "lf" WHERE "lf"."host" IS NULL AND "lf"."imageFingerprint" = emoji."imageFingerprint")');
 						break;
 					case 'unmatched':
-						builder.andWhere('emoji."imageFingerprint" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "emoji" "lf" WHERE "lf"."host" IS NULL AND "lf"."imageFingerprint" = emoji."imageFingerprint")');
+						builder.andWhere('emoji.host IS NOT NULL AND emoji."imageFingerprint" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "emoji" "lf" WHERE "lf"."host" IS NULL AND "lf"."imageFingerprint" = emoji."imageFingerprint")');
 						break;
 				}
 			}

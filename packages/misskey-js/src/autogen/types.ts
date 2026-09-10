@@ -341,6 +341,15 @@ export type paths = {
          */
         post: operations['admin___emoji___list-remote'];
     };
+    '/admin/emoji/refingerprint': {
+        /**
+         * admin/emoji/refingerprint
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:admin:emoji*
+         */
+        post: operations['admin___emoji___refingerprint'];
+    };
     '/admin/emoji/remove-aliases-bulk': {
         /**
          * admin/emoji/remove-aliases-bulk
@@ -5273,8 +5282,8 @@ export type components = {
             license: string | null;
             localOnly: boolean;
             isSensitive: boolean;
-            /** @enum {string|null} */
-            imageFingerprintState: 'pending' | 'failed' | 'unmatched' | 'matched' | null;
+            /** @enum {string} */
+            imageFingerprintState: 'pending' | 'failed' | 'ready' | 'unmatched' | 'matched';
             imageFingerprintErrorCode: string | null;
             roleIdsThatCanBeUsedThisEmojiAsReaction: {
                 /** Format: misskey:id */
@@ -8493,6 +8502,78 @@ export interface operations {
                         host: string | null;
                         url: string;
                     }[];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    admin___emoji___refingerprint: {
+        requestBody: {
+            content: {
+                'application/json': {
+                    emojiIds?: string[];
+                    /** @enum {string} */
+                    scope?: 'local';
+                    host?: string;
+                    /** @default false */
+                    onlyFailed?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        reset: number;
+                    };
                 };
             };
             /** @description Client error */
@@ -37759,7 +37840,7 @@ export interface operations {
                         isSensitive?: boolean;
                         localOnly?: boolean;
                         /** @enum {string} */
-                        imageFingerprintState?: 'pending' | 'failed' | 'unmatched' | 'matched';
+                        imageFingerprintState?: 'pending' | 'failed' | 'ready' | 'unmatched' | 'matched';
                         /**
                          * @default all
                          * @enum {string}

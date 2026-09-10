@@ -314,7 +314,7 @@ describe('EmojiEntityService.packDetailedAdminMany', () => {
 		expect(find).toHaveBeenCalledTimes(1);
 		expect(find).toHaveBeenCalledWith(expect.objectContaining({ select: ['imageFingerprint'] }));
 		expect(find.mock.calls[0][0].where.imageFingerprint.value).toEqual(['pix-v1:matched', 'pix-v1:unmatched']);
-		expect(actual.map(x => x.imageFingerprintState)).toEqual(['matched', 'matched', 'unmatched', null]);
+		expect(actual.map(x => x.imageFingerprintState)).toEqual(['matched', 'matched', 'unmatched', 'ready']);
 	});
 });
 
