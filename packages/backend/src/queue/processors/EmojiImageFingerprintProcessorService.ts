@@ -51,6 +51,12 @@ export class EmojiImageFingerprintProcessorService {
 					await this.emojisRepository.update(expected, { imageFingerprint: null, imageFingerprintAttemptedAt: new Date(), imageFingerprintErrorCode: error.code });
 					return;
 				}
+				if (error instanceof StatusError && !error.isRetryable) {
+					// 4xx(429以外)は何度取りに行っても同じ。恒久扱いにしてリトライを止める。
+					// ドライブから消えた画像などがここに来る。
+					await this.emojisRepository.update(expected, { imageFingerprint: null, imageFingerprintAttemptedAt: new Date(), imageFingerprintErrorCode: `HTTP_${error.statusCode}`.slice(0, 32) });
+					return;
+				}
 				// 一過性の失敗。再試行の対象に残すので attemptedAt は立てないが、理由は必ず残す。
 				// 残さないとDB上は永遠に pending のままで、失敗しているのか未着手なのかが区別できない。
 				const code = transientErrorCode(error);

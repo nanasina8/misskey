@@ -42,10 +42,25 @@ export class EmojiImageFingerprintSourceService {
 		if (!isFetchableHttpUrl(url)) throw new EmojiImageFingerprintError('INVALID_IMAGE', 'Emoji has no usable image URL');
 
 		if (emoji.host !== null) return this.downloadService.downloadFingerprintImage(url);
+
+		// ローカル絵文字はまずストレージから読む（自ホストへの往復を避けるため）。
+		// ただしストレージが読めなくても、その画像は公開URLからは配信できていることが多い
+		// （キューを動かすプロセスにドライブのボリュームが無い構成など）。指紋が取れないより
+		// 一度取りに行く方がましなので、失敗したらURLへフォールバックする。
+		try {
+			const stored = await this.readFromStorage(url);
+			if (stored !== null) return stored;
+		} catch {
+			// フォールバックする。理由はジョブ側のログとerrorCodeに出る。
+		}
+		return this.downloadService.downloadFingerprintImage(url);
+	}
+
+	private async readFromStorage(url: string): Promise<Buffer | null> {
 		const file = await this.driveFilesRepository.findOne({ where: [{ webpublicUrl: url }, { url: url }] });
-		if (file == null || file.isLink) return this.downloadService.downloadFingerprintImage(url);
+		if (file == null || file.isLink) return null;
 		const key = file.webpublicUrl === url && file.webpublicAccessKey ? file.webpublicAccessKey : file.accessKey;
-		if (key == null) return this.downloadService.downloadFingerprintImage(url);
+		if (key == null) return null;
 		if (file.storedInternal) return this.internalStorageService.readBytes(key);
 		const meta = await this.metaService.fetch();
 		if (meta.objectStorageBucket == null) throw new Error('Object storage bucket is not configured');

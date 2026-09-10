@@ -176,9 +176,36 @@ describe('EmojiImageFingerprintProcessorService', () => {
 			expect(unlock).toHaveBeenCalledTimes(1);
 		});
 
+		test('4xxは恒久扱いにしてリトライを止める', async () => {
+			const unlock = jest.fn();
+			const { processor, emojisRepository, fingerprintService, appLockService } = makeProcessor();
+			appLockService.getEmojiImageFingerprintLock.mockResolvedValue(unlock);
+			emojisRepository.findOneBy.mockResolvedValue({ id: 'e1', publicUrl: 'https://example.com/a.png', host: null });
+			fingerprintService.compute.mockRejectedValue(new StatusError('not found', 404, 'Not Found'));
+
+			// 何度取りに行っても同じなので、attemptedAt を立てて failed に落とす
+			await processor.process({ data: { emojiId: 'e1', sourceUrl: 'https://example.com/a.png', host: null } } as never);
+
+			expect(emojisRepository.update).toHaveBeenCalledWith(expect.anything(), {
+				imageFingerprint: null, imageFingerprintAttemptedAt: expect.any(Date), imageFingerprintErrorCode: 'HTTP_404',
+			});
+			expect(unlock).toHaveBeenCalledTimes(1);
+		});
+
+		test('429は一過性扱いのまま残す', async () => {
+			const unlock = jest.fn();
+			const { processor, emojisRepository, fingerprintService, appLockService } = makeProcessor();
+			appLockService.getEmojiImageFingerprintLock.mockResolvedValue(unlock);
+			emojisRepository.findOneBy.mockResolvedValue({ id: 'e1', publicUrl: 'https://example.com/a.png', host: null });
+			fingerprintService.compute.mockRejectedValue(new StatusError('slow down', 429, 'Too Many Requests'));
+
+			await expect(processor.process({ data: { emojiId: 'e1', sourceUrl: 'https://example.com/a.png', host: null } } as never)).rejects.toBeDefined();
+
+			expect(emojisRepository.update).toHaveBeenCalledWith(expect.anything(), { imageFingerprintErrorCode: 'HTTP_429' });
+		});
+
 		test.each([
 			[Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }), 'ECONNREFUSED'],
-			[new StatusError('forbidden', 403, 'Forbidden'), 'HTTP_403'],
 			[new TypeError('bad'), 'TypeError'],
 			['plain string', 'UNKNOWN'],
 		])('一過性エラーを短いコードに落とす', async (thrown, expected) => {
@@ -443,14 +470,31 @@ describe('EmojiImageFingerprintSourceService', () => {
 		expect(downloadService.downloadFingerprintImage).not.toHaveBeenCalled();
 	});
 
-	test('throws when object storage is required but not configured', async () => {
+	test('falls back to the public URL when object storage is not configured', async () => {
 		const publicUrl = 'https://example.com/a.png';
-		const { source, driveFilesRepository, metaService, s3Service } = makeSource();
+		const { source, driveFilesRepository, metaService, s3Service, downloadService } = makeSource();
 		driveFilesRepository.findOne.mockResolvedValue({ webpublicUrl: publicUrl, url: publicUrl, isLink: false, webpublicAccessKey: 'webkey', accessKey: 'ackey', storedInternal: false });
 		metaService.fetch.mockResolvedValue({ objectStorageBucket: null });
+		downloadService.downloadFingerprintImage.mockResolvedValue(Buffer.from('fallback'));
 
-		await expect(source.read({ host: null, publicUrl })).rejects.toThrow('Object storage bucket is not configured');
+		await expect(source.read({ host: null, publicUrl })).resolves.toEqual(Buffer.from('fallback'));
 		expect(s3Service.readBytes).not.toHaveBeenCalled();
+	});
+
+	test('ストレージが読めなくても公開URLへフォールバックする', async () => {
+		// キューを動かすプロセスにドライブのボリュームが無い構成では内部ストレージが ENOENT になるが、
+		// その画像は公開URLからは配信できている。指紋のためだけに諦める理由はない。
+		const publicUrl = 'https://example.com/a.png';
+		const { source, driveFilesRepository, internalStorageService, downloadService } = makeSource();
+		driveFilesRepository.findOne.mockResolvedValue({ webpublicUrl: null, url: publicUrl, isLink: false, webpublicAccessKey: null, accessKey: 'ackey', storedInternal: true });
+		internalStorageService.readBytes.mockRejectedValue(Object.assign(new Error('no such file'), { code: 'ENOENT' }));
+		downloadService.downloadFingerprintImage.mockResolvedValue(Buffer.from('viaurl'));
+
+		const result = await source.read({ host: null, publicUrl });
+
+		expect(result).toEqual(Buffer.from('viaurl'));
+		expect(internalStorageService.readBytes).toHaveBeenCalledWith('ackey');
+		expect(downloadService.downloadFingerprintImage).toHaveBeenCalledWith(publicUrl);
 	});
 });
 
