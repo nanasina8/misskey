@@ -17,7 +17,7 @@ import { DI } from '@/di-symbols.js';
 import { MemoryKVCache, RedisSingleCache } from '@/misc/cache.js';
 import { sqlLikeEscape } from '@/misc/sql-like-escape.js';
 import type { EmojisRepository, MiRole, MiUser } from '@/models/_.js';
-import type { MiEmoji } from '@/models/Emoji.js';
+import type { EmojiImageFingerprintState, MiEmoji } from '@/models/Emoji.js';
 import type { Serialized } from '@/types.js';
 
 const parseEmojiStrRegexp = /^([-\w]+)(?:@([\w.-]+))?$/;
@@ -213,6 +213,7 @@ export class CustomEmojiService implements OnApplicationShutdown {
 			remarks: data.remarks,
 			imageFingerprint: sourceChanged ? null : undefined,
 			imageFingerprintAttemptedAt: sourceChanged ? null : undefined,
+			imageFingerprintErrorCode: sourceChanged ? null : undefined,
 		});
 		if (sourceChanged) {
 			await this.queueService.createEmojiImageFingerprintJob({ emojiId: emoji.id, sourceUrl: data.publicUrl ?? emoji.publicUrl, host: emoji.host });
@@ -632,6 +633,7 @@ export class CustomEmojiService implements OnApplicationShutdown {
 				isSensitive?: boolean;
 				localOnly?: boolean;
 				hostType?: FetchEmojisHostTypes;
+				imageFingerprintState?: EmojiImageFingerprintState;
 				roleIds?: string[];
 			},
 			sinceId?: string;
@@ -720,6 +722,23 @@ export class CustomEmojiService implements OnApplicationShutdown {
 			if (q.localOnly != null) {
 				// noIndexScan
 				builder.andWhere('emoji.localOnly = :localOnly', { localOnly: q.localOnly });
+			}
+			if (q.imageFingerprintState) {
+				builder.andWhere('emoji.host IS NOT NULL');
+				switch (q.imageFingerprintState) {
+					case 'pending':
+						builder.andWhere('emoji."imageFingerprint" IS NULL AND emoji."imageFingerprintAttemptedAt" IS NULL');
+						break;
+					case 'failed':
+						builder.andWhere('emoji."imageFingerprint" IS NULL AND emoji."imageFingerprintAttemptedAt" IS NOT NULL');
+						break;
+					case 'matched':
+						builder.andWhere('emoji."imageFingerprint" IS NOT NULL AND EXISTS (SELECT 1 FROM "emoji" "lf" WHERE "lf"."host" IS NULL AND "lf"."imageFingerprint" = emoji."imageFingerprint")');
+						break;
+					case 'unmatched':
+						builder.andWhere('emoji."imageFingerprint" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "emoji" "lf" WHERE "lf"."host" IS NULL AND "lf"."imageFingerprint" = emoji."imageFingerprint")');
+						break;
+				}
 			}
 			if (q.roleIds && q.roleIds.length > 0) {
 				builder.andWhere('emoji.roleIdsThatCanBeUsedThisEmojiAsReaction && ARRAY[:...roleIds]::VARCHAR[]', { roleIds: q.roleIds });

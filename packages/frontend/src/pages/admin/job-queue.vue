@@ -326,9 +326,9 @@ const headerTabs = computed<{
 	key: '-',
 	title: i18n.ts.jobQueue,
 	icon: 'ti ti-list-check',
-}, ...Misskey.queueTypes.map((q) => ({
-	key: q,
-	title: q,
+}, ...queueInfos.value.map((q) => ({
+	key: q.name,
+	title: q.name,
 }))]);
 
 definePage(() => ({

@@ -33,12 +33,12 @@ export class EmojiImageFingerprintProcessorService {
 			if (emoji == null || emoji.publicUrl !== job.data.sourceUrl || emoji.host !== job.data.host) return;
 			try {
 				const fingerprint = await this.fingerprintService.compute(await this.sourceService.read(emoji));
-				await this.emojisRepository.update(expected, { imageFingerprint: fingerprint, imageFingerprintAttemptedAt: new Date() });
+				await this.emojisRepository.update(expected, { imageFingerprint: fingerprint, imageFingerprintAttemptedAt: new Date(), imageFingerprintErrorCode: null });
 			} catch (error) {
 				if (error instanceof EmojiImageFingerprintError) {
 					// 恒久的に指紋を取れない画像。attemptedAtを立てて、バックフィルが起動のたびに
 					// 取得し直さないようにする。一過性の失敗はここには来ず、ジョブのリトライに任せる。
-					await this.emojisRepository.update(expected, { imageFingerprint: null, imageFingerprintAttemptedAt: new Date() });
+					await this.emojisRepository.update(expected, { imageFingerprint: null, imageFingerprintAttemptedAt: new Date(), imageFingerprintErrorCode: error.code });
 					return;
 				}
 				throw error;

@@ -3234,6 +3234,12 @@ _roleSelectDialog:
   notSelected: "選択されていません"
 
 _customEmojisManager:
+  _fingerprint:
+    label: "照合状態"
+    pending: "未処理"
+    failed: "失敗"
+    unmatched: "一致なし"
+    matched: "一致あり"
   _gridCommon:
     copySelectionRows: "選択行をコピー"
     copySelectionRanges: "選択範囲をコピー"

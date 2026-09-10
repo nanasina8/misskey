@@ -3119,6 +3119,12 @@ _gridComponent:
 _roleSelectDialog:
   notSelected: "Not selected"
 _customEmojisManager:
+  _fingerprint:
+    label: "Match status"
+    pending: "Not processed"
+    failed: "Failed"
+    unmatched: "No match"
+    matched: "Matched"
   _gridCommon:
     copySelectionRows: "Copy selected rows"
     copySelectionRanges: "Copy selection"

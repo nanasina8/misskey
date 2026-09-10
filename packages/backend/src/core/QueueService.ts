@@ -4,7 +4,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, OnModuleInit, Optional } from '@nestjs/common';
 import { MetricsTime, type JobType } from 'bullmq';
 import { parse as parseRedisInfo } from 'redis-info';
 import type { IActivity } from '@/core/activitypub/type.js';
@@ -66,6 +66,7 @@ export const QUEUE_TYPES = [
 	'userWebhookDeliver',
 	'systemWebhookDeliver',
 	'hanamiGeneration',
+	'emojiImageFingerprint',
 ] as const;
 
 const HANAMI_GENERATION_JOB_OPTIONS = {
@@ -186,7 +187,7 @@ export class QueueService implements OnModuleInit {
 		@Inject('queue:userWebhookDeliver') public userWebhookDeliverQueue: UserWebhookDeliverQueue,
 		@Inject('queue:systemWebhookDeliver') public systemWebhookDeliverQueue: SystemWebhookDeliverQueue,
 		@Inject('queue:hanamiGeneration') public hanamiGenerationQueue?: HanamiGenerationQueue,
-		@Inject('queue:emojiImageFingerprint') public emojiImageFingerprintQueue?: EmojiImageFingerprintQueue,
+		@Optional() @Inject('queue:emojiImageFingerprint') public emojiImageFingerprintQueue?: EmojiImageFingerprintQueue,
 	) {}
 
 	@bindThis
@@ -293,6 +294,13 @@ export class QueueService implements OnModuleInit {
 			throw new Error('Hanami generation queue is not available');
 		}
 		return this.hanamiGenerationQueue;
+	}
+
+	private getEmojiImageFingerprintQueue(): EmojiImageFingerprintQueue {
+		if (this.emojiImageFingerprintQueue == null) {
+			throw new Error('Emoji image fingerprint queue is not available');
+		}
+		return this.emojiImageFingerprintQueue;
 	}
 
 	@bindThis
@@ -1051,6 +1059,7 @@ export class QueueService implements OnModuleInit {
 			case 'userWebhookDeliver': return this.userWebhookDeliverQueue;
 			case 'systemWebhookDeliver': return this.systemWebhookDeliverQueue;
 			case 'hanamiGeneration': return this.getHanamiGenerationQueue();
+			case 'emojiImageFingerprint': return this.getEmojiImageFingerprintQueue();
 			default: throw new Error(`Unrecognized queue type: ${type}`);
 		}
 	}
@@ -1171,24 +1180,28 @@ export class QueueService implements OnModuleInit {
 
 	@bindThis
 	public async queueGetQueues() {
-		const fetchings = QUEUE_TYPES.map(async type => {
-			const queue = this.getQueue(type);
+		// The image fingerprint queue can be omitted in partial deployments. Do not
+		// make the existing queue administration overview unavailable in that case.
+		const fetchings = QUEUE_TYPES
+			.filter(type => type !== 'emojiImageFingerprint' || this.emojiImageFingerprintQueue != null)
+			.map(async type => {
+				const queue = this.getQueue(type);
 
-			const counts = await queue.getJobCounts();
-			const isPaused = await queue.isPaused();
-			const metrics_completed = await queue.getMetrics('completed', 0, MetricsTime.ONE_WEEK);
-			const metrics_failed = await queue.getMetrics('failed', 0, MetricsTime.ONE_WEEK);
+				const counts = await queue.getJobCounts();
+				const isPaused = await queue.isPaused();
+				const metrics_completed = await queue.getMetrics('completed', 0, MetricsTime.ONE_WEEK);
+				const metrics_failed = await queue.getMetrics('failed', 0, MetricsTime.ONE_WEEK);
 
-			return {
-				name: type,
-				counts: counts,
-				isPaused,
-				metrics: {
-					completed: metrics_completed,
-					failed: metrics_failed,
-				},
-			};
-		});
+				return {
+					name: type,
+					counts: counts,
+					isPaused,
+					metrics: {
+						completed: metrics_completed,
+						failed: metrics_failed,
+					},
+				};
+			});
 
 		return await Promise.all(fetchings);
 	}

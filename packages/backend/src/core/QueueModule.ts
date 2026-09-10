@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { Inject, Module, OnApplicationShutdown } from '@nestjs/common';
+import { Inject, Module, OnApplicationShutdown, Optional } from '@nestjs/common';
 import * as Bull from 'bullmq';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
@@ -153,7 +153,7 @@ export class QueueModule implements OnApplicationShutdown {
 		@Inject('queue:objectStorage') public objectStorageQueue: ObjectStorageQueue,
 		@Inject('queue:userWebhookDeliver') public userWebhookDeliverQueue: UserWebhookDeliverQueue,
 		@Inject('queue:systemWebhookDeliver') public systemWebhookDeliverQueue: SystemWebhookDeliverQueue,
-		@Inject('queue:emojiImageFingerprint') public emojiImageFingerprintQueue: EmojiImageFingerprintQueue,
+		@Optional() @Inject('queue:emojiImageFingerprint') public emojiImageFingerprintQueue: EmojiImageFingerprintQueue | undefined,
 	) {}
 
 	public async dispose(): Promise<void> {
@@ -172,7 +172,7 @@ export class QueueModule implements OnApplicationShutdown {
 			this.objectStorageQueue.close(),
 			this.userWebhookDeliverQueue.close(),
 			this.systemWebhookDeliverQueue.close(),
-			this.emojiImageFingerprintQueue.close(),
+			this.emojiImageFingerprintQueue?.close(),
 		]);
 	}
 

@@ -7,6 +7,7 @@ import { Injectable } from '@nestjs/common';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { EmojiEntityService } from '@/core/entities/EmojiEntityService.js';
 import { CustomEmojiService, fetchEmojisHostTypes, fetchEmojisSortKeys } from '@/core/CustomEmojiService.js';
+import { emojiImageFingerprintStates } from '@/models/Emoji.js';
 import { IdService } from '@/core/IdService.js';
 
 export const meta = {
@@ -53,6 +54,10 @@ export const paramDef = {
 				license: { type: 'string' },
 				isSensitive: { type: 'boolean' },
 				localOnly: { type: 'boolean' },
+				imageFingerprintState: {
+					type: 'string',
+					enum: emojiImageFingerprintStates,
+				},
 				hostType: {
 					type: 'string',
 					enum: fetchEmojisHostTypes,
@@ -109,6 +114,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 						license: q?.license,
 						isSensitive: q?.isSensitive,
 						localOnly: q?.localOnly,
+						imageFingerprintState: q?.imageFingerprintState,
 						hostType: q?.hostType,
 						roleIds: q?.roleIds,
 					},

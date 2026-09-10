@@ -5,8 +5,10 @@
 
 import { createHash } from 'node:crypto';
 import { describe, expect, jest, test } from '@jest/globals';
+import { Test } from '@nestjs/testing';
 import { QueueService } from '@/core/QueueService.js';
 import type { Config } from '@/config.js';
+import { DI } from '@/di-symbols.js';
 
 /**
  * Focused tests for the fingerprint queue seams in QueueService:
@@ -15,9 +17,28 @@ import type { Config } from '@/config.js';
  * verifies the exact ID/options the service hands to BullMQ.
  */
 describe('QueueService emoji image fingerprint jobs', () => {
-	const NOOP_QUEUE = { add: async () => ({}) };
+	const NOOP_QUEUE = {
+		add: async () => ({}),
+		getJobCounts: async () => ({}),
+		isPaused: async () => false,
+		getMetrics: async () => ({ meta: {}, data: [], count: 0 }),
+		clean: async () => [],
+	};
+	const REQUIRED_QUEUE_TOKENS = [
+		'queue:system',
+		'queue:endedPollNotification',
+		'queue:postScheduledNote',
+		'queue:deliver',
+		'queue:inbox',
+		'queue:db',
+		'queue:relationship',
+		'queue:objectStorage',
+		'queue:userWebhookDeliver',
+		'queue:systemWebhookDeliver',
+		'queue:hanamiGeneration',
+	] as const;
 
-	function makeService(emojiQueue?: unknown): QueueService {
+	function makeService(emojiQueue?: unknown, hanamiQueue?: unknown): QueueService {
 		return new QueueService(
 			{} as Config,
 			NOOP_QUEUE as never,
@@ -30,7 +51,7 @@ describe('QueueService emoji image fingerprint jobs', () => {
 			NOOP_QUEUE as never,
 			NOOP_QUEUE as never,
 			NOOP_QUEUE as never,
-			undefined,
+			hanamiQueue as never,
 			emojiQueue as never,
 		);
 	}
@@ -132,9 +153,59 @@ describe('QueueService emoji image fingerprint jobs', () => {
 	});
 
 	test('no-ops when the fingerprint queue is not configured', async () => {
-		const service = makeService(undefined);
+		const service = makeService(undefined, NOOP_QUEUE);
 
 		await expect(service.createEmojiImageFingerprintJob({ emojiId: 'abc', sourceUrl: 'https://example.com/x.png', host: null })).resolves.toBeUndefined();
 		await expect(service.createEmojiImageFingerprintBackfillJob()).resolves.toBeUndefined();
+		await expect(service.queueGetQueues()).resolves.toHaveLength(11);
+		await expect(service.queueGetQueues()).resolves.not.toContainEqual(expect.objectContaining({ name: 'emojiImageFingerprint' }));
+		await expect(service.queueClear('emojiImageFingerprint', 'failed')).rejects.toThrow('Emoji image fingerprint queue is not available');
+		await expect(service.queueGetQueue('emojiImageFingerprint')).rejects.toThrow('Emoji image fingerprint queue is not available');
+	});
+
+	test('resolves through Nest without the optional fingerprint queue provider', async () => {
+		const module = await Test.createTestingModule({
+			providers: [
+				QueueService,
+				{ provide: DI.config, useValue: {} },
+				...REQUIRED_QUEUE_TOKENS.map(provide => ({ provide, useValue: NOOP_QUEUE })),
+			],
+		}).compile();
+		const service = module.get(QueueService);
+
+		await expect(service.createEmojiImageFingerprintJob({ emojiId: 'abc', sourceUrl: 'https://example.com/x.png', host: null })).resolves.toBeUndefined();
+		await expect(service.queueGetQueues()).resolves.toHaveLength(11);
+		await expect(service.queueGetQueues()).resolves.not.toContainEqual(expect.objectContaining({ name: 'emojiImageFingerprint' }));
+		await expect(service.queueGetQueue('emojiImageFingerprint')).rejects.toThrow('Emoji image fingerprint queue is not available');
+
+		await module.close();
+	});
+
+	test('makes a configured fingerprint queue available to queue administration', async () => {
+		const emojiQueue = {
+			...NOOP_QUEUE,
+			getJobCounts: jest.fn(async () => ({ waiting: 0 })),
+			isPaused: jest.fn(async () => false),
+			getMetrics: jest.fn(async () => ({ meta: {}, data: [], count: 0 })),
+			clean: jest.fn(async () => []),
+			qualifiedName: 'bull:emojiImageFingerprint',
+			client: Promise.resolve({
+				info: jest.fn(async () => 'redis_version:7.0.0\r\nredis_mode:standalone\r\nrun_id:run\r\nprocess_id:1\r\ntcp_port:6379\r\nos:Linux\r\nuptime_in_seconds:1\r\ntotal_system_memory:1\r\nused_memory:1\r\nmem_fragmentation_ratio:1\r\nused_memory_peak:1\r\nconnected_clients:1\r\nblocked_clients:0\r\n'),
+			}),
+		};
+		const service = makeService(emojiQueue, NOOP_QUEUE);
+
+		const queues = await service.queueGetQueues();
+		const fingerprintQueue = queues.find(queue => queue.name === 'emojiImageFingerprint');
+		expect(fingerprintQueue?.counts).toEqual({ waiting: 0 });
+		expect(emojiQueue.getJobCounts).toHaveBeenCalledTimes(1);
+
+		await service.queueClear('emojiImageFingerprint', 'failed');
+		expect(emojiQueue.clean).toHaveBeenCalledWith(0, 0, 'failed');
+
+		await expect(service.queueGetQueue('emojiImageFingerprint')).resolves.toMatchObject({
+			name: 'emojiImageFingerprint',
+			qualifiedName: 'bull:emojiImageFingerprint',
+		});
 	});
 });

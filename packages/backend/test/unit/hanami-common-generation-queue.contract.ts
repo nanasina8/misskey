@@ -59,6 +59,10 @@ function createQueueService() {
 		upsertJobScheduler: jest.fn(async () => undefined),
 		add: jest.fn<(name: string, data: Record<string, unknown>, options: Record<string, unknown>) => Promise<void>>(async () => undefined),
 	};
+	const emojiImageFingerprintQueue = {
+		...adminQueue(),
+		add: jest.fn(async () => undefined),
+	};
 	const otherQueues = Array.from({ length: 9 }, () => adminQueue());
 	const service = new QueueService(
 		{
@@ -76,9 +80,10 @@ function createQueueService() {
 		otherQueues[7] as never,
 		otherQueues[8] as never,
 		hanamiGenerationQueue as never,
+		emojiImageFingerprintQueue as never,
 	);
 
-	return { service, systemQueue, hanamiGenerationQueue, otherQueues };
+	return { service, systemQueue, hanamiGenerationQueue, emojiImageFingerprintQueue, otherQueues };
 }
 
 type ExistingAlias = {
@@ -304,13 +309,13 @@ describe('Hanami common generation queue wiring', () => {
 		expect(hanamiGenerationQueue.add).not.toHaveBeenCalled();
 	});
 
-	test('includes the dedicated queue in admin enumeration and clear', async () => {
+	test('includes the dedicated queues in admin enumeration and clear', async () => {
 		const { service, hanamiGenerationQueue } = createQueueService();
 
-		expect(QUEUE_TYPES).toHaveLength(11);
+		expect(QUEUE_TYPES).toHaveLength(12);
 		expect(QUEUE_TYPES).toContain('hanamiGeneration');
 		const queues = await service.queueGetQueues();
-		expect(queues).toHaveLength(11);
+		expect(queues).toHaveLength(12);
 		expect(queues.find(queue => queue.name === 'hanamiGeneration')).toBeDefined();
 
 		await service.queueClear('hanamiGeneration', 'failed');
@@ -335,6 +340,30 @@ describe('Hanami common generation queue wiring', () => {
 		);
 
 		await module.dispose();
+
+		for (const queue of queues) {
+			expect(queue.close).toHaveBeenCalledTimes(1);
+		}
+	});
+
+	test('skips an unavailable optional fingerprint queue during disposal', async () => {
+		const queues = Array.from({ length: 11 }, () => adminQueue());
+		const module = new QueueModule(
+			queues[0] as never,
+			queues[1] as never,
+			queues[2] as never,
+			queues[3] as never,
+			queues[4] as never,
+			queues[5] as never,
+			queues[6] as never,
+			queues[7] as never,
+			queues[8] as never,
+			queues[9] as never,
+			queues[10] as never,
+			undefined,
+		);
+
+		await module.onApplicationShutdown('SIGTERM');
 
 		for (const queue of queues) {
 			expect(queue.close).toHaveBeenCalledTimes(1);

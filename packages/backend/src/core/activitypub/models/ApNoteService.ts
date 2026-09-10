@@ -422,6 +422,7 @@ export class ApNoteService {
 						// _misskey_license が存在しなければ `null`
 						license: (tag._misskey_license?.freeText ?? null),
 						imageFingerprint: imageMaybeChanged ? null : undefined,
+						imageFingerprintErrorCode: imageMaybeChanged ? null : undefined,
 						imageFingerprintAttemptedAt: imageMaybeChanged ? null : undefined,
 					});
 

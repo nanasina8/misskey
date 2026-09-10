@@ -62,6 +62,19 @@ SPDX-License-Identifier: AGPL-3.0-only
 						>
 							<template #label>publicUrl</template>
 						</MkInput>
+						<MkSelect
+							v-model="queryImageFingerprintState"
+							:items="[
+								{ label: '-', value: null },
+								{ label: i18n.ts._customEmojisManager._fingerprint.pending, value: 'pending' },
+								{ label: i18n.ts._customEmojisManager._fingerprint.failed, value: 'failed' },
+								{ label: i18n.ts._customEmojisManager._fingerprint.unmatched, value: 'unmatched' },
+								{ label: i18n.ts._customEmojisManager._fingerprint.matched, value: 'matched' },
+							]"
+							:class="[$style.col3, $style.row2]"
+						>
+							<template #label>{{ i18n.ts._customEmojisManager._fingerprint.label }}</template>
+						</MkSelect>
 					</div>
 
 					<hr>
@@ -151,6 +164,7 @@ import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
 import MkButton from '@/components/MkButton.vue';
 import MkInput from '@/components/MkInput.vue';
+import MkSelect from '@/components/MkSelect.vue';
 import MkGrid from '@/components/grid/MkGrid.vue';
 import { emptyStrToUndefined, gridSortOrderKeys } from '@/pages/admin/custom-emojis-manager.impl.js';
 import MkFolder from '@/components/MkFolder.vue';
@@ -167,6 +181,7 @@ type GridItem = {
 	url: string;
 	name: string;
 	host: string;
+	fingerprintState: string;
 };
 
 function setupGrid(): GridSetting {
@@ -202,6 +217,7 @@ function setupGrid(): GridSetting {
 			{ bindTo: 'url', icon: 'ti-icons', type: 'image', editable: false, width: 'auto' },
 			{ bindTo: 'name', title: 'name', type: 'text', editable: false, width: 'auto' },
 			{ bindTo: 'host', title: 'host', type: 'text', editable: false, width: 'auto' },
+			{ bindTo: 'fingerprintState', title: 'fingerprint', type: 'text', editable: false, width: 140 },
 			{ bindTo: 'license', title: 'license', type: 'text', editable: false, width: 200 },
 			{ bindTo: 'uri', title: 'uri', type: 'text', editable: false, width: 'auto' },
 			{ bindTo: 'publicUrl', title: 'publicUrl', type: 'text', editable: false, width: 'auto' },
@@ -259,6 +275,7 @@ const queryHost = ref<string | null>(null);
 const queryLicense = ref<string | null>(null);
 const queryUri = ref<string | null>(null);
 const queryPublicUrl = ref<string | null>(null);
+const queryImageFingerprintState = ref<NonNullable<NonNullable<Misskey.entities.V2AdminEmojiListRequest['query']>['imageFingerprintState']> | null>(null);
 const queryLimit = ref<number>(100);
 const previousQuery = ref<string | undefined>(undefined);
 const sortOrders = ref<SortOrder<GridSortOrderKey>[]>([]);
@@ -283,6 +300,7 @@ function onQueryResetButtonClicked() {
 	queryLicense.value = null;
 	queryUri.value = null;
 	queryPublicUrl.value = null;
+	queryImageFingerprintState.value = null;
 }
 
 async function onPageChanged(pageNumber: number) {
@@ -361,6 +379,7 @@ async function refreshCustomEmojis() {
 		license: emptyStrToUndefined(queryLicense.value),
 		uri: emptyStrToUndefined(queryUri.value),
 		publicUrl: emptyStrToUndefined(queryPublicUrl.value),
+		imageFingerprintState: queryImageFingerprintState.value ?? undefined,
 		hostType: 'remote',
 	};
 
@@ -385,6 +404,11 @@ async function refreshCustomEmojis() {
 		name: it.name,
 		license: it.license,
 		host: it.host!,
+		fingerprintState: it.imageFingerprintState == null
+			? ''
+			: it.imageFingerprintState === 'failed' && it.imageFingerprintErrorCode != null
+				? `${i18n.ts._customEmojisManager._fingerprint.failed}(${it.imageFingerprintErrorCode})`
+				: i18n.ts._customEmojisManager._fingerprint[it.imageFingerprintState],
 	}));
 }
 

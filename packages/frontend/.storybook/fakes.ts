@@ -408,18 +408,21 @@ export function emoji(params?: {
 	localOnly?: boolean,
 	roleIdsThatCanBeUsedThisEmojiAsReaction?: {id:string, name:string}[],
 	updatedAt?: string,
+	imageFingerprintState?: entities.EmojiDetailedAdmin['imageFingerprintState'],
+	imageFingerprintErrorCode?: string | null,
 }, seed?: string): entities.EmojiDetailedAdmin {
 	const _seed = seed ?? (params?.id ?? "DEFAULT_SEED");
 	const id = params?.id ?? text(32, _seed);
 	const name = params?.name ?? text(8, _seed);
 	const updatedAt = params?.updatedAt ?? date({}, _seed).toISOString();
+	const host = params?.host ?? null;
 
 	const image = imageDataUrl({}, _seed)
 
 	return {
 		id: id,
 		name: name,
-		host: params?.host ?? null,
+		host,
 		uri: params?.uri ?? null,
 		publicUrl: params?.publicUrl ?? image,
 		originalUrl: params?.originalUrl ?? image,
@@ -431,5 +434,7 @@ export function emoji(params?: {
 		localOnly: params?.localOnly ?? false,
 		roleIdsThatCanBeUsedThisEmojiAsReaction: params?.roleIdsThatCanBeUsedThisEmojiAsReaction ?? [],
 		updatedAt: updatedAt,
+		imageFingerprintState: params?.imageFingerprintState ?? (host === null ? null : 'pending'),
+		imageFingerprintErrorCode: params?.imageFingerprintErrorCode ?? null,
 	}
 }

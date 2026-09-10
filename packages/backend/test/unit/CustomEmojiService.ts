@@ -6,6 +6,7 @@
 import { afterEach, beforeAll, describe, jest, test } from '@jest/globals';
 import { Test, TestingModule } from '@nestjs/testing';
 import { CustomEmojiService } from '@/core/CustomEmojiService.js';
+import { deriveEmojiImageFingerprintState } from '@/models/Emoji.js';
 import { EmojiEntityService } from '@/core/entities/EmojiEntityService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { IdService } from '@/core/IdService.js';
@@ -820,6 +821,48 @@ describe('CustomEmojiService', () => {
 					expect(actual.emojis[2].name).toBe('emoji003');
 				});
 			});
+		});
+
+		describe('imageFingerprintState', () => {
+			test('filters the four remote states and excludes local emojis automatically', async () => {
+				await insert([
+					defaultData('local', { imageFingerprint: null, imageFingerprintAttemptedAt: null }),
+					defaultData('pending', { host: 'remote.example', imageFingerprint: null, imageFingerprintAttemptedAt: null }),
+					defaultData('failed', { host: 'remote.example', imageFingerprint: null, imageFingerprintAttemptedAt: new Date() }),
+					defaultData('matched', { host: 'remote.example', imageFingerprint: 'pix-v1:matched', imageFingerprintAttemptedAt: new Date() }),
+					defaultData('unmatched', { host: 'remote.example', imageFingerprint: 'pix-v1:unmatched', imageFingerprintAttemptedAt: new Date() }),
+					defaultData('matching-local', { imageFingerprint: 'pix-v1:matched', imageFingerprintAttemptedAt: new Date() }),
+				]);
+
+				for (const [state, expectedName] of [
+					['pending', 'emojipending'],
+					['failed', 'emojifailed'],
+					['matched', 'emojimatched'],
+					['unmatched', 'emojiunmatched'],
+				] as const) {
+					const actual = await call({ query: { imageFingerprintState: state } });
+					expect(actual.allCount).toBe(1);
+					expect(actual.emojis[0].name).toBe(expectedName);
+				}
+			});
+		});
+	});
+
+	describe('deriveEmojiImageFingerprintState', () => {
+		const localFingerprints = new Set(['pix-v1:matched']);
+		const cases: Array<[
+			Parameters<typeof deriveEmojiImageFingerprintState>[0],
+			ReturnType<typeof deriveEmojiImageFingerprintState>,
+		]> = [
+			[{ host: 'remote.example', imageFingerprint: null, imageFingerprintAttemptedAt: null }, 'pending'],
+			[{ host: 'remote.example', imageFingerprint: null, imageFingerprintAttemptedAt: new Date() }, 'failed'],
+			[{ host: 'remote.example', imageFingerprint: 'pix-v1:unmatched', imageFingerprintAttemptedAt: new Date() }, 'unmatched'],
+			[{ host: 'remote.example', imageFingerprint: 'pix-v1:matched', imageFingerprintAttemptedAt: new Date() }, 'matched'],
+			[{ host: null, imageFingerprint: 'pix-v1:matched', imageFingerprintAttemptedAt: new Date() }, null],
+		];
+
+		test.each(cases)('returns %s for the supplied emoji', (emoji, expected) => {
+			expect(deriveEmojiImageFingerprintState(emoji, localFingerprints)).toBe(expected);
 		});
 	});
 });

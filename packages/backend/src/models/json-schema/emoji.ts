@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { emojiImageFingerprintStates } from '@/models/Emoji.js';
+
 export const packedEmojiSimpleSchema = {
 	type: 'object',
 	properties: {
@@ -171,6 +173,15 @@ export const packedEmojiDetailedAdminSchema = {
 		isSensitive: {
 			type: 'boolean',
 			optional: false, nullable: false,
+		},
+		imageFingerprintState: {
+			type: 'string',
+			optional: false, nullable: true,
+			enum: [...emojiImageFingerprintStates],
+		},
+		imageFingerprintErrorCode: {
+			type: 'string',
+			optional: false, nullable: true,
 		},
 		roleIdsThatCanBeUsedThisEmojiAsReaction: {
 			type: 'array',

@@ -12133,6 +12133,28 @@ export interface Locale extends ILocale {
         "notSelected": string;
     };
     "_customEmojisManager": {
+        "_fingerprint": {
+            /**
+             * 照合状態
+             */
+            "label": string;
+            /**
+             * 未処理
+             */
+            "pending": string;
+            /**
+             * 失敗
+             */
+            "failed": string;
+            /**
+             * 一致なし
+             */
+            "unmatched": string;
+            /**
+             * 一致あり
+             */
+            "matched": string;
+        };
         "_gridCommon": {
             /**
              * 選択行をコピー

@@ -7,8 +7,10 @@ import { afterEach, describe, expect, jest, test } from '@jest/globals';
 import { MemoryKVCache } from '@/misc/cache.js';
 import type { ReactionLocalEmojiCandidate } from '@/core/CustomEmojiService.js';
 import { CustomEmojiService } from '@/core/CustomEmojiService.js';
+import { EmojiEntityService } from '@/core/entities/EmojiEntityService.js';
 import { selectReactionLocalEmoji } from '@/core/entities/NoteEntityService.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
+import type { MiEmoji } from '@/models/Emoji.js';
 import type { MiNote } from '@/models/Note.js';
 
 function candidate(overrides: Partial<ReactionLocalEmojiCandidate> & Pick<ReactionLocalEmojiCandidate, 'id'>): ReactionLocalEmojiCandidate {
@@ -285,6 +287,34 @@ describe('CustomEmojiService.getReactionLocalEmojiCandidates', () => {
 		const actual = await service.getReactionLocalEmojiCandidates(['party@.']);
 		expect(actual.size).toBe(0);
 		expect(find).not.toHaveBeenCalled();
+	});
+});
+
+describe('EmojiEntityService.packDetailedAdminMany', () => {
+	test('looks up deduplicated remote fingerprints locally exactly once', async () => {
+		const find = jest.fn(async (_options: any) => [{ imageFingerprint: 'pix-v1:matched' }]);
+		const service = Object.create(EmojiEntityService.prototype) as EmojiEntityService;
+		(service as any).emojisRepository = { find };
+		(service as any).rolesRepository = { findBy: jest.fn() };
+		const emoji = (overrides: Partial<MiEmoji>) => ({
+			id: '9k1', updatedAt: null, name: 'emoji', host: 'remote.example', uri: null, type: null,
+			aliases: [], category: null, publicUrl: 'https://example.com/emoji.png', originalUrl: 'https://example.com/emoji.png',
+			license: null, localOnly: false, isSensitive: false, roleIdsThatCanBeUsedThisEmojiAsReaction: [],
+			imageFingerprint: null, imageFingerprintAttemptedAt: null, imageFingerprintErrorCode: null,
+			...overrides,
+		}) as MiEmoji;
+
+		const actual = await service.packDetailedAdminMany([
+			emoji({ id: '9k1', imageFingerprint: 'pix-v1:matched' }),
+			emoji({ id: '9k2', imageFingerprint: 'pix-v1:matched' }),
+			emoji({ id: '9k3', imageFingerprint: 'pix-v1:unmatched' }),
+			emoji({ id: '9k4', host: null, imageFingerprint: 'pix-v1:matched' }),
+		]);
+
+		expect(find).toHaveBeenCalledTimes(1);
+		expect(find).toHaveBeenCalledWith(expect.objectContaining({ select: ['imageFingerprint'] }));
+		expect(find.mock.calls[0][0].where.imageFingerprint.value).toEqual(['pix-v1:matched', 'pix-v1:unmatched']);
+		expect(actual.map(x => x.imageFingerprintState)).toEqual(['matched', 'matched', 'unmatched', null]);
 	});
 });
 

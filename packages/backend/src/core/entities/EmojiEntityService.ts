@@ -4,7 +4,8 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
-import { In } from 'typeorm';
+import { In, IsNull } from 'typeorm';
+import { deriveEmojiImageFingerprintState } from '@/models/Emoji.js';
 import { DI } from '@/di-symbols.js';
 import type { EmojisRepository, MiRole, RolesRepository } from '@/models/_.js';
 import type { Packed } from '@/misc/json-schema.js';
@@ -79,7 +80,8 @@ export class EmojiEntityService {
 	public async packDetailedAdmin(
 		src: MiEmoji['id'] | MiEmoji,
 		hint?: {
-			roles?: Map<MiRole['id'], MiRole>
+			roles?: Map<MiRole['id'], MiRole>;
+			localFingerprints?: ReadonlySet<string>;
 		},
 	): Promise<Packed<'EmojiDetailedAdmin'>> {
 		const emoji = typeof src === 'object' ? src : await this.emojisRepository.findOneByOrFail({ id: src });
@@ -123,6 +125,8 @@ export class EmojiEntityService {
 			localOnly: emoji.localOnly,
 			isSensitive: emoji.isSensitive,
 			roleIdsThatCanBeUsedThisEmojiAsReaction: roles.map(it => ({ id: it.id, name: it.name })),
+			imageFingerprintState: deriveEmojiImageFingerprintState(emoji, hint?.localFingerprints ?? new Set()),
+			imageFingerprintErrorCode: emoji.imageFingerprintErrorCode,
 		};
 	}
 
@@ -130,7 +134,7 @@ export class EmojiEntityService {
 	public async packDetailedAdminMany(
 		emojis: MiEmoji['id'][] | MiEmoji[],
 		hint?: {
-			roles?: Map<MiRole['id'], MiRole>
+			roles?: Map<MiRole['id'], MiRole>;
 		},
 	): Promise<Packed<'EmojiDetailedAdmin'>[]> {
 		// IDのみの要素をピックアップし、DBからレコードを取り出して他の値を補完する
@@ -154,7 +158,18 @@ export class EmojiEntityService {
 			hintRoles = new Map(roles.map(x => [x.id, x]));
 		}
 
-		return Promise.all(emojis.map(x => this.packDetailedAdmin(x, { roles: hintRoles })));
+		const fingerprints = [...new Set(emojiEntities.flatMap(emoji => emoji.host !== null && emoji.imageFingerprint !== null ? [emoji.imageFingerprint] : []))];
+		const localFingerprints = new Set<string>();
+		if (fingerprints.length > 0) {
+			const localEmojis = await this.emojisRepository.find({
+				where: { host: IsNull(), imageFingerprint: In(fingerprints) },
+				select: ['imageFingerprint'],
+			});
+			for (const localEmoji of localEmojis) {
+				if (localEmoji.imageFingerprint !== null) localFingerprints.add(localEmoji.imageFingerprint);
+			}
+		}
+
+		return Promise.all(emojis.map(x => this.packDetailedAdmin(x, { roles: hintRoles, localFingerprints })));
 	}
 }
-

@@ -55,7 +55,7 @@ describe('EmojiImageFingerprintProcessorService', () => {
 			expect(fingerprintService.compute).toHaveBeenCalledWith(Buffer.from('img'));
 			expect(emojisRepository.update).toHaveBeenCalledWith(
 				{ id: 'e1', publicUrl: 'https://example.com/a.png', host: 'example.com' },
-				{ imageFingerprint: 'pix-v1:deadbeef', imageFingerprintAttemptedAt: expect.any(Date) },
+				{ imageFingerprint: 'pix-v1:deadbeef', imageFingerprintAttemptedAt: expect.any(Date), imageFingerprintErrorCode: null },
 			);
 			expect(unlock).toHaveBeenCalledTimes(1);
 		});
@@ -78,6 +78,7 @@ describe('EmojiImageFingerprintProcessorService', () => {
 			expect(criteria.publicUrl).toBe('https://example.com/a.png');
 			expect(criteria.host).toEqual(IsNull());
 			expect(patch.imageFingerprint).toMatch(/^pix-v1:[0-9a-f]{64}$/);
+			expect(patch.imageFingerprintErrorCode).toBeNull();
 			expect(unlock).toHaveBeenCalledTimes(1);
 		});
 
@@ -132,7 +133,7 @@ describe('EmojiImageFingerprintProcessorService', () => {
 
 			expect(emojisRepository.update).toHaveBeenCalledWith(
 				{ id: 'e1', publicUrl: 'https://example.com/a.png', host: 'example.com' },
-				{ imageFingerprint: null, imageFingerprintAttemptedAt: expect.any(Date) },
+				{ imageFingerprint: null, imageFingerprintAttemptedAt: expect.any(Date), imageFingerprintErrorCode: 'INVALID_IMAGE' },
 			);
 			expect(unlock).toHaveBeenCalledTimes(1);
 		});
@@ -149,7 +150,7 @@ describe('EmojiImageFingerprintProcessorService', () => {
 			expect(fingerprintService.compute).not.toHaveBeenCalled();
 			expect(emojisRepository.update).toHaveBeenCalledWith(
 				{ id: 'e1', publicUrl: 'https://example.com/a.png', host: 'example.com' },
-				{ imageFingerprint: null, imageFingerprintAttemptedAt: expect.any(Date) },
+				{ imageFingerprint: null, imageFingerprintAttemptedAt: expect.any(Date), imageFingerprintErrorCode: 'INPUT_TOO_LARGE' },
 			);
 			expect(unlock).toHaveBeenCalledTimes(1);
 		});

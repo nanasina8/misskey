@@ -249,6 +249,7 @@ export const queueTypes = [
 	'userWebhookDeliver',
 	'systemWebhookDeliver',
 	'hanamiGeneration',
+	'emojiImageFingerprint',
 ] as const;
 
 // See: packages/backend/src/core/ReversiService.ts@L410

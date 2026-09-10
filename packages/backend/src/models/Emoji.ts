@@ -6,6 +6,30 @@
 import { PrimaryColumn, Entity, Index, Column } from 'typeorm';
 import { id } from './util/id.js';
 
+/**
+ * リモート絵文字とローカル絵文字の照合状態。
+ * JSONスキーマからも参照するため、core層ではなくエンティティ側に置く
+ * （models/json-schema/* が core/* を読むと import が循環する）。
+ */
+export const emojiImageFingerprintStates = ['pending', 'failed', 'unmatched', 'matched'] as const;
+export type EmojiImageFingerprintState = typeof emojiImageFingerprintStates[number];
+
+/**
+ * リモート絵文字の照合状態を返す。ローカル絵文字は対象外なので null。
+ *
+ * localFingerprints には、一致するローカル絵文字が実在する指紋だけを渡すこと。
+ */
+export function deriveEmojiImageFingerprintState(
+	emoji: Pick<MiEmoji, 'host' | 'imageFingerprint' | 'imageFingerprintAttemptedAt'>,
+	localFingerprints: ReadonlySet<string>,
+): EmojiImageFingerprintState | null {
+	if (emoji.host === null) return null;
+	if (emoji.imageFingerprint === null) {
+		return emoji.imageFingerprintAttemptedAt === null ? 'pending' : 'failed';
+	}
+	return localFingerprints.has(emoji.imageFingerprint) ? 'matched' : 'unmatched';
+}
+
 @Entity('emoji')
 @Index(['name', 'host'], { unique: true })
 @Index('IDX_EMOJI_ROLE_IDS', { synchronize: false }) // GIN for roleIdsThatCanBeUsedThisEmojiAsReaction in production
@@ -104,4 +128,10 @@ export class MiEmoji {
 		nullable: true,
 	})
 	public imageFingerprintAttemptedAt: Date | null;
+
+	// フィンガープリントを恒久的に取得できなかった理由。成功時はNULLに戻す。
+	@Column('varchar', {
+		length: 32, nullable: true,
+	})
+	public imageFingerprintErrorCode: string | null;
 }
