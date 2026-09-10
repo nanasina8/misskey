@@ -8,6 +8,7 @@ import sharp from 'sharp';
 import { IsNull } from 'typeorm';
 import { AppLockService } from '@/core/AppLockService.js';
 import { EmojiImageFingerprintError, EmojiImageFingerprintService } from '@/core/EmojiImageFingerprintService.js';
+import { StatusError } from '@/misc/status-error.js';
 import { EmojiImageFingerprintSourceService } from '@/core/EmojiImageFingerprintSourceService.js';
 import { EmojiImageFingerprintProcessorService } from '@/queue/processors/EmojiImageFingerprintProcessorService.js';
 
@@ -25,7 +26,7 @@ describe('EmojiImageFingerprintProcessorService', () => {
 			createEmojiImageFingerprintJob: jest.fn<(...args: any[]) => Promise<unknown>>(),
 			createEmojiImageFingerprintBackfillJob: jest.fn<(...args: any[]) => Promise<unknown>>(),
 		};
-		const queueLoggerService = { logger: { info: jest.fn() } };
+		const queueLoggerService = { logger: { info: jest.fn(), warn: jest.fn() } };
 		const sourceService: any = deps.sourceService ?? { read: jest.fn<(...args: any[]) => Promise<unknown>>() };
 		const fingerprintService: any = deps.fingerprintService ?? { compute: jest.fn<(...args: any[]) => Promise<unknown>>() };
 		const processor = new EmojiImageFingerprintProcessorService(
@@ -155,17 +156,41 @@ describe('EmojiImageFingerprintProcessorService', () => {
 			expect(unlock).toHaveBeenCalledTimes(1);
 		});
 
-		test('rethrows transient errors after releasing the lock', async () => {
+		test('rethrows transient errors, records the reason, and keeps the row retryable', async () => {
+			const unlock = jest.fn();
+			const { processor, emojisRepository, fingerprintService, appLockService, queueLoggerService } = makeProcessor();
+			appLockService.getEmojiImageFingerprintLock.mockResolvedValue(unlock);
+			emojisRepository.findOneBy.mockResolvedValue({ id: 'e1', publicUrl: 'https://example.com/a.png', host: 'example.com' });
+			const failure = Object.assign(new Error('no such file'), { code: 'ENOENT' });
+			fingerprintService.compute.mockRejectedValue(failure);
+
+			await expect(processor.process({ data: { emojiId: 'e1', sourceUrl: 'https://example.com/a.png', host: 'example.com' } } as never)).rejects.toThrow('no such file');
+
+			// attemptedAt は立てない（再試行の対象に残す）が、理由は残す。
+			// 残さないとDB上は永遠に pending のままで、未着手なのか失敗なのかが区別できない。
+			expect(emojisRepository.update).toHaveBeenCalledWith(
+				{ id: 'e1', publicUrl: 'https://example.com/a.png', host: 'example.com' },
+				{ imageFingerprintErrorCode: 'ENOENT' },
+			);
+			expect(queueLoggerService.logger.warn).toHaveBeenCalledWith('emoji-image-fingerprint-transient-failure', expect.objectContaining({ emojiId: 'e1', code: 'ENOENT' }));
+			expect(unlock).toHaveBeenCalledTimes(1);
+		});
+
+		test.each([
+			[Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }), 'ECONNREFUSED'],
+			[new StatusError('forbidden', 403, 'Forbidden'), 'HTTP_403'],
+			[new TypeError('bad'), 'TypeError'],
+			['plain string', 'UNKNOWN'],
+		])('一過性エラーを短いコードに落とす', async (thrown, expected) => {
 			const unlock = jest.fn();
 			const { processor, emojisRepository, fingerprintService, appLockService } = makeProcessor();
 			appLockService.getEmojiImageFingerprintLock.mockResolvedValue(unlock);
-			emojisRepository.findOneBy.mockResolvedValue({ id: 'e1', publicUrl: 'https://example.com/a.png', host: 'example.com' });
-			fingerprintService.compute.mockRejectedValue(new Error('network down'));
+			emojisRepository.findOneBy.mockResolvedValue({ id: 'e1', publicUrl: 'https://example.com/a.png', host: null });
+			fingerprintService.compute.mockRejectedValue(thrown);
 
-			await expect(processor.process({ data: { emojiId: 'e1', sourceUrl: 'https://example.com/a.png', host: 'example.com' } } as never)).rejects.toThrow('network down');
+			await expect(processor.process({ data: { emojiId: 'e1', sourceUrl: 'https://example.com/a.png', host: null } } as never)).rejects.toBeDefined();
 
-			expect(emojisRepository.update).not.toHaveBeenCalled();
-			expect(unlock).toHaveBeenCalledTimes(1);
+			expect(emojisRepository.update).toHaveBeenCalledWith(expect.anything(), { imageFingerprintErrorCode: expected });
 		});
 	});
 

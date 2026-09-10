@@ -10,16 +10,15 @@ import { misskeyApi } from '@/utility/misskey-api.js';
 
 /**
  * 照合状態の表示文字列。導出そのものはバックエンドが持っているので、ここは文言の選択だけ。
- * failed のときだけ理由コードを添える。
+ *
+ * 理由コードは failed だけでなく pending にも付く。一過性の失敗で再試行待ちになっている場合、
+ * 状態は pending のままだがコードが入るため、「未着手」と「失敗して待っている」を区別できる。
  */
 export function fingerprintStateLabel(
 	emoji: Pick<Misskey.entities.EmojiDetailedAdmin, 'imageFingerprintState' | 'imageFingerprintErrorCode'>,
 ): string {
-	const labels = i18n.ts._customEmojisManager._fingerprint;
-	if (emoji.imageFingerprintState === 'failed' && emoji.imageFingerprintErrorCode != null) {
-		return `${labels.failed}(${emoji.imageFingerprintErrorCode})`;
-	}
-	return labels[emoji.imageFingerprintState];
+	const label = i18n.ts._customEmojisManager._fingerprint[emoji.imageFingerprintState];
+	return emoji.imageFingerprintErrorCode != null ? `${label}(${emoji.imageFingerprintErrorCode})` : label;
 }
 
 /**

@@ -135,7 +135,9 @@ export class MiEmoji {
 	})
 	public imageFingerprintAttemptedAt: Date | null;
 
-	// フィンガープリントを恒久的に取得できなかった理由。成功時はNULLに戻す。
+	// フィンガープリントを取得できなかった理由。恒久エラー(EmojiImageFingerprintErrorのcode)と
+	// 一過性エラー(ENOENT / HTTP_403 など)の両方が入る。後者は attemptedAt を立てないので
+	// 状態は pending のままだが、理由がここに残ることで「未着手」と区別できる。成功時はNULLに戻す。
 	@Column('varchar', {
 		length: 32, nullable: true,
 	})

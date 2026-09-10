@@ -10,9 +10,19 @@ import type { EmojisRepository } from '@/models/_.js';
 import { AppLockService } from '@/core/AppLockService.js';
 import { EmojiImageFingerprintError, EmojiImageFingerprintService } from '@/core/EmojiImageFingerprintService.js';
 import { EmojiImageFingerprintSourceService } from '@/core/EmojiImageFingerprintSourceService.js';
+import { StatusError } from '@/misc/status-error.js';
 import type { EmojiImageFingerprintBackfillJobData, EmojiImageFingerprintJobData } from '../types.js';
 import { QueueService } from '@/core/QueueService.js';
 import { QueueLoggerService } from '../QueueLoggerService.js';
+
+/** 一過性エラーを32文字以内の短いコードに落とす。管理画面に出して原因の当たりを付けるためのもの。 */
+function transientErrorCode(error: unknown): string {
+	if (error instanceof StatusError) return `HTTP_${error.statusCode}`.slice(0, 32);
+	const code = (error as { code?: unknown } | null)?.code;
+	if (typeof code === 'string' && code.length > 0) return code.slice(0, 32);
+	if (error instanceof Error && error.name.length > 0) return error.name.slice(0, 32);
+	return 'UNKNOWN';
+}
 
 @Injectable()
 export class EmojiImageFingerprintProcessorService {
@@ -37,10 +47,18 @@ export class EmojiImageFingerprintProcessorService {
 			} catch (error) {
 				if (error instanceof EmojiImageFingerprintError) {
 					// 恒久的に指紋を取れない画像。attemptedAtを立てて、バックフィルが起動のたびに
-					// 取得し直さないようにする。一過性の失敗はここには来ず、ジョブのリトライに任せる。
+					// 取得し直さないようにする。
 					await this.emojisRepository.update(expected, { imageFingerprint: null, imageFingerprintAttemptedAt: new Date(), imageFingerprintErrorCode: error.code });
 					return;
 				}
+				// 一過性の失敗。再試行の対象に残すので attemptedAt は立てないが、理由は必ず残す。
+				// 残さないとDB上は永遠に pending のままで、失敗しているのか未着手なのかが区別できない。
+				const code = transientErrorCode(error);
+				await this.emojisRepository.update(expected, { imageFingerprintErrorCode: code });
+				this.queueLoggerService.logger.warn('emoji-image-fingerprint-transient-failure', {
+					emojiId: job.data.emojiId, host: job.data.host, sourceUrl: job.data.sourceUrl, code,
+					message: error instanceof Error ? error.message : String(error),
+				});
 				throw error;
 			}
 		} finally { unlock(); }
