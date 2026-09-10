@@ -19,6 +19,8 @@ import {
 	UserWebhookDeliverJobData,
 	SystemWebhookDeliverJobData,
 	PostScheduledNoteJobData,
+	EmojiImageFingerprintJobData,
+	EmojiImageFingerprintBackfillJobData,
 } from '../queue/types.js';
 import type { Provider } from '@nestjs/common';
 
@@ -33,6 +35,7 @@ export type RelationshipQueue = Bull.Queue<RelationshipJobData>;
 export type ObjectStorageQueue = Bull.Queue;
 export type UserWebhookDeliverQueue = Bull.Queue<UserWebhookDeliverJobData>;
 export type SystemWebhookDeliverQueue = Bull.Queue<SystemWebhookDeliverJobData>;
+export type EmojiImageFingerprintQueue = Bull.Queue<EmojiImageFingerprintJobData | EmojiImageFingerprintBackfillJobData>;
 
 const $system: Provider = {
 	provide: 'queue:system',
@@ -99,6 +102,11 @@ const $systemWebhookDeliver: Provider = {
 	useFactory: (config: Config) => new Bull.Queue(QUEUE.SYSTEM_WEBHOOK_DELIVER, baseQueueOptions(config, QUEUE.SYSTEM_WEBHOOK_DELIVER)),
 	inject: [DI.config],
 };
+const $emojiImageFingerprint: Provider = {
+	provide: 'queue:emojiImageFingerprint',
+	useFactory: (config: Config) => new Bull.Queue<EmojiImageFingerprintJobData | EmojiImageFingerprintBackfillJobData>(QUEUE.EMOJI_IMAGE_FINGERPRINT, baseQueueOptions(config, QUEUE.EMOJI_IMAGE_FINGERPRINT)),
+	inject: [DI.config],
+};
 
 @Module({
 	imports: [
@@ -115,6 +123,7 @@ const $systemWebhookDeliver: Provider = {
 		$objectStorage,
 		$userWebhookDeliver,
 		$systemWebhookDeliver,
+		$emojiImageFingerprint,
 	],
 	exports: [
 		$system,
@@ -128,6 +137,7 @@ const $systemWebhookDeliver: Provider = {
 		$objectStorage,
 		$userWebhookDeliver,
 		$systemWebhookDeliver,
+		$emojiImageFingerprint,
 	],
 })
 export class QueueModule implements OnApplicationShutdown {
@@ -143,6 +153,7 @@ export class QueueModule implements OnApplicationShutdown {
 		@Inject('queue:objectStorage') public objectStorageQueue: ObjectStorageQueue,
 		@Inject('queue:userWebhookDeliver') public userWebhookDeliverQueue: UserWebhookDeliverQueue,
 		@Inject('queue:systemWebhookDeliver') public systemWebhookDeliverQueue: SystemWebhookDeliverQueue,
+		@Inject('queue:emojiImageFingerprint') public emojiImageFingerprintQueue: EmojiImageFingerprintQueue,
 	) {}
 
 	public async dispose(): Promise<void> {
@@ -161,6 +172,7 @@ export class QueueModule implements OnApplicationShutdown {
 			this.objectStorageQueue.close(),
 			this.userWebhookDeliverQueue.close(),
 			this.systemWebhookDeliverQueue.close(),
+			this.emojiImageFingerprintQueue.close(),
 		]);
 	}
 

@@ -42,6 +42,13 @@ export type RelationshipJobData = {
 
 export type DbJobData<T extends keyof DbJobMap> = DbJobMap[T];
 
+export type EmojiImageFingerprintJobData = {
+	emojiId: string;
+	sourceUrl: string;
+	host: string | null;
+};
+export type EmojiImageFingerprintBackfillJobData = { cursor?: string };
+
 export type DbJobMap = {
 	deleteDriveFiles: DbJobDataWithUser;
 	exportCustomEmojis: DbJobDataWithUser;

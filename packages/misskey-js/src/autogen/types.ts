@@ -458,6 +458,15 @@ export type paths = {
          */
         post: operations['admin___get-user-ips'];
     };
+    '/admin/hanami/suggestion-events-export': {
+        /**
+         * admin/hanami/suggestion-events-export
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:account*
+         */
+        post: operations['admin___hanami___suggestion-events-export'];
+    };
     '/admin/hanami/taste-rebuild': {
         /**
          * admin/hanami/taste-rebuild
@@ -4542,6 +4551,9 @@ export type components = {
             /** @enum {string|null} */
             reactionAcceptance: 'likeOnly' | 'likeOnlyForRemote' | 'nonSensitiveOnly' | 'nonSensitiveOnlyForLocalLikeOnlyForRemote' | null;
             reactionEmojis: {
+                [key: string]: string;
+            };
+            reactionLocalEmojis?: {
                 [key: string]: string;
             };
             reactions: {
@@ -9315,6 +9327,97 @@ export interface operations {
                         /** Format: date-time */
                         createdAt: string;
                     }[];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___hanami___suggestion-events-export': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    startAt?: string | null;
+                    endAt?: string | null;
+                    limit?: number | null;
+                    cursor?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        exportId: string;
+                        expiresAt: string;
+                        cursor: string | null;
+                        hasMore: boolean;
+                        events: {
+                            user: string;
+                            note: string;
+                            author: string;
+                            timeBucket: string;
+                            /** @enum {string} */
+                            eventType: 'served' | 'seen' | 'reaction' | 'reply' | 'renote';
+                            /** @enum {string|null} */
+                            feedKind: 'personal' | 'common' | 'userRecommendation' | null;
+                            /** @enum {string|null} */
+                            source: 'globalPopular' | 'neighborTrending' | 'reactionSimilar' | 'catchup' | 'trending' | 'fof' | 'exploration' | 'normal' | null;
+                            sources: ('globalPopular' | 'neighborTrending' | 'reactionSimilar' | 'catchup' | 'trending' | 'fof' | 'exploration' | 'normal')[];
+                            /** @enum {string|null} */
+                            origin: 'commonCandidate' | 'personalCandidate' | 'userRecommendation' | null;
+                            reactionOutcome: boolean;
+                            replyOutcome: boolean;
+                            renoteOutcome: boolean;
+                        }[];
+                    };
                 };
             };
             /** @description Client error */
@@ -31978,6 +32081,9 @@ export interface operations {
                             [key: string]: number;
                         };
                         reactionEmojis: {
+                            [key: string]: string;
+                        };
+                        reactionLocalEmojis?: {
                             [key: string]: string;
                         };
                     }[];

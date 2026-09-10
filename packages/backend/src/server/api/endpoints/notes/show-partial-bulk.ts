@@ -38,6 +38,13 @@ export const meta = {
 						type: 'string',
 					},
 				},
+				reactionLocalEmojis: {
+					type: 'object',
+					optional: true, nullable: false,
+					additionalProperties: {
+						type: 'string',
+					},
+				},
 			},
 		},
 	},
@@ -60,7 +67,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private noteEntityService: NoteEntityService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
-			return await this.noteEntityService.fetchDiffs(ps.noteIds);
+			return await this.noteEntityService.fetchDiffs(ps.noteIds, me);
 		});
 	}
 }

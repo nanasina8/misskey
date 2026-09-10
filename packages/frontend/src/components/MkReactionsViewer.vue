@@ -18,9 +18,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 		:key="reaction"
 		:reaction="reaction"
 		:reactionEmojis="props.reactionEmojis"
+		:reactionLocalEmojis="props.reactionLocalEmojis"
 		:count="count"
 		:isInitial="initialReactions.has(reaction)"
 		:noteId="props.noteId"
+		:note="props.note"
 		:myReaction="props.myReaction"
 		@reactionToggled="onMockToggleReaction"
 	/>
@@ -39,15 +41,20 @@ import { prefer } from '@/preferences.js';
 import { customEmojisMap } from '@/custom-emojis.js';
 import { DI } from '@/di.js';
 import { isMuted } from '@/utility/emoji-mute.js';
+import { checkReactionPermissions } from '@/utility/check-reaction-permissions.js';
+import { getLocalEmojiReactionFor, parseRemoteCustomEmojiReaction } from '@/utility/reaction-local-emoji.js';
 
 const props = withDefaults(defineProps<{
 	noteId: Misskey.entities.Note['id'];
 	reactions: Misskey.entities.Note['reactions'];
 	reactionEmojis: Misskey.entities.Note['reactionEmojis'];
+	reactionLocalEmojis?: NonNullable<Misskey.entities.Note['reactionLocalEmojis']>;
 	myReaction: Misskey.entities.Note['myReaction'];
+	note?: Misskey.entities.Note;
 	maxNumber?: number;
 }>(), {
 	maxNumber: Infinity,
+	reactionLocalEmojis: () => ({}),
 });
 
 const mock = inject(DI.mock, false);
@@ -76,14 +83,20 @@ function onMockToggleReaction(emoji: string, count: number) {
 
 function canReact(reaction: string) {
 	if (!$i) return false;
+	if (parseRemoteCustomEmojiReaction(reaction) != null) {
+		const target = getLocalEmojiReactionFor(reaction, props.reactionLocalEmojis);
+		const emoji = target != null ? customEmojisMap.get(target.slice(1, -3)) : undefined;
+		return emoji != null && props.note != null && checkReactionPermissions($i, props.note, emoji);
+	}
 	// TODO: CheckPermissions
 	return !reaction.match(/@\w/) && (customEmojisMap.has(reaction) || isSupportedEmoji(reaction));
 }
 
-watch([() => props.reactions, () => props.maxNumber], ([newSource, maxNumber]) => {
+watch([() => props.reactions, () => props.maxNumber, () => props.reactionLocalEmojis, () => prefer.r.mutingEmojis.value], ([newSource, maxNumber]) => {
 	const processed: Record<string, number> = {};
 	for (const [r, c] of Object.entries(newSource)) {
-		const key = isMuted(r) ? '❤️' : r;
+		const isUnmatchedRemoteCustomEmoji = parseRemoteCustomEmojiReaction(r) != null && getLocalEmojiReactionFor(r, props.reactionLocalEmojis) == null;
+		const key = isMuted(r) && !isUnmatchedRemoteCustomEmoji ? '❤️' : r;
 		processed[key] = (processed[key] ?? 0) + c;
 	}
 	newSource = processed;

@@ -21,7 +21,7 @@ export const noteEvents = new EventEmitter<{
 }>();
 
 const fetchEvent = new EventEmitter<{
-	[id: string]: Pick<Misskey.entities.Note, 'reactions' | 'reactionEmojis'>;
+	[id: string]: Pick<Misskey.entities.Note, 'reactions' | 'reactionEmojis' | 'reactionLocalEmojis'>;
 }>();
 
 const pollingQueue = new Map<string, {
@@ -80,6 +80,7 @@ window.setInterval(() => {
 			fetchEvent.emit(item.id, {
 				reactions: item.reactions,
 				reactionEmojis: item.reactionEmojis,
+				reactionLocalEmojis: item.reactionLocalEmojis ?? {},
 			});
 		}
 	});
@@ -91,10 +92,11 @@ function pollingSubscribe(props: {
 }): () => void {
 	const { note, $note } = props;
 
-	function onFetched(data: Pick<Misskey.entities.Note, 'reactions' | 'reactionEmojis'>): void {
+	function onFetched(data: Pick<Misskey.entities.Note, 'reactions' | 'reactionEmojis' | 'reactionLocalEmojis'>): void {
 		$note.reactions = data.reactions;
 		$note.reactionCount = Object.values(data.reactions).reduce((a, b) => a + b, 0);
 		$note.reactionEmojis = data.reactionEmojis;
+		$note.reactionLocalEmojis = data.reactionLocalEmojis ?? {};
 	}
 
 	pollingEnqueue(note);
@@ -185,6 +187,7 @@ export type ReactiveNoteData = {
 	reactions: Misskey.entities.Note['reactions'];
 	reactionCount: Misskey.entities.Note['reactionCount'];
 	reactionEmojis: Misskey.entities.Note['reactionEmojis'];
+	reactionLocalEmojis: NonNullable<Misskey.entities.Note['reactionLocalEmojis']>;
 	myReaction: Misskey.entities.Note['myReaction'];
 	pollChoices: NonNullable<Misskey.entities.Note['poll']>['choices'];
 };
@@ -222,6 +225,7 @@ export function useNoteCapture(props: {
 		}, {} as Misskey.entities.Note['reactions']),
 		reactionCount: note.reactionCount,
 		reactionEmojis: note.reactionEmojis,
+		reactionLocalEmojis: note.reactionLocalEmojis ?? {},
 		myReaction: note.myReaction,
 		pollChoices: note.poll?.choices ?? [],
 	});

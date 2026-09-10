@@ -17,6 +17,7 @@ import type { MiDriveFile } from '@/models/DriveFile.js';
 import { NoteCreateService } from '@/core/NoteCreateService.js';
 import type Logger from '@/logger.js';
 import { IdService } from '@/core/IdService.js';
+import { QueueService } from '@/core/QueueService.js';
 import { PollService } from '@/core/PollService.js';
 import { StatusError } from '@/misc/status-error.js';
 import { UtilityService } from '@/core/UtilityService.js';
@@ -72,6 +73,7 @@ export class ApNoteService {
 		private noteCreateService: NoteCreateService,
 		private apDbResolverService: ApDbResolverService,
 		private apLoggerService: ApLoggerService,
+		private queueService: QueueService,
 	) {
 		this.logger = this.apLoggerService.logger;
 	}
@@ -401,6 +403,14 @@ export class ApNoteService {
 					|| (new Date(tag.updated) > exists.updatedAt)
 					|| (tag.icon.url !== exists.originalUrl)
 				) {
+					// fingerprintは publicUrl の画像から取るので、publicUrl が変わる場合（originalUrl と
+					// publicUrl が食い違う旧レコードを含む）は当然取り直す。加えて、同じURLの裏で画像が
+					// 差し替えられたケース（tag.updated だけが進む）でも古い指紋は当てにならないので取り直す。
+					const sourceChanged = tag.icon.url !== exists.originalUrl || tag.icon.url !== exists.publicUrl;
+					const imageMaybeChanged = sourceChanged
+						|| exists.updatedAt == null
+						|| new Date(tag.updated) > exists.updatedAt;
+
 					await this.emojisRepository.update({
 						host,
 						name,
@@ -410,11 +420,14 @@ export class ApNoteService {
 						publicUrl: tag.icon.url,
 						updatedAt: new Date(),
 						// _misskey_license が存在しなければ `null`
-						license: (tag._misskey_license?.freeText ?? null)
+						license: (tag._misskey_license?.freeText ?? null),
+						imageFingerprint: imageMaybeChanged ? null : undefined,
+						imageFingerprintAttemptedAt: imageMaybeChanged ? null : undefined,
 					});
 
 					const emoji = await this.emojisRepository.findOneBy({ host, name });
 					if (emoji == null) throw new Error('emoji update failed');
+					if (imageMaybeChanged) await this.queueService.createEmojiImageFingerprintJob({ emojiId: emoji.id, sourceUrl: emoji.publicUrl, host: emoji.host });
 					return emoji;
 				}
 
@@ -423,7 +436,7 @@ export class ApNoteService {
 
 			this.logger.info(`register emoji host=${host}, name=${name}`);
 
-			return await this.emojisRepository.insertOne({
+			const emoji = await this.emojisRepository.insertOne({
 				id: this.idService.gen(),
 				host,
 				name,
@@ -435,6 +448,8 @@ export class ApNoteService {
 				// _misskey_license が存在しなければ `null`
 				license: (tag._misskey_license?.freeText ?? null)
 			});
+			await this.queueService.createEmojiImageFingerprintJob({ emojiId: emoji.id, sourceUrl: emoji.publicUrl, host: emoji.host });
+			return emoji;
 		}));
 	}
 }

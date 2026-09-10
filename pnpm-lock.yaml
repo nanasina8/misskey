@@ -180,6 +180,9 @@ importers:
       ajv:
         specifier: 8.17.1
         version: 8.17.1
+      apng-js:
+        specifier: 1.1.5
+        version: 1.1.5
       archiver:
         specifier: 7.0.1
         version: 7.0.1
@@ -2538,7 +2541,7 @@ packages:
     hasBin: true
 
   '@hanamisskey/browser-search@https://github.com/HanaMisskey/hanami-wasm-search/archive/refs/tags/0.5.0.tar.gz':
-    resolution: {tarball: https://github.com/HanaMisskey/hanami-wasm-search/archive/refs/tags/0.5.0.tar.gz}
+    resolution: {integrity: sha512-pCyVPx0wce3PA27fa39/Yjk180OCg3yAed8Y2yL6AVlBI8bjW3YWXnWSUJQxvKqCT6TikLGyWQKtLT4YMKWpEw==, tarball: https://github.com/HanaMisskey/hanami-wasm-search/archive/refs/tags/0.5.0.tar.gz}
     version: 0.5.0
 
   '@hapi/address@5.1.1':
@@ -5294,6 +5297,9 @@ packages:
     resolution: {integrity: sha512-KMReFUr0B4t+D+OBkjR3KYqvocp2XaSzO55UcB6mgQMd3KbcE+mWTyvVV7D/zsdEbNnV6acZUutkiHQXvTr1Rw==}
     engines: {node: '>= 8'}
 
+  apng-js@1.1.5:
+    resolution: {integrity: sha512-ENBjy3HAyu7slaOgWRvVtFUdSGFWIHZvz8bGKSEM6/OWQm6NgwFquqY8R7YPgm4vnDISEczhZE2NoLAtKlnUfw==}
+
   app-root-path@3.1.0:
     resolution: {integrity: sha512-biN3PwB2gUtjaYy/isrU3aNWI5w+fAfvHkSvCKeQGxhmYpwKFUxudR3Yya+KqVRHBmEDYh+/lTozYCFbmzX4nA==}
     engines: {node: '>= 6.0.0'}
@@ -6601,6 +6607,7 @@ packages:
   eslint@9.39.2:
     resolution: {integrity: sha512-LEyamqS7W5HB3ujJyvi0HQK/dtVINZvd5mAAp9eT5S/ujByGjiZLCzPcHVzuXbpJDJF/cxwHlfceVUDZ2lnSTw==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+    deprecated: This version is no longer supported. Please see https://eslint.org/version-support for other options.
     hasBin: true
     peerDependencies:
       jiti: '*'
@@ -7054,11 +7061,13 @@ packages:
 
   glob@10.5.0:
     resolution: {integrity: sha512-DfXN8DfhJ7NH3Oe7cFmu3NCu1wKbkReJ8TorzSAFbSKrlNaQSKfIzqYqVY8zlbs2NLBbWpRiU52GX2PbaBVNkg==}
+    deprecated: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
     hasBin: true
 
   glob@11.1.0:
     resolution: {integrity: sha512-vuNwKSaKiqm7g0THUBu2x7ckSs3XJLXE+2ssL7/MfTGPLLcrJQ/4Uq1CjPTtO5cCIiRxqvN6Twy1qOwhL0Xjcw==}
     engines: {node: 20 || >=22}
+    deprecated: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
     hasBin: true
 
   glob@13.0.0:
@@ -7072,7 +7081,7 @@ packages:
   glob@8.1.0:
     resolution: {integrity: sha512-r8hpEjiQEYlF2QU0df3dS+nxxSIreXQS1qRhMJM0Q5NDdR386C7jb7Hwwod8Fgiuex+k0GFjgft18yvxm5XoCQ==}
     engines: {node: '>=12'}
-    deprecated: Glob versions prior to v9 are no longer supported
+    deprecated: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
 
   global-dirs@3.0.1:
     resolution: {integrity: sha512-NBcGGFbBA9s1VzD41QXDG+3++t9Mn5t1FpLdhESY6oKY4gYTFpX4wO3sqGUa0Srjtbfj3szX0RnemmrVRUdULA==}
@@ -10338,7 +10347,7 @@ packages:
   tar@7.5.2:
     resolution: {integrity: sha512-7NyxrTE4Anh8km8iEy7o0QYPs+0JKBTj5ZaqHg6B39erLg0qYXN3BijtShwbsNSvQ+LN75+KV+C4QR/f6Gwnpg==}
     engines: {node: '>=18'}
-    deprecated: Old versions of tar are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exhorbitant rates) by contacting i@izs.me
+    deprecated: Old versions of tar are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
 
   taskkill@5.0.0:
     resolution: {integrity: sha512-+HRtZ40Vc+6YfCDWCeAsixwxJgMbPY4HHuTgzPYH3JXvqHWUlsCfy+ylXlAKhFNcuLp4xVeWeFBUhDk+7KYUvQ==}
@@ -11024,8 +11033,8 @@ packages:
   vue-component-type-helpers@3.1.4:
     resolution: {integrity: sha512-Uws7Ew1OzTTqHW8ZVl/qLl/HB+jf08M0NdFONbVWAx0N4gMLK8yfZDgeB77hDnBmaigWWEn5qP8T9BG59jIeyQ==}
 
-  vue-component-type-helpers@3.3.1:
-    resolution: {integrity: sha512-pu58kqxmVyEH6VfNYW1UyEfR3XAnJ27ZXT3yzXxxpjLxVzAbyC35Zk/nm/RMs7ijWnJNSd9fWkeex2OhUsx3MA==}
+  vue-component-type-helpers@3.3.11:
+    resolution: {integrity: sha512-LwcxzeliO9fkQcpJG0PoX8X5kmAhKmH9wkpDLxNabwzkQ9Zeib2YVHwFV4pcWmMLfXVfjr/dSV+DaJ3cIPgSNA==}
 
   vue-demi@0.14.7:
     resolution: {integrity: sha512-EOG8KXDQNwkJILkx/gPcoL/7vH+hORoBaKgGe+6W7VFMvCYJfmF2dGbvgDroVnI8LU7/kTu8mbjRZGBU1z9NTA==}
@@ -14891,7 +14900,7 @@ snapshots:
       storybook: 9.1.17(@testing-library/dom@10.4.0)(bufferutil@4.1.0)(msw@2.12.7(@types/node@24.10.8)(typescript@5.9.3))(prettier@3.8.0)(utf-8-validate@6.0.6)(vite@7.3.1(@types/node@24.10.8)(jiti@2.6.1)(sass@1.97.2)(terser@5.45.0)(tsx@4.21.0)(yaml@2.8.2))
       type-fest: 2.19.0
       vue: 3.5.26(typescript@5.9.3)
-      vue-component-type-helpers: 3.3.1
+      vue-component-type-helpers: 3.3.11
 
   '@stylistic/eslint-plugin@2.13.0(eslint@9.39.2(jiti@2.6.1))(typescript@5.9.3)':
     dependencies:
@@ -16119,6 +16128,8 @@ snapshots:
     dependencies:
       normalize-path: 3.0.0
       picomatch: 2.3.1
+
+  apng-js@1.1.5: {}
 
   app-root-path@3.1.0: {}
 
@@ -22780,7 +22791,7 @@ snapshots:
 
   vue-component-type-helpers@3.1.4: {}
 
-  vue-component-type-helpers@3.3.1: {}
+  vue-component-type-helpers@3.3.11: {}
 
   vue-demi@0.14.7(vue@3.5.26(typescript@5.9.3)):
     dependencies:

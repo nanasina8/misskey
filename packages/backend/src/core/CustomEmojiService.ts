@@ -5,12 +5,13 @@
 
 import { Inject, Injectable, OnApplicationShutdown } from '@nestjs/common';
 import * as Redis from 'ioredis';
-import { In, IsNull } from 'typeorm';
+import { In, IsNull, Not } from 'typeorm';
 import { EmojiEntityService } from '@/core/entities/EmojiEntityService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { IdService } from '@/core/IdService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { UtilityService } from '@/core/UtilityService.js';
+import { QueueService } from '@/core/QueueService.js';
 import { bindThis } from '@/decorators.js';
 import { DI } from '@/di-symbols.js';
 import { MemoryKVCache, RedisSingleCache } from '@/misc/cache.js';
@@ -20,6 +21,18 @@ import type { MiEmoji } from '@/models/Emoji.js';
 import type { Serialized } from '@/types.js';
 
 const parseEmojiStrRegexp = /^([-\w]+)(?:@([\w.-]+))?$/;
+
+/**
+ * リモートカスタムリアクションに対するローカル絵文字の候補。
+ * imageFingerprint が一致するローカル絵文字を、ノート側のフィルタで選別するために必要な情報だけを持つ。
+ */
+export type ReactionLocalEmojiCandidate = {
+	id: MiEmoji['id'];
+	name: MiEmoji['name'];
+	localOnly: MiEmoji['localOnly'];
+	isSensitive: MiEmoji['isSensitive'];
+	roleIdsThatCanBeUsedThisEmojiAsReaction: MiEmoji['roleIdsThatCanBeUsedThisEmojiAsReaction'];
+};
 
 export const fetchEmojisHostTypes = [
 	'local',
@@ -61,6 +74,12 @@ export type FetchEmojisSortKeys = typeof fetchEmojisSortKeys[number];
 export class CustomEmojiService implements OnApplicationShutdown {
 	private emojisCache: MemoryKVCache<MiEmoji | null>;
 	public localEmojisCache: RedisSingleCache<Map<string, MiEmoji>>;
+	/**
+	 * `name@host` ごとのローカル絵文字候補。ノートのpackはストリーミング配信のように _hint_ を
+	 * 持たない経路でも走るため、キャッシュしないと接続クライアント数ぶんクエリが出る。
+	 * ローカル絵文字の変更では明示的に捨て、リモート側のfingerprint更新は寿命で吸収する。
+	 */
+	private reactionLocalEmojiCandidatesCache: MemoryKVCache<ReactionLocalEmojiCandidate[]>;
 
 	constructor(
 		@Inject(DI.redis)
@@ -72,8 +91,10 @@ export class CustomEmojiService implements OnApplicationShutdown {
 		private emojiEntityService: EmojiEntityService,
 		private moderationLogService: ModerationLogService,
 		private globalEventService: GlobalEventService,
+		private queueService: QueueService,
 	) {
 		this.emojisCache = new MemoryKVCache<MiEmoji | null>(1000 * 60 * 60 * 12); // 12h
+		this.reactionLocalEmojiCandidatesCache = new MemoryKVCache<ReactionLocalEmojiCandidate[]>(1000 * 60 * 5); // 5m
 
 		this.localEmojisCache = new RedisSingleCache<Map<string, MiEmoji>>(this.redisClient, 'localEmojis', {
 			lifetime: 1000 * 60 * 30, // 30m
@@ -120,9 +141,11 @@ export class CustomEmojiService implements OnApplicationShutdown {
 			roleIdsThatCanBeUsedThisEmojiAsReaction: data.roleIdsThatCanBeUsedThisEmojiAsReaction,
 			remarks: data.remarks,
 		});
+		// ローカル絵文字もキューに載せる。リクエストパスで画像デコードや外向きのフェッチを待たせない。
+		await this.queueService.createEmojiImageFingerprintJob({ emojiId: emoji.id, sourceUrl: emoji.publicUrl, host: emoji.host });
 
 		if (data.host == null) {
-			this.localEmojisCache.refresh();
+			this.refreshLocalEmojiCaches();
 
 			this.globalEventService.publishBroadcastStream('emojiAdded', {
 				emoji: await this.emojiEntityService.packDetailed(emoji.id),
@@ -171,6 +194,10 @@ export class CustomEmojiService implements OnApplicationShutdown {
 			if (isDuplicate) return 'SAME_NAME_EMOJI_EXISTS';
 		}
 
+		// Fingerprints are computed from the persisted display source (publicUrl).
+		// Changing originalUrl alone must neither enqueue a job for a URL which was
+		// not persisted nor leave a remote job permanently stale.
+		const sourceChanged = data.publicUrl !== undefined && data.publicUrl !== emoji.publicUrl;
 		await this.emojisRepository.update(emoji.id, {
 			updatedAt: new Date(),
 			name: data.name,
@@ -184,9 +211,14 @@ export class CustomEmojiService implements OnApplicationShutdown {
 			type: data.fileType,
 			roleIdsThatCanBeUsedThisEmojiAsReaction: data.roleIdsThatCanBeUsedThisEmojiAsReaction ?? undefined,
 			remarks: data.remarks,
+			imageFingerprint: sourceChanged ? null : undefined,
+			imageFingerprintAttemptedAt: sourceChanged ? null : undefined,
 		});
+		if (sourceChanged) {
+			await this.queueService.createEmojiImageFingerprintJob({ emojiId: emoji.id, sourceUrl: data.publicUrl ?? emoji.publicUrl, host: emoji.host });
+		}
 
-		this.localEmojisCache.refresh();
+		this.refreshLocalEmojiCaches();
 
 		const packed = await this.emojiEntityService.packDetailed(emoji.id);
 
@@ -228,7 +260,7 @@ export class CustomEmojiService implements OnApplicationShutdown {
 			});
 		}
 
-		this.localEmojisCache.refresh();
+		this.refreshLocalEmojiCaches();
 
 		this.globalEventService.publishBroadcastStream('emojiUpdated', {
 			emojis: await this.emojiEntityService.packDetailedMany(ids),
@@ -244,7 +276,7 @@ export class CustomEmojiService implements OnApplicationShutdown {
 			aliases: aliases,
 		});
 
-		this.localEmojisCache.refresh();
+		this.refreshLocalEmojiCaches();
 
 		this.globalEventService.publishBroadcastStream('emojiUpdated', {
 			emojis: await this.emojiEntityService.packDetailedMany(ids),
@@ -264,7 +296,7 @@ export class CustomEmojiService implements OnApplicationShutdown {
 			});
 		}
 
-		this.localEmojisCache.refresh();
+		this.refreshLocalEmojiCaches();
 
 		this.globalEventService.publishBroadcastStream('emojiUpdated', {
 			emojis: await this.emojiEntityService.packDetailedMany(ids),
@@ -280,7 +312,7 @@ export class CustomEmojiService implements OnApplicationShutdown {
 			category: category,
 		});
 
-		this.localEmojisCache.refresh();
+		this.refreshLocalEmojiCaches();
 
 		this.globalEventService.publishBroadcastStream('emojiUpdated', {
 			emojis: await this.emojiEntityService.packDetailedMany(ids),
@@ -296,7 +328,7 @@ export class CustomEmojiService implements OnApplicationShutdown {
 			license: license,
 		});
 
-		this.localEmojisCache.refresh();
+		this.refreshLocalEmojiCaches();
 
 		this.globalEventService.publishBroadcastStream('emojiUpdated', {
 			emojis: await this.emojiEntityService.packDetailedMany(ids),
@@ -309,7 +341,7 @@ export class CustomEmojiService implements OnApplicationShutdown {
 
 		await this.emojisRepository.delete(emoji.id);
 
-		this.localEmojisCache.refresh();
+		this.refreshLocalEmojiCaches();
 
 		this.globalEventService.publishBroadcastStream('emojiDeleted', {
 			emojis: [await this.emojiEntityService.packDetailed(emoji)],
@@ -340,7 +372,7 @@ export class CustomEmojiService implements OnApplicationShutdown {
 			}
 		}
 
-		this.localEmojisCache.refresh();
+		this.refreshLocalEmojiCaches();
 
 		this.globalEventService.publishBroadcastStream('emojiDeleted', {
 			emojis: await this.emojiEntityService.packDetailedMany(emojis),
@@ -434,6 +466,134 @@ export class CustomEmojiService implements OnApplicationShutdown {
 		for (const emoji of _emojis) {
 			this.emojisCache.set(`${emoji.name} ${emoji.host}`, emoji);
 		}
+	}
+
+	/**
+	 * リモートカスタムリアクション参照（`:name@host:` のコロンを外した `name@host`）に対して、
+	 * imageFingerprint が完全一致するローカル絵文字の候補一覧を返す。
+	 *
+	 * リモート絵文字 (host IS NOT NULL) を (name, host) で引いて非nullの imageFingerprint を集め、
+	 * その fingerprint を持つローカル絵文字 (host IS NULL) をまとめて取得する。計2回のバウンドされたクエリで完結し、
+	 * AP ID・URI・name・source MD5・URL は一切比較しない。
+	 *
+	 * 返り値のキーは与えられた参照文字列そのもの（正規化済み `name@host`）。候補は note 側でフィルタ・ID順ソートするため、
+	 * id / name / localOnly / isSensitive / roleIdsThatCanBeUsedThisEmojiAsReaction を保持する。
+	 */
+	@bindThis
+	public async getReactionLocalEmojiCandidates(
+		reactionEmojiNames: string[],
+	): Promise<Map<string, ReactionLocalEmojiCandidate[]>> {
+		const result = new Map<string, ReactionLocalEmojiCandidate[]>();
+		const uniqueNames = [...new Set(reactionEmojiNames)];
+		if (uniqueNames.length === 0) return result;
+
+		// 候補が無い参照はキーを立てない（キャッシュヒットでもDBを引いた時と同じ形にする）
+		const uncached: string[] = [];
+		for (const raw of uniqueNames) {
+			const cached = this.reactionLocalEmojiCandidatesCache.get(raw);
+			if (cached === undefined) uncached.push(raw);
+			else if (cached.length > 0) result.set(raw, cached);
+		}
+		if (uncached.length === 0) return result;
+
+		const queried = await this.queryReactionLocalEmojiCandidates(uncached);
+		// 「候補なし」も必ず入れる。候補が無い参照こそ毎回引き直されるので、そこをキャッシュしないと意味がない。
+		for (const raw of uncached) {
+			const candidates = queried.get(raw) ?? [];
+			this.reactionLocalEmojiCandidatesCache.set(raw, candidates);
+			if (candidates.length > 0) result.set(raw, candidates);
+		}
+
+		return result;
+	}
+
+	private async queryReactionLocalEmojiCandidates(
+		uniqueNames: string[],
+	): Promise<Map<string, ReactionLocalEmojiCandidate[]>> {
+		const result = new Map<string, ReactionLocalEmojiCandidate[]>();
+
+		// 参照文字列を name / host に分解し、正規化（punycode・自ホスト解決）する
+		const refs: { raw: string; name: string; host: string }[] = [];
+		for (const raw of uniqueNames) {
+			const { name, host } = this.parseEmojiStr(raw, null);
+			if (name != null && host != null) refs.push({ raw, name, host });
+		}
+		if (refs.length === 0) return result;
+
+		// 参照を host 単位でグループ化してリモート絵文字を検索（N+1 回避）
+		const hostToNames = new Map<string, Set<string>>();
+		for (const ref of refs) {
+			const names = hostToNames.get(ref.host) ?? new Set<string>();
+			names.add(ref.name);
+			hostToNames.set(ref.host, names);
+		}
+
+		const remoteWhere: any[] = [];
+		for (const [host, names] of hostToNames) {
+			remoteWhere.push({
+				name: In([...names]),
+				host,
+				imageFingerprint: Not(IsNull()),
+			});
+		}
+
+		const remoteEmojis = await this.emojisRepository.find({
+			where: remoteWhere,
+			select: ['name', 'host', 'imageFingerprint'],
+		});
+
+		// (name, host) → 参照文字列 と fingerprint → 参照文字列 の対応表
+		const pairKeyToRaw = new Map<string, string[]>();
+		for (const ref of refs) {
+			const key = `${ref.name}\u0000${ref.host}`;
+			const raws = pairKeyToRaw.get(key) ?? [];
+			raws.push(ref.raw);
+			pairKeyToRaw.set(key, raws);
+		}
+
+		const fingerprintToRaw = new Map<string, string[]>();
+		for (const remote of remoteEmojis) {
+			if (remote.imageFingerprint == null) continue;
+			const raws = pairKeyToRaw.get(`${remote.name}\u0000${remote.host}`);
+			if (raws == null) continue;
+			const existing = fingerprintToRaw.get(remote.imageFingerprint) ?? [];
+			for (const raw of raws) {
+				if (!existing.includes(raw)) existing.push(raw);
+			}
+			fingerprintToRaw.set(remote.imageFingerprint, existing);
+		}
+
+		const fingerprints = [...fingerprintToRaw.keys()];
+		if (fingerprints.length === 0) return result;
+
+		// 部分インデックス (host IS NULL AND imageFingerprint IS NOT NULL) を活かすローカル側の検索
+		const localEmojis = await this.emojisRepository.find({
+			where: {
+				host: IsNull(),
+				imageFingerprint: In(fingerprints),
+			},
+			select: ['id', 'name', 'localOnly', 'isSensitive', 'roleIdsThatCanBeUsedThisEmojiAsReaction', 'imageFingerprint'],
+		});
+
+		for (const local of localEmojis) {
+			if (local.imageFingerprint == null) continue;
+			const raws = fingerprintToRaw.get(local.imageFingerprint);
+			if (raws == null) continue;
+			const candidate: ReactionLocalEmojiCandidate = {
+				id: local.id,
+				name: local.name,
+				localOnly: local.localOnly,
+				isSensitive: local.isSensitive,
+				roleIdsThatCanBeUsedThisEmojiAsReaction: local.roleIdsThatCanBeUsedThisEmojiAsReaction,
+			};
+			for (const raw of raws) {
+				const list = result.get(raw) ?? [];
+				list.push(candidate);
+				result.set(raw, list);
+			}
+		}
+
+		return result;
 	}
 
 	/**
@@ -600,9 +760,17 @@ export class CustomEmojiService implements OnApplicationShutdown {
 		};
 	}
 
+	/** ローカル絵文字が変わると、fingerprint一致で導かれる候補も古くなる。 */
+	@bindThis
+	private refreshLocalEmojiCaches(): void {
+		this.localEmojisCache.refresh();
+		this.reactionLocalEmojiCandidatesCache.clear();
+	}
+
 	@bindThis
 	public dispose(): void {
 		this.emojisCache.dispose();
+		this.reactionLocalEmojiCandidatesCache.dispose();
 	}
 
 	@bindThis

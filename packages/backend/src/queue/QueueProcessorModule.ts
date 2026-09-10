@@ -52,6 +52,7 @@ import { AggregateRetentionProcessorService } from './processors/AggregateRetent
 import { ExportFavoritesProcessorService } from './processors/ExportFavoritesProcessorService.js';
 import { RelationshipProcessorService } from './processors/RelationshipProcessorService.js';
 import { HibernationSweepProcessorService } from './processors/HibernationSweepProcessorService.js';
+import { EmojiImageFingerprintProcessorService } from './processors/EmojiImageFingerprintProcessorService.js';
 
 @Module({
 	imports: [
@@ -105,6 +106,7 @@ import { HibernationSweepProcessorService } from './processors/HibernationSweepP
 		HanamiRecommendationEventCacheRepairProcessorService,
 		HanamiTimelinePartitionMaintenanceProcessorService,
 		HanamiUserFeedGenerationProcessorService,
+		EmojiImageFingerprintProcessorService,
 		QueueProcessorService,
 	],
 	exports: [

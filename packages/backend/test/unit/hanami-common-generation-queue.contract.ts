@@ -317,8 +317,8 @@ describe('Hanami common generation queue wiring', () => {
 		expect(hanamiGenerationQueue.clean).toHaveBeenCalledWith(0, 0, 'failed');
 	});
 
-	test('closes the dedicated queue with all eleven queue providers', async () => {
-		const queues = Array.from({ length: 11 }, () => adminQueue());
+	test('closes the dedicated queue with all twelve queue providers', async () => {
+		const queues = Array.from({ length: 12 }, () => adminQueue());
 		const module = new QueueModule(
 			queues[0] as never,
 			queues[1] as never,
@@ -331,6 +331,7 @@ describe('Hanami common generation queue wiring', () => {
 			queues[8] as never,
 			queues[9] as never,
 			queues[10] as never,
+			queues[11] as never,
 		);
 
 		await module.dispose();

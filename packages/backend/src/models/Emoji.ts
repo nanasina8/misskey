@@ -9,6 +9,8 @@ import { id } from './util/id.js';
 @Entity('emoji')
 @Index(['name', 'host'], { unique: true })
 @Index('IDX_EMOJI_ROLE_IDS', { synchronize: false }) // GIN for roleIdsThatCanBeUsedThisEmojiAsReaction in production
+// フィンガープリント未取得の絵文字だけをid順に走査するバックフィル用の部分インデックス（完了後は空になる）
+@Index('IDX_EMOJI_IMAGE_FINGERPRINT_PENDING', ['id'], { where: '"imageFingerprint" IS NULL AND "imageFingerprintAttemptedAt" IS NULL' })
 export class MiEmoji {
 	@PrimaryColumn(id())
 	public id: string;
@@ -88,4 +90,18 @@ export class MiEmoji {
 		length: 1024, nullable: true,
 	})
 	public remarks: string | null;
+
+	// ローカル絵文字の画像フィンガープリント（重複検知用）。リモート絵文字は対象外なので部分インデックス。
+	@Index('IDX_EMOJI_IMAGE_FINGERPRINT_LOCAL', { where: '"host" IS NULL AND "imageFingerprint" IS NOT NULL' })
+	@Column('varchar', {
+		length: 80, nullable: true,
+	})
+	public imageFingerprint: string | null;
+
+	// フィンガープリントの算出を試みた時刻。imageFingerprintがNULLのままでもここが埋まっていれば
+	// 「試したが取れなかった」を意味し、バックフィルの対象から外れる。
+	@Column('timestamp with time zone', {
+		nullable: true,
+	})
+	public imageFingerprintAttemptedAt: Date | null;
 }

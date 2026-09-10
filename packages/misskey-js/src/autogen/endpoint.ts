@@ -69,6 +69,8 @@ import type {
 	AdminGetTableStatsResponse,
 	AdminGetUserIpsRequest,
 	AdminGetUserIpsResponse,
+	AdminHanamiSuggestionEventsExportRequest,
+	AdminHanamiSuggestionEventsExportResponse,
 	AdminHanamiTasteRebuildRequest,
 	AdminHanamiTasteRebuildResponse,
 	AdminHanamiTasteRebuildStatusResponse,
@@ -727,6 +729,7 @@ export type Endpoints = {
 	'admin/get-index-stats': { req: EmptyRequest; res: AdminGetIndexStatsResponse };
 	'admin/get-table-stats': { req: EmptyRequest; res: AdminGetTableStatsResponse };
 	'admin/get-user-ips': { req: AdminGetUserIpsRequest; res: AdminGetUserIpsResponse };
+	'admin/hanami/suggestion-events-export': { req: AdminHanamiSuggestionEventsExportRequest; res: AdminHanamiSuggestionEventsExportResponse };
 	'admin/hanami/taste-rebuild': { req: AdminHanamiTasteRebuildRequest; res: AdminHanamiTasteRebuildResponse };
 	'admin/hanami/taste-rebuild-status': { req: EmptyRequest; res: AdminHanamiTasteRebuildStatusResponse };
 	'admin/invite/create': { req: AdminInviteCreateRequest; res: AdminInviteCreateResponse };

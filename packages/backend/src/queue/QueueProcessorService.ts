@@ -53,6 +53,7 @@ import { HanamiUserFeedGenerationProcessorService } from './processors/HanamiUse
 import { HanamiTimelinePartitionMaintenanceProcessorService } from './processors/HanamiTimelinePartitionMaintenanceProcessorService.js';
 import { HanamiRecommendationEventCacheRepairProcessorService } from './processors/HanamiRecommendationEventCacheRepairProcessorService.js';
 import { HibernationSweepProcessorService } from './processors/HibernationSweepProcessorService.js';
+import { EmojiImageFingerprintProcessorService } from './processors/EmojiImageFingerprintProcessorService.js';
 import { QueueLoggerService } from './QueueLoggerService.js';
 import { QUEUE, baseWorkerOptions } from './const.js';
 import { ImportNotesProcessorService } from './processors/ImportNotesProcessorService.js';
@@ -113,6 +114,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 	private endedPollNotificationQueueWorker: Bull.Worker;
 	private postScheduledNoteQueueWorker: Bull.Worker;
 	private hanamiGenerationQueueWorker: Bull.Worker;
+	private emojiImageFingerprintQueueWorker: Bull.Worker;
 
 	constructor(
 		@Inject(DI.config)
@@ -159,6 +161,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 		private hanamiTasteBatchProcessorService: HanamiTasteBatchProcessorService,
 		private hanamiTimelinePartitionMaintenanceProcessorService: HanamiTimelinePartitionMaintenanceProcessorService,
 		private hibernationSweepProcessorService: HibernationSweepProcessorService,
+		private emojiImageFingerprintProcessorService: EmojiImageFingerprintProcessorService,
 		private hanamiCommonGenerationProcessorService: HanamiCommonGenerationProcessorService,
 		private hanamiUserFeedGenerationProcessorService: HanamiUserFeedGenerationProcessorService,
 		private hanamiGenerationReconcileProcessorService: HanamiGenerationReconcileProcessorService,
@@ -638,6 +641,18 @@ export class QueueProcessorService implements OnApplicationShutdown {
 			});
 		}
 		//#endregion
+
+		//#region emoji image fingerprint
+		{
+			this.emojiImageFingerprintQueueWorker = new Bull.Worker(QUEUE.EMOJI_IMAGE_FINGERPRINT, (job) => job.name === 'backfill'
+				? this.emojiImageFingerprintProcessorService.processBackfill(job)
+				: this.emojiImageFingerprintProcessorService.process(job), {
+				...baseWorkerOptions(this.config, QUEUE.EMOJI_IMAGE_FINGERPRINT),
+				concurrency: 2,
+				autorun: false,
+			});
+		}
+		//#endregion
 	}
 
 	@bindThis
@@ -654,6 +669,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 			this.endedPollNotificationQueueWorker.run(),
 			this.postScheduledNoteQueueWorker.run(),
 			this.hanamiGenerationQueueWorker.run(),
+			this.emojiImageFingerprintQueueWorker.run(),
 		]);
 	}
 
@@ -671,6 +687,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 			this.endedPollNotificationQueueWorker.close(),
 			this.postScheduledNoteQueueWorker.close(),
 			this.hanamiGenerationQueueWorker.close(),
+			this.emojiImageFingerprintQueueWorker.close(),
 		]);
 	}
 

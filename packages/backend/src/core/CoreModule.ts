@@ -28,6 +28,7 @@ import { CaptchaService } from './CaptchaService.js';
 import { CustomEmojiService } from './CustomEmojiService.js';
 import { DeleteAccountService } from './DeleteAccountService.js';
 import { DownloadService } from './DownloadService.js';
+import { EmojiImageFingerprintSourceService } from './EmojiImageFingerprintSourceService.js';
 import { DriveService } from './DriveService.js';
 import { EmailService } from './EmailService.js';
 import { FederatedInstanceService } from './FederatedInstanceService.js';
@@ -116,6 +117,7 @@ import { ChatService } from './ChatService.js';
 import { RegistryApiService } from './RegistryApiService.js';
 import { ReversiService } from './ReversiService.js';
 import { PageService } from './PageService.js';
+import { EmojiImageFingerprintService } from './EmojiImageFingerprintService.js';
 
 import { ChartLoggerService } from './chart/ChartLoggerService.js';
 import FederationChart from './chart/charts/federation.js';
@@ -465,6 +467,8 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		RegistryApiService,
 		ReversiService,
 		PageService,
+		EmojiImageFingerprintService,
+		EmojiImageFingerprintSourceService,
 
 		ChartLoggerService,
 		FederationChart,
@@ -817,6 +821,8 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		RegistryApiService,
 		ReversiService,
 		PageService,
+		EmojiImageFingerprintService,
+		EmojiImageFingerprintSourceService,
 
 		FederationChart,
 		NotesChart,

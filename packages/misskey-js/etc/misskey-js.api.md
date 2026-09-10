@@ -246,6 +246,12 @@ type AdminGetUserIpsRequest = operations['admin___get-user-ips']['requestBody'][
 type AdminGetUserIpsResponse = operations['admin___get-user-ips']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type AdminHanamiSuggestionEventsExportRequest = operations['admin___hanami___suggestion-events-export']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiSuggestionEventsExportResponse = operations['admin___hanami___suggestion-events-export']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type AdminHanamiTasteRebuildRequest = operations['admin___hanami___taste-rebuild']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -1583,6 +1589,8 @@ declare namespace entities {
         AdminGetTableStatsResponse,
         AdminGetUserIpsRequest,
         AdminGetUserIpsResponse,
+        AdminHanamiSuggestionEventsExportRequest,
+        AdminHanamiSuggestionEventsExportResponse,
         AdminHanamiTasteRebuildRequest,
         AdminHanamiTasteRebuildResponse,
         AdminHanamiTasteRebuildStatusResponse,
@@ -3036,7 +3044,7 @@ type ModerationLog = {
 });
 
 // @public (undocumented)
-export const moderationLogTypes: readonly ["updateServerSettings", "suspend", "unsuspend", "updateUserNote", "addCustomEmoji", "updateCustomEmoji", "deleteCustomEmoji", "assignRole", "unassignRole", "createRole", "updateRole", "deleteRole", "clearQueue", "promoteQueue", "deleteDriveFile", "deleteNote", "createGlobalAnnouncement", "createUserAnnouncement", "updateGlobalAnnouncement", "updateUserAnnouncement", "deleteGlobalAnnouncement", "deleteUserAnnouncement", "resetPassword", "suspendRemoteInstance", "unsuspendRemoteInstance", "updateRemoteInstanceNote", "markSensitiveDriveFile", "unmarkSensitiveDriveFile", "resolveAbuseReport", "forwardAbuseReport", "updateAbuseReportNote", "createInvitation", "createAd", "updateAd", "deleteAd", "createAvatarDecoration", "updateAvatarDecoration", "deleteAvatarDecoration", "unsetUserAvatar", "unsetUserBanner", "createSystemWebhook", "updateSystemWebhook", "deleteSystemWebhook", "createAbuseReportNotificationRecipient", "updateAbuseReportNotificationRecipient", "deleteAbuseReportNotificationRecipient", "deleteAccount", "deletePage", "deleteFlash", "deleteGalleryPost", "deleteChatRoom", "updateProxyAccountDescription"];
+export const moderationLogTypes: readonly ["updateServerSettings", "suspend", "unsuspend", "updateUserNote", "addCustomEmoji", "updateCustomEmoji", "deleteCustomEmoji", "assignRole", "unassignRole", "createRole", "updateRole", "deleteRole", "clearQueue", "promoteQueue", "deleteDriveFile", "deleteNote", "createGlobalAnnouncement", "createUserAnnouncement", "updateGlobalAnnouncement", "updateUserAnnouncement", "deleteGlobalAnnouncement", "deleteUserAnnouncement", "resetPassword", "suspendRemoteInstance", "unsuspendRemoteInstance", "updateRemoteInstanceNote", "markSensitiveDriveFile", "unmarkSensitiveDriveFile", "resolveAbuseReport", "forwardAbuseReport", "updateAbuseReportNote", "createInvitation", "createAd", "updateAd", "deleteAd", "createAvatarDecoration", "updateAvatarDecoration", "deleteAvatarDecoration", "unsetUserAvatar", "unsetUserBanner", "createSystemWebhook", "updateSystemWebhook", "deleteSystemWebhook", "createAbuseReportNotificationRecipient", "updateAbuseReportNotificationRecipient", "deleteAbuseReportNotificationRecipient", "deleteAccount", "deletePage", "deleteFlash", "deleteGalleryPost", "deleteChatRoom", "updateProxyAccountDescription", "exportHanamiSuggestionEvents"];
 
 // @public (undocumented)
 type MuteCreateRequest = operations['mute___create']['requestBody']['content']['application/json'];

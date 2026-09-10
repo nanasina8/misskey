@@ -36,6 +36,14 @@ export class InternalStorageService {
 	}
 
 	@bindThis
+	public async readBytes(key: string, maxBytes = 16 * 1024 * 1024): Promise<Buffer> {
+		const file = this.resolvePath(key);
+		const stat = await fs.promises.stat(file);
+		if (stat.size > maxBytes) throw new Error('Stored image exceeds fingerprint byte limit');
+		return fs.promises.readFile(file);
+	}
+
+	@bindThis
 	public saveFromPath(key: string, srcPath: string) {
 		fs.mkdirSync(path, { recursive: true });
 		fs.copyFileSync(srcPath, this.resolvePath(key));

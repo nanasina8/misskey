@@ -32,6 +32,8 @@ import type {
 	SystemWebhookDeliverJobData,
 	ThinUser,
 	UserWebhookDeliverJobData,
+	EmojiImageFingerprintJobData,
+	EmojiImageFingerprintBackfillJobData,
 } from '../queue/types.js';
 import type {
 	DbQueue,
@@ -45,6 +47,7 @@ import type {
 	SystemQueue,
 	SystemWebhookDeliverQueue,
 	UserWebhookDeliverQueue,
+	EmojiImageFingerprintQueue,
 } from './QueueModule.js';
 import type httpSignature from '@peertube/http-signature';
 import type * as Bull from 'bullmq';
@@ -73,6 +76,13 @@ const HANAMI_GENERATION_JOB_OPTIONS = {
 	removeOnFail: {
 		age: 3600 * 24 * 7,
 	},
+} satisfies Bull.JobsOptions;
+
+const EMOJI_IMAGE_FINGERPRINT_JOB_OPTIONS = {
+	attempts: 2,
+	backoff: { type: 'exponential', delay: 1000 },
+	removeOnComplete: { age: 3600 * 24 * 7, count: 100 },
+	removeOnFail: { age: 3600 * 24 * 7, count: 100 },
 } satisfies Bull.JobsOptions;
 
 const HANAMI_USER_FEED_GENERATION_JOB_OPTIONS = {
@@ -176,10 +186,40 @@ export class QueueService implements OnModuleInit {
 		@Inject('queue:userWebhookDeliver') public userWebhookDeliverQueue: UserWebhookDeliverQueue,
 		@Inject('queue:systemWebhookDeliver') public systemWebhookDeliverQueue: SystemWebhookDeliverQueue,
 		@Inject('queue:hanamiGeneration') public hanamiGenerationQueue?: HanamiGenerationQueue,
+		@Inject('queue:emojiImageFingerprint') public emojiImageFingerprintQueue?: EmojiImageFingerprintQueue,
 	) {}
 
 	@bindThis
+	public async createEmojiImageFingerprintJob(data: EmojiImageFingerprintJobData): Promise<void> {
+		if (this.emojiImageFingerprintQueue == null) return;
+		const source = createHash('sha256').update(`${data.emojiId}\0${data.sourceUrl}`).digest('hex');
+		await this.emojiImageFingerprintQueue.add('compute', data, {
+			...EMOJI_IMAGE_FINGERPRINT_JOB_OPTIONS,
+			// Keep completed jobs for observability without letting their IDs suppress a
+			// later return to this source. BullMQ removes this simple deduplication key
+			// when the active job completes or finally fails, while retaining it for retries.
+			jobId: `emoji-image-fingerprint-${randomUUID()}`,
+			deduplication: { id: source },
+		});
+	}
+
+	@bindThis
+	public async createEmojiImageFingerprintBackfillJob(data: EmojiImageFingerprintBackfillJobData = {}): Promise<void> {
+		if (this.emojiImageFingerprintQueue == null) return;
+		await this.emojiImageFingerprintQueue.add('backfill', data, {
+			...EMOJI_IMAGE_FINGERPRINT_JOB_OPTIONS,
+			// compute側と同じ理由で固定jobIdは使えない。removeOnCompleteのcountでジョブが押し出されると
+			// 重複排除にならず、逆に保持されている間はfinally failedしたページからチェーンを再開できない。
+			// deduplicationキーは完了・最終失敗の時点で解放されるので、次の起動が取りこぼしを拾い直せる。
+			jobId: `emoji-image-fingerprint-backfill-${randomUUID()}`,
+			deduplication: { id: `emoji-image-fingerprint-backfill-${data.cursor ?? 'start'}` },
+		});
+	}
+
+	@bindThis
 	public async onModuleInit(): Promise<void> {
+		// Seed only queue work during startup; no image is fetched on request paths.
+		await this.createEmojiImageFingerprintBackfillJob();
 		await Promise.all(REPEATABLE_SYSTEM_JOB_DEF.map(async (def) => {
 			await this.systemQueue.upsertJobScheduler(def.name, {
 				pattern: def.pattern,

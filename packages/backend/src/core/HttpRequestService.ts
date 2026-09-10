@@ -30,6 +30,7 @@ export type HttpRequestSendOptions = {
 class HttpRequestServiceAgent extends http.Agent {
 	constructor(
 		private config: Config,
+		private readonly alwaysFilter = false,
 		options?: http.AgentOptions,
 	) {
 		super(options);
@@ -44,7 +45,7 @@ class HttpRequestServiceAgent extends http.Agent {
 		}
 
 		socket.on('connect', () => {
-			if (socket instanceof net.Socket && process.env.NODE_ENV === 'production') {
+			if (socket instanceof net.Socket && (this.alwaysFilter || process.env.NODE_ENV === 'production')) {
 				const address = socket.remoteAddress;
 				if (address && ipaddr.isValid(address)) {
 					if (this.isPrivateIp(address)) {
@@ -61,10 +62,12 @@ class HttpRequestServiceAgent extends http.Agent {
 	private isPrivateIp(ip: string): boolean {
 		const parsedIp = ipaddr.parse(ip);
 
-		for (const net of this.config.allowedPrivateNetworks ?? []) {
-			const cidr = ipaddr.parseCIDR(net);
-			if (cidr[0].kind() === parsedIp.kind() && parsedIp.match(ipaddr.parseCIDR(net))) {
-				return false;
+		if (!this.alwaysFilter) {
+			for (const net of this.config.allowedPrivateNetworks ?? []) {
+				const cidr = ipaddr.parseCIDR(net);
+				if (cidr[0].kind() === parsedIp.kind() && parsedIp.match(cidr)) {
+					return false;
+				}
 			}
 		}
 
@@ -75,6 +78,7 @@ class HttpRequestServiceAgent extends http.Agent {
 class HttpsRequestServiceAgent extends https.Agent {
 	constructor(
 		private config: Config,
+		private readonly alwaysFilter = false,
 		options?: https.AgentOptions,
 	) {
 		super(options);
@@ -89,7 +93,7 @@ class HttpsRequestServiceAgent extends https.Agent {
 		}
 
 		socket.on('connect', () => {
-			if (socket instanceof net.Socket && process.env.NODE_ENV === 'production') {
+			if (socket instanceof net.Socket && (this.alwaysFilter || process.env.NODE_ENV === 'production')) {
 				const address = socket.remoteAddress;
 				if (address && ipaddr.isValid(address)) {
 					if (this.isPrivateIp(address)) {
@@ -106,10 +110,12 @@ class HttpsRequestServiceAgent extends https.Agent {
 	private isPrivateIp(ip: string): boolean {
 		const parsedIp = ipaddr.parse(ip);
 
-		for (const net of this.config.allowedPrivateNetworks ?? []) {
-			const cidr = ipaddr.parseCIDR(net);
-			if (cidr[0].kind() === parsedIp.kind() && parsedIp.match(ipaddr.parseCIDR(net))) {
-				return false;
+		if (!this.alwaysFilter) {
+			for (const net of this.config.allowedPrivateNetworks ?? []) {
+				const cidr = ipaddr.parseCIDR(net);
+				if (cidr[0].kind() === parsedIp.kind() && parsedIp.match(cidr)) {
+					return false;
+				}
 			}
 		}
 
@@ -138,6 +144,8 @@ export class HttpRequestService {
 	 * Get https non-proxy agent
 	 */
 	private readonly https: https.Agent;
+	private readonly strictHttp: http.Agent;
+	private readonly strictHttps: https.Agent;
 
 	/**
 	 * Get http proxy or non-proxy agent
@@ -170,9 +178,11 @@ export class HttpRequestService {
 
 		this.httpsNative = new https.Agent(agentOption);
 
-		this.http = new HttpRequestServiceAgent(config, agentOption);
+		this.http = new HttpRequestServiceAgent(config, false, agentOption);
 
-		this.https = new HttpsRequestServiceAgent(config, agentOption);
+		this.https = new HttpsRequestServiceAgent(config, false, agentOption);
+		this.strictHttp = new HttpRequestServiceAgent(config, true, agentOption);
+		this.strictHttps = new HttpsRequestServiceAgent(config, true, agentOption);
 
 		const maxSockets = Math.max(256, config.deliverJobConcurrency ?? 128);
 
@@ -220,6 +230,17 @@ export class HttpRequestService {
 			}
 			return url.protocol === 'http:' ? this.httpAgent : this.httpsAgent;
 		}
+	}
+
+	/**
+	 * A direct agent which retains the socket-time private-address check. This
+	 * is intentionally separate from the normal proxy-aware public API: callers
+	 * handling untrusted media must not let a proxy hide the destination address.
+	 */
+	@bindThis
+	public getFilteredDirectAgent(url: URL): http.Agent | https.Agent {
+		if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Only HTTP(S) URLs are supported');
+		return url.protocol === 'http:' ? this.strictHttp : this.strictHttps;
 	}
 
 	/**

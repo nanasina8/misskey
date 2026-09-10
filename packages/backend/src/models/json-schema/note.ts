@@ -219,6 +219,15 @@ export const packedNoteSchema = {
 				}],
 			},
 		},
+		reactionLocalEmojis: {
+			type: 'object',
+			optional: true, nullable: false,
+			additionalProperties: {
+				anyOf: [{
+					type: 'string',
+				}],
+			},
+		},
 		reactions: {
 			type: 'object',
 			optional: false, nullable: false,

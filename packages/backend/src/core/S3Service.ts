@@ -7,13 +7,13 @@ import { URL } from 'node:url';
 import * as http from 'node:http';
 import * as https from 'node:https';
 import { Injectable } from '@nestjs/common';
-import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import { NodeHttpHandler, NodeHttpHandlerOptions } from '@smithy/node-http-handler';
 import type { MiMeta } from '@/models/Meta.js';
 import { HttpRequestService } from '@/core/HttpRequestService.js';
 import { bindThis } from '@/decorators.js';
-import type { DeleteObjectCommandInput, PutObjectCommandInput } from '@aws-sdk/client-s3';
+import type { DeleteObjectCommandInput, GetObjectCommandInput, PutObjectCommandInput } from '@aws-sdk/client-s3';
 
 @Injectable()
 export class S3Service {
@@ -67,5 +67,19 @@ export class S3Service {
 	public delete(meta: MiMeta, input: DeleteObjectCommandInput) {
 		const client = this.getS3Client(meta);
 		return client.send(new DeleteObjectCommand(input));
+	}
+
+	@bindThis
+	public async readBytes(meta: MiMeta, input: GetObjectCommandInput, maxBytes = 16 * 1024 * 1024): Promise<Buffer> {
+		const output = await this.getS3Client(meta).send(new GetObjectCommand(input));
+		if (output.ContentLength != null && output.ContentLength > maxBytes) throw new Error('Object storage image exceeds fingerprint byte limit');
+		if (output.Body == null) throw new Error('Object storage response has no body');
+		const chunks: Buffer[] = []; let size = 0;
+		for await (const chunk of output.Body as AsyncIterable<Uint8Array>) {
+			const bytes = Buffer.from(chunk); size += bytes.length;
+			if (size > maxBytes) throw new Error('Object storage image exceeds fingerprint byte limit');
+			chunks.push(bytes);
+		}
+		return Buffer.concat(chunks);
 	}
 }

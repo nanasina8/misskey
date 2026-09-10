@@ -113,6 +113,59 @@ export class DownloadService {
 		};
 	}
 
+	/** Strict, bounded retrieval used only by emoji fingerprinting. Existing
+	 * downloadUrl users intentionally retain their historical proxy semantics. */
+	@bindThis
+	public async downloadFingerprintImage(url: string): Promise<Buffer> {
+		const maxSize = 16 * 1024 * 1024;
+		let current = new URL(url);
+		for (let redirects = 0; redirects <= 5; redirects++) {
+			if (current.protocol !== 'http:' && current.protocol !== 'https:') throw new Error('Fingerprint download only permits HTTP(S)');
+			const request = got.stream(current, {
+				headers: { 'User-Agent': this.config.userAgent },
+				agent: current.protocol === 'http:'
+					? { http: this.httpRequestService.getFilteredDirectAgent(current) as import('node:http').Agent }
+					: { https: this.httpRequestService.getFilteredDirectAgent(current) as import('node:https').Agent },
+				followRedirect: false,
+				throwHttpErrors: false,
+				retry: { limit: 0 },
+				timeout: { lookup: 10_000, connect: 10_000, secureConnect: 10_000, socket: 10_000, response: 10_000, request: 10_000 },
+				maxRedirects: 0,
+			});
+			const response = await new Promise<Got.Response>((resolve, reject) => {
+				request.once('response', resolve);
+				request.once('error', reject);
+			});
+			if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+				request.destroy();
+				current = new URL(response.headers.location, current);
+				continue;
+			}
+			if (response.statusCode < 200 || response.statusCode >= 300) {
+				request.destroy();
+				throw new StatusError(`${response.statusCode} ${response.statusMessage}`, response.statusCode, response.statusMessage);
+			}
+			const contentLength = response.headers['content-length'];
+			if (contentLength != null && Number(contentLength) > maxSize) {
+				request.destroy();
+				throw new Error('Fingerprint download exceeds 16 MiB');
+			}
+
+			const chunks: Buffer[] = [];
+			let size = 0;
+			for await (const chunk of request) {
+				size += chunk.length;
+				if (size > maxSize) {
+					request.destroy();
+					throw new Error('Fingerprint download exceeds 16 MiB');
+				}
+				chunks.push(chunk);
+			}
+			return Buffer.concat(chunks, size);
+		}
+		throw new Error('Fingerprint download exceeded redirect limit');
+	}
+
 	@bindThis
 	public async downloadTextFile(url: string): Promise<string> {
 		// Create temp file
