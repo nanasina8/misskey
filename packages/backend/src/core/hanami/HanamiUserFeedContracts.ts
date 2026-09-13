@@ -163,6 +163,8 @@ export type HanamiPersonalFeedComputationInput = {
 	readonly userId: string;
 	/** Active personal-feed epoch; constraints span all batches in this epoch. */
 	readonly epochId: string;
+	/** Ready batch captured under the generation claim's state-row lock. */
+	readonly latestReadyBatchId: string | null;
 	readonly baseCommonGenerationId: string;
 
 	/**

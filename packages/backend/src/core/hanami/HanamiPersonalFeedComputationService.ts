@@ -32,8 +32,8 @@ import { createHanamiQualityShadow, type HanamiRelationshipClass } from '@/core/
 
 const MAX_SEGMENTS = 7;
 const SEGMENT_SIZE = 30;
-const MAX_COMMON_CANDIDATES = 900;
-const COMMON_CANDIDATE_LIMITS = Object.freeze({ globalPopular: 200, trending: 200, exploration: 500 });
+const MAX_COMMON_CANDIDATES = 1200;
+const COMMON_CANDIDATE_LIMITS = Object.freeze({ globalPopular: 500, trending: 200, exploration: 500 });
 const GENERATION_LOCK_TIMEOUT_MS = 5000;
 
 const CONFIGURE_DEADLINE_SQL = `
@@ -320,9 +320,11 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 		const ids = [...new Set(candidates.map(c => c.noteId))];
 		if (ids.length === 0) return { candidates, seed: [] };
 		const existingRows = await context.queryRunner.query(`
-			SELECT e."noteId" AS note_id FROM "hanami_user_feed_entry" e
-			JOIN "hanami_user_feed_batch" b ON b."id" = e."batchId" AND b."status" = 'ready'
-			WHERE e."userId" = $1 AND e."epochId" = $2 AND e."noteId" = ANY($3::varchar[])
+			SELECT DISTINCT ev."noteId" AS note_id
+			FROM "hanami_recommendation_event" ev
+			WHERE ev."userId" = $1 AND ev."eventType" = 'served'
+				AND ev."feedKind" = 'personal' AND ev."feedEpochId" = $2
+				AND ev."noteId" = ANY($3::varchar[])
 		`, [context.userId, context.epochId, ids]) as Array<{ note_id: string }>;
 		const seenRows = await context.queryRunner.query(`
 			SELECT DISTINCT e."noteId" AS note_id FROM "hanami_recommendation_event" e
@@ -351,6 +353,7 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 				qualityShadow: createHanamiQualityShadow({ relationshipClass: row.relationship_class, standaloneValue: null, socialOnly: null }),
 			}];
 		});
+		if (context.latestReadyBatchId == null) return { candidates: enriched, seed: [] };
 		const seedRows = await context.queryRunner.query(`
 			SELECT e."noteId" AS note_id, n."userId" AS author_id, COALESCE(n.text, '') AS text, u."isBot" AS is_bot,
 				CASE WHEN EXISTS (SELECT 1 FROM following f WHERE f."followerId" = $1 AND f."followeeId" = n."userId") THEN 'directFollow'
@@ -358,8 +361,8 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 					ELSE 'unknown' END AS relationship_class
 			FROM "hanami_user_feed_entry" e JOIN "hanami_user_feed_batch" b ON b.id = e."batchId" AND b.status = 'ready'
 			JOIN note n ON n.id = e."noteId" JOIN "user" u ON u.id = n."userId"
-			WHERE e."userId" = $1 AND e."epochId" = $2 ORDER BY e."sequence" DESC LIMIT 210
-		`, [context.userId, context.epochId]) as Array<{ note_id: string; author_id: string; text: string; is_bot: boolean; relationship_class: HanamiRelationshipClass }>;
+			WHERE e."userId" = $1 AND e."epochId" = $2 AND e."batchId" = $3 ORDER BY e."sequence" DESC LIMIT 210
+		`, [context.userId, context.epochId, context.latestReadyBatchId]) as Array<{ note_id: string; author_id: string; text: string; is_bot: boolean; relationship_class: HanamiRelationshipClass }>;
 		return { candidates: enriched, seed: seedRows.map(row => ({ noteId: row.note_id, userId: row.author_id, score: 0,
 			relationshipClass: row.relationship_class,
 			exactTextFingerprint: createHanamiExactTextFingerprint(row.text), isBot: row.is_bot,
@@ -383,7 +386,7 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 
 	/**
 	 * Final persisted-path exploration pool: this deliberately runs after safety
-	 * and the epoch/seen hard exclusions. One deterministic round takes the
+	 * and the served-in-this-epoch/seen hard exclusions. One deterministic round takes the
 	 * author-diverse rounds preserve ranked candidate volume while keeping every
 	 * author at or below 5% of the pool. With fewer,
 	 * no mathematically valid exploration pool exists and only that axis is

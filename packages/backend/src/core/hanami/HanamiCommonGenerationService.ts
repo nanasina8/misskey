@@ -40,7 +40,7 @@ const MAX_SEGMENT_ITEMS = 30;
 const MAX_TREND_TERMS = 30;
 const MAX_TREND_REPRESENTATIVES = 5;
 const CANDIDATE_LIMITS: Readonly<Record<HanamiCommonAxis, number>> = {
-	globalPopular: 200,
+	globalPopular: 500,
 	trending: 200,
 	exploration: 500,
 };

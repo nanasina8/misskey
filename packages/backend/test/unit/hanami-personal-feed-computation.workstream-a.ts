@@ -38,6 +38,7 @@ function input(signal = new AbortController().signal): HanamiPersonalFeedComputa
 	return {
 		userId: 'user-1',
 		epochId: 'epoch-1',
+		latestReadyBatchId: null,
 		baseCommonGenerationId: 'common-generation-pinned',
 		generatedAt,
 		databaseDeadlineAt,
@@ -196,7 +197,7 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		];
 		const fixture = createComputation({ commonRows, candidates: personal, confidence: 'high' });
 
-		const result = await fixture.service.computePersonalFeed(input());
+		const result = await fixture.service.computePersonalFeed({ ...input(), latestReadyBatchId: 'head' });
 
 		expect(fixture.service.algorithmVersion).toBe(HANAMI_PERSONAL_FEED_ALGORITHM_VERSION);
 		expect(fixture.commonGenerationRead.loadReadyCommonCandidates).toHaveBeenCalledWith('common-generation-pinned', {
@@ -237,7 +238,7 @@ describe('Phase 4 workstream A personal feed computation', () => {
 
 	test('accepts only the bounded common acquisition envelope', async () => {
 		const commonRows = [
-			...Array.from({ length: 200 }, (_, i) => commonRow('globalPopular', `global-${i}`)),
+			...Array.from({ length: 500 }, (_, i) => commonRow('globalPopular', `global-${i}`)),
 			...Array.from({ length: 200 }, (_, i) => commonRow('trending', `trend-${i}`)),
 			...Array.from({ length: 500 }, (_, i) => commonRow('exploration', `explore-${i}`)),
 		];
@@ -245,11 +246,11 @@ describe('Phase 4 workstream A personal feed computation', () => {
 
 		await fixture.service.computePersonalFeed(input());
 
-		expect(fixture.safety.filterCommonEligibleNotes.mock.calls[0]![0]).toHaveLength(900);
+		expect(fixture.safety.filterCommonEligibleNotes.mock.calls[0]![0]).toHaveLength(1200);
 		const overLimit = createComputation({
-			commonRows: Array.from({ length: 201 }, (_, i) => commonRow('globalPopular', `global-${i}`)),
+			commonRows: Array.from({ length: 501 }, (_, i) => commonRow('globalPopular', `global-${i}`)),
 		});
-		await expect(overLimit.service.computePersonalFeed(input())).rejects.toThrow('globalPopular candidate read exceeded 200 rows');
+		await expect(overLimit.service.computePersonalFeed(input())).rejects.toThrow('globalPopular candidate read exceeded 500 rows');
 		expect(overLimit.db.createQueryRunner).toHaveBeenCalledTimes(1);
 		expect(overLimit.safety.filterCommonEligibleNotes).not.toHaveBeenCalled();
 	});
@@ -374,14 +375,14 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		expect(Math.max(...Array.from(new Set(result.map(value => value.authorId))).map(author => result.filter(value => value.authorId === author).length)) / result.length).toBeLessThanOrEqual(0.05);
 	});
 
-	test('applies safety then epoch and seven-day seen exclusions before exploration diversity', async () => {
+	test('applies safety then served and seven-day seen exclusions before exploration diversity', async () => {
 		const exploration = Array.from({ length: 21 }, (_, index) => candidate('exploration', `explore-${index}`, `author-${index}`));
 		const global = candidate('globalPopular', 'global-survives', 'global-author');
 		const queryRunner = createQueryRunner(async (sql) => {
 			if (sql.includes("set_config('statement_timeout'")) return [{}];
 			if (sql.includes('AS before_deadline')) return [{ before_deadline: true }];
+			if (sql.includes("ev.\"eventType\" = 'served'")) return [{ note_id: 'explore-0' }];
 			if (sql.includes('FROM "hanami_recommendation_event"')) return [{ note_id: 'explore-1' }];
-			if (sql.includes('AND e."noteId" = ANY')) return [{ note_id: 'explore-0' }];
 			return [];
 		});
 		const fixture = createComputation({
@@ -394,11 +395,44 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		const result = await fixture.service.computePersonalFeed(input());
 
 		const epochQueryOrder = fixture.driverQuery.mock.invocationCallOrder[
-			fixture.driverQuery.mock.calls.findIndex(call => String(call[0]).includes('AND e."noteId" = ANY'))
+			fixture.driverQuery.mock.calls.findIndex(call => String(call[0]).includes("ev.\"eventType\" = 'served'"))
 		]!;
 		expect(fixture.safety.filterPersonalEligibleCandidates.mock.invocationCallOrder[0]).toBeLessThan(epochQueryOrder);
 		expect(result.items.some(item => item.noteId.startsWith('explore-'))).toBe(false);
 		expect(result.items.some(item => item.noteId === 'global-survives')).toBe(true);
+	});
+
+	test('retains a persisted-but-unserved candidate while excluding an actually served candidate', async () => {
+		const queryRunner = createQueryRunner(async (sql, parameters) => {
+			if (sql.includes("set_config('statement_timeout'")) return [{}];
+			if (sql.includes('AS before_deadline')) return [{ before_deadline: true }];
+			if (sql.includes("ev.\"eventType\" = 'served'")) return [{ note_id: 'actually-served' }];
+			if (sql.includes('FROM "hanami_recommendation_event"')) return [];
+			if (sql.includes('FROM note n JOIN "user" u')) return (parameters?.[1] as string[]).map(noteId => ({ note_id: noteId, author_id: `author-${noteId}`, text: noteId, is_bot: false, relationship_class: 'unknown' }));
+			return [];
+		});
+		const fixture = createComputation({ confidence: 'none', axisLevels: new Map([['globalPopular', 'normal']]), candidates: [
+			// This candidate is conceptually already present in hanami_user_feed_entry,
+			// but no served event is returned for it.
+			candidate('globalPopular', 'persisted-unserved'),
+			candidate('globalPopular', 'actually-served'),
+		], queryRunner });
+		const result = await fixture.service.computePersonalFeed({ ...input(), latestReadyBatchId: 'latest-batch' });
+
+		expect(result.items.map(item => item.noteId)).toContain('persisted-unserved');
+		expect(result.items.map(item => item.noteId)).not.toContain('actually-served');
+		const entryExclusionQueries = fixture.driverQuery.mock.calls.filter(call => {
+			const sql = String(call[0]);
+			return sql.includes('FROM "hanami_user_feed_entry"') && !sql.includes('ORDER BY e."sequence" DESC LIMIT 210');
+		});
+		expect(entryExclusionQueries).toEqual([]);
+		const seedQuery = fixture.driverQuery.mock.calls.find(call => String(call[0]).includes('ORDER BY e."sequence" DESC LIMIT 210'));
+		expect(seedQuery?.[0]).toContain('AND e."batchId" = $3');
+		expect(seedQuery?.[1]).toEqual(['user-1', 'epoch-1', 'latest-batch']);
+
+		const nullSeedFixture = createComputation({ candidates: [candidate('globalPopular', 'persisted-unserved')] });
+		await nullSeedFixture.service.computePersonalFeed(input());
+		expect(nullSeedFixture.driverQuery.mock.calls.some(call => String(call[0]).includes('ORDER BY e."sequence" DESC LIMIT 210'))).toBe(false);
 	});
 
 	test('omits insufficient exploration without removing non-exploration candidates', async () => {
@@ -407,7 +441,7 @@ describe('Phase 4 workstream A personal feed computation', () => {
 			axisLevels: new Map([['globalPopular', 'normal'], ['exploration', 'normal']]),
 			candidates: [candidate('globalPopular', 'global-survives'), ...Array.from({ length: 19 }, (_, index) => candidate('exploration', `explore-${index}`, `author-${index}`))],
 		});
-		const result = await fixture.service.computePersonalFeed(input());
+		const result = await fixture.service.computePersonalFeed({ ...input(), latestReadyBatchId: 'head' });
 		expect(result.items.map(item => item.noteId)).toContain('global-survives');
 		expect(result.items.some(item => item.source === 'exploration')).toBe(false);
 	});
@@ -435,7 +469,7 @@ describe('Phase 4 workstream A personal feed computation', () => {
 			queryRunner,
 		});
 
-		const result = await fixture.service.computePersonalFeed(input());
+		const result = await fixture.service.computePersonalFeed({ ...input(), latestReadyBatchId: 'head' });
 
 		expect(result.items).toHaveLength(15);
 		expect(result.items.every(item => item.noteId.startsWith('new-unknown-'))).toBe(true);
@@ -456,7 +490,7 @@ describe('Phase 4 workstream A personal feed computation', () => {
 				return [];
 			});
 			const fixture = createComputation({ candidates: Array.from({ length: 15 }, (_, index) => candidate('globalPopular', `new-${kind}-${index}`)), queryRunner });
-			await expect(fixture.service.computePersonalFeed(input())).rejects.toBeInstanceOf(HanamiInvalidPersonalSeedError);
+			await expect(fixture.service.computePersonalFeed({ ...input(), latestReadyBatchId: 'head' })).rejects.toBeInstanceOf(HanamiInvalidPersonalSeedError);
 		}
 	});
 
@@ -538,7 +572,7 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		expect(fixture.driverQuery.mock.calls[1]![0]).toContain("set_config('statement_timeout'");
 		expect(fixture.driverQuery.mock.calls[1]![1]).toEqual([databaseDeadlineAt, '5000']);
 		expect(fixture.driverQuery.mock.calls.at(-1)?.[0]).toContain('clock_timestamp() < $1::timestamptz');
-		expect(fixture.driverQuery.mock.calls.filter(call => String(call[0]).includes("set_config('statement_timeout'"))).toHaveLength(6);
+		expect(fixture.driverQuery.mock.calls.filter(call => String(call[0]).includes("set_config('statement_timeout'"))).toHaveLength(5);
 		expect(fixture.queryRunner.commitTransaction).toHaveBeenCalledTimes(1);
 		expect(fixture.queryRunner.release).toHaveBeenCalledTimes(1);
 		expect(fixture.safety.filterAndPack).not.toHaveBeenCalled();
@@ -781,7 +815,7 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 		expect(relationshipCaches.userBlockedCache.fetch).not.toHaveBeenCalled();
 	});
 
-	test('uses indexed following EXISTS and the bounded top-relation CTE for generation catchup', async () => {
+	test('uses the author-driven bounded top-relation CTE for generation catchup', async () => {
 		const service = createGenerationForYou({}, {}, {}, {
 			idService: { gen: jest.fn(() => 'since-id') },
 		}) as unknown as {
@@ -798,9 +832,8 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 
 		const catchupQuery = queryRunner.query.mock.calls.find(call => String(call[0]).includes('WITH top_relation AS MATERIALIZED'))!;
 		expect(catchupQuery[0]).toContain('ORDER BY "relScore" DESC, "otherUserId" ASC');
-		expect(catchupQuery[0]).toContain('EXISTS (');
-		expect(catchupQuery[0]).toContain('f."followerId" = $1 AND f."followeeId" = n."userId"');
-		expect(catchupQuery[0]).not.toContain('n."userId" = ANY');
+		expect(catchupQuery[0]).toContain('authors AS MATERIALIZED');
+		expect(catchupQuery[0]).toContain('JOIN note n ON n."userId" = a.id');
 		expect(catchupQuery[1]).toEqual([generation.userId, 100, 'since-id', 250]);
 	});
 

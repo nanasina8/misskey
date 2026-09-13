@@ -455,7 +455,7 @@ function convertRedisOptions(options: RedisOptionsSource, host: string): RedisOp
 
 export function resolveHanamiConfig(config: HanamiConfigSource, env: NodeJS.ProcessEnv = process.env, requireRuntimeSecrets = true): HanamiConfigValues {
 	const hanamiCursorSigningKeys = readHanamiCursorSigningKeys(config.hanamiCursorSigningKeys, env[HANAMI_CURSOR_SIGNING_KEYS_JSON_ENV], requireRuntimeSecrets);
-	const hanamiGenerationSyncWaitMs = readConfigInt('hanamiGenerationSyncWaitMs', config.hanamiGenerationSyncWaitMs, 2000, { min: 0 });
+	const hanamiGenerationSyncWaitMs = readConfigInt('hanamiGenerationSyncWaitMs', config.hanamiGenerationSyncWaitMs, 8000, { min: 0 });
 	const userHibernationDays = readConfigInt('userHibernationDays', config.userHibernationDays, 50, { min: 1, max: MAX_USER_HIBERNATION_DAYS });
 	const hanamiCommonGenerationIntervalMs = readConfigInt('hanamiCommonGenerationIntervalMs', config.hanamiCommonGenerationIntervalMs, 600000, { min: 1 });
 	const hanamiGenerationWorkerTimeoutMs = readConfigInt('hanamiGenerationWorkerTimeoutMs', config.hanamiGenerationWorkerTimeoutMs, 60000, { min: 1 });
@@ -466,6 +466,9 @@ export function resolveHanamiConfig(config: HanamiConfigSource, env: NodeJS.Proc
 
 	if (hanamiGenerationLeaseMs <= hanamiGenerationWorkerTimeoutMs) {
 		throw new Error(`Invalid config: hanamiGenerationLeaseMs (${hanamiGenerationLeaseMs}) must be greater than hanamiGenerationWorkerTimeoutMs (${hanamiGenerationWorkerTimeoutMs}).`);
+	}
+	if (hanamiGenerationSyncWaitMs >= hanamiGenerationWorkerTimeoutMs) {
+		throw new Error(`Invalid config: hanamiGenerationSyncWaitMs (${hanamiGenerationSyncWaitMs}) must be less than hanamiGenerationWorkerTimeoutMs (${hanamiGenerationWorkerTimeoutMs}).`);
 	}
 
 	return {

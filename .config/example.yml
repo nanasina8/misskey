@@ -262,7 +262,8 @@ fulltextSearch:
 #    secret: replace-with-at-least-32-utf8-bytes
 
 # Hanami persisted timeline generation defaults.
-hanamiGenerationSyncWaitMs: 2000
+# 生成は通常 1〜2 秒、cold で数秒。worker timeout (60000) 未満にすること。
+hanamiGenerationSyncWaitMs: 8000
 userHibernationDays: 50
 hanamiCommonGenerationIntervalMs: 600000
 hanamiGenerationWorkerTimeoutMs: 60000

@@ -10,6 +10,7 @@ import { HanamiCommonHeadQueries } from '@/core/hanami/HanamiCommonHeadQueries.j
 import { HanamiPersistedFeedReadService } from '@/core/hanami/HanamiPersistedFeedReadService.js';
 import { HanamiUserFeedGenerationService } from '@/core/hanami/HanamiUserFeedGenerationService.js';
 import { HanamiUserFeedRequestService } from '@/core/hanami/HanamiUserFeedRequestService.js';
+import { encodeHanamiPersonalFeedEntryLocator } from '@/core/hanami/HanamiFeedCodec.js';
 import type {
 	HanamiPersonalFeedComputationPort,
 	HanamiPersonalFeedComputationResult,
@@ -351,4 +352,174 @@ describe('Hanami Phase 5 workstream B unit contracts', () => {
 		expect(calls[4]!.values).toEqual(['user-1', 'epoch-1', '9', 2]);
 		expect(calls[4]!.sql).not.toMatch(/e\."sequence"\s*=\s*\$\d/);
 	});
+
+	test.each([
+		{ trigger: 'refresh' as const, served: ['9'], expectedDelete: ['user-1', 'epoch-1', 'old-head', '9'] },
+		{ trigger: 'refresh' as const, served: [], expectedDelete: ['user-1', 'epoch-1', 'old-head'] },
+		{ trigger: 'initial' as const, served: [], expectedDelete: null },
+	])('removes only the unserved old refresh-head tail ($trigger)', async ({ trigger, served, expectedDelete }) => {
+		const calls: Array<{ sql: string; values: unknown[] }> = [];
+		const query = jest.fn<(sql: string, values?: unknown[]) => Promise<unknown[]>>(async (sql: string, values: unknown[] = []) => {
+				calls.push({ sql, values });
+				if (sql.includes("set_config('statement_timeout'")) return [{}];
+				if (sql.includes('SELECT "sequence"::text')) return [{ sequence: '10' }, { sequence: '9' }, { sequence: '8' }];
+				if (sql.includes('SELECT ev."feedEntryId"')) return served.map(sequence => ({
+					feed_entry_id: encodeHanamiPersonalFeedEntryLocator({ userId: 'user-1', epochId: 'epoch-1', sequence }),
+				}));
+				return [];
+		});
+		const runner = { query };
+		const service = new HanamiUserFeedGenerationService({} as never, makeConfig(), {} as never, computation) as unknown as {
+			deleteUnservedOldHeadTail(runner: { query: typeof query }, budget: unknown, claim: unknown, state: unknown): Promise<void>;
+		};
+		const budget = {
+			controller: new AbortController(), monotonicDeadline: performance.now() + 1_000,
+			databaseDeadlineAt: '2099-08-20T00:00:00.000000Z', timeoutError: new Error('timeout'), dispose: () => undefined,
+		};
+		await service.deleteUnservedOldHeadTail(runner, budget, {
+			batchId: 'new-head', userId: 'user-1', epochId: 'epoch-1', trigger, attempt: 1, leaseOwner: 'owner', baseCommonGenerationId: 'common', generatedAt: '2026-08-20T00:00:00.000000Z',
+		}, { latest_ready_batch_id: 'old-head' });
+
+		const deletion = calls.find(call => call.sql.includes('DELETE FROM "hanami_user_feed_entry"'));
+		if (expectedDelete == null) expect(deletion).toBeUndefined();
+		else expect(deletion?.values).toEqual(expectedDelete);
+	});
+
+	test('recognizes only an unserved, recent ready head for refresh reuse', async () => {
+		const query = jest.fn<(sql: string, values?: unknown[]) => Promise<Array<{ id: string }>>>(async () => [{ id: 'head' }]);
+		const service = new HanamiUserFeedRequestService(
+			{} as never, makeConfig(), {} as never, {} as never, {} as never,
+			{ getLogger: () => ({ warn: jest.fn() }) } as never, new HanamiCommonHeadQueries(),
+		) as unknown as {
+			isUnservedReadyHead(runner: { query: typeof query }, state: unknown): Promise<boolean>;
+		};
+		await expect(service.isUnservedReadyHead({ query }, { latest_ready_batch_id: 'head', user_id: 'user-1', epoch_id: 'epoch-1' })).resolves.toBe(true);
+		expect(query.mock.calls[0]![0]).toContain("b.\"finishedAt\" > clock_timestamp() - INTERVAL '20 minutes'");
+		expect(query.mock.calls[0]![0]).toContain("ev.\"eventType\" = 'served'");
+		expect(query.mock.calls[0]![1]).toEqual(['head', 'user-1', 'epoch-1']);
+	});
+
+	test('reuses an unserved ready head through requestRefresh without creating or queuing a batch', async () => {
+		const calls: Array<{ sql: string; values: unknown[] }> = [];
+		const runner = makeRequestRunner(calls, { unservedHead: true });
+		const queue = { enqueueHanamiUserFeedGeneration: jest.fn() };
+		const service = new HanamiUserFeedRequestService(
+			{ createQueryRunner: () => runner } as never, makeConfig(), { gen: jest.fn() } as never,
+			{ getUserPolicies: jest.fn(async () => ({ hanamiTlAvailable: true })) } as never,
+			queue as never, { getLogger: () => ({ warn: jest.fn() }) } as never, new HanamiCommonHeadQueries(),
+		);
+
+		await expect(service.requestRefresh('user-1', Buffer.alloc(32, 1).toString('base64url'))).resolves.toEqual({
+			kind: 'serve',
+			head: { mode: 'personalized', kind: 'personal', feedEpochId: 'epoch-1', headBatchId: 'head', headSequence: '9' },
+			generationPending: false,
+			requestedBatchId: 'head',
+		});
+		const readyInsert = calls.find(call => call.sql.includes('INSERT INTO "hanami_user_feed_refresh"') && call.sql.includes("'ready'"));
+		expect(readyInsert?.values).toEqual(['user-1', 'epoch-1', expect.any(Buffer), 'head', '9']);
+		expect(calls.some(call => call.sql.includes('INSERT INTO "hanami_user_feed_batch"'))).toBe(false);
+		expect(queue.enqueueHanamiUserFeedGeneration).not.toHaveBeenCalled();
+	});
+
+	test.each([
+		['served head', { unservedHead: false }],
+		['stale head', { unservedHead: false }],
+		['active batch', { unservedHead: false, activeBatch: true }],
+	] as const)('keeps the normal refresh-generation path for a $s', async (_name, options) => {
+		const calls: Array<{ sql: string; values: unknown[] }> = [];
+		const runner = makeRequestRunner(calls, options);
+		const queue = { enqueueHanamiUserFeedGeneration: jest.fn(async () => undefined) };
+		const service = new HanamiUserFeedRequestService(
+			{ createQueryRunner: () => runner } as never, makeConfig(), { gen: jest.fn(() => 'new-batch') } as never,
+			{ getUserPolicies: jest.fn(async () => ({ hanamiTlAvailable: true })) } as never,
+			queue as never, { getLogger: () => ({ warn: jest.fn() }) } as never, new HanamiCommonHeadQueries(),
+		);
+
+		const result = await service.requestRefresh('user-1', Buffer.alloc(32, 2).toString('base64url'));
+		expect(result).toMatchObject({ kind: 'serve', generationPending: true });
+		expect(calls.some(call => call.sql.includes('INSERT INTO "hanami_user_feed_refresh"') && call.sql.includes("'ready'"))).toBe(false);
+		if ('activeBatch' in options && options.activeBatch === true) {
+			expect(result).toMatchObject({ requestedBatchId: 'active-batch' });
+			expect(calls.some(call => call.sql.includes('INSERT INTO "hanami_user_feed_batch"'))).toBe(false);
+		} else {
+			expect(calls.some(call => call.sql.includes('INSERT INTO "hanami_user_feed_batch"'))).toBe(true);
+		}
+	});
+
+	test.each([
+		{ trigger: 'refresh' as const, served: ['9'], expectedDelete: ['user-1', 'epoch-1', 'old-head', '9'] },
+		{ trigger: 'refresh' as const, served: [], expectedDelete: ['user-1', 'epoch-1', 'old-head'] },
+		{ trigger: 'initial' as const, served: [], expectedDelete: null },
+	])('publishes $trigger batches with old-head pruning before entry insertion', async ({ trigger, served, expectedDelete }) => {
+		const calls: Array<{ sql: string; values: unknown[] }> = [];
+		const runner = makePublishRunner(calls, served);
+		const service = new HanamiUserFeedGenerationService(
+			{ createQueryRunner: () => runner } as never, makeConfig(), { gen: jest.fn(() => 'entry-id') } as never, computation,
+		) as unknown as {
+			publishBatch(claim: unknown, computation: HanamiPersonalFeedComputationResult, budget: unknown): Promise<unknown>;
+		};
+		const budget = { controller: new AbortController(), monotonicDeadline: performance.now() + 1_000,
+			databaseDeadlineAt: '2099-08-20T00:00:00.000000Z', timeoutError: new Error('timeout'), dispose: () => undefined };
+		const claim = { batchId: 'new-head', userId: 'user-1', epochId: 'epoch-1', trigger, attempt: 1, leaseOwner: 'owner', baseCommonGenerationId: 'common', generatedAt: '2026-08-20T00:00:00.000000Z' };
+		const result: HanamiPersonalFeedComputationResult = { confidence: 'none', segmentLengths: [1], items: [{ noteId: 'new-note', source: 'globalPopular', sources: ['globalPopular'], origin: 'commonCandidate', reasonMetadata: { version: 1 } }] };
+
+		await expect(service.publishBatch(claim, result, budget)).resolves.toMatchObject({ kind: 'published' });
+		const deletionIndex = calls.findIndex(call => call.sql.includes('DELETE FROM "hanami_user_feed_entry"'));
+		const insertIndex = calls.findIndex(call => call.sql.includes('INSERT INTO "hanami_user_feed_entry"'));
+		if (expectedDelete == null) expect(deletionIndex).toBe(-1);
+		else {
+			expect(calls[deletionIndex]?.values).toEqual(expectedDelete);
+			expect(deletionIndex).toBeLessThan(insertIndex);
+		}
+		expect(runner.commitTransaction).toHaveBeenCalledTimes(1);
+	});
 });
+
+function makeRequestRunner(calls: Array<{ sql: string; values: unknown[] }>, options: { unservedHead: boolean; activeBatch?: boolean }) {
+	const runner = {
+		isTransactionActive: false,
+		connect: jest.fn(async () => undefined), startTransaction: jest.fn(async () => { runner.isTransactionActive = true; }),
+		commitTransaction: jest.fn(async () => { runner.isTransactionActive = false; }), rollbackTransaction: jest.fn(async () => { runner.isTransactionActive = false; }), release: jest.fn(async () => undefined),
+		query: jest.fn(async (sql: string, values: unknown[] = []) => {
+			calls.push({ sql, values });
+			if (sql.includes('FROM "user" u')) return [{ id: 'user-1', is_hibernated: false }];
+			if (sql.includes('FROM "hanami_user_feed_state" s')) return [{ user_id: 'user-1', epoch_id: 'epoch-1', mode: 'personalized', initial_state: 'ready', latest_ready_batch_id: 'head', generating_batch_id: options.activeBatch ? 'active-batch' : null, latest_sequence: '9', earliest_retained_sequence: '1', common_epoch_id: 'common-epoch', common_generation_id: 'common', common_sequence: '1' }];
+			if (sql.includes('FROM "hanami_user_feed_epoch" e')) return [{ epoch_id: 'epoch-1', retired_at: null }];
+			if (sql.includes('INSERT INTO "hanami_user_feed_batch"')) return [{ id: 'new-batch' }];
+			if (sql.includes('status" IN (\'pending\', \'generating\')')) return options.activeBatch ? [{ id: 'active-batch', user_id: 'user-1', epoch_id: 'epoch-1', trigger: 'refresh', status: 'generating', attempts: 1, item_count: 0 }] : [];
+			if (sql.includes('FROM "user_profile" p')) return [{ enabled: true }];
+			if (sql.includes('COUNT(*)::text')) return [{ count: '0' }];
+			if (sql.includes('b."finishedAt"')) return options.unservedHead ? [{ id: 'head' }] : [];
+			if (sql.includes('FROM "hanami_common_feed_state"')) return [{ epoch_id: 'common-epoch', generation_id: 'common', head_sequence: '1' }];
+			if (sql.includes('FROM "hanami_common_generation" g')) return [{ id: 'common', status: 'ready' }];
+			if (sql.includes('SELECT b."id" AS id') && sql.includes('b."status" = \'ready\'')) return [{ id: 'head' }];
+			if (sql.includes('UPDATE "hanami_user_feed_state"')) return [{ user_id: 'user-1' }];
+			return [];
+		}),
+	};
+	return runner;
+}
+
+function makePublishRunner(calls: Array<{ sql: string; values: unknown[] }>, served: readonly string[]) {
+	const runner = {
+		isTransactionActive: false,
+		connect: jest.fn(async () => undefined), startTransaction: jest.fn(async () => { runner.isTransactionActive = true; }),
+		commitTransaction: jest.fn(async () => { runner.isTransactionActive = false; }), rollbackTransaction: jest.fn(async () => { runner.isTransactionActive = false; }), release: jest.fn(async () => undefined),
+		query: jest.fn(async (sql: string, values: unknown[] = []) => {
+			calls.push({ sql, values });
+			if (sql.includes('deadline_at')) return [{ deadline_at: '2099-08-20T00:00:00.000000Z' }];
+			if (sql.includes("set_config('statement_timeout'")) return [{}];
+			if (sql.includes('FROM "user" u')) return [{ id: 'user-1', is_hibernated: false }];
+			if (sql.includes('FROM "hanami_user_feed_state" s')) return [{ user_id: 'user-1', epoch_id: 'epoch-1', mode: 'personalized', initial_state: 'ready', latest_ready_batch_id: 'old-head', generating_batch_id: 'new-head', latest_sequence: '9', earliest_retained_sequence: '1', common_epoch_id: 'common-epoch', common_generation_id: 'common', common_sequence: '1' }];
+			if (sql.includes('FROM "hanami_user_feed_epoch" e')) return [{ epoch_id: 'epoch-1', retired_at: null }];
+			if (sql.includes('FROM "hanami_user_feed_batch" b') && sql.includes('FOR UPDATE OF b')) return [{ id: 'new-head', user_id: 'user-1', epoch_id: 'epoch-1', trigger: 'refresh', status: 'generating', attempts: 1, lease_owner: 'owner', lease_is_live: true, available_is_due: true, item_count: 0, base_common_generation_id: 'common' }];
+			if (sql.includes('SELECT "sequence"::text')) return [{ sequence: '10' }, { sequence: '9' }, { sequence: '8' }];
+			if (sql.includes('SELECT ev."feedEntryId"')) return served.map(sequence => ({ feed_entry_id: encodeHanamiPersonalFeedEntryLocator({ userId: 'user-1', epochId: 'epoch-1', sequence }) }));
+			if (sql.includes('FROM "hanami_common_generation" g')) return [{ id: 'common' }];
+			if (sql.includes('UPDATE "hanami_user_feed_batch"')) return [{ id: 'new-head' }];
+			if (sql.includes('UPDATE "hanami_user_feed_state"')) return [{ latest_sequence: '10' }];
+			return [];
+		}),
+	};
+	return runner;
+}

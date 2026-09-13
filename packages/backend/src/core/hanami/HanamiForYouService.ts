@@ -1150,20 +1150,21 @@ export class HanamiForYouService {
 					WHERE "userId" = $1
 					ORDER BY "relScore" DESC, "otherUserId" ASC
 					LIMIT $2
+				),
+				authors AS MATERIALIZED (
+					SELECT id FROM top_relation
+					UNION
+					SELECT f."followeeId" FROM following f WHERE f."followerId" = $1
 				)
 				SELECT n.id AS "noteId", n."userId" AS "userId", count(r.id)::int AS "reactionCount",
 					COALESCE(tr."relScore", 0)::float8 AS "relScore",
 					COALESCE((SELECT max("relScore") FROM top_relation), 1)::float8 AS "maxRel"
-				FROM note n
+				FROM authors a
+				JOIN note n ON n."userId" = a.id AND n.id >= $3
 				JOIN note_reaction r ON r."noteId" = n.id AND r.id >= $3
 				LEFT JOIN top_relation tr ON tr.id = n."userId"
 				WHERE n.id >= $3
 					AND n.visibility IN ('public','home') AND n."channelId" IS NULL AND n."userId" <> $1
-					AND (tr.id IS NOT NULL OR EXISTS (
-						SELECT 1 FROM following f
-						WHERE f."followerId" = $1 AND f."followeeId" = n."userId"
-						LIMIT 1
-					))
 					AND (n."replyId" IS NULL OR n."replyUserId" = n."userId")
 					AND (n."renoteId" IS NULL OR n.text IS NOT NULL OR n."hasPoll" = TRUE OR n."fileIds" <> '{}')
 				GROUP BY n.id, n."userId", tr."relScore"

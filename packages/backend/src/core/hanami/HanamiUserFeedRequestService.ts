@@ -28,6 +28,7 @@ import type { DataSource, QueryRunner } from 'typeorm';
 const REFRESH_TTL_MINUTES = 15;
 const REFRESH_RATE_LIMIT = 3;
 const SYNC_POLL_INTERVAL_MS = 20;
+const UNSERVED_HEAD_REUSE_MINUTES = 20;
 
 type UserRow = {
 	id: string;
@@ -244,6 +245,24 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 				}
 
 				let state = context.state;
+				if (state != null && state.mode === 'personalized' && state.latest_ready_batch_id != null && context.activeBatch == null
+					&& await this.isUnservedReadyHead(queryRunner, state)) {
+					const head = await this.requireStateHead(queryRunner, state);
+					await queryRunner.query(`
+						INSERT INTO "hanami_user_feed_refresh" (
+							"userId", "epochId", "refreshTokenDigest", "requestedBatchId", "status",
+							"resultMode", "resultFeedEpochId", "resultHeadBatchId", "resultHeadSequence", "createdAt", "expiresAt"
+						)
+						VALUES ($1, $2, $3, $4, 'ready', 'personalized', $2, $4, $5::bigint, clock_timestamp(),
+							clock_timestamp() + INTERVAL '${REFRESH_TTL_MINUTES} minutes')
+					`, [userId, state.epoch_id, refreshDigest, state.latest_ready_batch_id, state.latest_sequence]);
+					return {
+						result: { kind: 'serve', head, generationPending: false, requestedBatchId: state.latest_ready_batch_id },
+						batchId: null,
+						refreshDigest: null,
+					};
+				}
+
 				let batchId: string;
 				if (state == null || state.initial_state === 'notEvaluated') {
 					const commonHead = await this.requireLockedCommonHead(queryRunner);
@@ -606,6 +625,23 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 				AND r."createdAt" > clock_timestamp() - INTERVAL '1 minute'
 		`, [userId]) as Array<{ count: string }>;
 		return Number(rows.at(0)?.count ?? '0') >= REFRESH_RATE_LIMIT;
+	}
+
+	private async isUnservedReadyHead(queryRunner: QueryRunner, state: StateRow): Promise<boolean> {
+		const rows = await queryRunner.query(`
+			SELECT b."id" AS id
+			FROM "hanami_user_feed_batch" b
+			WHERE b."id" = $1 AND b."userId" = $2 AND b."epochId" = $3 AND b."status" = 'ready'
+				AND b."finishedAt" > clock_timestamp() - INTERVAL '${UNSERVED_HEAD_REUSE_MINUTES} minutes'
+				AND NOT EXISTS (
+					SELECT 1 FROM "hanami_user_feed_entry" e
+					JOIN "hanami_recommendation_event" ev
+						ON ev."userId" = e."userId" AND ev."noteId" = e."noteId"
+						AND ev."eventType" = 'served' AND ev."feedKind" = 'personal' AND ev."feedEpochId" = e."epochId"
+					WHERE e."batchId" = b."id"
+				)
+		`, [state.latest_ready_batch_id, state.user_id, state.epoch_id]) as Array<{ id: string }>;
+		return rows.length === 1;
 	}
 
 	private async requireStateHead(queryRunner: QueryRunner, state: StateRow): Promise<HanamiFeedHeadSnapshot> {

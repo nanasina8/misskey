@@ -24,6 +24,7 @@ import {
 	type HanamiUserFeedGenerationRunResult,
 } from './HanamiUserFeedContracts.js';
 import { HanamiCommonHeadQueries } from './HanamiCommonHeadQueries.js';
+import { encodeHanamiPersonalFeedEntryLocator } from './HanamiFeedCodec.js';
 import type { DataSource, QueryRunner } from 'typeorm';
 
 const MAX_ITEMS = 210;
@@ -53,6 +54,7 @@ type Claim = {
 	attempt: number;
 	leaseOwner: string;
 	baseCommonGenerationId: string;
+	latestReadyBatchId: string | null;
 	generatedAt: string;
 };
 
@@ -143,6 +145,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 				userId: claim!.userId,
 				epochId: claim!.epochId,
 				baseCommonGenerationId: claim!.baseCommonGenerationId,
+				latestReadyBatchId: claim!.latestReadyBatchId,
 				generatedAt: claim!.generatedAt,
 				databaseDeadlineAt: this.databaseDeadlineAt(workerLease),
 				signal: workerLease.controller.signal,
@@ -282,6 +285,12 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 		return await this.withDeadlineTransaction(budget, async (queryRunner) => {
 			const leaseOwner = randomUUID();
 			const rows = hanamiReturningRows(await this.deadlineQuery(queryRunner, budget, `
+				WITH locked_state AS (
+					SELECT s."userId", s."epochId", s."generatingBatchId", s."latestReadyBatchId"
+					FROM "hanami_user_feed_state" s
+					WHERE s."userId" = (SELECT b."userId" FROM "hanami_user_feed_batch" b WHERE b."id" = $1)
+					FOR UPDATE
+				)
 				UPDATE "hanami_user_feed_batch" b
 				SET "status" = 'generating',
 					"attempts" = b."attempts" + 1,
@@ -301,7 +310,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 						SELECT 1 FROM "user" u WHERE u."id" = b."userId" AND u."isHibernated" = FALSE
 					)
 					AND EXISTS (
-						SELECT 1 FROM "hanami_user_feed_state" s
+						SELECT 1 FROM locked_state s
 						WHERE s."userId" = b."userId" AND s."epochId" = b."epochId" AND s."generatingBatchId" = b."id"
 					)
 					AND EXISTS (
@@ -315,6 +324,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 				RETURNING b."id" AS id, b."userId" AS user_id, b."epochId" AS epoch_id,
 					b."trigger" AS trigger, b."attempts" AS attempts,
 					b."baseCommonGenerationId" AS base_common_generation_id,
+					(SELECT s."latestReadyBatchId" FROM locked_state s) AS latest_ready_batch_id,
 					to_char(b."startedAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS generated_at
 			`, [batchId, leaseOwner, String(this.config.hanamiGenerationLeaseMs), this.config.hanamiGenerationMaxAttempts]) as Array<{
 				id: string;
@@ -323,6 +333,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 				trigger: 'initial' | 'refresh';
 				attempts: number;
 				base_common_generation_id: string;
+				latest_ready_batch_id: string | null;
 				generated_at: string;
 			}>);
 			const row = rows.at(0);
@@ -336,7 +347,8 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 						trigger: row.trigger,
 						attempt: row.attempts,
 						leaseOwner,
-						baseCommonGenerationId: row.base_common_generation_id,
+					baseCommonGenerationId: row.base_common_generation_id,
+					latestReadyBatchId: row.latest_ready_batch_id,
 						generatedAt: this.toIsoString(row.generated_at, 'batch startedAt'),
 					},
 				};
@@ -497,6 +509,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 
 				const batch = await this.lockBatch(queryRunner, budget, claim.batchId);
 				if (!this.isExactLiveClaim(state, batch, claim)) throw new HanamiUserFeedLeaseLostError();
+				await this.deleteUnservedOldHeadTail(queryRunner, budget, claim, state);
 				const commonRows = await this.deadlineQuery(queryRunner, budget, `
 					SELECT g."id" AS id FROM "hanami_common_generation" g
 					WHERE g."id" = $1 AND g."status" = 'ready'
@@ -581,6 +594,46 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 			if (error instanceof HanamiUserFeedLeaseLostError) return { kind: 'stale' };
 			throw error;
 		}
+	}
+
+	private async deleteUnservedOldHeadTail(queryRunner: QueryRunner, budget: Budget, claim: Claim, state: StateRow): Promise<void> {
+		if (claim.trigger !== 'refresh' || state.latest_ready_batch_id == null || state.latest_ready_batch_id === claim.batchId) return;
+
+		const oldHeadBatchId = state.latest_ready_batch_id;
+		const entries = await this.deadlineQuery(queryRunner, budget, `
+			SELECT "sequence"::text AS sequence
+			FROM "hanami_user_feed_entry"
+			WHERE "userId" = $1 AND "epochId" = $2 AND "batchId" = $3
+			ORDER BY "sequence" DESC
+		`, [claim.userId, claim.epochId, oldHeadBatchId]) as Array<{ sequence: string }>;
+		if (entries.length === 0) return;
+
+		const sequenceByLocator = new Map(entries.map(({ sequence }) => [
+			encodeHanamiPersonalFeedEntryLocator({ userId: claim.userId, epochId: claim.epochId, sequence }),
+			sequence,
+		]));
+		const served = await this.deadlineQuery(queryRunner, budget, `
+			SELECT ev."feedEntryId" AS feed_entry_id
+			FROM "hanami_recommendation_event" ev
+			WHERE ev."userId" = $1 AND ev."eventType" = 'served' AND ev."feedEntryId" = ANY($2::varchar[])
+		`, [claim.userId, [...sequenceByLocator.keys()]]) as Array<{ feed_entry_id: string }>;
+		const servedSequences = served.flatMap(({ feed_entry_id }) => {
+			const sequence = sequenceByLocator.get(feed_entry_id);
+			return sequence == null ? [] : [BigInt(sequence)];
+		});
+		if (servedSequences.length === 0) {
+			await this.deadlineQuery(queryRunner, budget, `
+				DELETE FROM "hanami_user_feed_entry"
+				WHERE "userId" = $1 AND "epochId" = $2 AND "batchId" = $3
+			`, [claim.userId, claim.epochId, oldHeadBatchId]);
+			return;
+		}
+
+		const minServed = servedSequences.reduce((minimum, sequence) => sequence < minimum ? sequence : minimum);
+		await this.deadlineQuery(queryRunner, budget, `
+			DELETE FROM "hanami_user_feed_entry"
+			WHERE "userId" = $1 AND "epochId" = $2 AND "batchId" = $3 AND "sequence" < $4::bigint
+		`, [claim.userId, claim.epochId, oldHeadBatchId, minServed.toString()]);
 	}
 
 	private async resolveFailure(claim: Claim, budget: Budget): Promise<FailureResolution> {

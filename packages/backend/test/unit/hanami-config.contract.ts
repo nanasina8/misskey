@@ -104,10 +104,18 @@ describe('Hanami config contracts', () => {
 		}, {})).toThrow('must be greater than hanamiGenerationWorkerTimeoutMs');
 	});
 
+	test('resolveHanamiConfig rejects a synchronous wait at or beyond worker timeout', () => {
+		expect(() => resolveHanamiConfig({
+			hanamiCursorSigningKeys: yamlKeys,
+			hanamiGenerationSyncWaitMs: 60_000,
+			hanamiGenerationWorkerTimeoutMs: 60_000,
+		}, {})).toThrow('hanamiGenerationSyncWaitMs');
+	});
+
 	test('resolveHanamiConfig returns the expected defaults', () => {
 		expect(resolveHanamiConfig({ hanamiCursorSigningKeys: yamlKeys }, {})).toEqual({
 			hanamiCursorSigningKeys: yamlKeys,
-			hanamiGenerationSyncWaitMs: 2000,
+			hanamiGenerationSyncWaitMs: 8000,
 			userHibernationDays: 50,
 			hanamiCommonGenerationIntervalMs: 600000,
 			hanamiGenerationWorkerTimeoutMs: 60000,

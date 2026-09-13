@@ -100,9 +100,9 @@ describe('HanamiCommonComputationService', () => {
 		expect(observedScores.has('')).toBe(true);
 		expect(observedScores.has('not-finite')).toBe(true);
 		expect(setup.safetyService.filterCommonEligibleNotes).toHaveBeenCalledTimes(1);
-		expect(result.candidates.globalPopular).toHaveLength(200);
+		expect(result.candidates.globalPopular).toHaveLength(500);
 		expect(result.candidates.trending).toHaveLength(200);
-		expect(result.candidates.exploration).toHaveLength(310);
+		expect(result.candidates.exploration).toHaveLength(0);
 		expect(result.trendSnapshot.terms).toHaveLength(30);
 		expect(result.trendSnapshot.terms.every(term => term.representativeNoteIds.length === 5)).toBe(true);
 		expect(setup.service.algorithmVersion).toBe(HANAMI_COMMON_ALGORITHM_VERSION);
@@ -155,12 +155,12 @@ describe('HanamiCommonComputationService', () => {
 		expect(observedScores.has('featured-5000')).toBe(true);
 		expect(safetyIds).toHaveLength(5000);
 		expect(new Set(safetyIds).size).toBe(5000);
-		expect(result.candidates.globalPopular).toHaveLength(200);
+		expect(result.candidates.globalPopular).toHaveLength(500);
 		expect(result.candidates.globalPopular[0]!.noteId).toBe('featured-0250');
-		expect(result.candidates.globalPopular.at(-1)!.noteId).toBe('featured-0449');
+		expect(result.candidates.globalPopular.at(-1)!.noteId).toBe('featured-0749');
 		expect(result.candidates.exploration).toHaveLength(500);
-		expect(result.candidates.exploration[0]!.noteId).toBe('featured-0450');
-		expect(result.candidates.exploration.at(-1)!.noteId).toBe('featured-0949');
+		expect(result.candidates.exploration[0]!.noteId).toBe('featured-0750');
+		expect(result.candidates.exploration.at(-1)!.noteId).toBe('featured-1249');
 		for (const candidate of result.candidates.exploration) expect(result.candidates.globalPopular.some(popular => popular.noteId === candidate.noteId)).toBe(false);
 	});
 
@@ -328,8 +328,8 @@ describe('HanamiCommonComputationService', () => {
 		expect(result.candidates.globalPopular[0]!.noteId).toBe('popular-200');
 		expect(result.candidates.globalPopular.at(-1)!.noteId).toBe('popular-399');
 		expect(result.candidates.exploration).toHaveLength(500);
-		expect(result.candidates.exploration[0]!.noteId).toBe('recent-1000');
-		expect(result.candidates.exploration.at(-1)!.noteId).toBe('recent-999');
+		expect(result.candidates.exploration[0]!.noteId).toBe('recent-600');
+		expect(result.candidates.exploration.at(-1)!.noteId).toBe('recent-1099');
 	});
 
 	test('builds author-diverse DB exploration with at least 20 authors, 5% author share, and the 500 cap', async () => {
@@ -379,7 +379,7 @@ describe('HanamiCommonComputationService', () => {
 
 	test('falls back to featured excluding the popular pool when DB has fewer than 20 authors', async () => {
 		const scores = new Map<string, number>();
-		for (let index = 0; index < 300; index++) {
+		for (let index = 0; index < 800; index++) {
 			scores.set(`featured-${String(index).padStart(4, '0')}`, 1000 - index);
 		}
 		const setup = createComputation({
@@ -395,14 +395,14 @@ describe('HanamiCommonComputationService', () => {
 		const exploration = result.candidates.exploration;
 		const popularIds = new Set(result.candidates.globalPopular.map(candidate => candidate.noteId));
 
-		expect(exploration).toHaveLength(100);
-		expect(exploration[0]!.noteId).toBe('featured-0200');
-		expect(exploration.at(-1)!.noteId).toBe('featured-0299');
+		expect(exploration).toHaveLength(300);
+		expect(exploration[0]!.noteId).toBe('featured-0500');
+		expect(exploration.at(-1)!.noteId).toBe('featured-0799');
 		for (const candidate of exploration) expect(popularIds.has(candidate.noteId)).toBe(false);
 	});
 
 	test('uses the safe featured fallback when safety removes enough authors from an otherwise eligible DB source', async () => {
-		const scores = new Map(Array.from({ length: 220 }, (_, index) => [`featured-${String(index).padStart(4, '0')}`, 1000 - index]));
+		const scores = new Map(Array.from({ length: 520 }, (_, index) => [`featured-${String(index).padStart(4, '0')}`, 1000 - index]));
 		const setup = createComputation({
 			scores,
 			dbQuery: async () => Array.from({ length: 20 }, (_, index) => ({ noteId: `db-${index}`, userId: `db-author-${index}` })),
@@ -414,11 +414,11 @@ describe('HanamiCommonComputationService', () => {
 		const exploration = (await setup.service.buildSourceBundle(buildInput(new AbortController().signal))).candidates.exploration;
 
 		expect(exploration).toHaveLength(20);
-		expect(exploration[0]?.noteId).toBe('featured-0200');
+		expect(exploration[0]?.noteId).toBe('featured-0500');
 	});
 
 	test('excludes the finalized globalPopular set from a safety-triggered Featured fallback', async () => {
-		const scores = new Map(Array.from({ length: 500 }, (_, index) => [`featured-${String(index).padStart(4, '0')}`, 1000 - index]));
+		const scores = new Map(Array.from({ length: 1000 }, (_, index) => [`featured-${String(index).padStart(4, '0')}`, 1000 - index]));
 		const setup = createComputation({
 			scores,
 			dbQuery: async () => Array.from({ length: 20 }, (_, index) => ({ noteId: `db-${index}`, userId: `db-author-${index}` })),
@@ -431,7 +431,7 @@ describe('HanamiCommonComputationService', () => {
 		const global = new Set(result.candidates.globalPopular.map(candidate => candidate.noteId));
 
 		expect(result.candidates.globalPopular[0]?.noteId).toBe('featured-0100');
-		expect(result.candidates.exploration[0]?.noteId).toBe('featured-0300');
+		expect(result.candidates.exploration[0]?.noteId).toBe('featured-0600');
 		for (const candidate of result.candidates.exploration) expect(global.has(candidate.noteId)).toBe(false);
 	});
 
@@ -456,7 +456,7 @@ describe('HanamiCommonComputationService', () => {
 	});
 
 	test('resolves Featured fallback safety IDs when globalPopular is disabled', async () => {
-		const scores = new Map(Array.from({ length: 220 }, (_, index) => [`featured-${String(index).padStart(4, '0')}`, 1000 - index]));
+		const scores = new Map(Array.from({ length: 520 }, (_, index) => [`featured-${String(index).padStart(4, '0')}`, 1000 - index]));
 		const setup = createComputation({
 			scores,
 			axisConfig: { globalPopular: { available: false } },
@@ -470,7 +470,7 @@ describe('HanamiCommonComputationService', () => {
 
 		expect(result.candidates.globalPopular).toEqual([]);
 		expect(result.candidates.exploration).toHaveLength(20);
-		expect(result.candidates.exploration[0]?.noteId).toBe('featured-0200');
+		expect(result.candidates.exploration[0]?.noteId).toBe('featured-0500');
 	});
 
 	test('gracefully falls back to featured when the exploration DB query throws', async () => {
