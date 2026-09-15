@@ -15,6 +15,10 @@ export default function(app: App) {
 	app.component('WidgetCalendar', defineAsyncComponent(() => import('./WidgetCalendar.vue')));
 	app.component('WidgetRss', defineAsyncComponent(() => import('./WidgetRss.vue')));
 	app.component('WidgetRssTicker', defineAsyncComponent(() => import('./WidgetRssTicker.vue')));
+	app.component('WidgetHanamiTrends', defineAsyncComponent(() => import('./WidgetHanamiTrends.vue')));
+	app.component('WidgetHanamiTalkedUsers', defineAsyncComponent(() => import('./WidgetHanamiTalkedUsers.vue')));
+	app.component('WidgetHanamiConnectionRing', defineAsyncComponent(() => import('./WidgetHanamiConnectionRing.vue')));
+	app.component('WidgetHanamiLapsedUsers', defineAsyncComponent(() => import('./WidgetHanamiLapsedUsers.vue')));
 	app.component('WidgetTrends', defineAsyncComponent(() => import('./WidgetTrends.vue')));
 	app.component('WidgetClock', defineAsyncComponent(() => import('./WidgetClock.vue')));
 	app.component('WidgetActivity', defineAsyncComponent(() => import('./WidgetActivity.vue')));
@@ -54,6 +58,10 @@ export const widgets = [
 	'rss',
 	'rssTicker',
 	'trends',
+	'hanamiTrends',
+	'hanamiTalkedUsers',
+	'hanamiConnectionRing',
+	'hanamiLapsedUsers',
 	'clock',
 	'activity',
 	'photos',

@@ -26,6 +26,10 @@ export const ROUTE_DEF = [{
 	path: '/',
 	component: $i ? PageTimeline : page(() => import('@/pages/welcome.vue')),
 }, {
+	path: '/hanami/trends/history',
+	component: page(() => import('@/pages/hanami-trends-history.vue')),
+	loginRequired: false,
+}, {
 	path: '/timeline',
 	component: PageTimeline,
 }, {

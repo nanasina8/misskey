@@ -3862,6 +3862,15 @@ export type paths = {
          */
         post: operations['users___get-frequently-replied-users'];
     };
+    '/users/hanami-affinity': {
+        /**
+         * users/hanami-affinity
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:account*
+         */
+        post: operations['users___hanami-affinity'];
+    };
     '/users/hanami-recommendations': {
         /**
          * users/hanami-recommendations
@@ -36516,6 +36525,113 @@ export interface operations {
                         user: components['schemas']['UserDetailed'];
                         weight: number;
                     }[];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'users___hanami-affinity': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /**
+                     * @default top
+                     * @enum {string}
+                     */
+                    mode?: 'top' | 'lapsed';
+                    /** @default 10 */
+                    limit?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        /** Format: date-time */
+                        computedAt: string;
+                        items: {
+                            user: components['schemas']['UserLite'];
+                            rank?: number;
+                            score?: number;
+                            rankDelta?: number | null;
+                            mutualFollow?: boolean;
+                            mutualInteraction?: boolean;
+                            /** Format: date-time */
+                            lastInteractionAt?: string | null;
+                            counts?: {
+                                reply: {
+                                    out: number;
+                                    in: number;
+                                };
+                                mention: {
+                                    out: number;
+                                    in: number;
+                                };
+                                renote: {
+                                    out: number;
+                                    in: number;
+                                };
+                                reaction: {
+                                    out: number;
+                                    in: number;
+                                };
+                            };
+                            daysSinceLast?: number;
+                            pastPerWeek?: number;
+                            /** Format: date-time */
+                            latestNoteAt?: string | null;
+                            birthdayWithin14d?: boolean;
+                        }[];
+                    };
                 };
             };
             /** @description Client error */

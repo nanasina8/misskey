@@ -9982,6 +9982,22 @@ export interface Locale extends ILocale {
     };
     "_widgets": {
         /**
+         * ことばのトレンド
+         */
+        "hanamiTrends": string;
+        /**
+         * よく話す人
+         */
+        "hanamiTalkedUsers": string;
+        /**
+         * ユーザークラウド
+         */
+        "hanamiConnectionRing": string;
+        /**
+         * ご無沙汰の人
+         */
+        "hanamiLapsedUsers": string;
+        /**
          * プロフィール
          */
         "profile": string;
@@ -13364,6 +13380,176 @@ export interface Locale extends ILocale {
         "mfm": string;
     };
     "_hana": {
+        "_affinity": {
+            "_cloud": {
+                /**
+                 * 直近90日
+                 */
+                "period": string;
+                /**
+                 * 回転を再開
+                 */
+                "play": string;
+                /**
+                 * 回転を一時停止
+                 */
+                "pause": string;
+                /**
+                 * 自分
+                 */
+                "you": string;
+                /**
+                 * ドラッグで回転 · ホバー／長押しで詳細
+                 */
+                "help": string;
+                /**
+                 * 近い
+                 */
+                "near": string;
+                /**
+                 * 遠い
+                 */
+                "far": string;
+                /**
+                 * 近め · やりとりが多い
+                 */
+                "close": string;
+                /**
+                 * 中ほど · ときどきやりとり
+                 */
+                "middle": string;
+                /**
+                 * 遠め · やりとりが少なめ
+                 */
+                "outer": string;
+                /**
+                 * 双方向のやりとり
+                 */
+                "both": string;
+                /**
+                 * 片方向のやりとり
+                 */
+                "oneWay": string;
+                /**
+                 * 固定中 · ×で解除
+                 */
+                "pinned": string;
+                /**
+                 * クリック／長押しで固定
+                 */
+                "pinHint": string;
+                /**
+                 * 内側ほどやりとりが多い · 直近90日
+                 */
+                "footer": string;
+                /**
+                 * 表示する人数
+                 */
+                "count": string;
+            };
+            /**
+             * new
+             */
+            "rankNew": string;
+            /**
+             * 最後のやりとり
+             */
+            "lastInteraction": string;
+            /**
+             * 直近90日 · 先月比 · 右は最後のやりとり
+             */
+            "talkedFooter": string;
+            /**
+             * よく話す
+             */
+            "ringInner": string;
+            /**
+             * ときどき
+             */
+            "ringOuter": string;
+            /**
+             * 内側ほど関係値が高い · 直近90日
+             */
+            "ringFooter": string;
+            /**
+             * まだやりとりがありません
+             */
+            "ringEmpty": string;
+            /**
+             * まだやりとりがありません
+             */
+            "talkedEmpty": string;
+            /**
+             * 最近やりとりが途切れている人はいません
+             */
+            "lapsedEmpty": string;
+            /**
+             * 以前よく話していて、最近やりとりが途切れている人
+             */
+            "lapsedFooter": string;
+            /**
+             * {n}日前
+             */
+            "daysAgo": ParameterizedString<"n">;
+            /**
+             * 以前は週{n}回くらい
+             */
+            "perWeek": ParameterizedString<"n">;
+            /**
+             * 以前は月に数回
+             */
+            "fewPerMonth": string;
+            /**
+             * 最近投稿あり
+             */
+            "recentlyPosted": string;
+            /**
+             * 誕生日が近い
+             */
+            "birthdaySoon": string;
+            /**
+             * 投稿を見る
+             */
+            "viewNotes": string;
+            /**
+             * 相互
+             */
+            "mutual": string;
+            /**
+             * 返信 {reply} · メンション {mention} · リノート {renote} · リアクション {reaction}
+             */
+            "counts": ParameterizedString<"reply" | "mention" | "renote" | "reaction">;
+        };
+        "_trends": {
+            /**
+             * 話している人 {n}人
+             */
+            "authors": ParameterizedString<"n">;
+            /**
+             * 代表ノートなし
+             */
+            "noRepresentativeNote": string;
+            /**
+             * {time} のスナップショット · 上位10語
+             */
+            "snapshot": ParameterizedString<"time">;
+            /**
+             * 過去のトレンド
+             */
+            "history": string;
+            /**
+             * まだトレンドがありません
+             */
+            "empty": string;
+            /**
+             * {time} · {n}語
+             */
+            "group": ParameterizedString<"time" | "n">;
+            /**
+             * さらに前へ
+             */
+            "older": string;
+        };
         /**
          * 備考
          */

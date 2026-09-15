@@ -460,3 +460,4 @@ export * as 'notes/hanami-timeline-seen' from './endpoints/notes/hanami-timeline
 export * as 'notes/hanami-trends' from './endpoints/notes/hanami-trends.js';
 export * as 'notes/hanamisearch-v1' from './endpoints/notes/hanamisearch-v1.js';
 export * as 'users/hanami-recommendations' from './endpoints/users/hanami-recommendations.js';
+export * as 'users/hanami-affinity' from './endpoints/users/hanami-affinity.js';
