@@ -197,6 +197,7 @@ export const paramDef = {
 		exploreMediaFilter: { type: 'string', enum: ['all', 'hideSensitive', 'hideMedia'] },
 		hanamiRecommendationEnabled: { type: 'boolean' },
 		hanamiShowRecommendationReason: { type: 'boolean' },
+		hanamiReduceEphemeralPosts: { type: 'boolean' },
 		hanamiRecommendationAxes: {
 			type: 'object', nullable: false,
 			properties: {
@@ -406,6 +407,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (ps.exploreMediaFilter !== undefined) profileUpdates.exploreMediaFilter = ps.exploreMediaFilter;
 			if (typeof ps.hanamiRecommendationEnabled === 'boolean') profileUpdates.hanamiRecommendationEnabled = ps.hanamiRecommendationEnabled;
 			if (typeof ps.hanamiShowRecommendationReason === 'boolean') profileUpdates.hanamiShowRecommendationReason = ps.hanamiShowRecommendationReason;
+			if (typeof ps.hanamiReduceEphemeralPosts === 'boolean') profileUpdates.hanamiReduceEphemeralPosts = ps.hanamiReduceEphemeralPosts;
 			if (ps.hanamiRecommendationAxes !== undefined) {
 				// 既知の軸キーのみ採用（未知キーは無視＝廃止軸 lowExposure の保存値もここで自然に消える）。
 				// 値は量レベル（off/low/normal/high）に正規化。旧booleanは true=normal / false=off。

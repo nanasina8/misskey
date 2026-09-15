@@ -28,12 +28,14 @@ import {
 import { HanamiForYouSafetyService } from '@/core/hanami/HanamiForYouSafetyService.js';
 import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
 import { createHanamiExactTextFingerprint, createHanamiStrictBotTemplateFingerprint } from '@/core/hanami/HanamiForYouTextNormalization.js';
-import { createHanamiQualityShadow, type HanamiRelationshipClass } from '@/core/hanami/HanamiForYouQualityContracts.js';
+import { createHanamiQualityShadow, createHanamiQualityShadowFromJudgement, type HanamiRelationshipClass } from '@/core/hanami/HanamiForYouQualityContracts.js';
+import { selectHanamiDiscoveryCandidates } from '@/core/hanami/HanamiDiscoverySelection.js';
+import { HANAMI_NOTE_JUDGE_MODEL, createDefaultHanamiNoteJudgeSettings, validateHanamiNoteJudgeSettings, type HanamiNoteJudgeSettings } from '@/core/hanami/HanamiNoteJudgeContracts.js';
 
 const MAX_SEGMENTS = 7;
 const SEGMENT_SIZE = 30;
-const MAX_COMMON_CANDIDATES = 1200;
-const COMMON_CANDIDATE_LIMITS = Object.freeze({ globalPopular: 500, trending: 200, exploration: 500 });
+const MAX_COMMON_CANDIDATES = 1900;
+const COMMON_CANDIDATE_LIMITS = Object.freeze({ globalPopular: 500, trending: 200, exploration: 1200 });
 const GENERATION_LOCK_TIMEOUT_MS = 5000;
 
 const CONFIGURE_DEADLINE_SQL = `
@@ -61,6 +63,13 @@ type GenerationRunnerScope = {
 	transactionStarted: boolean;
 	released: boolean;
 };
+
+type HanamiNoteJudgeFeedContext = Readonly<{
+	settings: HanamiNoteJudgeSettings;
+	reduceEphemeralPosts: boolean;
+}>;
+
+type HanamiJudgeReason = 'llm' | 'bot' | 'reply' | 'template' | 'emptyText';
 
 export const HANAMI_PERSONAL_FEED_ALGORITHM_VERSION = 'hanami-personal-v1';
 
@@ -316,7 +325,22 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 	 * are derived only in memory from Note text; persisted entries retain Note IDs
 	 * only, so no fingerprint/text is written to reasonMetadata.
 	 */
-	private async enrichAndExcludeEpochCandidates(context: HanamiPersonalFeedGenerationContext, candidates: readonly HanamiPersonalFeedCandidate[]): Promise<{ candidates: readonly HanamiPersonalFeedCandidate[]; seed: readonly ForYouCandidate[] }> {
+	/** Snapshot settings and the viewer preference once for this feed generation. */
+	private async loadNoteJudgeFeedContext(context: HanamiPersonalFeedGenerationContext): Promise<HanamiNoteJudgeFeedContext> {
+		const rows = await context.queryRunner.query(`
+			SELECT m."hanamiNoteJudgeSettings" AS settings,
+				p."hanamiReduceEphemeralPosts" AS reduce_ephemeral_posts
+			FROM meta m LEFT JOIN "user_profile" p ON p."userId" = $1
+			LIMIT 1
+		`, [context.userId]) as Array<{ settings: unknown; reduce_ephemeral_posts: boolean | null }>;
+		const validated = validateHanamiNoteJudgeSettings(rows[0]?.settings);
+		return {
+			settings: validated.ok ? validated.value : createDefaultHanamiNoteJudgeSettings(),
+			reduceEphemeralPosts: rows[0]?.reduce_ephemeral_posts !== false,
+		};
+	}
+
+	private async enrichAndExcludeEpochCandidates(context: HanamiPersonalFeedGenerationContext, candidates: readonly HanamiPersonalFeedCandidate[], judgeContext: HanamiNoteJudgeFeedContext): Promise<{ candidates: readonly HanamiPersonalFeedCandidate[]; seed: readonly ForYouCandidate[] }> {
 		const ids = [...new Set(candidates.map(c => c.noteId))];
 		if (ids.length === 0) return { candidates, seed: [] };
 		const existingRows = await context.queryRunner.query(`
@@ -334,12 +358,15 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 		const excluded = new Set([...existingRows, ...seenRows].map(row => row.note_id));
 		const eligible = candidates.filter(candidate => !excluded.has(candidate.noteId));
 		const detailRows = await context.queryRunner.query(`
-			SELECT n.id AS note_id, n."userId" AS author_id, COALESCE(n.text, '') AS text, u."isBot" AS is_bot,
+			SELECT n.id AS note_id, n."userId" AS author_id, COALESCE(n.text, '') AS text, n.tags AS tags, n."fileIds" <> '{}' AS has_files, u."isBot" AS is_bot,
+				j.model AS judgement_model, j."ephemeralScore" AS ephemeral_score, j.interest AS interest,
 				CASE WHEN EXISTS (SELECT 1 FROM following f WHERE f."followerId" = $1 AND f."followeeId" = n."userId") THEN 'directFollow'
 					WHEN EXISTS (SELECT 1 FROM following f WHERE (f."followerId" = $1 AND f."followeeId" = n."userId") OR (f."followerId" = n."userId" AND f."followeeId" = $1)) THEN 'known'
 					ELSE 'unknown' END AS relationship_class
-			FROM note n JOIN "user" u ON u.id = n."userId" WHERE n.id = ANY($2::varchar[])
-		`, [context.userId, eligible.map(c => c.noteId)]) as Array<{ note_id: string; author_id: string; text: string; is_bot: boolean; relationship_class: HanamiRelationshipClass }>;
+			FROM note n JOIN "user" u ON u.id = n."userId"
+			LEFT JOIN "hanami_note_judgement" j ON j."noteId" = n.id AND j."promptVersion" = $3
+			WHERE n.id = ANY($2::varchar[])
+		`, [context.userId, eligible.map(c => c.noteId), judgeContext.settings.promptVersion]) as Array<{ note_id: string; author_id: string; text: string; tags: string[]; has_files: boolean; is_bot: boolean; judgement_model: string | null; ephemeral_score: number | null; interest: number | null; relationship_class: HanamiRelationshipClass }>;
 		const detail = new Map(detailRows.map(row => [row.note_id, row]));
 		const enriched = eligible.flatMap(candidate => {
 			const row = detail.get(candidate.noteId);
@@ -347,10 +374,24 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 			// is not a reason to invent a DB retry; retain legacy-compatible fields.
 			if (row == null) return [candidate];
 			const text = row.text;
+			const judgement = Number.isFinite(row.ephemeral_score) && Number.isFinite(row.interest)
+				? { ephemeralScore: Number(row.ephemeral_score), interest: Number(row.interest) }
+				: null;
+			const judgementReason: HanamiJudgeReason | undefined = judgement == null
+				? undefined
+				: row.judgement_model === HANAMI_NOTE_JUDGE_MODEL ? 'llm'
+					: row.judgement_model === 'rule:bot' ? 'bot'
+						: row.judgement_model === 'rule:reply' ? 'reply'
+							: row.judgement_model === 'rule:template' ? 'template'
+								: row.judgement_model === 'rule:emptyText' ? 'emptyText'
+									: undefined;
 			return [{ ...candidate, authorId: row.author_id, relationshipClass: row.relationship_class,
 				exactTextFingerprint: createHanamiExactTextFingerprint(text),
 				...(row.is_bot ? { isBot: true, strictBotTemplateFingerprint: createHanamiStrictBotTemplateFingerprint(row.author_id, text) } : {}),
-				qualityShadow: createHanamiQualityShadow({ relationshipClass: row.relationship_class, standaloneValue: null, socialOnly: null }),
+				qualityShadow: judgement == null
+					? createHanamiQualityShadow({ relationshipClass: row.relationship_class, standaloneValue: null, socialOnly: null })
+					: createHanamiQualityShadowFromJudgement({ relationshipClass: row.relationship_class, judgement, thresholds: { thetaEphemeral: judgeContext.settings.ephemeralThreshold, thetaInterest: judgeContext.settings.interestThreshold } }),
+				...({ hanamiJudge: judgement, hanamiJudgeReason: judgementReason, hanamiHasFiles: row.has_files === true, hanamiCampaignTags: row.tags ?? [] }),
 			}];
 		});
 		if (context.latestReadyBatchId == null) return { candidates: enriched, seed: [] };
@@ -384,39 +425,45 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 		};
 	}
 
-	/**
-	 * Final persisted-path exploration pool: this deliberately runs after safety
-	 * and the served-in-this-epoch/seen hard exclusions. One deterministic round takes the
-	 * author-diverse rounds preserve ranked candidate volume while keeping every
-	 * author at or below 5% of the pool. With fewer,
-	 * no mathematically valid exploration pool exists and only that axis is
-	 * omitted (other eligible axes are untouched).
-	 */
-	private finalExplorationDiversity(candidates: readonly HanamiPersonalFeedCandidate[]): readonly HanamiPersonalFeedCandidate[] {
-		const exploration = candidates.filter(candidate => candidate.axis === 'exploration');
-		const authors = new Map<string, HanamiPersonalFeedCandidate[]>();
-		for (const candidate of exploration) {
-			const list = authors.get(candidate.authorId) ?? [];
-			list.push(candidate);
-			authors.set(candidate.authorId, list);
-		}
-		// With fewer than twenty authors, even one candidate is >5%; omit this axis
-		// rather than claim a mathematically impossible diversity guarantee.
-		if (authors.size < 20) return candidates.filter(candidate => candidate.axis !== 'exploration');
-		// A complete round has one candidate per author. Retaining only complete
-		// rounds means the least-prolific eligible author sets the safe volume,
-		// while the bounded 500 candidate source remains recoverable when all
-		// authors have depth.
-		const lists = [...authors.values()];
-		const rounds = Math.min(
-			Math.max(1, Math.floor(COMMON_CANDIDATE_LIMITS.exploration / authors.size)),
-			...lists.map(list => list.length),
-		);
-		const selected: HanamiPersonalFeedCandidate[] = [];
-		for (let round = 0; round < rounds; round++) {
-			for (const list of lists) selected.push(list[round]!);
-		}
-		return candidates.filter(candidate => candidate.axis !== 'exploration').concat(selected);
+	/** Applies post-safety judgement gates while retaining the existing interleave quotas. */
+	private async applyJudgeSelection(
+		context: HanamiPersonalFeedGenerationContext,
+		candidates: readonly HanamiPersonalFeedCandidate[],
+		judgeContext: HanamiNoteJudgeFeedContext,
+		rawExplorationBaseScores: ReadonlyMap<string, number> = new Map(),
+		explorationPoolMaximum: number | undefined,
+	): Promise<readonly HanamiPersonalFeedCandidate[]> {
+		const { settings } = judgeContext;
+		type WithJudge = HanamiPersonalFeedCandidate & { hanamiJudge?: { ephemeralScore: number; interest: number } | null; hanamiJudgeReason?: HanamiJudgeReason; hanamiHasFiles?: boolean; hanamiCampaignTags?: string[] };
+		const typed = candidates as readonly WithJudge[];
+		const exploration = typed.filter(candidate => candidate.axis === 'exploration');
+		const selectedExploration = selectHanamiDiscoveryCandidates({
+			candidates: exploration.map(candidate => ({
+				noteId: candidate.noteId, authorId: candidate.authorId, reactionScore: rawExplorationBaseScores.get(candidate.noteId) ?? candidate.score,
+				ephemeralScore: candidate.hanamiJudge?.ephemeralScore, interest: candidate.hanamiJudge?.interest,
+				campaignTags: candidate.hanamiCampaignTags, relationshipClass: candidate.relationshipClass,
+				isSelf: candidate.authorId === context.userId,
+			})),
+			parameters: { reactionMax: settings.reactionMax, interestMax: settings.interestMax, thetaEphemeral: settings.ephemeralThreshold, thetaInterest: settings.interestThreshold, excludeEphemeral: judgeContext.reduceEphemeralPosts, ...(explorationPoolMaximum !== undefined ? { poolMaxReactionScore: explorationPoolMaximum } : {}) },
+			viewerFFAuthorIds: new Set(),
+		});
+		const byId = new Map(exploration.map(candidate => [candidate.noteId, candidate]));
+		const explorationOutput = selectedExploration.flatMap(selected => {
+			const candidate = byId.get(selected.noteId);
+			return candidate == null ? [] : [{ ...candidate, score: selected.score }];
+		});
+		const otherAxes = typed.filter(candidate => candidate.axis !== 'exploration').filter(candidate => {
+			const judgement = candidate.hanamiJudge;
+			// Popular/trending retain unjudged candidates and direct follows.
+			return !judgeContext.reduceEphemeralPosts
+				|| (candidate.axis !== 'globalPopular' && candidate.axis !== 'trending')
+				|| judgement == null
+				|| candidate.relationshipClass === 'directFollow'
+				|| candidate.hanamiJudgeReason !== 'llm'
+				|| candidate.hanamiHasFiles !== false
+				|| judgement.ephemeralScore <= settings.ephemeralThreshold;
+		});
+		return [...otherAxes, ...explorationOutput];
 	}
 
 	private validateCommonCandidates(candidates: readonly HanamiPersistedCommonCandidate[]): void {
@@ -461,6 +508,15 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 		persistedCommon: readonly HanamiPersistedCommonCandidate[],
 	): Promise<HanamiPersonalFeedComputationResult> {
 		const { signal } = context;
+		const rawExplorationBaseScores = new Map(persistedCommon.flatMap(candidate => (
+			candidate.axis === 'exploration' && Number.isFinite(candidate.baseScore)
+				? [[candidate.noteId, candidate.baseScore] as const]
+				: []
+		)));
+		const explorationPoolMaximum = rawExplorationBaseScores.size === 0
+			? undefined
+			: Math.max(0, ...rawExplorationBaseScores.values());
+		const judgeContext = await this.boundary(signal, async () => await this.loadNoteJudgeFeedContext(context));
 		const commonAuthorByNoteId = await this.boundary(signal, async () => (
 			await this.hanamiForYouSafetyService.filterCommonEligibleNotes(
 				persistedCommon.map(candidate => candidate.noteId),
@@ -487,9 +543,15 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 		const rankedCandidates = await this.boundary(signal, async () => (
 			await this.hanamiForYouService.rankPersonalFeedCandidates(context, preparation, safeCandidates)
 		));
-		const constrained = await this.boundary(signal, async () => await this.enrichAndExcludeEpochCandidates(context, rankedCandidates));
+		const constrained = await this.boundary(signal, async () => await this.enrichAndExcludeEpochCandidates(context, rankedCandidates, judgeContext));
 
-		const finalCandidates = this.finalExplorationDiversity(constrained.candidates);
+		const finalCandidates = await this.applyJudgeSelection(
+			context,
+			constrained.candidates,
+			judgeContext,
+			rawExplorationBaseScores,
+			explorationPoolMaximum,
+		);
 		// This is a refresh-wide eligibility fact, not a segment-local one. Reusing
 		// it for every interleave prevents later segments from silently dropping the
 		// 30-item unknown floor merely because earlier segments consumed candidates.

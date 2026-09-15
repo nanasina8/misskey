@@ -118,6 +118,20 @@ describe('Endpoints', () => {
 			assert.strictEqual(res.body.birthday, myBirthday);
 		});
 
+		test('短期間の投稿を減らす設定を更新できる', async () => {
+			const disabled = await api('i/update', {
+				hanamiReduceEphemeralPosts: false,
+			} as never, alice);
+			assert.strictEqual(disabled.status, 200);
+			assert.strictEqual((disabled.body as { hanamiReduceEphemeralPosts?: boolean }).hanamiReduceEphemeralPosts, false);
+
+			const enabled = await api('i/update', {
+				hanamiReduceEphemeralPosts: true,
+			} as never, alice);
+			assert.strictEqual(enabled.status, 200);
+			assert.strictEqual((enabled.body as { hanamiReduceEphemeralPosts?: boolean }).hanamiReduceEphemeralPosts, true);
+		});
+
 		test('名前を空白のみにした場合nullになる', async () => {
 			const res = await api('i/update', {
 				name: ' ',

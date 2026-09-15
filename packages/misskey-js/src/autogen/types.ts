@@ -467,6 +467,42 @@ export type paths = {
          */
         post: operations['admin___get-user-ips'];
     };
+    '/admin/hanami/judge-aggregate': {
+        /**
+         * admin/hanami/judge-aggregate
+         * @description Get local Hanami note judge aggregates.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['admin___hanami___judge-aggregate'];
+    };
+    '/admin/hanami/judge-settings': {
+        /**
+         * admin/hanami/judge-settings
+         * @description Read or update local Hanami note judge settings.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:admin:queue*
+         */
+        post: operations['admin___hanami___judge-settings'];
+    };
+    '/admin/hanami/judge-status': {
+        /**
+         * admin/hanami/judge-status
+         * @description Get local Hanami note judge status and backlog.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['admin___hanami___judge-status'];
+    };
+    '/admin/hanami/judge-trial': {
+        /**
+         * admin/hanami/judge-trial
+         * @description List recent Hanami note judge trial candidates.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['admin___hanami___judge-trial'];
+    };
     '/admin/hanami/suggestion-events-export': {
         /**
          * admin/hanami/suggestion-events-export
@@ -4220,6 +4256,7 @@ export type components = {
                 exploration?: 'off' | 'low' | 'normal' | 'high';
             };
             hanamiShowRecommendationReason?: boolean;
+            hanamiReduceEphemeralPosts?: boolean;
             receiveAnnouncementEmail: boolean;
             alwaysMarkNsfw: boolean;
             autoSensitive: boolean;
@@ -9411,6 +9448,349 @@ export interface operations {
                         /** Format: date-time */
                         createdAt: string;
                     }[];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___hanami___judge-aggregate': {
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        judged: number;
+                        ephemeral: number;
+                        interestFiltered: number;
+                        typeBreakdown: {
+                            contentType: number;
+                            count: number;
+                        }[];
+                        topServed: {
+                            noteId: string;
+                            text: string;
+                            reactionScore: number | null;
+                            interest: number | null;
+                            ephemeralScore: number | null;
+                        }[];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___hanami___judge-settings': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    settings?: {
+                        schemaVersion: number;
+                        promptVersion: number;
+                        ephemeralThreshold: number;
+                        interestThreshold: number;
+                        reactionMax: number;
+                        interestMax: number;
+                        basis: {
+                            ephemeralA: string;
+                            ephemeralB: string;
+                            interest1: string;
+                            interest2: string;
+                            interest3: string;
+                            interest4: string;
+                            interest5: string;
+                        };
+                        examples: string[];
+                        templatePatterns: string[];
+                    } | null;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        schemaVersion: number;
+                        promptVersion: number;
+                        ephemeralThreshold: number;
+                        interestThreshold: number;
+                        reactionMax: number;
+                        interestMax: number;
+                        basis: {
+                            ephemeralA: string;
+                            ephemeralB: string;
+                            interest1: string;
+                            interest2: string;
+                            interest3: string;
+                            interest4: string;
+                            interest5: string;
+                        };
+                        examples: string[];
+                        templatePatterns: string[];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___hanami___judge-status': {
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        model: string;
+                        promptVersion: number;
+                        latestRun: {
+                            id: string;
+                            status: string;
+                            params: {
+                                [key: string]: unknown;
+                            };
+                            /** Format: date-time */
+                            startedAt: string;
+                            /** Format: date-time */
+                            finishedAt: string | null;
+                        } | null;
+                        backlog: number;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___hanami___judge-trial': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @default 50 */
+                    limit?: number;
+                    settings?: {
+                        schemaVersion: number;
+                        promptVersion: number;
+                        ephemeralThreshold: number;
+                        interestThreshold: number;
+                        reactionMax: number;
+                        interestMax: number;
+                        basis: {
+                            ephemeralA: string;
+                            ephemeralB: string;
+                            interest1: string;
+                            interest2: string;
+                            interest3: string;
+                            interest4: string;
+                            interest5: string;
+                        };
+                        examples: string[];
+                        templatePatterns: string[];
+                    } | null;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        items: {
+                            noteId: string;
+                            text: string;
+                            reactionScore: number;
+                            ephemeralScore: number | null;
+                            interest: number | null;
+                            contentType: number | null;
+                            /** @enum {string} */
+                            reason: 'unjudged' | 'bot' | 'reply' | 'template' | 'emptyText' | 'ephemeral' | 'lowInterest' | 'eligible';
+                        }[];
+                    };
                 };
             };
             /** @description Client error */
@@ -28207,6 +28587,7 @@ export interface operations {
                     exploreMediaFilter?: 'all' | 'hideSensitive' | 'hideMedia';
                     hanamiRecommendationEnabled?: boolean;
                     hanamiShowRecommendationReason?: boolean;
+                    hanamiReduceEphemeralPosts?: boolean;
                     hanamiRecommendationAxes?: {
                         /** @enum {string} */
                         globalPopular?: 'off' | 'low' | 'normal' | 'high';

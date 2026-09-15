@@ -128,6 +128,31 @@ SPDX-License-Identifier: AGPL-3.0-only
 						</template>
 
 						<div class="_gaps">
+							<MkFolder :defaultOpen="false">
+								<template #icon><i class="ti ti-scale"></i></template>
+								<template #label>Hanami Judge</template>
+								<div class="_gaps">
+									<MkInput v-model="judgeSettings.ephemeralA"><template #label>Q1 ephemeralA</template></MkInput>
+									<MkInput v-model="judgeSettings.ephemeralB"><template #label>Q1 ephemeralB</template></MkInput>
+									<MkInput v-model="judgeSettings.q1Examples"><template #label>Q1 examples</template></MkInput>
+									<MkTextarea v-model="judgeSettings.q1Templates"><template #label>Q1 templates</template></MkTextarea>
+									<MkInput v-model="judgeSettings.interest1"><template #label>Q2 interest1</template></MkInput>
+									<MkInput v-model="judgeSettings.interest2"><template #label>Q2 interest2</template></MkInput>
+									<MkInput v-model="judgeSettings.interest3"><template #label>Q2 interest3</template></MkInput>
+									<MkInput v-model="judgeSettings.interest4"><template #label>Q2 interest4</template></MkInput>
+									<MkInput v-model="judgeSettings.interest5"><template #label>Q2 interest5</template></MkInput>
+									<MkInput v-model="judgeSettings.q2Examples"><template #label>Q2 examples</template></MkInput>
+									<MkTextarea v-model="judgeSettings.q2Templates"><template #label>Q2 templates</template></MkTextarea>
+									<MkInput v-for="key in judgeLimitKeys" :key="key" v-model="judgeSettings[key]" type="number"><template #label>{{ key }}</template></MkInput>
+									<MkButton primary @click="saveJudgeSettings">設定を保存</MkButton>
+									<MkButton @click="runJudgeTrial">下書き設定で試行（最新50件）</MkButton>
+									<MkInfo>モデル: {{ judgeStatus.model ?? '-' }} / 最新実行: {{ judgeStatus.latestRun ?? '-' }} / backlog: {{ judgeStatus.backlog ?? '-' }}</MkInfo>
+									<MkInfo>試行結果（除外理由を含む）</MkInfo>
+									<pre>{{ JSON.stringify(judgeTrial, null, 2) }}</pre>
+									<MkInfo>集計</MkInfo>
+									<pre>{{ JSON.stringify(judgeAggregate, null, 2) }}</pre>
+								</div>
+							</MkFolder>
 								<MkFolder :defaultOpen="false">
 									<template #icon><i class="ti ti-adjustments"></i></template>
 									<template #label>{{ i18n.ts._hana._recommendation.axes }}</template>
@@ -229,6 +254,7 @@ import { definePage } from '@/page.js';
 import MkSwitch from '@/components/MkSwitch.vue';
 import MkFolder from '@/components/MkFolder.vue';
 import MkInput from '@/components/MkInput.vue';
+import MkTextarea from '@/components/MkTextarea.vue';
 import MkLink from '@/components/MkLink.vue';
 import { useForm } from '@/composables/use-form.js';
 	import MkFormFooter from '@/components/MkFormFooter.vue';
@@ -360,6 +386,85 @@ const hanamiRecForm = useForm({
 	} as never);
 	fetchInstance(true);
 });
+
+type JudgeSettings = {
+	ephemeralA: string;
+	ephemeralB: string;
+	interest1: string;
+	interest2: string;
+	interest3: string;
+	interest4: string;
+	interest5: string;
+	q1Examples: string;
+	q1Templates: string;
+	q2Examples: string;
+	q2Templates: string;
+	thetaEMax: number;
+	thetaIMax: number;
+	reactionMax: number;
+	interestMax: number;
+};
+type JudgeTrialItem = {
+	noteId: string;
+	text: string;
+	reactionScore: number;
+	ephemeralScore: number | null;
+	interest: number | null;
+	contentType: number | null;
+	reason: 'unjudged' | 'bot' | 'reply' | 'template' | 'emptyText' | 'ephemeral' | 'lowInterest' | 'eligible';
+};
+const judgeLimitKeys = ['thetaEMax', 'thetaIMax', 'reactionMax', 'interestMax'] as const;
+const judgeSettings = ref<JudgeSettings>({ ephemeralA: '', ephemeralB: '', interest1: '', interest2: '', interest3: '', interest4: '', interest5: '', q1Examples: '', q1Templates: '', q2Examples: '', q2Templates: '', thetaEMax: 0, thetaIMax: 0, reactionMax: 0, interestMax: 0 });
+const judgeSettingsRaw = ref(await misskeyApi('admin/hanami/judge-settings'));
+Object.assign(judgeSettings.value, {
+	ephemeralA: judgeSettingsRaw.value.basis?.ephemeralA ?? '',
+	ephemeralB: judgeSettingsRaw.value.basis?.ephemeralB ?? '',
+	q1Examples: (judgeSettingsRaw.value.examples ?? []).join('\n'),
+	q1Templates: (judgeSettingsRaw.value.templatePatterns ?? []).join('\n'),
+	interest1: judgeSettingsRaw.value.basis?.interest1 ?? '',
+	interest2: judgeSettingsRaw.value.basis?.interest2 ?? '',
+	interest3: judgeSettingsRaw.value.basis?.interest3 ?? '',
+	interest4: judgeSettingsRaw.value.basis?.interest4 ?? '',
+	interest5: judgeSettingsRaw.value.basis?.interest5 ?? '',
+	q2Examples: (judgeSettingsRaw.value.examples ?? []).join('\n'),
+	q2Templates: (judgeSettingsRaw.value.templatePatterns ?? []).join('\n'),
+	thetaEMax: judgeSettingsRaw.value.ephemeralThreshold ?? 0,
+	thetaIMax: judgeSettingsRaw.value.interestThreshold ?? 2.95,
+	reactionMax: judgeSettingsRaw.value.reactionMax ?? 3,
+	interestMax: judgeSettingsRaw.value.interestMax ?? 10,
+});
+const judgeStatus = ref(await misskeyApi('admin/hanami/judge-status'));
+const judgeTrial = ref<JudgeTrialItem[]>([]);
+const judgeAggregate = ref(await misskeyApi('admin/hanami/judge-aggregate'));
+
+function judgeDraftSettings() {
+	const examples = [...new Set(`${judgeSettings.value.q1Examples}\n${judgeSettings.value.q2Examples}`.split('\n').map(value => value.trim()).filter(Boolean))];
+	const templatePatterns = [...new Set(`${judgeSettings.value.q1Templates}\n${judgeSettings.value.q2Templates}`.split('\n').map(value => value.trim()).filter(Boolean))];
+	return {
+		...judgeSettingsRaw.value,
+		ephemeralThreshold: Number(judgeSettings.value.thetaEMax), interestThreshold: Number(judgeSettings.value.thetaIMax),
+		reactionMax: Number(judgeSettings.value.reactionMax), interestMax: Number(judgeSettings.value.interestMax), examples, templatePatterns,
+		basis: {
+			...judgeSettingsRaw.value.basis,
+			ephemeralA: judgeSettings.value.ephemeralA,
+			ephemeralB: judgeSettings.value.ephemeralB,
+			interest1: judgeSettings.value.interest1,
+			interest2: judgeSettings.value.interest2,
+			interest3: judgeSettings.value.interest3,
+			interest4: judgeSettings.value.interest4,
+			interest5: judgeSettings.value.interest5,
+		},
+	};
+}
+
+async function runJudgeTrial() {
+	judgeTrial.value = (await misskeyApi('admin/hanami/judge-trial', { limit: 50, settings: judgeDraftSettings() })).items;
+}
+
+async function saveJudgeSettings() {
+	const response = await misskeyApi('admin/hanami/judge-settings', { settings: judgeDraftSettings() });
+	judgeSettingsRaw.value = response;
+}
 
 type TasteRebuildStatus = {
 	state: 'idle' | 'running' | 'done' | 'error';

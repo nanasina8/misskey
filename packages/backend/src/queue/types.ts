@@ -157,6 +157,11 @@ export type HanamiCommonGenerationJobData = {
 	generationId: string;
 };
 
+export type HanamiNoteJudgeJobData = {
+	noteIds: string[];
+	promptVersion: number;
+};
+
 export type HanamiUserFeedGenerationJobData = {
 	batchId: string;
 };
@@ -186,6 +191,7 @@ export type HanamiRecommendationEventCacheReplayJobData =
 export type HanamiGenerationJobMap = {
 	hanamiCommonGenerationTick: HanamiCommonGenerationTickJobData;
 	hanamiCommonGeneration: HanamiCommonGenerationJobData;
+	hanamiNoteJudge: HanamiNoteJudgeJobData;
 	hanamiUserFeedGeneration: HanamiUserFeedGenerationJobData;
 	hanamiGenerationReconcile: HanamiGenerationReconcileJobData;
 	hanamiRecommendationEventCacheRepair: HanamiRecommendationEventCacheRepairJobData;

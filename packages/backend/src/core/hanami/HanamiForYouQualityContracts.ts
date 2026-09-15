@@ -33,6 +33,46 @@ export type CreateHanamiQualityShadowInput = Readonly<{
 	modelVersion?: string;
 }>;
 
+/** The text-free values persisted by the note judgement worker. */
+export type HanamiQualityJudgementValues = Readonly<{
+	ephemeralScore: number;
+	interest: number;
+}>;
+
+export type HanamiQualityJudgementThresholds = Readonly<{
+	thetaEphemeral: number;
+	thetaInterest: number;
+}>;
+
+/** Maps a completed judgement to the two persistence-safe quality flags. */
+export function mapHanamiQualityJudgement(
+	judgement: HanamiQualityJudgementValues,
+	thresholds: HanamiQualityJudgementThresholds,
+): Pick<HanamiQualityShadow, 'standaloneValue' | 'socialOnly'> {
+	return {
+		standaloneValue: judgement.interest >= thresholds.thetaInterest,
+		socialOnly: judgement.ephemeralScore > thresholds.thetaEphemeral,
+	};
+}
+
+export type CreateHanamiQualityShadowFromJudgementInput = Readonly<{
+	relationshipClass: HanamiRelationshipClass;
+	judgement: HanamiQualityJudgementValues;
+	thresholds: HanamiQualityJudgementThresholds;
+	ruleVersion?: string;
+	modelVersion?: string;
+}>;
+
+/** Builds persistence-safe metadata directly from a completed note judgement. */
+export function createHanamiQualityShadowFromJudgement(input: CreateHanamiQualityShadowFromJudgementInput): HanamiQualityShadow {
+	return createHanamiQualityShadow({
+		relationshipClass: input.relationshipClass,
+		...mapHanamiQualityJudgement(input.judgement, input.thresholds),
+		ruleVersion: input.ruleVersion,
+		modelVersion: input.modelVersion,
+	});
+}
+
 /** Builds metadata only. It performs neither ranking nor hard filtering. */
 export function createHanamiQualityShadow(input: CreateHanamiQualityShadowInput): HanamiQualityShadow {
 	return {

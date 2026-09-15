@@ -8,7 +8,7 @@ import { HanamiForYouBatchService, hanamiRelationDecayForUtcDay } from '@/core/h
 
 function serviceWith(db: Record<string, unknown>): HanamiForYouBatchService {
 	const idService = { gen: (time?: number) => `id-${time ?? 0}` };
-	return new HanamiForYouBatchService(db as never, {} as never, idService as never, {} as never);
+	return new HanamiForYouBatchService(db as never, {} as never, {} as never, idService as never, {} as never);
 }
 
 describe('Hanami For You interaction daily rollup', () => {
@@ -104,7 +104,7 @@ describe('Hanami For You interaction daily rollup', () => {
 				return [];
 			}),
 		};
-		const service = new HanamiForYouBatchService(db as never, repository as never, { gen: () => 'run-id' } as never, {} as never);
+		const service = new HanamiForYouBatchService(db as never, repository as never, {} as never, { gen: () => 'run-id' } as never, {} as never);
 		const logger = { warn: jest.fn() };
 
 		expect(await service.runAlsBatch(logger as never)).toEqual({ runId: 'run-id', status: 'failed' });

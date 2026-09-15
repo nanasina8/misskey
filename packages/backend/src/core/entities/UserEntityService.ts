@@ -601,6 +601,7 @@ export class UserEntityService implements OnModuleInit {
 				hanamiRecommendationEnabled: profile!.hanamiRecommendationEnabled,
 				hanamiRecommendationAxes: profile!.hanamiRecommendationAxes,
 				hanamiShowRecommendationReason: profile!.hanamiShowRecommendationReason,
+				hanamiReduceEphemeralPosts: profile!.hanamiReduceEphemeralPosts,
 				receiveAnnouncementEmail: profile!.receiveAnnouncementEmail,
 				alwaysMarkNsfw: profile!.alwaysMarkNsfw,
 				autoSensitive: profile!.autoSensitive,

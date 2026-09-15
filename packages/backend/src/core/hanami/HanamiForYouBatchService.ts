@@ -6,9 +6,10 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { cpus, tmpdir } from 'node:os';
 import * as Path from 'node:path';
 import { Inject, Injectable } from '@nestjs/common';
+import * as Redis from 'ioredis';
 import { DataSource, type QueryRunner } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
@@ -27,6 +28,15 @@ import {
 	HANAMI_EVENT_TTL_PERSONAL_MS,
 } from './HanamiForYouKeys.js';
 import { HANAMI_PYTHON_THREAD_ENV, prepareHanamiPythonCommand, resolveHanamiRepoRoot } from './HanamiPythonRuntime.js';
+import {
+	HANAMI_NOTE_JUDGE_MAX_BATCH_SIZE,
+	HANAMI_NOTE_JUDGE_MODEL,
+	createDefaultHanamiNoteJudgeSettings,
+	splitHanamiNoteJudgeBatches,
+	validateHanamiNoteJudgeSettings,
+	type HanamiNoteJudgeSettings,
+} from './HanamiNoteJudgeContracts.js';
+import { applyHanamiNoteJudgeRules } from './HanamiNoteJudgeRules.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -69,8 +79,20 @@ const CENTROID_USER_LIMIT = 2000;
 const COLD_CENTROID_MAX_REACTIONS = 4;
 const COLD_CENTROID_PER_SOURCE = 3;
 const EMBEDDING_PROCESS_TIMEOUT_MS = 30 * 60 * 1000;
-const E5_SHADOW_MODEL = 'intfloat/multilingual-e5-small';
-const E5_SHADOW_VERSION = 'multilingual-e5-small/query-prefix-v1';
+const NOTE_JUDGE_LOCK_KEY = 'hanami:llm:exclusive:v1';
+const NOTE_JUDGE_LOCK_TTL_SEC = 35 * 60;
+const NOTE_JUDGE_TIMEOUT_MS = 35 * 60 * 1000;
+export const HANAMI_NOTE_JUDGE_LOCK_DELAY_MS = 60_000;
+
+/** Queue processors move this to delayed without consuming a Bull attempt. */
+export class HanamiNoteJudgeLockContentionError extends Error {
+	public constructor() {
+		super('Hanami local LLM is busy with taste processing');
+		this.name = 'HanamiNoteJudgeLockContentionError';
+	}
+}
+
+export type HanamiNoteJudgeJobData = Readonly<{ noteIds: readonly string[]; promptVersion: number }>;
 
 type RelationAccumKey = string; // `${me}\t${other}`
 type RelationAccum = { out: number; in: number };
@@ -123,6 +145,9 @@ export class HanamiForYouBatchService {
 
 		@Inject(DI.hanamiForYouModelRunsRepository)
 		private hanamiForYouModelRunsRepository: HanamiForYouModelRunsRepository,
+
+		@Inject(DI.redis)
+		private redisClient: Redis.Redis,
 
 		private idService: IdService,
 		private featuredService: FeaturedService,
@@ -187,6 +212,13 @@ export class HanamiForYouBatchService {
 			logger.succ('hanami foryou: event cleanup done');
 		} catch (err) {
 			logger.error('hanami foryou: event cleanup failed', { e: err });
+		}
+
+		try {
+			const deleted = await this.cleanupNoteJudgements();
+			logger.succ(`hanami note judge: cleanup deleted ${deleted} rows`);
+		} catch (err) {
+			logger.error('hanami note judge: cleanup failed', { e: err });
 		}
 	}
 
@@ -544,7 +576,7 @@ export class HanamiForYouBatchService {
 			const scriptPath = process.env.HANAMI_FORYOU_ALS_SCRIPT
 				?? Path.join(resolveHanamiRepoRoot(), 'scripts/hanami-foryou/rec_als.py');
 			const command = prepareHanamiPythonCommand([scriptPath, inputPath, outputPath]);
-			await execFileAsync(command.file, command.args, { env: command.env, timeout: ALS_PROCESS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
+			await this.withLocalLlmLock(async () => await execFileAsync(command.file, command.args, { env: command.env, timeout: ALS_PROCESS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 }));
 
 			// 3) 取り込み。
 			const out = JSON.parse(await readFile(outputPath, 'utf8')) as AlsOutput;
@@ -616,6 +648,164 @@ export class HanamiForYouBatchService {
 			wallDurationMs: Date.now() - startedAt,
 			cpuDurationMicros: cpu.user + cpu.system,
 		};
+	}
+
+	private async noteJudgeSettings(): Promise<HanamiNoteJudgeSettings> {
+		const rows = await this.db.query(`SELECT "hanamiNoteJudgeSettings" AS settings FROM meta LIMIT 1`) as Array<{ settings: unknown }>;
+		const validated = validateHanamiNoteJudgeSettings(rows[0]?.settings);
+		return validated.ok ? validated.value : createDefaultHanamiNoteJudgeSettings();
+	}
+
+	/** A queued version must never be evaluated with a later Meta snapshot. */
+	private async noteJudgeSettingsForVersion(promptVersion: number): Promise<HanamiNoteJudgeSettings | null> {
+		const rows = await this.db.query(`SELECT "settings" AS settings FROM "hanami_note_judge_settings" WHERE "promptVersion" = $1`, [promptVersion]) as Array<{ settings: unknown }>;
+		const validated = validateHanamiNoteJudgeSettings(rows[0]?.settings);
+		if (validated.ok && validated.value.promptVersion === promptVersion) return validated.value;
+		// This fallback only covers a current-version job during a rolling migration
+		// deployment. It deliberately cannot supply a newer Meta snapshot to an old
+		// queued version.
+		const current = await this.noteJudgeSettings();
+		return current.promptVersion === promptVersion ? current : null;
+	}
+
+	/** Hourly scheduled TTL sweep; the judgement cache is never retained beyond 14 days. */
+	@bindThis
+	public async cleanupNoteJudgements(): Promise<number> {
+		const result = await this.db.query(`DELETE FROM "hanami_note_judgement" WHERE "judgedAt" < clock_timestamp() - INTERVAL '14 days'`) as unknown;
+		if (Array.isArray(result) && typeof result[1] === 'number') return result[1];
+		if (typeof result === 'object' && result != null) {
+			const counts = result as { affectedRows?: unknown; rowCount?: unknown };
+			return Number(counts.affectedRows ?? counts.rowCount ?? 0);
+		}
+		return 0;
+	}
+
+	private noteJudgePythonEnv(): NodeJS.ProcessEnv {
+		const configured = Number(process.env.HANAMI_LLM_MAX_THREADS);
+		const maximum = Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : Math.max(1, Math.floor(cpus().length / 2));
+		return { ...process.env, ...HANAMI_PYTHON_THREAD_ENV, HANAMI_LLM_MAX_THREADS: String(maximum) };
+	}
+
+	private async acquireNoteJudgeLock(): Promise<string | null> {
+		const token = `${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+		const result = await this.redisClient.set(NOTE_JUDGE_LOCK_KEY, token, 'EX', NOTE_JUDGE_LOCK_TTL_SEC, 'NX');
+		return result == null ? null : token;
+	}
+
+	private async releaseNoteJudgeLock(token: string): Promise<void> {
+		await this.redisClient.eval('if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end', 1, NOTE_JUDGE_LOCK_KEY, token).catch(() => undefined);
+	}
+
+	/** Serializes every local Python model invocation with taste and note judging. */
+	private async withLocalLlmLock<T>(operation: () => Promise<T>): Promise<T> {
+		const token = await this.acquireNoteJudgeLock();
+		if (token == null) throw new Error('Hanami local LLM is busy with taste processing');
+		try {
+			return await operation();
+		} finally {
+			await this.releaseNoteJudgeLock(token);
+		}
+	}
+
+	/** Builds bounded jobs and marks deterministic rule exclusions without calling Python. */
+	@bindThis
+	public async prepareNoteJudgeJobs(generationId: string): Promise<readonly HanamiNoteJudgeJobData[]> {
+		return await this.prepareNoteJudgeJobsForCandidates('c."generationId" = $1', [generationId]);
+	}
+
+	/** Reconciles only the current ready common generation within its 72-hour candidate window. */
+	@bindThis
+	public async reconcileNoteJudgeJobs(): Promise<readonly HanamiNoteJudgeJobData[]> {
+		return await this.prepareNoteJudgeJobsForCandidates(`c."generationId" = (
+			SELECT state."latestReadyGenerationId" FROM "hanami_common_feed_state" state
+			WHERE state."latestReadyGenerationId" IS NOT NULL LIMIT 1
+		) AND n."createdAt" >= clock_timestamp() - INTERVAL '72 hours'`, []);
+	}
+
+	private async prepareNoteJudgeJobsForCandidates(candidateWhere: string, candidateParameters: readonly unknown[]): Promise<readonly HanamiNoteJudgeJobData[]> {
+		const settings = await this.noteJudgeSettings();
+		const rows = await this.db.query(`
+			SELECT DISTINCT n.id, COALESCE(n.text, '') AS text, u."isBot" AS "isBot", (n."replyId" IS NOT NULL) AS "isReply"
+			FROM "hanami_common_candidate" c
+			JOIN "hanami_common_generation" g ON g.id = c."generationId" AND g.status = 'ready'
+			JOIN note n ON n.id = c."noteId" JOIN "user" u ON u.id = n."userId"
+			LEFT JOIN "hanami_note_judgement" j ON j."noteId" = n.id AND j."promptVersion" = $${candidateParameters.length + 1}
+			WHERE ${candidateWhere} AND j."noteId" IS NULL
+			ORDER BY n.id DESC`, [...candidateParameters, settings.promptVersion]) as Array<{ id: string; text: string; isBot: boolean; isReply: boolean }>;
+		const judgeable: string[] = [];
+		for (const row of rows) {
+			const rule = applyHanamiNoteJudgeRules({ text: row.text, isBot: row.isBot, isReply: row.isReply, templatePatterns: settings.templatePatterns });
+			if (rule.shouldJudge) {
+				judgeable.push(row.id);
+			} else {
+				// Keep the deterministic exclusion reason in the existing cache field so
+				// serving can distinguish it from an LLM ephemeral judgement.
+				await this.db.query(`INSERT INTO "hanami_note_judgement" ("noteId",model,"promptVersion","ephemeralScore",interest,"interestDist","contentType","judgedAt") VALUES ($1,$2,$3,999,1,$4::real[],0,clock_timestamp()) ON CONFLICT ("noteId") DO UPDATE SET model=EXCLUDED.model,"promptVersion"=EXCLUDED."promptVersion","ephemeralScore"=EXCLUDED."ephemeralScore",interest=EXCLUDED.interest,"interestDist"=EXCLUDED."interestDist","contentType"=EXCLUDED."contentType","judgedAt"=EXCLUDED."judgedAt"`, [row.id, `rule:${rule.reason}`, settings.promptVersion, [1, 0, 0, 0, 0]]);
+			}
+		}
+		return Object.freeze(splitHanamiNoteJudgeBatches(judgeable, HANAMI_NOTE_JUDGE_MAX_BATCH_SIZE).map(noteIds => Object.freeze({ noteIds: Object.freeze(noteIds), promptVersion: settings.promptVersion })));
+	}
+
+	/** Executes one durable <=64 local-Qwen job; transient runtime failures are rethrown for Bull retry. */
+	@bindThis
+	public async runNoteJudgeJob(data: HanamiNoteJudgeJobData, logger: Logger): Promise<{ runId: string; status: 'ready' | 'failed'; processedCount: number }> {
+		if (data.noteIds.length === 0 || data.noteIds.length > HANAMI_NOTE_JUDGE_MAX_BATCH_SIZE) throw new RangeError(`Hanami note judge job must contain 1..${HANAMI_NOTE_JUDGE_MAX_BATCH_SIZE} notes`);
+		const startedAt = Date.now();
+		const startedCpu = process.cpuUsage();
+		const settings = await this.noteJudgeSettingsForVersion(data.promptVersion);
+		const lockToken = await this.acquireNoteJudgeLock();
+		if (lockToken == null) throw new HanamiNoteJudgeLockContentionError();
+		let runId: string | null = null;
+		let tmpDir: string | null = null;
+		try {
+			runId = await this.createRun('note-judge', { model: HANAMI_NOTE_JUDGE_MODEL, promptVersion: data.promptVersion, requestedCount: data.noteIds.length });
+			// Pre-history jobs are harmless stale no-ops. History-backed older jobs run
+			// with their own immutable snapshot rather than the current Meta setting.
+			if (settings == null) {
+				await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, processedCount: 0, stalePromptVersion: true }));
+				return { runId, status: 'ready', processedCount: 0 };
+			}
+			const rows = await this.db.query(`SELECT n.id, COALESCE(n.text, '') AS text, n."fileIds" <> '{}' AS "hasFiles", u."isBot" AS "isBot", (n."replyId" IS NOT NULL) AS "isReply" FROM note n JOIN "user" u ON u.id = n."userId" LEFT JOIN "hanami_note_judgement" j ON j."noteId" = n.id AND j."promptVersion" = $2 WHERE n.id = ANY($1::varchar[]) AND j."noteId" IS NULL`, [data.noteIds, data.promptVersion]) as Array<{ id: string; text: string; hasFiles: boolean; isBot: boolean; isReply: boolean }>;
+			const notes = rows.flatMap(row => {
+				const rule = applyHanamiNoteJudgeRules({ text: row.text, isBot: row.isBot, isReply: row.isReply, templatePatterns: settings.templatePatterns });
+				return rule.shouldJudge ? [{ noteId: row.id, cleanedText: rule.cleanedText, hasFiles: row.hasFiles }] : [];
+			});
+			if (notes.length === 0) {
+				await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, processedCount: 0, backlog: 0 }));
+				return { runId, status: 'ready', processedCount: 0 };
+			}
+			tmpDir = await mkdtemp(Path.join(tmpdir(), 'hanami-note-judge-'));
+			const inputPath = Path.join(tmpDir, 'input.json');
+			const outputPath = Path.join(tmpDir, 'output.json');
+			await writeFile(inputPath, JSON.stringify({ settings, notes }), 'utf8');
+			const scriptPath = process.env.HANAMI_NOTE_JUDGE_SCRIPT ?? Path.join(resolveHanamiRepoRoot(), 'packages/backend/src/core/hanami/HanamiNoteJudgeCpu.py');
+			const command = prepareHanamiPythonCommand([scriptPath, inputPath, outputPath], { env: this.noteJudgePythonEnv() });
+			const judgeEnv = this.noteJudgePythonEnv();
+			await execFileAsync(command.file, command.args, { env: { ...command.env, OMP_NUM_THREADS: judgeEnv.HANAMI_LLM_MAX_THREADS, MKL_NUM_THREADS: judgeEnv.HANAMI_LLM_MAX_THREADS, OPENBLAS_NUM_THREADS: judgeEnv.HANAMI_LLM_MAX_THREADS, NUMEXPR_NUM_THREADS: judgeEnv.HANAMI_LLM_MAX_THREADS }, timeout: NOTE_JUDGE_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+			const output = JSON.parse(await readFile(outputPath, 'utf8')) as { status?: string; error?: string; promptVersion?: number; judgements?: Array<{ noteId: string; ephemeralScore: number; interest: number; interestDist: number[]; contentType: number }> };
+			if (output.status === 'unavailable') throw new Error(`Hanami note judge unavailable: ${output.error ?? 'unknown error'}`);
+			if (output.status !== 'ok' && output.status !== 'partial') throw new Error(`Hanami note judge returned invalid status: ${String(output.status)}`);
+			if (output.promptVersion !== data.promptVersion) throw new Error('Hanami note judge returned a mismatched promptVersion');
+			const judgements = output.judgements ?? [];
+			const accepted = new Set<string>();
+			for (const judgement of judgements) {
+				if (!data.noteIds.includes(judgement.noteId) || !Number.isFinite(judgement.ephemeralScore) || !Number.isFinite(judgement.interest) || judgement.interestDist.length !== 5 || !Number.isInteger(judgement.contentType)) continue;
+				accepted.add(judgement.noteId);
+				await this.db.query(`INSERT INTO "hanami_note_judgement" ("noteId",model,"promptVersion","ephemeralScore",interest,"interestDist","contentType","judgedAt") VALUES ($1,$2,$3,$4,$5,$6::real[],$7,clock_timestamp()) ON CONFLICT ("noteId") DO UPDATE SET model=EXCLUDED.model,"promptVersion"=EXCLUDED."promptVersion","ephemeralScore"=EXCLUDED."ephemeralScore",interest=EXCLUDED.interest,"interestDist"=EXCLUDED."interestDist","contentType"=EXCLUDED."contentType","judgedAt"=EXCLUDED."judgedAt"`, [judgement.noteId, HANAMI_NOTE_JUDGE_MODEL, data.promptVersion, judgement.ephemeralScore, judgement.interest, judgement.interestDist, judgement.contentType]);
+			}
+			if (output.status === 'partial' || accepted.size !== notes.length) throw new Error(`Hanami note judge returned ${accepted.size}/${notes.length} judgements; pending notes will retry`);
+			await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, processedCount: judgements.length, secondsPerItem: judgements.length === 0 ? null : (Date.now() - startedAt) / 1000 / judgements.length, backlog: Math.max(0, notes.length - judgements.length) }));
+			return { runId, status: 'ready', processedCount: accepted.size };
+		} catch (error) {
+			logger.warn(`hanami note judge unavailable/failed: ${(error as Error).message}`);
+			if (runId != null) {
+				await this.markRun(runId, 'failed', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, processedCount: 0, secondsPerItem: null, failure: (error as Error).message })).catch(() => undefined);
+			}
+			throw error;
+		} finally {
+			await this.releaseNoteJudgeLock(lockToken);
+			if (tmpDir != null) await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+		}
 	}
 
 	/** kind ごとに status='ready' の最新 run id（serve 用）。 */
@@ -784,7 +974,7 @@ export class HanamiForYouBatchService {
 			const scriptPath = process.env.HANAMI_FORYOU_CONTENT_SCRIPT
 				?? Path.join(resolveHanamiRepoRoot(), 'scripts/hanami-foryou/rec_content_cpu.py');
 			const command = prepareHanamiPythonCommand([scriptPath, inputPath, outputPath]);
-			await execFileAsync(command.file, command.args, { env: command.env, timeout: EMBEDDING_PROCESS_TIMEOUT_MS, maxBuffer: 256 * 1024 * 1024 });
+			await this.withLocalLlmLock(async () => await execFileAsync(command.file, command.args, { env: command.env, timeout: EMBEDDING_PROCESS_TIMEOUT_MS, maxBuffer: 256 * 1024 * 1024 }));
 
 			const out = JSON.parse(await readFile(outputPath, 'utf8')) as {
 				model: string; dim: number; status?: string; error?: string;
@@ -796,9 +986,6 @@ export class HanamiForYouBatchService {
 			await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: out.model, modelVersion: out.model, processedCount: out.embeddings.length + out.centroids.length, backlog: Math.max(0, noteRows.length - out.embeddings.length), coldCentroidUsers: coldSourceCentroids.length }));
 			primaryReady = true;
 			await this.pruneOldRuns('embedding').catch(() => undefined);
-			// Shadow diagnostics are strictly best-effort; an already-ready MiniLM run
-			// must never be reclassified because shadow setup or cleanup failed.
-			await this.runQualityShadow(noteRows, logger).catch(() => undefined);
 			return { runId, status: 'ready' };
 		} catch (err) {
 			if (primaryReady) return { runId, status: 'ready' };
@@ -868,40 +1055,6 @@ export class HanamiForYouBatchService {
 			UNION ALL SELECT uid, 'followed' AS source, text FROM followed_ranked WHERE rank <= $4`,
 			[CENTROID_USER_LIMIT, sinceId, COLD_CENTROID_MAX_REACTIONS, COLD_CENTROID_PER_SOURCE, EMBEDDING_MODEL],
 		) as { uid: string; source: string; text: string }[];
-	}
-
-	/** E5 is diagnostic-only: it writes no embedding table and is never read by ranking code. */
-	private async runQualityShadow(notes: { id: string; text: string }[], logger: Logger): Promise<void> {
-		const startedAt = Date.now();
-		const startedCpu = process.cpuUsage();
-		let runId: string | null = null;
-		let tmpDir: string | null = null;
-		try {
-			runId = await this.createRun('embedding-e5-shadow', { model: E5_SHADOW_MODEL, modelVersion: E5_SHADOW_VERSION, threadSettings: HANAMI_PYTHON_THREAD_ENV });
-			tmpDir = await mkdtemp(Path.join(tmpdir(), 'hanami-e5-shadow-'));
-			const inputPath = Path.join(tmpDir, 'input.json');
-			const outputPath = Path.join(tmpDir, 'output.json');
-			await writeFile(inputPath, JSON.stringify({ notes: notes.map(note => [note.id, note.text]) }), 'utf8');
-			const scriptPath = Path.join(resolveHanamiRepoRoot(), 'scripts/hanami-foryou/rec_quality_shadow_cpu.py');
-			const command = prepareHanamiPythonCommand([scriptPath, inputPath, outputPath]);
-			await execFileAsync(command.file, command.args, { env: command.env, timeout: EMBEDDING_PROCESS_TIMEOUT_MS, maxBuffer: 256 * 1024 * 1024 });
-			const out = JSON.parse(await readFile(outputPath, 'utf8')) as { status?: string; error?: string; model: string; version: string; dim: number; embeddings: unknown[] };
-			const status = out.status === 'unavailable' ? 'failed' : 'ready';
-			await this.markRun(runId, status, this.runMetrics(startedAt, startedCpu, { model: out.model, modelVersion: out.version, modelOutputDimension: out.dim, processedCount: out.embeddings.length, backlog: Math.max(0, notes.length - out.embeddings.length), shadowStatus: out.status ?? 'ok', shadowErrorCategory: out.status === 'unavailable' ? 'unavailable' : undefined }));
-		} catch (err) {
-			const category = this.shadowErrorCategory(err);
-			// Shadow diagnostics are optional, including their own logger/repository path.
-			try { logger.warn(`hanami foryou: E5 quality shadow unavailable: ${category}`); } catch { /* ignore */ }
-			if (runId != null) await this.markRun(runId, 'failed', this.runMetrics(startedAt, startedCpu, { model: E5_SHADOW_MODEL, modelVersion: E5_SHADOW_VERSION, processedCount: 0, shadowStatus: 'unavailable', shadowErrorCategory: category })).catch(() => undefined);
-		} finally {
-			if (tmpDir != null) await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
-			await this.pruneOldRuns('embedding-e5-shadow').catch(() => undefined);
-		}
-	}
-
-	private shadowErrorCategory(err: unknown): 'Error' | 'TypeError' | 'SyntaxError' | 'AbortError' | 'unavailable' {
-		const name = err instanceof Error ? err.name : '';
-		return name === 'TypeError' || name === 'SyntaxError' || name === 'AbortError' ? name : 'Error';
 	}
 
 	private async ingestEmbeddingOutput(out: { model: string; dim: number; embeddings: { noteId: string; vector: number[] }[]; centroids: { userId: string; vector: number[]; evidenceCount: number }[] }): Promise<void> {

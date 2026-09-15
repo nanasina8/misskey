@@ -230,6 +230,12 @@ export class MiUserProfile {
 
 	@Column('boolean', {
 		default: true,
+		comment: 'はなみTLで短期間の投稿を減らすか（ユーザー設定）',
+	})
+	public hanamiReduceEphemeralPosts: boolean;
+
+	@Column('boolean', {
+		default: true,
 	})
 	public receiveAnnouncementEmail: boolean;
 

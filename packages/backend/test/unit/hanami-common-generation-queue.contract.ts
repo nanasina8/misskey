@@ -284,17 +284,25 @@ describe('Hanami common generation queue wiring', () => {
 		expect(reconcile.hanamiGenerationQueue.add).toHaveBeenCalledWith('hanamiCommonGenerationTick', { reason: 'seed' }, SEED_JOB_OPTIONS);
 	});
 
-	test('enqueues exact seed, generation, and reconcile payloads with one attempt', async () => {
+	test('enqueues exact seed, generation, reconcile, and retryable versioned judge payloads', async () => {
 		const { service, hanamiGenerationQueue } = createQueueService();
 		hanamiGenerationQueue.add.mockClear();
 
 		await service.enqueueHanamiCommonGenerationSeed();
 		await service.enqueueHanamiCommonGeneration('generation-1');
 		await service.enqueueHanamiGenerationReconcile();
+		await service.enqueueHanamiNoteJudge(['note-b', 'note-a'], 4);
 
 		expect(hanamiGenerationQueue.add).toHaveBeenNthCalledWith(1, 'hanamiCommonGenerationTick', { reason: 'seed' }, SEED_JOB_OPTIONS);
 		expect(hanamiGenerationQueue.add).toHaveBeenNthCalledWith(2, 'hanamiCommonGeneration', { generationId: 'generation-1' }, JOB_OPTIONS);
 		expect(hanamiGenerationQueue.add).toHaveBeenNthCalledWith(3, 'hanamiGenerationReconcile', {}, JOB_OPTIONS);
+		expect(hanamiGenerationQueue.add).toHaveBeenNthCalledWith(4, 'hanamiNoteJudge', { noteIds: ['note-a', 'note-b'], promptVersion: 4 }, expect.objectContaining({
+			attempts: 3,
+			backoff: { type: 'exponential', delay: 1000 },
+			removeOnComplete: true,
+			removeOnFail: true,
+			jobId: expect.stringMatching(/^hanamiNoteJudge-4-/),
+		}));
 		const generationCall = hanamiGenerationQueue.add.mock.calls[1];
 		expect(Object.keys(generationCall[1])).toEqual(['generationId']);
 		expect(generationCall[2]).not.toHaveProperty('jobId');

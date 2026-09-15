@@ -59,6 +59,7 @@ import { QUEUE, baseWorkerOptions } from './const.js';
 import { ImportNotesProcessorService } from './processors/ImportNotesProcessorService.js';
 import type {
 	HanamiCommonGenerationJobData,
+	HanamiNoteJudgeJobData,
 	HanamiCommonGenerationTickJobData,
 	HanamiGenerationReconcileJobData,
 	HanamiRecommendationEventCacheRepairJobData,
@@ -257,6 +258,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 				switch (job.name) {
 					case 'hanamiCommonGenerationTick': return this.hanamiCommonGenerationProcessorService.processTick(job as Bull.Job<HanamiCommonGenerationTickJobData, unknown, 'hanamiCommonGenerationTick'>);
 					case 'hanamiCommonGeneration': return this.hanamiCommonGenerationProcessorService.processGeneration(job as Bull.Job<HanamiCommonGenerationJobData, unknown, 'hanamiCommonGeneration'>);
+					case 'hanamiNoteJudge': return this.hanamiCommonGenerationProcessorService.processNoteJudge(job as Bull.Job<HanamiNoteJudgeJobData, unknown, 'hanamiNoteJudge'>);
 					case 'hanamiUserFeedGeneration': return this.hanamiUserFeedGenerationProcessorService.process(job as Bull.Job<HanamiUserFeedGenerationJobData, unknown, 'hanamiUserFeedGeneration'>);
 					case 'hanamiGenerationReconcile': return this.hanamiGenerationReconcileProcessorService.process(job as Bull.Job<HanamiGenerationReconcileJobData, unknown, 'hanamiGenerationReconcile'>);
 					case 'hanamiRecommendationEventCacheRepair': return this.hanamiRecommendationEventCacheRepairProcessorService.process(job as Bull.Job<HanamiRecommendationEventCacheRepairJobData, unknown, 'hanamiRecommendationEventCacheRepair'>);

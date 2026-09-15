@@ -30,6 +30,7 @@ import type {
 	HanamiPersonalFeedComputationInput,
 } from '@/core/hanami/HanamiUserFeedContracts.js';
 import { createHanamiExactTextFingerprint } from '@/core/hanami/HanamiForYouTextNormalization.js';
+import { HANAMI_NOTE_JUDGE_MODEL, createDefaultHanamiNoteJudgeSettings } from '@/core/hanami/HanamiNoteJudgeContracts.js';
 
 const generatedAt = '2026-08-20T10:00:00.000Z';
 const databaseDeadlineAt = '2026-08-20T10:00:45.000Z';
@@ -85,6 +86,16 @@ function createQueryRunner(queryImplementation?: (sql: string, parameters?: unkn
 		if (queryImplementation != null) return await queryImplementation(sql, parameters);
 		if (sql.includes("set_config('statement_timeout'")) return [{}];
 		if (sql.includes('AS before_deadline')) return [{ before_deadline: true }];
+		if (sql.includes('FROM note n JOIN "user" u')) return (parameters?.[1] as string[]).map(noteId => ({
+			note_id: noteId,
+			author_id: `author-${noteId}`,
+			text: noteId,
+			tags: [],
+			is_bot: false,
+			ephemeral_score: 0,
+			interest: 3,
+			relationship_class: 'unknown',
+		}));
 		return [];
 	});
 	const queryRunner = {
@@ -115,6 +126,7 @@ function createComputation(options: {
 	candidates?: readonly HanamiPersonalFeedCandidate[];
 	commonRows?: readonly HanamiPersistedCommonCandidate[];
 	gather?: (input: HanamiPersonalFeedGenerationContext, common: readonly HanamiPersonalFeedCandidate[]) => Promise<HanamiPersonalFeedCandidatePreparation>;
+	rank?: (input: HanamiPersonalFeedGenerationContext, preparation: HanamiPersonalFeedCandidatePreparation, safe: readonly HanamiPersonalFeedCandidate[]) => Promise<readonly HanamiPersonalFeedCandidate[]>;
 	filterCommon?: (noteIds: readonly string[], signal: AbortSignal, runner?: unknown) => Promise<ReadonlyMap<string, string>>;
 	queryRunner?: ReturnType<typeof createQueryRunner>;
 } = {}) {
@@ -141,7 +153,7 @@ function createComputation(options: {
 		candidates: [...common, ...(options.candidates ?? [])],
 	});
 	const gatherPersonalFeedCandidates = jest.fn(options.gather ?? defaultGather);
-	const rankPersonalFeedCandidates = jest.fn(async (_computationInput: HanamiPersonalFeedGenerationContext, _preparation: HanamiPersonalFeedCandidatePreparation, safe: readonly HanamiPersonalFeedCandidate[]) => safe);
+	const rankPersonalFeedCandidates = jest.fn(options.rank ?? (async (_computationInput: HanamiPersonalFeedGenerationContext, _preparation: HanamiPersonalFeedCandidatePreparation, safe: readonly HanamiPersonalFeedCandidate[]) => safe));
 	const getForYouPage = jest.fn();
 	const forYou = { gatherPersonalFeedCandidates, rankPersonalFeedCandidates, getForYouPage };
 	const buildReasonMetadata = jest.fn((value: Pick<HanamiPersonalFeedCandidate, 'term' | 'clusterId' | 'bucket'>, fallbackOverflow = false) => Object.freeze({
@@ -240,13 +252,13 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		const commonRows = [
 			...Array.from({ length: 500 }, (_, i) => commonRow('globalPopular', `global-${i}`)),
 			...Array.from({ length: 200 }, (_, i) => commonRow('trending', `trend-${i}`)),
-			...Array.from({ length: 500 }, (_, i) => commonRow('exploration', `explore-${i}`)),
+			...Array.from({ length: 1200 }, (_, i) => commonRow('exploration', `explore-${i}`)),
 		];
 		const fixture = createComputation({ commonRows });
 
 		await fixture.service.computePersonalFeed(input());
 
-		expect(fixture.safety.filterCommonEligibleNotes.mock.calls[0]![0]).toHaveLength(1200);
+		expect(fixture.safety.filterCommonEligibleNotes.mock.calls[0]![0]).toHaveLength(1900);
 		const overLimit = createComputation({
 			commonRows: Array.from({ length: 501 }, (_, i) => commonRow('globalPopular', `global-${i}`)),
 		});
@@ -311,10 +323,20 @@ describe('Phase 4 workstream A personal feed computation', () => {
 	});
 
 	test('deduplicates Notes across segments while retaining sliding author constraints', async () => {
+		const oneAuthorRunner = createQueryRunner(async (sql, parameters) => {
+			if (sql.includes("set_config('statement_timeout'")) return [{}];
+			if (sql.includes('AS before_deadline')) return [{ before_deadline: true }];
+			if (sql.includes('FROM note n JOIN "user" u')) return (parameters?.[1] as string[]).map(noteId => ({
+				note_id: noteId, author_id: 'same-author', text: noteId, tags: [], is_bot: false,
+				ephemeral_score: 0, interest: 3, relationship_class: 'unknown',
+			}));
+			return [];
+		});
 		const oneAuthor = createComputation({
 			confidence: 'none',
 			axisLevels: new Map([['globalPopular', 'normal']]),
 			candidates: candidates('globalPopular', 20, () => 'same-author'),
+			queryRunner: oneAuthorRunner,
 		});
 		const authorResult = await oneAuthor.service.computePersonalFeed(input());
 		expect(authorResult.segmentLengths).toEqual([1]);
@@ -349,40 +371,18 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		expect(shortResult.segmentLengths).toEqual([30, 5]);
 	});
 
-	test('keeps a deterministic <=5% exploration pool with exactly twenty eligible authors', async () => {
-		const fixture = createComputation();
-		const diversity = fixture.service as unknown as { finalExplorationDiversity(values: readonly HanamiPersonalFeedCandidate[]): readonly HanamiPersonalFeedCandidate[] };
-		const exploration = Array.from({ length: 20 }, (_, index) => candidate('exploration', `explore-${index}`, `author-${index}`));
-		const result = diversity.finalExplorationDiversity(exploration);
-		const counts = new Map<string, number>();
-		for (const value of result) counts.set(value.authorId, (counts.get(value.authorId) ?? 0) + 1);
-		expect(result).toHaveLength(20);
-		expect(Math.max(...counts.values()) / result.length).toBeLessThanOrEqual(0.05);
-	});
-
-	test('keeps complete ranked exploration rounds deterministically', async () => {
-		const fixture = createComputation();
-		const diversity = fixture.service as unknown as { finalExplorationDiversity(values: readonly HanamiPersonalFeedCandidate[]): readonly HanamiPersonalFeedCandidate[] };
-		const exploration = Array.from({ length: 20 }, (_, author) => [
-			candidate('exploration', `author-${author}-high`, `author-${author}`, { score: 2 }),
-			candidate('exploration', `author-${author}-low`, `author-${author}`, { score: 1 }),
-		]).flat();
-		const result = diversity.finalExplorationDiversity(exploration);
-		expect(result.map(value => value.noteId)).toEqual([
-			...Array.from({ length: 20 }, (_, index) => `author-${index}-high`),
-			...Array.from({ length: 20 }, (_, index) => `author-${index}-low`),
-		]);
-		expect(Math.max(...Array.from(new Set(result.map(value => value.authorId))).map(author => result.filter(value => value.authorId === author).length)) / result.length).toBeLessThanOrEqual(0.05);
-	});
-
-	test('applies safety then served and seven-day seen exclusions before exploration diversity', async () => {
+	test('applies safety then served and seven-day seen exclusions before judged exploration selection', async () => {
 		const exploration = Array.from({ length: 21 }, (_, index) => candidate('exploration', `explore-${index}`, `author-${index}`));
 		const global = candidate('globalPopular', 'global-survives', 'global-author');
-		const queryRunner = createQueryRunner(async (sql) => {
+		const queryRunner = createQueryRunner(async (sql, parameters) => {
 			if (sql.includes("set_config('statement_timeout'")) return [{}];
 			if (sql.includes('AS before_deadline')) return [{ before_deadline: true }];
 			if (sql.includes("ev.\"eventType\" = 'served'")) return [{ note_id: 'explore-0' }];
 			if (sql.includes('FROM "hanami_recommendation_event"')) return [{ note_id: 'explore-1' }];
+			if (sql.includes('FROM note n JOIN "user" u')) return (parameters?.[1] as string[]).map(noteId => ({
+				note_id: noteId, author_id: `author-${noteId}`, text: noteId, tags: [], is_bot: false,
+				ephemeral_score: 0, interest: 3, relationship_class: 'unknown',
+			}));
 			return [];
 		});
 		const fixture = createComputation({
@@ -398,8 +398,50 @@ describe('Phase 4 workstream A personal feed computation', () => {
 			fixture.driverQuery.mock.calls.findIndex(call => String(call[0]).includes("ev.\"eventType\" = 'served'"))
 		]!;
 		expect(fixture.safety.filterPersonalEligibleCandidates.mock.invocationCallOrder[0]).toBeLessThan(epochQueryOrder);
-		expect(result.items.some(item => item.noteId.startsWith('explore-'))).toBe(false);
+		expect(result.items.map(item => item.noteId)).not.toContain('explore-0');
+		expect(result.items.map(item => item.noteId)).not.toContain('explore-1');
+		expect(result.items.some(item => item.noteId.startsWith('explore-'))).toBe(true);
 		expect(result.items.some(item => item.noteId === 'global-survives')).toBe(true);
+	});
+
+	test('uses raw common exploration scores and the unfiltered pool maximum for discovery selection', async () => {
+		const queryRunner = createQueryRunner(async (sql, parameters) => {
+			if (sql.includes("set_config('statement_timeout'")) return [{}];
+			if (sql.includes('AS before_deadline')) return [{ before_deadline: true }];
+			if (sql.includes("ev.\"eventType\" = 'served'")) return [{ note_id: 'served-high' }];
+			if (sql.includes('FROM "hanami_recommendation_event"')) return [];
+			if (sql.includes('FROM note n JOIN "user" u')) return (parameters?.[1] as string[]).map(noteId => ({
+				note_id: noteId, author_id: `author-${noteId}`, text: noteId, tags: [], is_bot: false,
+				ephemeral_score: 0, interest: 3,
+				relationship_class: noteId === 'ff-max' ? 'directFollow' : 'unknown',
+			}));
+			return [];
+		});
+		const fixture = createComputation({
+			confidence: 'none',
+			axisLevels: new Map([['exploration', 'normal']]),
+			commonRows: [
+				{ ...commonRow('exploration', 'ff-max'), baseScore: 100 },
+				{ ...commonRow('exploration', 'served-high'), baseScore: 90 },
+				{ ...commonRow('exploration', 'raw-first'), baseScore: 50 },
+				{ ...commonRow('exploration', 'raw-second'), baseScore: 40 },
+			],
+			rank: async (_generation, _preparation, safe) => safe.map(value => ({
+				...value,
+				score: value.noteId === 'raw-first' ? 1 : value.noteId === 'raw-second' ? 1000 : value.score,
+			})),
+			queryRunner,
+		});
+
+		const result = await fixture.service.computePersonalFeed(input());
+
+		expect(result.items.map(item => item.noteId)).toEqual(['raw-first', 'raw-second']);
+		const scores = new Map(fixture.provenance.buildReasonMetadata.mock.calls.map(([value]) => {
+			const candidate = value as unknown as HanamiPersonalFeedCandidate;
+			return [candidate.noteId, candidate.score] as const;
+		}));
+		expect(scores.get('raw-first')).toBeCloseTo(Math.log1p(50) / Math.log1p(100) * 3 + 5);
+		expect(scores.get('raw-second')).toBeCloseTo(Math.log1p(40) / Math.log1p(100) * 3 + 5);
 	});
 
 	test('retains a persisted-but-unserved candidate while excluding an actually served candidate', async () => {
@@ -435,15 +477,60 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		expect(nullSeedFixture.driverQuery.mock.calls.some(call => String(call[0]).includes('ORDER BY e."sequence" DESC LIMIT 210'))).toBe(false);
 	});
 
-	test('omits insufficient exploration without removing non-exploration candidates', async () => {
+	test('excludes unjudged exploration without removing non-exploration candidates', async () => {
+		const queryRunner = createQueryRunner(async (sql, parameters) => {
+			if (sql.includes("set_config('statement_timeout'")) return [{}];
+			if (sql.includes('AS before_deadline')) return [{ before_deadline: true }];
+			if (sql.includes('FROM note n JOIN "user" u')) return (parameters?.[1] as string[]).map(noteId => ({
+				note_id: noteId, author_id: `author-${noteId}`, text: noteId, tags: [], is_bot: false,
+				ephemeral_score: null, interest: null, relationship_class: 'unknown',
+			}));
+			return [];
+		});
 		const fixture = createComputation({
 			confidence: 'none',
 			axisLevels: new Map([['globalPopular', 'normal'], ['exploration', 'normal']]),
-			candidates: [candidate('globalPopular', 'global-survives'), ...Array.from({ length: 19 }, (_, index) => candidate('exploration', `explore-${index}`, `author-${index}`))],
+			candidates: [candidate('globalPopular', 'global-survives'), ...Array.from({ length: 20 }, (_, index) => candidate('exploration', `explore-${index}`, `author-${index}`))],
+			queryRunner,
 		});
 		const result = await fixture.service.computePersonalFeed({ ...input(), latestReadyBatchId: 'head' });
 		expect(result.items.map(item => item.noteId)).toContain('global-survives');
 		expect(result.items.some(item => item.source === 'exploration')).toBe(false);
+	});
+
+	test('uses one v1 judge snapshot for enrichment, quality gates, and selection when Meta advances to v2', async () => {
+		const v1 = { ...createDefaultHanamiNoteJudgeSettings(), promptVersion: 1, ephemeralThreshold: 0 };
+		const v2 = { ...v1, promptVersion: 2, ephemeralThreshold: 2 };
+		const queryRunner = createQueryRunner(async (sql, parameters) => {
+			if (sql.includes("set_config('statement_timeout'")) return [{}];
+			if (sql.includes('AS before_deadline')) return [{ before_deadline: true }];
+			if (sql.includes('FROM meta m LEFT JOIN "user_profile"')) return [{ settings: v1, reduce_ephemeral_posts: true }];
+			if (sql.includes('SELECT "hanamiNoteJudgeSettings" AS settings FROM meta')) return [{ settings: v2 }];
+			if (sql.includes('FROM note n JOIN "user" u')) {
+				expect(parameters?.[2]).toBe(1);
+				return (parameters?.[1] as string[]).map(noteId => ({
+					note_id: noteId, author_id: `author-${noteId}`, text: noteId, tags: [], is_bot: false,
+					judgement_model: HANAMI_NOTE_JUDGE_MODEL, ephemeral_score: 1, interest: 3, relationship_class: 'unknown',
+				}));
+			}
+			return [];
+		});
+		const fixture = createComputation({
+			confidence: 'none',
+			axisLevels: new Map([['globalPopular', 'normal'], ['trending', 'normal'], ['exploration', 'normal']]),
+			candidates: [
+				candidate('globalPopular', 'popular'),
+				candidate('trending', 'trend'),
+				...Array.from({ length: 20 }, (_, index) => candidate('exploration', `explore-${index}`)),
+			],
+			queryRunner,
+		});
+
+		const result = await fixture.service.computePersonalFeed(input());
+
+		expect(result.items).toEqual([]);
+		expect(fixture.driverQuery.mock.calls.filter(call => String(call[0]).includes('FROM meta m LEFT JOIN "user_profile"'))).toHaveLength(1);
+		expect(fixture.driverQuery.mock.calls.filter(call => String(call[0]).includes('SELECT "hanamiNoteJudgeSettings" AS settings FROM meta'))).toEqual([]);
 	});
 
 	test('heals a legacy old-head unknown deficit before returning a personal prefix', async () => {
@@ -572,7 +659,7 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		expect(fixture.driverQuery.mock.calls[1]![0]).toContain("set_config('statement_timeout'");
 		expect(fixture.driverQuery.mock.calls[1]![1]).toEqual([databaseDeadlineAt, '5000']);
 		expect(fixture.driverQuery.mock.calls.at(-1)?.[0]).toContain('clock_timestamp() < $1::timestamptz');
-		expect(fixture.driverQuery.mock.calls.filter(call => String(call[0]).includes("set_config('statement_timeout'"))).toHaveLength(5);
+		expect(fixture.driverQuery.mock.calls.filter(call => String(call[0]).includes("set_config('statement_timeout'"))).toHaveLength(6);
 		expect(fixture.queryRunner.commitTransaction).toHaveBeenCalledTimes(1);
 		expect(fixture.queryRunner.release).toHaveBeenCalledTimes(1);
 		expect(fixture.safety.filterAndPack).not.toHaveBeenCalled();

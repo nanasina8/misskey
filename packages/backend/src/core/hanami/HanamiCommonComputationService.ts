@@ -33,9 +33,9 @@ const DB_GLOBAL_FALLBACK_SAMPLE = 5000;
 const FEATURED_HEADROOM = 5000;
 const GLOBAL_POPULAR_POOL = 500;
 const TRENDING_POOL = 200;
-const EXPLORATION_POOL = 500;
-const EXPLORATION_MIN_AUTHORS = 20;
-const EXPLORATION_MAX_AUTHOR_SHARE = 0.05;
+const EXPLORATION_POPULAR_POOL = 600;
+const EXPLORATION_RECENT_POOL = 600;
+const EXPLORATION_POOL = EXPLORATION_POPULAR_POOL + EXPLORATION_RECENT_POOL;
 const TREND_SNAPSHOT_TERM_MAX = 30;
 const TREND_REPRESENTATIVE_NOTE_MAX = 5;
 
@@ -53,10 +53,7 @@ type RawTrendTerm = {
 	readonly distinctAuthors: number;
 	readonly representativeNoteIds: readonly string[];
 };
-type ExplorationSource =
-	| { readonly kind: 'none'; readonly noteIds: readonly string[] }
-	| { readonly kind: 'db'; readonly noteIds: readonly string[] }
-	| { readonly kind: 'featured'; readonly noteIds: readonly string[] };
+type ExplorationSource = readonly RawCandidate[];
 
 const emptyMetadata: Readonly<Record<string, unknown>> = Object.freeze({});
 
@@ -203,102 +200,49 @@ export class HanamiCommonComputationService implements HanamiCommonComputationPo
 	}
 
 	private async dbRecentExplorationRows(sourceAsOf: Date): Promise<{ noteId: string; userId: string }[]> {
-		const sinceId = this.idService.gen(sourceAsOf.getTime() - DB_GLOBAL_FALLBACK_WINDOW_MS);
+		const sinceId = this.idService.gen(sourceAsOf.getTime() - DAY_MS);
 		const rows = await this.db.query(
-			`SELECT n.id AS "noteId", n."userId" AS "userId"
-			 FROM note n
-			 INNER JOIN "user" u ON u.id = n."userId"
-			 WHERE n.id >= $1
-			   AND n.visibility IN ('public','home') AND n."channelId" IS NULL
-			   AND NOT (${pureRenoteSql('n')})
-			   AND u."isDeleted" = FALSE AND u."isSuspended" = FALSE
-			 ORDER BY n.id DESC
+			`WITH recent AS (
+			   SELECT DISTINCT ON (n."userId") n.id AS "noteId", n."userId" AS "userId"
+			   FROM note n
+			   INNER JOIN "user" u ON u.id = n."userId"
+			   WHERE n.id >= $1
+			     AND n.visibility IN ('public','home') AND n."channelId" IS NULL
+			     AND NOT (${pureRenoteSql('n')})
+			     AND n."replyId" IS NULL AND u."isBot" = FALSE
+			     AND u."isDeleted" = FALSE AND u."isSuspended" = FALSE
+			   ORDER BY n."userId", n.id DESC
+			 )
+			 SELECT recent."noteId", recent."userId"
+			 FROM recent
+			 ORDER BY recent."noteId" DESC
 			 LIMIT $2`,
-			[sinceId, DB_GLOBAL_FALLBACK_SAMPLE],
+			[sinceId, EXPLORATION_RECENT_POOL],
 		) as { noteId: string; userId: string }[];
 		return rows;
 	}
 
 	private async resolveExplorationSource(featured: readonly { noteId: string; score: number }[], sourceAsOf: Date): Promise<ExplorationSource> {
+		const out: RawCandidate[] = [];
+		const seen = new Set<string>();
+		for (const candidate of featured.slice(0, EXPLORATION_POPULAR_POOL)) {
+			if (!seen.has(candidate.noteId)) {
+				seen.add(candidate.noteId);
+				out.push({ noteId: candidate.noteId, baseScore: candidate.score });
+			}
+		}
 		try {
 			const rows = await this.dbRecentExplorationRows(sourceAsOf);
-			const distinctAuthors = new Set(rows.map(row => row.userId).filter(userId => userId.length > 0)).size;
-			if (distinctAuthors >= EXPLORATION_MIN_AUTHORS) {
-				return { kind: 'db', noteIds: Object.freeze(rows.map(row => row.noteId)) };
+			for (const row of rows) {
+				if (!seen.has(row.noteId)) {
+					seen.add(row.noteId);
+					out.push({ noteId: row.noteId, baseScore: 0 });
+				}
 			}
 		} catch {
-			// fall through to the featured fallback below.
+			// A DB outage still leaves the independently computed 72h popular side.
 		}
-		return { kind: 'featured', noteIds: Object.freeze(featured.slice(GLOBAL_POPULAR_POOL).map(candidate => candidate.noteId)) };
-	}
-
-	private authorDiverseSample(rows: readonly { noteId: string; authorId: string }[], cap: number, maxShare: number): { noteId: string; authorId: string }[] {
-		const byAuthor = new Map<string, { noteId: string; authorId: string }[]>();
-		for (const row of rows) {
-			const list = byAuthor.get(row.authorId);
-			if (list == null) byAuthor.set(row.authorId, [row]);
-			else list.push(row);
-		}
-		// 行の初出順を保つ。Misskey の id は時系列ソート可能なので、ここで並べ替えると
-		// cap 打ち切りが「最古の cap 人」を選び、探索軸から新規アカウントが永久に消える。
-		const allAuthors = [...byAuthor.keys()];
-		if (allAuthors.length < Math.ceil(1 / maxShare)) return [];
-		const authors = allAuthors.slice(0, cap);
-		// Keep complete author rounds. A fixed per-author cap derived from the
-		// 500-item maximum is insufficient for a short pool (for example, 25
-		// items from one author in a 44-item result). Complete rounds make every
-		// author's final share exactly 1 / authorCount.
-		const rounds = Math.min(
-			Math.max(1, Math.floor(cap / authors.length)),
-			...authors.map(author => byAuthor.get(author)!.length),
-		);
-		const out: { noteId: string; authorId: string }[] = [];
-		for (let round = 0; round < rounds; round++) {
-			for (const author of authors) {
-				const list = byAuthor.get(author)!;
-				out.push(list[round]!);
-			}
-		}
-		return out;
-	}
-
-	private finalizeExploration(noteIds: readonly string[], safeAuthors: ReadonlyMap<string, string>): readonly HanamiCommonCandidate[] {
-		const eligible: { noteId: string; authorId: string }[] = [];
-		const seen = new Set<string>();
-		for (const noteId of noteIds) {
-			if (noteId.length === 0 || seen.has(noteId)) continue;
-			const authorId = safeAuthors.get(noteId);
-			if (authorId == null || authorId.length === 0) continue;
-			seen.add(noteId);
-			eligible.push({ noteId, authorId });
-		}
-		const sampled = this.authorDiverseSample(eligible, EXPLORATION_POOL, EXPLORATION_MAX_AUTHOR_SHARE);
-		// Safety can remove authors after the DB evidence check. Do not emit a
-		// smaller pool while claiming the strict five-percent exploration contract.
-		if (new Set(sampled.map(row => row.authorId)).size < EXPLORATION_MIN_AUTHORS) return Object.freeze([]);
-		const count = sampled.length;
-		return Object.freeze(sampled.map((row, index) => Object.freeze({
-			noteId: row.noteId,
-			authorId: row.authorId,
-			baseScore: count > 0 ? (count - index) / count : 0,
-			metadata: emptyMetadata,
-		})));
-	}
-
-	private finalizeExplorationWithFallback(source: ExplorationSource, safeAuthors: ReadonlyMap<string, string>, featured: readonly { noteId: string; score: number }[], globalPopularNoteIds: ReadonlySet<string>): readonly HanamiCommonCandidate[] {
-		if (source.kind === 'none') return Object.freeze([]);
-		// globalPopular is finalized only after safety. Its safe backfill can extend
-		// into the raw Featured tail, so remove the finalized set for both a direct
-		// Featured source and a DB source before diversity sampling.
-		const primary = this.finalizeExploration(source.noteIds.filter(noteId => !globalPopularNoteIds.has(noteId)), safeAuthors);
-		if (primary.length > 0 || source.kind === 'featured') return primary;
-		// The DB source is chosen before safety. If safety later removes enough
-		// authors to make its diversity contract impossible, use the independently
-		// ranked featured tail that was safety-resolved in the same bounded pass.
-		return this.finalizeExploration(featured
-			.slice(GLOBAL_POPULAR_POOL)
-			.filter(candidate => !globalPopularNoteIds.has(candidate.noteId))
-			.map(candidate => candidate.noteId), safeAuthors);
+		return Object.freeze(out.slice(0, EXPLORATION_POOL));
 	}
 
 	@bindThis
@@ -322,7 +266,7 @@ export class HanamiCommonComputationService implements HanamiCommonComputationPo
 				? Promise.resolve<RawCandidate[]>(featured.map(candidate => ({ noteId: candidate.noteId, baseScore: candidate.score })))
 				: this.dbGlobalPopularFallbackCandidates(effectiveSourceAsOf);
 			const explorationPromise = !enabled.has('exploration')
-				? Promise.resolve<ExplorationSource>({ kind: 'none', noteIds: Object.freeze([]) })
+				? Promise.resolve<ExplorationSource>(Object.freeze([]))
 				: this.resolveExplorationSource(featured, effectiveSourceAsOf);
 			return Promise.all([trendPromise, globalPopularPromise, explorationPromise]);
 		});
@@ -332,10 +276,7 @@ export class HanamiCommonComputationService implements HanamiCommonComputationPo
 		const candidateIds = [...new Set([
 			...(enabled.has('globalPopular') ? globalPopularRaw.map(candidate => candidate.noteId) : []),
 			...(enabled.has('trending') ? trendingRaw.map(candidate => candidate.noteId) : []),
-			...(enabled.has('exploration') ? explorationSource.noteIds : []),
-			// The fallback may be needed only after the DB source is safety-filtered.
-			// Resolve its bounded Featured tail now even if globalPopular is disabled.
-			...(enabled.has('exploration') ? featured.slice(GLOBAL_POPULAR_POOL).map(candidate => candidate.noteId) : []),
+			...(enabled.has('exploration') ? explorationSource.map(candidate => candidate.noteId) : []),
 			...snapshotTerms.flatMap(term => term.representativeNoteIds),
 		])];
 
@@ -347,7 +288,7 @@ export class HanamiCommonComputationService implements HanamiCommonComputationPo
 		const candidates: HanamiCommonCandidateMap = Object.freeze({
 			globalPopular,
 			trending: enabled.has('trending') ? this.finalizeCandidates(trendingRaw, safeAuthors, 'trending', TRENDING_POOL) : Object.freeze([]),
-			exploration: enabled.has('exploration') ? this.finalizeExplorationWithFallback(explorationSource, safeAuthors, featured, new Set(globalPopular.map(candidate => candidate.noteId))) : Object.freeze([]),
+			exploration: enabled.has('exploration') ? this.finalizeCandidates(explorationSource, safeAuthors, 'exploration', EXPLORATION_POOL) : Object.freeze([]),
 		});
 
 		const trendTerms: HanamiTrendSnapshotTerm[] = [];

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import * as Bull from 'bullmq';
 import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
@@ -15,16 +15,21 @@ import {
 	type HanamiCommonGenerationRunResult,
 } from '@/core/hanami/HanamiCommonGenerationContracts.js';
 import { QueueService } from '@/core/QueueService.js';
+import { HanamiForYouBatchService, HanamiNoteJudgeLockContentionError } from '@/core/hanami/HanamiForYouBatchService.js';
 import type {
 	HanamiCommonGenerationJobData,
 	HanamiCommonGenerationTickJobData,
 	HanamiGenerationReconcileJobData,
+	HanamiNoteJudgeJobData,
 } from '../types.js';
 import { QueueLoggerService } from '../QueueLoggerService.js';
 
 type HanamiCommonGenerationTickJob = Bull.Job<HanamiCommonGenerationTickJobData, unknown, 'hanamiCommonGenerationTick'>;
 type HanamiCommonGenerationJob = Bull.Job<HanamiCommonGenerationJobData, unknown, 'hanamiCommonGeneration'>;
 type HanamiGenerationReconcileJob = Bull.Job<HanamiGenerationReconcileJobData, unknown, 'hanamiGenerationReconcile'>;
+type HanamiNoteJudgeJob = Bull.Job<HanamiNoteJudgeJobData, unknown, 'hanamiNoteJudge'>;
+
+const NOTE_JUDGE_LOCK_CONTENTION_DELAY_MS = 60_000;
 
 function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
 	if (typeof value !== 'object' || value == null || Array.isArray(value)) return false;
@@ -50,6 +55,8 @@ export class HanamiCommonGenerationProcessorService {
 		private lifecycle: HanamiCommonGenerationLifecyclePort,
 		private queueService: QueueService,
 		private queueLoggerService: QueueLoggerService,
+		@Optional()
+		private hanamiForYouBatchService?: HanamiForYouBatchService,
 	) {
 		this.logger = this.queueLoggerService.logger.createSubLogger('hanami-common-generation');
 	}
@@ -91,6 +98,10 @@ export class HanamiCommonGenerationProcessorService {
 			}
 
 			const result = await this.lifecycle.runCommonGeneration(job.data.generationId);
+			if (result.kind === 'published' && this.hanamiForYouBatchService != null) {
+				const judgeJobs = await this.hanamiForYouBatchService.prepareNoteJudgeJobs(result.generationId);
+				for (const judgeJob of judgeJobs) await this.queueService.enqueueHanamiNoteJudge(judgeJob.noteIds, judgeJob.promptVersion);
+			}
 			switch (result.kind) {
 				case 'published':
 					this.logger.succ('hanami common generation published', {
@@ -125,6 +136,24 @@ export class HanamiCommonGenerationProcessorService {
 	}
 
 	@bindThis
+	public async processNoteJudge(job: HanamiNoteJudgeJob): Promise<{ runId: string; status: 'ready' | 'failed'; processedCount: number }> {
+		try {
+			if (!hasExactKeys(job.data, ['noteIds', 'promptVersion']) || !Array.isArray(job.data.noteIds) || job.data.noteIds.length === 0 || job.data.noteIds.length > 64 || !job.data.noteIds.every(noteId => typeof noteId === 'string' && noteId.length > 0) || !Number.isSafeInteger(job.data.promptVersion) || job.data.promptVersion < 1) malformedPayload(job.name);
+			if (this.hanamiForYouBatchService == null) throw new Error('Hanami note judge service is unavailable');
+			const result = await this.hanamiForYouBatchService.runNoteJudgeJob(job.data, this.logger);
+			await job.log(`note judge ${result.status}: ${result.processedCount}`);
+			await job.updateProgress(100);
+			return result;
+		} catch (error) {
+			if (error instanceof HanamiNoteJudgeLockContentionError) {
+				await job.moveToDelayed(Date.now() + NOTE_JUDGE_LOCK_CONTENTION_DELAY_MS, job.token);
+				throw new Bull.DelayedError(error.message);
+			}
+			throw normalizeBullRejection(error);
+		}
+	}
+
+	@bindThis
 	public async processCommonReconcile(job: HanamiGenerationReconcileJob): Promise<HanamiCommonGenerationDispatch | null> {
 		const dispatch = await this.lifecycle.findDispatchableCommonGeneration();
 		if (dispatch != null) {
@@ -137,6 +166,11 @@ export class HanamiCommonGenerationProcessorService {
 		} else {
 			this.logger.info('hanami common generation reconcile found no work');
 			await job.log('reconcile found no work');
+		}
+		if (this.hanamiForYouBatchService != null) {
+			const judgeJobs = await this.hanamiForYouBatchService.reconcileNoteJudgeJobs();
+			for (const judgeJob of judgeJobs) await this.queueService.enqueueHanamiNoteJudge(judgeJob.noteIds, judgeJob.promptVersion);
+			await job.log(`reconciled ${judgeJobs.length} note judge batches`);
 		}
 		return dispatch;
 	}

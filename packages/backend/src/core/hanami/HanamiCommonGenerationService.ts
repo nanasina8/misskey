@@ -42,7 +42,7 @@ const MAX_TREND_REPRESENTATIVES = 5;
 const CANDIDATE_LIMITS: Readonly<Record<HanamiCommonAxis, number>> = {
 	globalPopular: 500,
 	trending: 200,
-	exploration: 500,
+	exploration: 1200,
 };
 const AXIS_ORDER = new Map<HanamiCommonAxis, number>(HANAMI_COMMON_AXES.map((axis, index) => [axis, index]));
 

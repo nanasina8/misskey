@@ -133,6 +133,7 @@ class FakeRedisPipeline {
 class FakeRedis {
 	public activeKeys = new Set<string>();
 	public lockOk = true;
+	public sharedLockOk = true;
 	public setCalls: unknown[][] = [];
 	public evalCalls: unknown[][] = [];
 	public pipelineExecs: RedisOp[][] = [];
@@ -151,7 +152,7 @@ class FakeRedis {
 
 	public async set(...args: unknown[]): Promise<'OK' | null> {
 		this.setCalls.push(args);
-		return this.lockOk ? 'OK' : null;
+		return this.lockOk && (args[0] !== 'hanami:llm:exclusive:v1' || this.sharedLockOk) ? 'OK' : null;
 	}
 
 	public async eval(...args: unknown[]): Promise<number> {
@@ -420,7 +421,10 @@ describe('HanamiTasteClusterBatchService reactionSimilar match', () => {
 
 		expect(log.warn).not.toHaveBeenCalled();
 		expect(db.query).toHaveBeenCalledTimes(4);
-		expect(redis.setCalls[0]).toEqual(['hanami:taste:tick:lock', expect.any(String), 'EX', 35 * 60, 'NX']);
+		expect(redis.setCalls).toEqual([
+			['hanami:taste:tick:lock', expect.any(String), 'EX', 35 * 60, 'NX'],
+			['hanami:llm:exclusive:v1', expect.any(String), 'EX', 35 * 60, 'NX'],
+		]);
 		expect(redis.evalCalls).toHaveLength(1);
 
 		const writes = writePipelines(redis);
@@ -869,6 +873,33 @@ describe('HanamiForYouService taste cosNorm', () => {
 		}).reactionSimilarCandidates('me', [], new Set(), new Set());
 
 		expect(out.map(c => c.noteId)).toEqual([low, high]);
+	});
+});
+
+describe('HanamiTasteClusterBatchService daily cluster', () => {
+	test('shared LLM lock held: skips before either embedding or k-means Python work', async () => {
+		const redis = new FakeRedis();
+		redis.sharedLockOk = false;
+		const db = { query: jest.fn(async () => []) };
+		const service = tasteBatchService(db, redis);
+		const embedTexts = jest.fn();
+		const clusterUserChunk = jest.fn();
+		(service as unknown as { embedTexts: typeof embedTexts }).embedTexts = embedTexts;
+		(service as unknown as { clusterUserChunk: typeof clusterUserChunk }).clusterUserChunk = clusterUserChunk;
+
+		await expect(service.runTasteClusterBatch(logger() as never)).resolves.toEqual({ users: 0 });
+
+		expect(redis.setCalls).toEqual([
+			['hanami:taste:tick:lock', expect.any(String), 'EX', 35 * 60, 'NX'],
+			['hanami:llm:exclusive:v1', expect.any(String), 'EX', 35 * 60, 'NX'],
+		]);
+		expect(db.query).not.toHaveBeenCalled();
+		expect(embedTexts).not.toHaveBeenCalled();
+		expect(clusterUserChunk).not.toHaveBeenCalled();
+		expect(redis.evalCalls).toHaveLength(1);
+		expect(redis.evalCalls[0]?.[0]).toContain('redis.call("get", KEYS[i]) == ARGV[1]');
+		expect(redis.evalCalls[0]?.slice(1, 4)).toEqual([2, 'hanami:taste:tick:lock', 'hanami:llm:exclusive:v1']);
+		expect(redis.evalCalls[0]?.[4]).toBe(redis.setCalls[0]?.[1]);
 	});
 });
 

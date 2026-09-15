@@ -122,6 +122,7 @@ describe('API', () => {
 		const update: Misskey.entities.IUpdateRequest = {
 			hanamiRecommendationEnabled: true,
 			hanamiShowRecommendationReason: true,
+			hanamiReduceEphemeralPosts: false,
 			hanamiRecommendationAxes: {
 				globalPopular: 'normal',
 				exploration: 'low',
@@ -130,6 +131,7 @@ describe('API', () => {
 		expectType<Misskey.entities.IUpdateRequest>(update);
 		expectType<boolean | undefined>(({} as Misskey.entities.MeDetailed).hanamiRecommendationEnabled);
 		expectType<boolean | undefined>(({} as Misskey.entities.MeDetailed).hanamiShowRecommendationReason);
+		expectType<boolean | undefined>(({} as Misskey.entities.MeDetailed).hanamiReduceEphemeralPosts);
 		expectType<boolean | undefined>(({} as Misskey.entities.MetaDetailed).features?.hanamiTimeline);
 
 		// @ts-expect-error Obsolete recommendation strength is not exposed.
@@ -138,5 +140,46 @@ describe('API', () => {
 		({} as Misskey.entities.MeDetailed).hanamiRecommendationAutoInjectEnabled;
 		// @ts-expect-error Obsolete auto-injection strength is not exposed.
 		({} as Misskey.entities.IUpdateRequest).hanamiRecommendationAutoInjectStrength;
+	});
+
+	test('Hanami judge contracts', async () => {
+		const cli = new Misskey.api.APIClient({
+			origin: 'https://misskey.test',
+			credential: 'TOKEN'
+		});
+
+		const aggregate = await cli.request('admin/hanami/judge-aggregate', {});
+		expectType<Misskey.entities.AdminHanamiJudgeAggregateResponse>(aggregate);
+		const status = await cli.request('admin/hanami/judge-status', {});
+		expectType<Misskey.entities.AdminHanamiJudgeStatusResponse>(status);
+		const trial = await cli.request('admin/hanami/judge-trial', { limit: 50 });
+		expectType<Misskey.entities.AdminHanamiJudgeTrialResponse>(trial);
+
+		const settings: Misskey.entities.AdminHanamiJudgeSettingsRequest = {
+			settings: {
+				schemaVersion: 1,
+				promptVersion: 1,
+				ephemeralThreshold: 0.5,
+				interestThreshold: 0.5,
+				reactionMax: 1,
+				interestMax: 1,
+				basis: {
+					ephemeralA: 'a', ephemeralB: 'b', interest1: '1', interest2: '2',
+					interest3: '3', interest4: '4', interest5: '5',
+				},
+				examples: [],
+				templatePatterns: [],
+			},
+		};
+		const settingsResponse = await cli.request('admin/hanami/judge-settings', settings);
+		expectType<Misskey.entities.AdminHanamiJudgeSettingsResponse>(settingsResponse);
+
+		const incomplete: Misskey.entities.AdminHanamiJudgeSettingsRequest = {
+			// @ts-expect-error Settings require all concrete generated fields.
+			settings: {
+				schemaVersion: 1,
+			},
+		};
+		void incomplete;
 	});
 });

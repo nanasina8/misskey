@@ -252,6 +252,24 @@ type AdminGetUserIpsRequest = operations['admin___get-user-ips']['requestBody'][
 type AdminGetUserIpsResponse = operations['admin___get-user-ips']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type AdminHanamiJudgeAggregateResponse = operations['admin___hanami___judge-aggregate']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiJudgeSettingsRequest = operations['admin___hanami___judge-settings']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiJudgeSettingsResponse = operations['admin___hanami___judge-settings']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiJudgeStatusResponse = operations['admin___hanami___judge-status']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiJudgeTrialRequest = operations['admin___hanami___judge-trial']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiJudgeTrialResponse = operations['admin___hanami___judge-trial']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type AdminHanamiSuggestionEventsExportRequest = operations['admin___hanami___suggestion-events-export']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -1597,6 +1615,12 @@ declare namespace entities {
         AdminGetTableStatsResponse,
         AdminGetUserIpsRequest,
         AdminGetUserIpsResponse,
+        AdminHanamiJudgeAggregateResponse,
+        AdminHanamiJudgeSettingsRequest,
+        AdminHanamiJudgeSettingsResponse,
+        AdminHanamiJudgeStatusResponse,
+        AdminHanamiJudgeTrialRequest,
+        AdminHanamiJudgeTrialResponse,
         AdminHanamiSuggestionEventsExportRequest,
         AdminHanamiSuggestionEventsExportResponse,
         AdminHanamiTasteRebuildRequest,

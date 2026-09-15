@@ -24,6 +24,7 @@ import type {
 	DeliverJobData,
 	HanamiCommonGenerationJobData,
 	HanamiCommonGenerationTickJobData,
+	HanamiNoteJudgeJobData,
 	HanamiGenerationReconcileJobData,
 	HanamiRecommendationEventCacheRepairJobData,
 	HanamiRecommendationEventCacheReplayContinuationJobData,
@@ -77,6 +78,16 @@ const HANAMI_GENERATION_JOB_OPTIONS = {
 	removeOnFail: {
 		age: 3600 * 24 * 7,
 	},
+} satisfies Bull.JobsOptions;
+
+const HANAMI_NOTE_JUDGE_JOB_OPTIONS = {
+	attempts: 3,
+	backoff: { type: 'exponential', delay: 1000 },
+	// Reconciliation owns eventual delivery after a terminal failure. Removing
+	// terminal jobs releases the deterministic id while active/retry attempts
+	// remain deduplicated.
+	removeOnComplete: true,
+	removeOnFail: true,
 } satisfies Bull.JobsOptions;
 
 const EMOJI_IMAGE_FINGERPRINT_JOB_OPTIONS = {
@@ -325,6 +336,18 @@ export class QueueService implements OnModuleInit {
 		}
 		const data: HanamiCommonGenerationJobData = { generationId };
 		return this.getHanamiGenerationQueue().add('hanamiCommonGeneration', data, HANAMI_GENERATION_JOB_OPTIONS);
+	}
+
+	@bindThis
+	public enqueueHanamiNoteJudge(noteIds: readonly string[], promptVersion: number) {
+		if (noteIds.length === 0 || noteIds.length > 64) throw new RangeError('Hanami note judge jobs require 1..64 notes');
+		if (!Number.isSafeInteger(promptVersion) || promptVersion < 1) throw new RangeError('Hanami note judge jobs require a positive promptVersion');
+		const normalizedNoteIds = [...new Set(noteIds)].sort();
+		const digest = createHash('sha256').update(`${promptVersion}\0${normalizedNoteIds.join('\0')}`).digest('hex');
+		return this.getHanamiGenerationQueue().add('hanamiNoteJudge', { noteIds: normalizedNoteIds, promptVersion } satisfies HanamiNoteJudgeJobData, {
+			...HANAMI_NOTE_JUDGE_JOB_OPTIONS,
+			jobId: `hanamiNoteJudge-${promptVersion}-${digest}`,
+		});
 	}
 
 	@bindThis

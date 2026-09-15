@@ -104,7 +104,12 @@ const RECENT_BACKFILL_TIME_BUDGET_SEC = 60;
 // 周期を跨いだ瞬間に次 tick が NX を通ってしまい重複ガードにならない）。正常/timeout 終了時は
 // finally の Lua 解放で即座に空くので、TTL が長くても平常のスループットには影響しない。
 // TTL まで塞がるのはプロセス即死時のみ（最大3-4 tick スキップ後に自己回復）。
-const TASTE_TICK_LOCK_KEY = 'hanami:taste:tick:lock';
+// Qwen judgement and taste Python both reserve this process-wide model budget.
+// Keep the historical taste lock while also reserving the process-wide LLM
+// budget.  The former is part of the worker compatibility contract; the
+// latter prevents overlap with note judgement workers.
+const TASTE_TICK_LEGACY_LOCK_KEY = 'hanami:taste:tick:lock';
+const TASTE_TICK_LOCK_KEY = 'hanami:llm:exclusive:v1';
 const TASTE_TICK_LOCK_TTL_SEC = 35 * 60;
 const TASTE_MATCH_SLOW_WARN_MS = 60 * 1000; // これを超えたらスケール対策（ANN/差分化）検討のサイン
 const TASTE_REBUILD_STATUS_KEY = 'hanami:taste:rebuild:status';
@@ -278,14 +283,20 @@ export class HanamiTasteClusterBatchService {
 
 	private async acquireTasteTickLock(): Promise<string | null> {
 		const lockToken = `${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
-		const lock = await this.redisClient.set(TASTE_TICK_LOCK_KEY, lockToken, 'EX', TASTE_TICK_LOCK_TTL_SEC, 'NX');
-		return lock == null ? null : lockToken;
+		const legacy = await this.redisClient.set(TASTE_TICK_LEGACY_LOCK_KEY, lockToken, 'EX', TASTE_TICK_LOCK_TTL_SEC, 'NX');
+		if (legacy == null) return null;
+		const shared = await this.redisClient.set(TASTE_TICK_LOCK_KEY, lockToken, 'EX', TASTE_TICK_LOCK_TTL_SEC, 'NX');
+		if (shared == null) {
+			await this.releaseTasteTickLock(lockToken);
+			return null;
+		}
+		return lockToken;
 	}
 
 	private async releaseTasteTickLock(lockToken: string): Promise<void> {
 		await this.redisClient.eval(
-			'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end',
-			1, TASTE_TICK_LOCK_KEY, lockToken,
+			'local deleted = 0; for i = 1, 2 do if redis.call("get", KEYS[i]) == ARGV[1] then deleted = deleted + redis.call("del", KEYS[i]) end end; return deleted',
+			2, TASTE_TICK_LEGACY_LOCK_KEY, TASTE_TICK_LOCK_KEY, lockToken,
 		).catch(() => { /* TTLで解ける */ });
 	}
 
@@ -1157,6 +1168,19 @@ export class HanamiTasteClusterBatchService {
 
 	@bindThis
 	public async runTasteClusterBatch(logger: Logger): Promise<{ users: number }> {
+		const lockToken = await this.acquireTasteTickLock();
+		if (lockToken == null) {
+			logger.warn('hanami taste cluster: taste/LLM lock busy, skip');
+			return { users: 0 };
+		}
+		try {
+			return await this.runTasteClusterBatchLocked(logger);
+		} finally {
+			await this.releaseTasteTickLock(lockToken);
+		}
+	}
+
+	private async runTasteClusterBatchLocked(logger: Logger): Promise<{ users: number }> {
 		const now = Date.now();
 
 		// 0) e5 埋め込みの TTL 整理（30日）＋旧モデル行の purge。

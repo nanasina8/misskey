@@ -32,6 +32,10 @@
 					<template #caption>{{ i18n.ts._hana._recommendation.showReasonDescription }}</template>
 				</MkSwitch>
 
+				<MkSwitch v-model="hanamiReduceEphemeralPosts" @update:modelValue="saveHanamiReduceEphemeralPosts">
+					<template #label>その場限りの投稿を控えめにする</template>
+				</MkSwitch>
+
 				<div class="_gaps_s">
 					<div :class="$style.presetLabel"><i class="ti ti-wand"></i> {{ recommendationI18n.presets }}</div>
 					<div :class="$style.presetRow">
@@ -156,6 +160,7 @@ type RecommendationAccount = typeof $i & {
 	hanamiRecommendationEnabled?: boolean;
 	hanamiRecommendationAxes?: Partial<Record<AxisKey | LegacyAxisKey, AxisLevel | boolean>>;
 	hanamiShowRecommendationReason?: boolean;
+	hanamiReduceEphemeralPosts?: boolean;
 };
 type RecommendationI18n = typeof i18n.ts._hana._recommendation & {
 	presets: string;
@@ -266,6 +271,7 @@ function axisInitial(axis: AxisKey): AxisLevel {
 const axisAvailable = Object.fromEntries(AXES.map(ax => [ax, axisServerValue(ax).available])) as Record<AxisKey, boolean>;
 
 const exploreMediaFilter = ref<ExploreMediaFilter>(account.exploreMediaFilter ?? 'all');
+const hanamiReduceEphemeralPosts = ref(account.hanamiReduceEphemeralPosts ?? true);
 const recommendationForm = useForm<RecommendationFormState>({
 	enabled: account.hanamiRecommendationEnabled ?? true,
 	showReason: account.hanamiShowRecommendationReason ?? false,
@@ -352,6 +358,12 @@ function setTasteClusterWeight(cluster: HanamiTasteCluster, weight: unknown) {
 
 async function saveExploreMediaFilter() {
 	const patch = { exploreMediaFilter: exploreMediaFilter.value };
+	await os.apiWithDialog('i/update', patch as never);
+	updateCurrentAccountPartial(patch as unknown as Parameters<typeof updateCurrentAccountPartial>[0]);
+}
+
+async function saveHanamiReduceEphemeralPosts(value: boolean) {
+	const patch = { hanamiReduceEphemeralPosts: value };
 	await os.apiWithDialog('i/update', patch as never);
 	updateCurrentAccountPartial(patch as unknown as Parameters<typeof updateCurrentAccountPartial>[0]);
 }

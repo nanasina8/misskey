@@ -102,7 +102,7 @@ describe('HanamiCommonComputationService', () => {
 		expect(setup.safetyService.filterCommonEligibleNotes).toHaveBeenCalledTimes(1);
 		expect(result.candidates.globalPopular).toHaveLength(500);
 		expect(result.candidates.trending).toHaveLength(200);
-		expect(result.candidates.exploration).toHaveLength(0);
+		expect(result.candidates.exploration).toHaveLength(510);
 		expect(result.trendSnapshot.terms).toHaveLength(30);
 		expect(result.trendSnapshot.terms.every(term => term.representativeNoteIds.length === 5)).toBe(true);
 		expect(setup.service.algorithmVersion).toBe(HANAMI_COMMON_ALGORITHM_VERSION);
@@ -129,7 +129,7 @@ describe('HanamiCommonComputationService', () => {
 		}
 	});
 
-	test('shares bounded Featured headroom and applies global and exploration caps after safety', async () => {
+	test('shares bounded Featured headroom and applies the global cap after safety', async () => {
 		const scores = new Map<string, number>();
 		for (let index = 0; index < 5200; index++) {
 			scores.set(`featured-${String(index).padStart(4, '0')}`, 10_000 - index);
@@ -158,10 +158,6 @@ describe('HanamiCommonComputationService', () => {
 		expect(result.candidates.globalPopular).toHaveLength(500);
 		expect(result.candidates.globalPopular[0]!.noteId).toBe('featured-0250');
 		expect(result.candidates.globalPopular.at(-1)!.noteId).toBe('featured-0749');
-		expect(result.candidates.exploration).toHaveLength(500);
-		expect(result.candidates.exploration[0]!.noteId).toBe('featured-0750');
-		expect(result.candidates.exploration.at(-1)!.noteId).toBe('featured-1249');
-		for (const candidate of result.candidates.exploration) expect(result.candidates.globalPopular.some(popular => popular.noteId === candidate.noteId)).toBe(false);
 	});
 
 	test('keeps trend-relevant scores outside common headroom while bounding common safety IDs', async () => {
@@ -280,242 +276,46 @@ describe('HanamiCommonComputationService', () => {
 		expect(result.candidates.trending.at(-1)!.noteId).toBe('trend-204');
 	});
 
-	test('scans bounded canonical DB fallback headroom and applies final caps after safety', async () => {
+	test('selects the newest global 600 from more than 600 author-diverse recent notes, caps exploration at 1200, and has no length exclusion', async () => {
 		jest.spyOn(Date, 'now').mockReturnValue(NOW);
 		const sourceAsOf = new Date('2026-06-17T20:57:56.000Z');
-		const dbQuery = jest.fn(async (sql: string, _parameters: unknown[]) => {
-			if (sql.includes('WITH recent AS')) {
-				return Array.from({ length: 400 }, (_, index) => ({
-					noteId: `popular-${index}`,
-					userId: `stale-popular-author-${index}`,
-					reactionCount: 400 - index,
-				}));
-			}
-			return Array.from({ length: 1100 }, (_, index) => ({
-				noteId: `recent-${index}`,
-				userId: `stale-recent-author-${index}`,
-			}));
-		});
+		const scores = new Map(Array.from({ length: 600 }, (_, index) => [`popular-${index}`, 600 - index]));
+		const newestPerAuthorRows = Array.from({ length: 602 }, (_, index) => ({
+			noteId: `recent-${String(index).padStart(4, '0')}`,
+			userId: `recent-author-${String(index).padStart(4, '0')}`,
+		}));
+		const expectedRecent = [...newestPerAuthorRows]
+			.sort((a, b) => b.noteId.localeCompare(a.noteId))
+			.slice(0, 600);
+		const dbQuery = jest.fn<(sql: string, parameters: unknown[]) => Promise<unknown[]>>(async () => (
+			expectedRecent
+		));
 		const setup = createComputation({
+			scores,
 			dbQuery,
-			safeAuthors: noteIds => new Map(noteIds
-				.filter(noteId => {
-					if (noteId.startsWith('popular-')) return Number(noteId.slice('popular-'.length)) >= 200;
-					if (noteId.startsWith('recent-')) return Number(noteId.slice('recent-'.length)) >= 600;
-					return true;
-				})
-				.map(noteId => [noteId, `current:${noteId}`])),
+			safeAuthors: noteIds => new Map(noteIds.map(noteId => [noteId, `current:${noteId}`])),
 		});
 
 		const result = await setup.service.buildSourceBundle(buildInput(new AbortController().signal, sourceAsOf));
 
-		expect(dbQuery).toHaveBeenCalledTimes(2);
-		expect(setup.idService.gen).toHaveBeenCalledTimes(2);
-		expect(setup.idService.gen).toHaveBeenNthCalledWith(1, sourceAsOf.getTime() - 30 * 24 * 60 * 60 * 1000);
-		expect(setup.idService.gen).toHaveBeenNthCalledWith(2, sourceAsOf.getTime() - 30 * 24 * 60 * 60 * 1000);
-		expect(dbQuery.mock.calls[0][1]).toEqual(['fallback-since-id', 5000]);
-		expect(dbQuery.mock.calls[1][1]).toEqual(['fallback-since-id', 5000]);
-		expect(result.sourceAsOf.capturedAt).toBe(sourceAsOf.toISOString());
-		for (const [sql] of dbQuery.mock.calls) {
-			expect(sql).toContain('n."renoteId" IS NOT NULL');
-			expect(sql).toContain('n."replyId" IS NULL');
-			expect(sql).toContain('n.text IS NULL');
-			expect(sql).toContain('n.cw IS NULL');
-			expect(sql).toContain('n."hasPoll" = FALSE');
-			expect(sql).toContain('COALESCE(cardinality(n."fileIds"), 0) = 0');
-		}
-		expect(result.candidates.globalPopular).toHaveLength(200);
-		expect(result.candidates.globalPopular[0]!.noteId).toBe('popular-200');
-		expect(result.candidates.globalPopular.at(-1)!.noteId).toBe('popular-399');
-		expect(result.candidates.exploration).toHaveLength(500);
-		expect(result.candidates.exploration[0]!.noteId).toBe('recent-600');
-		expect(result.candidates.exploration.at(-1)!.noteId).toBe('recent-1099');
-	});
-
-	test('builds author-diverse DB exploration with at least 20 authors, 5% author share, and the 500 cap', async () => {
-		const authorKey = (author: number) => String(author).padStart(2, '0');
-		const rows: { noteId: string; userId: string }[] = [];
-		for (let author = 0; author < 20; author++) {
-			for (let note = 0; note < 40; note++) {
-				rows.push({ noteId: `explore-${authorKey(author)}-${note}`, userId: `author-${authorKey(author)}` });
-			}
-		}
-		const setup = createComputation({
-			scores: new Map([['featured', 1]]),
-			dbQuery: async () => rows,
-			safeAuthors: noteIds => new Map(noteIds.map(noteId => [noteId, `author-${noteId.split('-')[1]}`])),
-		});
-
-		const result = await setup.service.buildSourceBundle(buildInput(new AbortController().signal));
-		const exploration = result.candidates.exploration;
-
-		expect(exploration).toHaveLength(500);
-		const byAuthor = new Map<string, number>();
-		for (const candidate of exploration) byAuthor.set(candidate.authorId, (byAuthor.get(candidate.authorId) ?? 0) + 1);
-		expect(byAuthor.size).toBe(20);
-		for (const count of byAuthor.values()) expect(count).toBe(25);
-		expect(exploration[0]!.authorId).toBe('author-00');
-		expect(exploration.at(-1)!.authorId).toBe('author-19');
-	});
-
-	test('uses complete author rounds so a short exploration pool still keeps every author at 5% or below', async () => {
-		const rows = [
-			...Array.from({ length: 25 }, (_, note) => ({ noteId: `dominant-${note}`, userId: 'author-00' })),
-			...Array.from({ length: 19 }, (_, author) => ({ noteId: `singleton-${String(author + 1).padStart(2, '0')}`, userId: `author-${String(author + 1).padStart(2, '0')}` })),
-		];
-		const setup = createComputation({
-			scores: new Map([['featured', 1]]),
-			dbQuery: async () => rows,
-			safeAuthors: noteIds => new Map(noteIds.map(noteId => [noteId, noteId.startsWith('dominant') ? 'author-00' : `author-${noteId.slice(-2)}`])),
-		});
-
-		const exploration = (await setup.service.buildSourceBundle(buildInput(new AbortController().signal))).candidates.exploration;
-
-		expect(exploration).toHaveLength(20);
-		for (const author of new Set(exploration.map(candidate => candidate.authorId))) {
-			expect(exploration.filter(candidate => candidate.authorId === author).length / exploration.length).toBeLessThanOrEqual(0.05);
-		}
-	});
-
-	test('falls back to featured excluding the popular pool when DB has fewer than 20 authors', async () => {
-		const scores = new Map<string, number>();
-		for (let index = 0; index < 800; index++) {
-			scores.set(`featured-${String(index).padStart(4, '0')}`, 1000 - index);
-		}
-		const setup = createComputation({
-			scores,
-			dbQuery: async () => [
-				{ noteId: 'db-0', userId: 'few-author-0' },
-				{ noteId: 'db-1', userId: 'few-author-1' },
-				{ noteId: 'db-2', userId: 'few-author-2' },
-			],
-		});
-
-		const result = await setup.service.buildSourceBundle(buildInput(new AbortController().signal));
-		const exploration = result.candidates.exploration;
-		const popularIds = new Set(result.candidates.globalPopular.map(candidate => candidate.noteId));
-
-		expect(exploration).toHaveLength(300);
-		expect(exploration[0]!.noteId).toBe('featured-0500');
-		expect(exploration.at(-1)!.noteId).toBe('featured-0799');
-		for (const candidate of exploration) expect(popularIds.has(candidate.noteId)).toBe(false);
-	});
-
-	test('uses the safe featured fallback when safety removes enough authors from an otherwise eligible DB source', async () => {
-		const scores = new Map(Array.from({ length: 520 }, (_, index) => [`featured-${String(index).padStart(4, '0')}`, 1000 - index]));
-		const setup = createComputation({
-			scores,
-			dbQuery: async () => Array.from({ length: 20 }, (_, index) => ({ noteId: `db-${index}`, userId: `db-author-${index}` })),
-			safeAuthors: noteIds => new Map(noteIds
-				.filter(noteId => noteId !== 'db-19')
-				.map(noteId => [noteId, `author-${noteId}`])),
-		});
-
-		const exploration = (await setup.service.buildSourceBundle(buildInput(new AbortController().signal))).candidates.exploration;
-
-		expect(exploration).toHaveLength(20);
-		expect(exploration[0]?.noteId).toBe('featured-0500');
-	});
-
-	test('excludes the finalized globalPopular set from a safety-triggered Featured fallback', async () => {
-		const scores = new Map(Array.from({ length: 1000 }, (_, index) => [`featured-${String(index).padStart(4, '0')}`, 1000 - index]));
-		const setup = createComputation({
-			scores,
-			dbQuery: async () => Array.from({ length: 20 }, (_, index) => ({ noteId: `db-${index}`, userId: `db-author-${index}` })),
-			safeAuthors: noteIds => new Map(noteIds
-				.filter(noteId => noteId !== 'db-19' && !/^featured-00[0-9]{2}$/.test(noteId))
-				.map(noteId => [noteId, `author-${noteId}`])),
-		});
-
-		const result = await setup.service.buildSourceBundle(buildInput(new AbortController().signal));
-		const global = new Set(result.candidates.globalPopular.map(candidate => candidate.noteId));
-
-		expect(result.candidates.globalPopular[0]?.noteId).toBe('featured-0100');
-		expect(result.candidates.exploration[0]?.noteId).toBe('featured-0600');
-		for (const candidate of result.candidates.exploration) expect(global.has(candidate.noteId)).toBe(false);
-	});
-
-	test('keeps an unsafe top-200 Featured retry disjoint from finalized popular and at five percent per author', async () => {
-		const scores = new Map(Array.from({ length: 1000 }, (_, index) => [`featured-${String(index).padStart(4, '0')}`, 1000 - index]));
-		const setup = createComputation({
-			scores,
-			dbQuery: async () => Array.from({ length: 20 }, (_, index) => ({ noteId: `db-${index}`, userId: `db-author-${index}` })),
-			safeAuthors: noteIds => new Map(noteIds
-				.filter(noteId => noteId.startsWith('db-') ? noteId !== 'db-19' : Number(noteId.slice('featured-'.length)) >= 200)
-				.map(noteId => [noteId, noteId.startsWith('featured-') ? `author-${Math.floor(Number(noteId.slice('featured-'.length)) / 25)}` : `author-${noteId}`])),
-		});
-
-		const result = await setup.service.buildSourceBundle(buildInput(new AbortController().signal));
-		const popular = new Set(result.candidates.globalPopular.map(candidate => candidate.noteId));
-		const authorCounts = new Map<string, number>();
-		for (const candidate of result.candidates.exploration) {
-			expect(popular.has(candidate.noteId)).toBe(false);
-			authorCounts.set(candidate.authorId, (authorCounts.get(candidate.authorId) ?? 0) + 1);
-		}
-		for (const count of authorCounts.values()) expect(count / result.candidates.exploration.length).toBeLessThanOrEqual(0.05);
-	});
-
-	test('resolves Featured fallback safety IDs when globalPopular is disabled', async () => {
-		const scores = new Map(Array.from({ length: 520 }, (_, index) => [`featured-${String(index).padStart(4, '0')}`, 1000 - index]));
-		const setup = createComputation({
-			scores,
-			axisConfig: { globalPopular: { available: false } },
-			dbQuery: async () => Array.from({ length: 20 }, (_, index) => ({ noteId: `db-${index}`, userId: `db-author-${index}` })),
-			safeAuthors: noteIds => new Map(noteIds
-				.filter(noteId => noteId !== 'db-19')
-				.map(noteId => [noteId, `author-${noteId}`])),
-		});
-
-		const result = await setup.service.buildSourceBundle(buildInput(new AbortController().signal));
-
-		expect(result.candidates.globalPopular).toEqual([]);
-		expect(result.candidates.exploration).toHaveLength(20);
-		expect(result.candidates.exploration[0]?.noteId).toBe('featured-0500');
-	});
-
-	test('gracefully falls back to featured when the exploration DB query throws', async () => {
-		const scores = new Map<string, number>();
-		for (let index = 0; index < 210; index++) {
-			scores.set(`featured-${String(index).padStart(4, '0')}`, 1000 - index);
-		}
-		const setup = createComputation({
-			scores,
-			dbQuery: async () => { throw new Error('db unavailable'); },
-		});
-
-		const result = await setup.service.buildSourceBundle(buildInput(new AbortController().signal));
-
-		// Fewer than twenty safe fallback authors cannot satisfy a strict 5% share;
-		// omit the axis rather than falsely presenting it as diverse exploration.
-		expect(result.candidates.exploration).toEqual([]);
-	});
-
-	test('scans bounded recent exploration with author safety join and pure-renote exclusion', async () => {
-		jest.spyOn(Date, 'now').mockReturnValue(NOW);
-		const dbQuery = jest.fn(async (_sql: string, _parameters: unknown[]) => [{ noteId: 'e-0', userId: 'u-0' }]);
-		const setup = createComputation({
-			scores: new Map([['featured', 1]]),
-			dbQuery,
-		});
-
-		await setup.service.buildSourceBundle(buildInput(new AbortController().signal));
-
 		expect(dbQuery).toHaveBeenCalledTimes(1);
-		expect(dbQuery.mock.calls[0]![1]).toEqual(['fallback-since-id', 5000]);
-		const sql = dbQuery.mock.calls[0]![0];
-		expect(sql).toContain('INNER JOIN "user" u ON u.id = n."userId"');
-		expect(sql).toContain('u."isDeleted" = FALSE');
-		expect(sql).toContain('u."isSuspended" = FALSE');
-		expect(sql).toContain('n.visibility IN (\'public\',\'home\')');
-		expect(sql).toContain('n."channelId" IS NULL');
-		expect(sql).toContain('n."renoteId" IS NOT NULL');
-		expect(sql).toContain('n."replyId" IS NULL');
-		expect(sql).toContain('n.text IS NULL');
-		expect(sql).toContain('n.cw IS NULL');
-		expect(sql).toContain('n."hasPoll" = FALSE');
-		expect(sql).toContain('COALESCE(cardinality(n."fileIds"), 0) = 0');
-		expect(sql).toContain('ORDER BY n.id DESC');
-		expect(sql).toContain('LIMIT $2');
+		expect(setup.idService.gen).toHaveBeenCalledWith(sourceAsOf.getTime() - 24 * 60 * 60 * 1000);
+		expect(dbQuery.mock.calls[0][1]).toEqual(['fallback-since-id', 600]);
+		expect(result.sourceAsOf.capturedAt).toBe(sourceAsOf.toISOString());
+		const recentSql = dbQuery.mock.calls[0]![0] as string;
+		expect(recentSql).toContain('DISTINCT ON (n."userId")');
+		expect(recentSql).toMatch(/ORDER BY n\."userId", n\.id DESC\s*\)\s*SELECT recent\."noteId", recent\."userId"\s*FROM recent\s*ORDER BY recent\."noteId" DESC\s*LIMIT \$2/s);
+		expect(recentSql).toContain('n."replyId" IS NULL');
+		expect(recentSql).toContain('u."isBot" = FALSE');
+		expect(recentSql).not.toMatch(/(?:char_)?length\(/i);
+		expect(result.candidates.globalPopular).toHaveLength(500);
+		expect(result.candidates.exploration).toHaveLength(1200);
+		expect(result.candidates.exploration.slice(0, 600).map(candidate => candidate.noteId)).toEqual(
+			Array.from({ length: 600 }, (_, index) => `popular-${index}`),
+		);
+		expect(result.candidates.exploration.slice(600).map(candidate => candidate.noteId)).toEqual(
+			expectedRecent.map(row => row.noteId),
+		);
 	});
 
 	test('does not query the DB for exploration when the axis is disabled', async () => {

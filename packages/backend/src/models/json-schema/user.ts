@@ -506,6 +506,10 @@ export const packedMeDetailedOnlySchema = {
 			type: 'boolean',
 			nullable: false, optional: true,
 		},
+		hanamiReduceEphemeralPosts: {
+			type: 'boolean',
+			nullable: false, optional: true,
+		},
 		receiveAnnouncementEmail: {
 			type: 'boolean',
 			nullable: false, optional: false,

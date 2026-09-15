@@ -187,11 +187,9 @@ module.exports = {
 		"^.+\\.(t|j)sx?$": ["@swc/jest"],
 	},
 
-	// An array of regexp pattern strings that are matched against all source file paths, matched files will skip transformation
-	// transformIgnorePatterns: [
-	//   "\\\\node_modules\\\\",
-	//   "\\.pnp\\.[^\\\\]+$"
-	// ],
+	// ESM-only runtime dependencies reached by backend integration graphs must pass
+	// through the existing SWC transform under Jest's VM module loader.
+	transformIgnorePatterns: ['/node_modules/(?!(nanoid|happy-dom)/)'],
 
 	// An array of regexp pattern strings that are matched against all modules before the module loader will automatically return a mock for them
 	// unmockedModulePathPatterns: undefined,

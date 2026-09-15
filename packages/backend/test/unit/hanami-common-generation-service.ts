@@ -750,6 +750,94 @@ describe('HanamiCommonGenerationService', () => {
 		expect(() => internals.validateMaterialization(bundle, makeMaterialization())).not.toThrow();
 	});
 
+	test('stages and publishes 1200 exploration candidates through the common generation service', async () => {
+		let leaseOwner: string | undefined;
+		let runnerIndex = 0;
+		const stagedCandidateCounts: number[] = [];
+		const publishedCandidateCounts: unknown[][] = [];
+		const explorationCandidates = Array.from({ length: 1200 }, (_, index) => ({
+			noteId: index === 0 ? 'note-explore' : `note-explore-${index}`,
+			authorId: index === 0 ? 'author-explore' : `author-explore-${index}`,
+			baseScore: 1200 - index,
+			metadata: {},
+		}));
+		const largeExplorationComputation: HanamiCommonComputationPort = {
+			...computation,
+			buildSourceBundle: async () => ({
+				...makeBundle(),
+				candidates: { ...makeBundle().candidates, exploration: explorationCandidates },
+			}),
+		};
+		const createQueryRunner = jest.fn(() => {
+			const phase = runnerIndex++;
+			const runner = makeRunner();
+			runner.query.mockImplementation(async (sql: string, values: unknown[] = []) => {
+				if (sql.includes('pg_catalog.clock_timestamp() +')) return [{ deadline_at: '2026-08-20T00:01:00.000000Z' }];
+				if (sql.includes("set_config('statement_timeout'")) return [{}];
+				if (sql.includes('FROM "hanami_common_feed_state" s') && sql.includes('FOR UPDATE')) {
+					return [{
+						epoch_id: null,
+						latest_sequence: '0',
+						earliest_retained_sequence: '0',
+						latest_ready_generation_id: null,
+						generating_generation_id: 'generation-id',
+						generation_lease_owner: phase === 0 ? null : leaseOwner,
+						generation_lease_expires_at: phase === 0 ? null : new Date('2026-08-20T00:02:00.000Z'),
+						generation_fence: phase === 0 ? '0' : '1',
+						lease_is_live: phase !== 0,
+					}];
+				}
+				if (sql.includes('FROM "hanami_common_generation" g') && sql.includes('FOR UPDATE')) {
+					return [{
+						status: phase === 0 ? 'pending' : 'generating',
+						ordinal: '1',
+						started_at: timestamp,
+						generation_fence: phase === 0 ? '0' : '1',
+					}];
+				}
+				if (sql.includes('SET "generationFence" = "generationFence" +')) {
+					leaseOwner = values[2] as string;
+					return [{ generation_fence: '1', epoch_id: null }];
+				}
+				if (sql.includes('SET "status" = \'generating\'')) return [{ started_at: timestamp, generation_fence: '1' }];
+				if (sql.includes('INSERT INTO "hanami_common_candidate"')) {
+					stagedCandidateCounts.push((values[3] as string[]).length);
+					return [];
+				}
+				if (sql.includes('SET "sourceAsOf"')) return [{ generation_fence: '1' }];
+				if (sql.includes('SET "generationLeaseExpiresAt"') && sql.includes('clock_timestamp() < $6::timestamptz')) return [{ generation_fence: '1' }];
+				if (sql.includes('FROM "hanami_trend_snapshot" t') && sql.includes('FOR UPDATE')) return [{ status: 'pending' }];
+				if (sql.includes('AS shape_is_valid')) return [{ shape_is_valid: true, lost_ordinal: false }];
+				if (sql.includes('AS counts_match')) {
+					publishedCandidateCounts.push(values);
+					return [{ counts_match: true }];
+				}
+				if (sql.includes('SET "status" = \'ready\', "itemCount"')) return [{ ordinal: '1' }];
+				if (sql.includes('SET "status" = \'ready\', "checksum"')) return [{ generation_fence: '1' }];
+				if (sql.includes('SET "epochId" = COALESCE')) return [{ latest_sequence: '3', earliest_retained_sequence: '1' }];
+				return [];
+			});
+			return runner;
+		});
+		const service = makeService(
+			{ createQueryRunner, query: async () => [] },
+			['epoch-id', 'feed-1', 'feed-2', 'feed-3', 'trend-1'],
+			undefined,
+			{},
+			largeExplorationComputation,
+		);
+
+		await expect(service.runCommonGeneration('generation-id')).resolves.toEqual({
+			kind: 'published',
+			generationId: 'generation-id',
+			generationFence: '1',
+			itemCount: 3,
+		});
+		expect(stagedCandidateCounts).toEqual([1202]);
+		expect(publishedCandidateCounts.map((values) => values.slice(3))).toEqual([['1202', '1', '1', '1200']]);
+		expect(createQueryRunner).toHaveBeenCalledTimes(3);
+	});
+
 	test('allows trend snapshot representatives outside a disabled timeline candidate axis', () => {
 		const internals = makeService() as unknown as ServiceInternals;
 		const bundle = makeBundle();

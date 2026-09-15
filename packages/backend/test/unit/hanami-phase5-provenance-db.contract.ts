@@ -287,7 +287,7 @@ describe('Hanami Phase 5 workstream D PostgreSQL 18 contracts', () => {
 			await query(`UPDATE "hanami_recommendation_event"
 				SET "createdAt" = clock_timestamp() - INTERVAL '15 days', "occurredAt" = clock_timestamp()
 				WHERE "eventType" = 'seen' AND "feedEntryId" = $1`, [first.feedEntryId]);
-			const batch = new HanamiForYouBatchService(makeDataSource(schema) as never, {} as never, {} as never, {} as never);
+			const batch = new HanamiForYouBatchService(makeDataSource(schema) as never, {} as never, {} as never, {} as never, {} as never);
 			await batch.cleanupEvents();
 			expect(await query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM "hanami_recommendation_event"
 				WHERE "eventType" = 'seen' AND "feedEntryId" = $1`, [first.feedEntryId])).toEqual([{ count: '1' }]);
