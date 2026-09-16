@@ -232,7 +232,8 @@ describe('native connection cloud', () => {
 		for (let frame = 0; frame < 20; frame++) {
 			const velocity = await frameVelocity(c);
 			expect(velocity.yaw).toBeCloseTo(expected, 8);
-			expect(velocity.pitch).toBeCloseTo(-expected, 8);
+			// Moving up (negative y) pulls the near side up: pitch velocity matches the yaw sign here.
+			expect(velocity.pitch).toBeCloseTo(expected, 8);
 		}
 	});
 
@@ -304,7 +305,7 @@ describe('native connection cloud', () => {
 		for (let frame = 1; frame <= 100; frame++) {
 			const velocity = await frameVelocity(c);
 			expect(velocity.yaw).toBeCloseTo(settlingSpeed(yaw, frame), 8);
-			expect(velocity.pitch).toBeCloseTo(settlingSpeed(pitch, frame), 8);
+			expect(velocity.pitch).toBeCloseTo(settlingSpeed(-pitch, frame), 8);
 		}
 	});
 
@@ -324,11 +325,11 @@ describe('native connection cloud', () => {
 		const velocity = await frameVelocity(c, 16);
 		const expected = 1.6 / 0.034 * Math.pow(0.95, 1016 / 16.7);
 		expect(velocity.yaw).toBeCloseTo(expected, 8);
-		expect(velocity.pitch).toBeCloseTo(expected, 8);
+		expect(velocity.pitch).toBeCloseTo(-expected, 8);
 		for (let i = 0; i < 240; i++) await c.tick(16);
 		const settled = await frameVelocity(c, 16);
 		expect(settled.yaw).toBeCloseTo(settlingSpeed(expected, 241, 16), 8);
-		expect(settled.pitch).toBeCloseTo(settlingSpeed(expected, 241, 16), 8);
+		expect(settled.pitch).toBeCloseTo(settlingSpeed(-expected, 241, 16), 8);
 	});
 
 	test.each(['mouse', 'touch', 'pen'])('paused %s dragging starts at 3px and wraps pitch across both poles', async pointerType => {
@@ -340,9 +341,9 @@ describe('native connection cloud', () => {
 		await c.move(103);
 		expect(c.angles()[0] - yaw).toBeCloseTo(0.048);
 		await c.move(200, 1000);
-		expect(c.angles()[1]).toBeCloseTo((-0.35 + 900 * 0.016) % (Math.PI * 2));
+		expect(c.angles()[1]).toBeCloseTo((-0.35 - 900 * 0.016) % (Math.PI * 2));
 		await c.move(200, -1000);
-		expect(angularDelta(c.angles()[1], -0.35 + (-1000 - 100) * 0.016)).toBeCloseTo(0);
+		expect(angularDelta(c.angles()[1], -0.35 - (-1000 - 100) * 0.016)).toBeCloseTo(0);
 		await c.up();
 		await c.mouse(300, 0);
 		const still = [...c.angles()];

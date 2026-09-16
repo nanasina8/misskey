@@ -257,7 +257,8 @@ function movePointer(event: PointerEvent) {
 	if (drag.moved) {
 		const now = performance.now();
 		const dx = (event.clientX - drag.x) * 0.016;
-		const dy = (event.clientY - drag.y) * 0.016;
+		// Dragging down pulls the near side down, like grabbing the sphere surface.
+		const dy = -(event.clientY - drag.y) * 0.016;
 		yaw = (yaw + dx) % (Math.PI * 2);
 		pitch = (pitch + dy) % (Math.PI * 2);
 		const duration = Math.max(1, now - drag.updated);
