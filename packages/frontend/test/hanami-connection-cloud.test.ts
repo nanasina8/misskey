@@ -2,12 +2,19 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { beforeEach, afterEach, describe, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/vue';
-import Cloud from '@/components/HanamiConnectionCloud.vue';
 import type * as Misskey from 'misskey-js';
+import Cloud from '@/components/HanamiConnectionCloud.vue';
+import Tooltip from '@/components/HanamiConnectionTooltip.vue';
+import * as os from '@/os.js';
 import { buildConnectionLayout, cloudCamera, connectionAvatarSize, connectionCloseness, connectionDistanceBand, normalizeConnectionCount, selectConnectionItems, projectCloudPoint } from '@/utility/hanami-connection-layout.js';
 
+vi.mock('@/os.js', () => ({ popup: vi.fn(() => ({ dispose: vi.fn() })), pageWindow: vi.fn() }));
+vi.mock('@/utility/hanami-connection-layout.js', async importOriginal => {
+	const actual = await importOriginal<typeof import('@/utility/hanami-connection-layout.js')>();
+	return { ...actual, cloudCamera: vi.fn(actual.cloudCamera) };
+});
 vi.mock('@/preferences.js', () => ({ prefer: { s: { animation: false } } }));
 vi.mock('@/filters/user.js', () => ({ userPage: (user: { username: string }) => `/@${user.username}` }));
 vi.mock('@/i18n.js', async () => {
@@ -35,6 +42,7 @@ const candidates: Misskey.entities.UsersHanamiAffinityResponse['items'] = fixtur
 	counts: { reply: { out: 24, in: 0 }, mention: { out: 0, in: 0 }, renote: { out: 0, in: 0 }, reaction: { out: 30, in: 0 } },
 }));
 const items = selectConnectionItems(candidates, 30);
+beforeEach(() => vi.clearAllMocks());
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('connection distance', () => {
@@ -79,10 +87,10 @@ describe('connection distance', () => {
 			const layout = buildConnectionLayout(selectConnectionItems(candidates, count));
 			expect(new Set(layout.map(point => point.item.user.id)).size).toBe(count);
 			for (const point of layout) {
-				const expected = full.get(point.item.user.id)!;
-				expect(point.item).toBe(expected.item);
-				expect(point.closeness).toBe(expected.closeness);
-				expect(point.radius).toBe(expected.radius);
+				const expected = full.get(point.item.user.id);
+				expect(point.item).toBe(expected?.item);
+				expect(point.closeness).toBe(expected?.closeness);
+				expect(point.radius).toBe(expected?.radius);
 			}
 		}
 	});
@@ -115,115 +123,467 @@ describe('connection distance', () => {
 	});
 });
 
+// Drive the rendering loop independently of timers and real browser frames.
+function setupCloud(mock = false) {
+	vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+	let visibility: (entries: { isIntersecting: boolean }[]) => void = () => {};
+	const callbacks = new Map<number, FrameRequestCallback>();
+	let frame = 0;
+	vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => { callbacks.set(++frame, callback); return frame; }));
+	vi.stubGlobal('cancelAnimationFrame', vi.fn((id: number) => callbacks.delete(id)));
+	vi.stubGlobal('IntersectionObserver', class {
+		constructor(callback: typeof visibility) { visibility = callback; }
+		observe() { visibility([{ isIntersecting: true }]); }
+		disconnect() {}
+	});
+	vi.stubGlobal('ResizeObserver', class {
+		constructor(private callback: (entries: { contentRect: { width: number } }[]) => void) {}
+		observe() { this.callback([{ contentRect: { width: 300 } }]); }
+		disconnect() {}
+	});
+	const view = render(Cloud, { props: { items, self: fixtureUsers[0], mock }, global: { stubs } });
+	const peer = view.container.querySelector(`[data-user-id="${items[0].user.id}"]`) as HTMLElement;
+	const stage = peer.parentElement as HTMLElement;
+	Object.defineProperties(stage, {
+		setPointerCapture: { value: vi.fn() },
+		hasPointerCapture: { value: () => false },
+	});
+	let hit: Element | null = stage;
+	vi.spyOn(window.document, 'elementFromPoint').mockImplementation(() => hit);
+	const angles = () => {
+		const calls = vi.mocked(cloudCamera).mock.calls;
+		return calls[calls.length - 1];
+	};
+	const tick = async (ms = 40) => {
+		await vi.advanceTimersByTimeAsync(ms);
+		for (const [id, callback] of [...callbacks]) {
+			callbacks.delete(id);
+			callback(performance.now());
+		}
+	};
+	const mouse = async (x: number, y: number, target: HTMLElement = stage) => {
+		hit = target;
+		await fireEvent.pointerMove(target, { pointerType: 'mouse', clientX: x, clientY: y });
+	};
+	const play = () => fireEvent.click(view.getByRole('button', { name: '回転を再開' }));
+	let gesturePointerType = 'touch';
+	const down = (target = stage, pointerType = 'touch') => {
+		gesturePointerType = pointerType;
+		return fireEvent.pointerDown(target, { pointerType, pointerId: 1, isPrimary: true, button: 0, clientX: 100, clientY: 100 });
+	};
+	const move = (x: number, y = 100) => fireEvent.pointerMove(stage, { pointerType: gesturePointerType, pointerId: 1, clientX: x, clientY: y });
+	const up = () => fireEvent.pointerUp(stage, { pointerType: gesturePointerType, pointerId: 1 });
+	return { view, peer, stage, callbacks, angles, tick, mouse, play, down, move, up, visibility: (value: boolean) => visibility([{ isIntersecting: value }]), hit: (element: Element | null) => { hit = element; } };
+}
+
+function angularDelta(current: number, previous: number) {
+	return Math.atan2(Math.sin(current - previous), Math.cos(current - previous));
+}
+
+async function frameVelocity(cloud: ReturnType<typeof setupCloud>, ms = 40) {
+	const [yaw, pitch] = cloud.angles();
+	await cloud.tick(ms);
+	return {
+		yaw: angularDelta(cloud.angles()[0], yaw) / (ms / 1000),
+		pitch: angularDelta(cloud.angles()[1], pitch) / (ms / 1000),
+	};
+}
+
+// Closed-form speed at a given frame: decay only up to the first threshold crossing.
+function settlingSpeed(initial: number, frames: number, ms = 40) {
+	if (Math.abs(initial) <= 0.18) return initial;
+	const factor = Math.pow(0.95, ms / 16.7);
+	const crossing = Math.ceil(Math.log(0.18 / Math.abs(initial)) / Math.log(factor));
+	return initial * Math.pow(factor, Math.min(frames, crossing));
+}
+
+function popupProps() {
+	const call = vi.mocked(os.popup).mock.calls.at(-1);
+	expect(call?.[0]).toBe(Tooltip);
+	return call?.[1] as { showing: { value: boolean }; anchorElement: HTMLElement; item: typeof items[number]; closeness: number };
+}
+
 describe('native connection cloud', () => {
-	test('hover shows distance and counts; click pins, Escape dismisses; sample users have no profile links', async () => {
-		const view = render(Cloud, { props: { items, self: fixtureUsers[0], mock: true }, global: { stubs } });
-		const peer = view.container.querySelector(`[data-user-id="${items[0].user.id}"]`) as HTMLElement;
-		expect(view.container.querySelector('svg')).toBeNull();
-		await fireEvent.pointerMove(peer, { pointerType: 'mouse' });
-		expect(view.getByText('近め · やりとりが多い')).toBeTruthy();
-		expect(view.getByText('返信 24 · リアクション 30')).toBeTruthy();
-		expect(view.container.querySelectorAll('svg line')).toHaveLength(1);
-		await fireEvent.click(peer);
-		expect(view.getByText('固定中 · ×で解除')).toBeTruthy();
-		expect(view.container.querySelector('a')).toBeNull();
-		await fireEvent.keyDown(peer, { key: 'Escape' });
-		expect(view.queryByTestId('connection-detail')).toBeNull();
-		expect(view.container.querySelector('svg')).toBeNull();
+	test('cursor position and pointerleave never alter the initial rotation velocity', async () => {
+		const c = setupCloud();
+		await c.play();
+		for (const [frame, [x, y]] of [[300, 0], [0, 300], [150, 150], [153, 153]].entries()) {
+			await c.mouse(x, y);
+			const velocity = await frameVelocity(c);
+			expect(velocity.yaw).toBeCloseTo(settlingSpeed(-1.8, frame + 1), 8);
+			expect(velocity.pitch).toBeCloseTo(settlingSpeed(-0.6, frame + 1), 8);
+		}
+		await fireEvent.pointerLeave(c.stage);
+		const velocity = await frameVelocity(c);
+		expect(velocity.yaw).toBeCloseTo(settlingSpeed(-1.8, 5), 8);
+		expect(velocity.pitch).toBeCloseTo(settlingSpeed(-0.6, 5), 8);
 	});
 
-	test('long press pins details; pointer cancellation prevents a subsequent long press', async () => {
-		vi.useFakeTimers();
-		const view = render(Cloud, { props: { items, mock: true }, global: { stubs } });
-		const peer = view.container.querySelector(`[data-user-id="${items[0].user.id}"]`) as HTMLElement;
-		Object.defineProperty(peer.parentElement, 'hasPointerCapture', { value: () => false });
-		await fireEvent.pointerDown(peer, { pointerType: 'touch', pointerId: 1, isPrimary: true, button: 0, clientX: 100, clientY: 100 });
-		await vi.advanceTimersByTimeAsync(460);
-		expect(view.getByText('固定中 · ×で解除')).toBeTruthy();
-		await fireEvent.click(view.getByRole('button', { name: '閉じる' }));
-		await fireEvent.pointerDown(peer, { pointerType: 'touch', pointerId: 2, isPrimary: true, button: 0, clientX: 100, clientY: 100 });
-		await fireEvent.pointerCancel(peer, { pointerId: 2 });
+	test.each([-0.08, -0.0004, 0, 0.0004, 0.0012, 0.08])('a drag ending at %s rad/s preserves subthreshold speed and rounds only tiny speeds to zero', async speed => {
+		const c = setupCloud();
+		await c.play();
+		await c.down(c.stage, 'mouse');
+		await vi.advanceTimersByTimeAsync(100);
+		await c.move(104, 104);
+		await vi.advanceTimersByTimeAsync(50);
+		await c.move(104 + speed * 0.05 / 0.016, 104 - speed * 0.05 / 0.016);
+		await c.up();
+		const expected = Math.abs(speed) < 0.001 ? 0 : speed;
+		for (let frame = 0; frame < 20; frame++) {
+			const velocity = await frameVelocity(c);
+			expect(velocity.yaw).toBeCloseTo(expected, 8);
+			expect(velocity.pitch).toBeCloseTo(-expected, 8);
+		}
+	});
+
+	test.each(['mouse', 'touch', 'pen'])('%s stops after holding still for exactly 100ms before release', async pointerType => {
+		const c = setupCloud();
+		await c.play();
+		await c.down(c.stage, pointerType);
+		await vi.advanceTimersByTimeAsync(200);
+		await c.move(110, 90);
+		const stopped = [...c.angles()];
+		expect(c.callbacks.size).toBe(0);
+		await c.tick(100);
+		expect(c.angles()).toEqual(stopped);
+		await c.up();
+		await c.mouse(300, 0);
+		for (let frame = 0; frame < 20; frame++) await c.tick();
+		expect(c.angles()).toEqual(stopped);
+	});
+
+	test('initial rotation starts on both axes and settles independently below 0.18 rad/s', async () => {
+		const c = setupCloud();
+		await c.play();
+		for (let frame = 1; frame <= 100; frame++) {
+			const velocity = await frameVelocity(c);
+			expect(velocity.yaw).toBeCloseTo(settlingSpeed(-1.8, frame), 8);
+			expect(velocity.pitch).toBeCloseTo(settlingSpeed(-0.6, frame), 8);
+			expect(velocity.yaw).toBeLessThan(0);
+			expect(velocity.pitch).toBeLessThan(0);
+		}
+		const settled = await frameVelocity(c);
+		expect(Math.abs(settled.yaw)).toBeLessThan(0.18);
+		expect(Math.abs(settled.pitch)).toBeLessThan(0.18);
+		expect(Math.abs(settled.yaw)).toBeGreaterThan(0.18 * Math.pow(0.95, 40 / 16.7));
+		expect(Math.abs(settled.pitch)).toBeGreaterThan(0.18 * Math.pow(0.95, 40 / 16.7));
+	});
+
+	test.each(['mouse', 'touch', 'pen'])('%s rotates 1.6 rad per 100px and uses the same per-axis decay after release', async pointerType => {
+		const c = setupCloud();
+		await c.play();
+		const [yaw] = c.angles();
+		await c.down(c.stage, pointerType);
+		await vi.advanceTimersByTimeAsync(34);
+		await c.move(200);
+		expect(c.callbacks.size).toBe(0);
+		expect(c.stage.dataset.dragging).toBe('true');
+		expect(c.stage.setPointerCapture).toHaveBeenCalledWith(1);
+		expect(c.angles()[0] - yaw).toBeCloseTo(1.6);
+		await c.up();
+		expect(c.stage.hasAttribute('data-dragging')).toBe(false);
+		for (let frame = 1; frame <= 100; frame++) {
+			const velocity = await frameVelocity(c);
+			expect(velocity.yaw).toBeCloseTo(settlingSpeed(1.6 / 0.034, frame), 8);
+			expect(velocity.pitch).toBeCloseTo(0, 8);
+		}
+		expect(os.pageWindow).not.toHaveBeenCalled();
+	});
+
+	test.each([
+		{ pointerType: 'mouse', x: 200, y: 0, yaw: 16, pitch: -16 },
+		{ pointerType: 'touch', x: 0, y: 200, yaw: -16, pitch: 16 },
+		{ pointerType: 'pen', x: 200, y: 100.5, yaw: 16, pitch: 0.08 },
+	])('$pointerType flick to ($x, $y) decays each axis independently for 100 frames', async ({ pointerType, x, y, yaw, pitch }) => {
+		const c = setupCloud();
+		await c.play();
+		await c.down(c.stage, pointerType);
+		await vi.advanceTimersByTimeAsync(100);
+		await c.move(x, y);
+		await c.up();
+		for (let frame = 1; frame <= 100; frame++) {
+			const velocity = await frameVelocity(c);
+			expect(velocity.yaw).toBeCloseTo(settlingSpeed(yaw, frame), 8);
+			expect(velocity.pitch).toBeCloseTo(settlingSpeed(pitch, frame), 8);
+		}
+	});
+
+	test.each([30, 60, 120])('touch velocity decays equally at %s fps and stops decaying at each axis threshold', async fps => {
+		const c = setupCloud();
+		await c.play();
+		await c.down();
+		await vi.advanceTimersByTimeAsync(34);
+		await c.move(200, 200);
+		await c.up();
+		let elapsed = 0;
+		for (let i = 1; i <= fps; i++) {
+			const next = Math.round(i * 1000 / fps);
+			await c.tick(next - elapsed);
+			elapsed = next;
+		}
+		const velocity = await frameVelocity(c, 16);
+		const expected = 1.6 / 0.034 * Math.pow(0.95, 1016 / 16.7);
+		expect(velocity.yaw).toBeCloseTo(expected, 8);
+		expect(velocity.pitch).toBeCloseTo(expected, 8);
+		for (let i = 0; i < 240; i++) await c.tick(16);
+		const settled = await frameVelocity(c, 16);
+		expect(settled.yaw).toBeCloseTo(settlingSpeed(expected, 241, 16), 8);
+		expect(settled.pitch).toBeCloseTo(settlingSpeed(expected, 241, 16), 8);
+	});
+
+	test.each(['mouse', 'touch', 'pen'])('paused %s dragging starts at 3px and wraps pitch across both poles', async pointerType => {
+		const c = setupCloud();
+		const [yaw] = c.angles();
+		await c.down(c.stage, pointerType);
+		await c.move(102);
+		expect(c.angles()[0]).toBe(yaw);
+		await c.move(103);
+		expect(c.angles()[0] - yaw).toBeCloseTo(0.048);
+		await c.move(200, 1000);
+		expect(c.angles()[1]).toBeCloseTo((-0.35 + 900 * 0.016) % (Math.PI * 2));
+		await c.move(200, -1000);
+		expect(angularDelta(c.angles()[1], -0.35 + (-1000 - 100) * 0.016)).toBeCloseTo(0);
+		await c.up();
+		await c.mouse(300, 0);
+		const still = [...c.angles()];
+		await c.tick();
+		expect(c.angles()).toEqual(still);
+		expect(c.callbacks.size).toBe(0);
+	});
+
+	test('300ms hover opens an anchored tooltip and slows rotation to one quarter without stopping frames', async () => {
+		const c = setupCloud();
+		await c.play();
+		for (let frame = 0; frame < 100; frame++) await c.tick();
+		const base = await frameVelocity(c);
+		await c.mouse(300, 150, c.peer);
+		await vi.advanceTimersByTimeAsync(299);
+		expect(os.popup).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(1);
+		const props = popupProps();
+		expect(props.anchorElement).toBe(c.peer);
+		expect(props.item).toEqual(items[0]);
+		expect(props.showing.value).toBe(true);
+		expect(c.view.container.querySelectorAll('svg line')).toHaveLength(1);
+		expect(c.callbacks.size).toBe(1);
+		await c.tick();
+		const [yaw] = c.angles();
+		await c.tick();
+		expect(c.angles()[0] - yaw).toBeCloseTo(base.yaw * 0.04 / 4);
+		await c.mouse(150, 150, c.peer);
+		const [centerYaw] = c.angles();
+		await c.tick(16);
+		expect(c.angles()[0] - centerYaw).toBeCloseTo(base.yaw * 0.016 / 4, 8);
+		await fireEvent.pointerLeave(c.stage);
+		expect(props.showing.value).toBe(false);
+		expect(c.view.container.querySelector('svg')).toBeNull();
+		expect(c.callbacks.size).toBe(1);
+		const dispose = vi.mocked(os.popup).mock.results.at(-1)?.value.dispose;
+		const events = vi.mocked(os.popup).mock.calls.at(-1)?.[2] as { closed: () => void };
+		events.closed();
+		expect(dispose).toHaveBeenCalledOnce();
+	});
+
+	test('changing avatars restarts the delay and rotation under a stationary cursor closes the tooltip', async () => {
+		const c = setupCloud();
+		await c.play();
+		await c.mouse(300, 150, c.peer);
+		await vi.advanceTimersByTimeAsync(200);
+		const other = c.view.container.querySelector(`[data-user-id="${items[1].user.id}"]`) as HTMLElement;
+		await c.mouse(300, 150, other);
+		await vi.advanceTimersByTimeAsync(200);
+		expect(os.popup).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(100);
+		const props = popupProps();
+		expect(props.anchorElement).toBe(other);
+		c.hit(c.stage);
+		await c.tick();
+		await vi.advanceTimersByTimeAsync(99);
+		expect(props.showing.value).toBe(true);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(props.showing.value).toBe(false);
+	});
+
+	test.each(['mouse', 'touch', 'pen'])('%s short click below 3px opens once, while drag clicks never open a profile', async pointerType => {
+		const c = setupCloud();
+		await c.down(c.peer, pointerType);
+		await vi.advanceTimersByTimeAsync(100);
+		await c.move(102);
+		await c.up();
+		await fireEvent.click(c.peer, { detail: 1 });
+		expect(os.pageWindow).toHaveBeenCalledExactlyOnceWith(`/@${items[0].user.username}`);
+		vi.mocked(os.pageWindow).mockClear();
+		await c.down(c.peer, pointerType);
+		await vi.advanceTimersByTimeAsync(50);
+		await c.move(103);
+		await c.up();
+		await fireEvent.click(c.peer, { detail: 1 });
+		expect(os.pageWindow).not.toHaveBeenCalled();
+		// A subsequent real click is not suppressed by the previous drag.
+		await c.down(c.peer, pointerType);
+		await c.up();
+		await fireEvent.click(c.peer, { detail: 1 });
+		expect(os.pageWindow).toHaveBeenCalledTimes(1);
+	});
+
+	test.each(['mouse', 'touch'])('mock %s clicks do not open profiles', async pointerType => {
+		const c = setupCloud(true);
+		await c.down(c.peer, pointerType);
+		await c.up();
+		await fireEvent.click(c.peer, { detail: 1 });
+		expect(os.pageWindow).not.toHaveBeenCalled();
+	});
+
+	test.each(['mouse', 'touch', 'pen'])('%s dragging closes the tooltip and suspends all hit testing until release', async pointerType => {
+		const c = setupCloud();
+		await c.play();
+		await c.mouse(100, 100, c.peer);
+		await vi.advanceTimersByTimeAsync(300);
+		const props = popupProps();
+		// Queue a 100ms hit test, then begin dragging before it runs.
+		await c.tick(16);
+		await c.down(c.peer, pointerType);
+		await c.move(103);
+		expect(props.showing.value).toBe(false);
+		expect(c.callbacks.size).toBe(0);
+		const hitTests = vi.mocked(window.document.elementFromPoint).mock.calls.length;
+		await c.tick(200);
+		await c.move(110);
+		await c.tick(200);
+		expect(window.document.elementFromPoint).toHaveBeenCalledTimes(hitTests);
+		expect(os.popup).toHaveBeenCalledTimes(1);
+		await c.up();
+		await c.mouse(150, 150);
+		await c.tick(16);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(window.document.elementFromPoint).toHaveBeenCalledTimes(hitTests + 1);
+	});
+
+	test('a mouse hold is not a touch long press or a short click', async () => {
+		const c = setupCloud();
+		await c.down(c.peer, 'mouse');
+		await vi.advanceTimersByTimeAsync(450);
+		expect(os.popup).not.toHaveBeenCalled();
+		await c.up();
+		await fireEvent.click(c.peer, { detail: 1 });
+		expect(os.pageWindow).not.toHaveBeenCalled();
+	});
+
+	test('short taps open once, long presses close on release, cancellation and slow taps do not navigate', async () => {
+		const c = setupCloud();
+		await c.down(c.peer);
+		await vi.advanceTimersByTimeAsync(100);
+		await c.up();
+		await fireEvent.click(c.peer, { detail: 1 });
+		expect(os.pageWindow).toHaveBeenCalledTimes(1);
+		await c.down(c.peer);
+		await vi.advanceTimersByTimeAsync(450);
+		const props = popupProps();
+		expect(props.showing.value).toBe(true);
+		await c.up();
+		expect(props.showing.value).toBe(false);
+		await fireEvent.click(c.peer, { detail: 1 });
+		await c.down(c.peer);
+		await fireEvent.pointerCancel(c.stage, { pointerId: 1 });
 		await vi.advanceTimersByTimeAsync(500);
-		expect(view.queryByTestId('connection-detail')).toBeNull();
+		expect(os.popup).toHaveBeenCalledTimes(1);
+		await c.down(c.peer);
+		await vi.advanceTimersByTimeAsync(350);
+		await c.up();
+		expect(os.pageWindow).toHaveBeenCalledTimes(1);
+	});
+
+	test('keyboard focus opens details; blur and Escape close them and native button activation opens the profile', async () => {
+		const c = setupCloud();
+		vi.spyOn(c.peer, 'matches').mockImplementation(selector => selector === ':focus-visible');
+		await fireEvent.focus(c.peer);
+		const first = popupProps();
+		await fireEvent.keyDown(c.peer, { key: 'Escape' });
+		expect(first.showing.value).toBe(false);
+		await fireEvent.focus(c.peer);
+		const second = popupProps();
+		await fireEvent.blur(c.peer);
+		expect(second.showing.value).toBe(false);
+		await fireEvent.click(c.peer, { detail: 0 });
+		expect(os.pageWindow).toHaveBeenCalledWith(`/@${items[0].user.username}`);
+	});
+
+	test('tooltip uses the existing identity and four count labels, distance, direction and relative time', () => {
+		const view = render(Tooltip, {
+			props: { showing: true, anchorElement: window.document.createElement('button'), item: items[0], closeness: 1 },
+			global: { stubs: { ...stubs, MkTooltip: { template: '<div><slot/></div>' } } },
+		});
+		for (const text of ['返信', 'メンション', 'リノート', 'リアクション', '24', '30', '近め · やりとりが多い', items[0].user.username]) expect(view.getByText(text)).toBeTruthy();
+		expect(view.getAllByText('0')).toHaveLength(2);
+		expect(view.container.textContent).toContain('双方向のやりとり ·');
+		expect(view.container.querySelector('a, button')).toBeNull();
 	});
 });
-
 
 describe('cloud rendering lifecycle', () => {
-	test('explicit Play overrides the initial animation preference; pause and offscreen cancel all frames', async () => {
-		let visibility: ((entries: { isIntersecting: boolean }[]) => void) | undefined;
-		const callbacks = new Map<number, FrameRequestCallback>();
-		let frame = 0;
-		vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => { callbacks.set(++frame, callback); return frame; }));
-		vi.stubGlobal('cancelAnimationFrame', vi.fn((id: number) => callbacks.delete(id)));
-		vi.stubGlobal('IntersectionObserver', class {
-			constructor(callback: typeof visibility) { visibility = callback; }
-			observe() { visibility?.([{ isIntersecting: true }]); }
-			disconnect() {}
-		});
-		const view = render(Cloud, { props: { items, mock: true }, global: { stubs } });
-		const peer = view.container.querySelector(`[data-user-id="${items[0].user.id}"]`) as HTMLElement;
-		const original = peer.style.transform;
-		expect(callbacks.size).toBe(0);
-		await fireEvent.click(view.getByRole('button', { name: '回転を再開' }));
-		expect(callbacks.size).toBe(1);
-		const [id, callback] = [...callbacks][0];
-		callbacks.delete(id);
-		callback(performance.now() + 40);
-		expect(peer.style.transform).not.toBe(original);
-		await fireEvent.pointerMove(peer, { pointerType: 'mouse' });
-		expect(callbacks.size).toBe(0);
-		await fireEvent.pointerLeave(peer);
-		expect(callbacks.size).toBe(1);
-		await fireEvent.click(peer);
-		expect(callbacks.size).toBe(1); // Pinning the detail does not freeze the globe.
-
-		visibility?.([{ isIntersecting: false }]);
-		expect(callbacks.size).toBe(0);
-		visibility?.([{ isIntersecting: true }]);
-		expect(callbacks.size).toBe(1);
+	test('explicit Play overrides the initial animation preference; pause, offscreen and hidden tabs cancel all frames', async () => {
+		const c = setupCloud(true);
+		const original = c.peer.style.transform;
+		expect(c.callbacks.size).toBe(0);
+		await c.play();
+		expect(c.callbacks.size).toBe(1);
+		await c.tick();
+		expect(c.peer.style.transform).not.toBe(original);
+		await c.mouse(300, 150, c.peer);
+		await vi.advanceTimersByTimeAsync(300);
+		const props = popupProps();
+		expect(c.callbacks.size).toBe(1);
+		c.visibility(false);
+		expect(c.callbacks.size).toBe(0);
+		expect(props.showing.value).toBe(false);
+		c.visibility(true);
+		expect(c.callbacks.size).toBe(1);
 		const hidden = vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(true);
 		await fireEvent(window.document, new Event('visibilitychange'));
-		expect(callbacks.size).toBe(0);
+		expect(c.callbacks.size).toBe(0);
 		hidden.mockReturnValue(false);
 		await fireEvent(window.document, new Event('visibilitychange'));
-		expect(callbacks.size).toBe(1);
-		await fireEvent.click(view.getByRole('button', { name: '回転を一時停止' }));
-		expect(callbacks.size).toBe(0);
-		await fireEvent.click(view.getByRole('button', { name: '回転を再開' }));
-		view.unmount();
-		expect(callbacks.size).toBe(0);
+		expect(c.callbacks.size).toBe(1);
+		await fireEvent.click(c.view.getByRole('button', { name: '回転を一時停止' }));
+		expect(c.callbacks.size).toBe(0);
+		await c.play();
+		await c.mouse(300, 150, c.peer);
+		c.view.unmount();
+		await vi.advanceTimersByTimeAsync(500);
+		expect(c.callbacks.size).toBe(0);
+		expect(os.popup).toHaveBeenCalledTimes(1);
 	});
-});
 
+	test('cursor hit testing runs only every 100ms and offscreen cancels pending checks', async () => {
+		const c = setupCloud();
+		await c.play();
+		await c.mouse(300, 150);
+		for (let i = 0; i < 10; i++) await c.tick(10);
+		expect(window.document.elementFromPoint).not.toHaveBeenCalled();
+		await c.tick(10);
+		expect(window.document.elementFromPoint).toHaveBeenCalledTimes(1);
+		for (let i = 0; i < 10; i++) await c.tick(10);
+		expect(window.document.elementFromPoint).toHaveBeenCalledTimes(2);
+		c.visibility(false);
+		await vi.advanceTimersByTimeAsync(500);
+		expect(window.document.elementFromPoint).toHaveBeenCalledTimes(2);
+	});
 
-describe('vertical cloud rotation', () => {
-	test('dragging crosses both poles, completes a revolution and keeps rotating in either direction', async () => {
-		vi.stubGlobal('IntersectionObserver', class {
-			constructor(private callback: (entries: { isIntersecting: boolean }[]) => void) {}
-			observe() { this.callback([{ isIntersecting: true }]); }
-			disconnect() {}
-		});
-		const view = render(Cloud, { props: { items, mock: true }, global: { stubs } });
-		const peer = view.container.querySelector('[data-user-id]') as HTMLElement;
-		const stage = peer.parentElement as HTMLElement;
-		Object.defineProperty(stage, 'setPointerCapture', { value: () => {} });
-		Object.defineProperty(stage, 'hasPointerCapture', { value: () => false });
-		const original = peer.style.transform;
-		await fireEvent.pointerDown(stage, { pointerId: 1, isPrimary: true, button: 0, clientX: 100, clientY: 100 });
-		let previous = original;
-		for (let step = 1; step <= 16; step++) {
-			await fireEvent.pointerMove(stage, { pointerId: 1, clientX: 100, clientY: 100 + step * (Math.PI * 2 / 0.008 / 8) });
-			expect(peer.style.transform).not.toBe(previous);
-			previous = peer.style.transform;
-			if (step % 8 === 0) expect(peer.style.transform).toBe(original);
+	test('every native animation frame renders, including high refresh rates, while stalled frames cannot jump arbitrarily far', async () => {
+		const c = setupCloud();
+		await c.play();
+		await c.mouse(300, 150);
+		let elapsed = 0;
+		for (const ms of [16, 17, 8, 7]) {
+			const [yaw] = c.angles();
+			const calls = vi.mocked(cloudCamera).mock.calls.length;
+			await c.tick(ms);
+			elapsed += ms;
+			expect(c.angles()[0] - yaw).toBeCloseTo(-1.8 * Math.pow(0.95, elapsed / 16.7) * ms / 1000, 8);
+			expect(vi.mocked(cloudCamera).mock.calls.length).toBe(calls + 1);
 		}
-		for (let step = 15; step >= -8; step--) {
-			await fireEvent.pointerMove(stage, { pointerId: 1, clientX: 100, clientY: 100 + step * (Math.PI * 2 / 0.008 / 8) });
-			expect(peer.style.transform).not.toBe(previous);
-			previous = peer.style.transform;
-			if (step % 8 === 0) expect(peer.style.transform).toBe(original);
-		}
-		await fireEvent.pointerUp(stage, { pointerId: 1 });
+		const before = c.angles()[0];
+		await c.tick(1000);
+		expect(c.angles()[0] - before).toBeCloseTo(-1.8 * Math.pow(0.95, (elapsed + 1000) / 16.7) * 0.08, 8);
 	});
 });

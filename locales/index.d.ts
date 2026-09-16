@@ -13383,6 +13383,10 @@ export interface Locale extends ILocale {
         "_affinity": {
             "_cloud": {
                 /**
+                 * ユーザークラウドのプレビュー
+                 */
+                "preview": string;
+                /**
                  * 直近90日
                  */
                 "period": string;
@@ -13398,18 +13402,6 @@ export interface Locale extends ILocale {
                  * 自分
                  */
                 "you": string;
-                /**
-                 * ドラッグで回転 · ホバー／長押しで詳細
-                 */
-                "help": string;
-                /**
-                 * 近い
-                 */
-                "near": string;
-                /**
-                 * 遠い
-                 */
-                "far": string;
                 /**
                  * 近め · やりとりが多い
                  */
@@ -13431,21 +13423,57 @@ export interface Locale extends ILocale {
                  */
                 "oneWay": string;
                 /**
-                 * 固定中 · ×で解除
-                 */
-                "pinned": string;
-                /**
-                 * クリック／長押しで固定
-                 */
-                "pinHint": string;
-                /**
-                 * 内側ほどやりとりが多い · 直近90日
+                 * 内側ほどやりとりが多い · クリックでプロフィール
                  */
                 "footer": string;
+                /**
+                 * 画像・表示名・やりとりの数値はすべてサンプルです。
+                 */
+                "sample": string;
                 /**
                  * 表示する人数
                  */
                 "count": string;
+                /**
+                 * ウィジェットの幅
+                 */
+                "width": string;
+                /**
+                 * 名前の候補
+                 */
+                "naming": string;
+                /**
+                 * やりとりマップ
+                 */
+                "nameMap": string;
+                /**
+                 * ユーザークラウド
+                 */
+                "nameCloud": string;
+                /**
+                 * 交流マップ
+                 */
+                "nameInteraction": string;
+                /**
+                 * 身近な人
+                 */
+                "namePeople": string;
+                /**
+                 * やりとりマップ：距離とやりとりを眺める機能が伝わる名前。第一候補です。
+                 */
+                "nameMapReason": string;
+                /**
+                 * ユーザークラウド：「サーバークラウド」に倣い、3Dで人を表示することを表現。
+                 */
+                "nameCloudReason": string;
+                /**
+                 * 交流マップ：「ユーザーリスト」のように、内容と表示形式を短く組み合わせた名前。
+                 */
+                "nameInteractionReason": string;
+                /**
+                 * 身近な人：「よく話す人」「ご無沙汰の人」と並べやすい、日常的な名前。
+                 */
+                "namePeopleReason": string;
             };
             /**
              * new

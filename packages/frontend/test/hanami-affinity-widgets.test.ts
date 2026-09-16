@@ -8,10 +8,12 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/vue';
 import Talked from '@/widgets/WidgetHanamiTalkedUsers.vue';
 import Ring from '@/widgets/WidgetHanamiConnectionRing.vue';
 import Lapsed from '@/widgets/WidgetHanamiLapsedUsers.vue';
+import * as os from '@/os.js';
 
 const api = vi.hoisted(() => vi.fn());
 const interval = vi.hoisted(() => vi.fn());
 const settings = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
+vi.mock('@/os.js', () => ({ popup: vi.fn(() => ({ dispose: vi.fn() })), pageWindow: vi.fn() }));
 vi.mock('@/preferences.js', () => ({ prefer: { s: { animation: false } } }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: api }));
 vi.mock('@@/js/use-interval.js', () => ({ useInterval: interval }));
@@ -108,8 +110,8 @@ describe('WidgetHanamiConnectionRing', () => {
 		await waitFor(() => expect(view.container.querySelectorAll('[data-user-id]')).toHaveLength(24));
 		expect(api).toHaveBeenCalledTimes(1);
 		const peer = view.container.querySelector('[data-user-id="person0"]')!;
-		await fireEvent.click(peer);
-		expect(view.getByRole('link', { name: /Profile/ }).getAttribute('href')).toBe('/@person0');
+		await fireEvent.click(peer, { detail: 0 });
+		expect(os.pageWindow).toHaveBeenCalledWith('/@person0');
 		expect(view.container.textContent).not.toContain('関係の良し悪し');
 	});
 
