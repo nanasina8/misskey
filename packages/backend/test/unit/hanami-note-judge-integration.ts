@@ -7,6 +7,7 @@ import { describe, expect, jest, test } from '@jest/globals';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as Path from 'node:path';
+import { IdService } from '@/core/IdService.js';
 import { HanamiForYouBatchService, HanamiNoteJudgeLockContentionError } from '@/core/hanami/HanamiForYouBatchService.js';
 import { createDefaultHanamiNoteJudgeSettings } from '@/core/hanami/HanamiNoteJudgeContracts.js';
 import { HanamiPersonalFeedComputationService } from '@/core/hanami/HanamiPersonalFeedComputationService.js';
@@ -17,8 +18,8 @@ type PersonalJudgeInternals = {
 	applyJudgeSelection(context: HanamiPersonalFeedGenerationContext, candidates: readonly HanamiPersonalFeedCandidate[], judgeContext: { settings: ReturnType<typeof createDefaultHanamiNoteJudgeSettings>; reduceEphemeralPosts: boolean }): Promise<readonly HanamiPersonalFeedCandidate[]>;
 };
 
-function batchService(query: unknown, redis: unknown = { set: jest.fn(async () => 'OK'), eval: jest.fn(async () => 1) }): HanamiForYouBatchService {
-	return new HanamiForYouBatchService({ query } as never, { insert: jest.fn(async () => undefined), update: jest.fn(async () => undefined) } as never, redis as never, { gen: () => 'run-id' } as never, {} as never);
+function batchService(query: unknown, redis: unknown = { set: jest.fn(async () => 'OK'), eval: jest.fn(async () => 1) }, idService: Pick<IdService, 'gen'> = { gen: () => 'run-id' }): HanamiForYouBatchService {
+	return new HanamiForYouBatchService({ query } as never, { insert: jest.fn(async () => undefined), update: jest.fn(async () => undefined) } as never, redis as never, idService as never, {} as never);
 }
 
 describe('Hanami note judge integration', () => {
@@ -45,9 +46,11 @@ describe('Hanami note judge integration', () => {
 
 		const calls = query.mock.calls as unknown as Array<[string, unknown[] | undefined]>;
 		const candidateQuery = calls.find(([sql]) => sql.includes('FROM "hanami_common_candidate"'))!;
+		expect(candidateQuery[0]).toContain('c."generationId" = $1');
 		expect(candidateQuery[0]).toContain('j."promptVersion" = $2');
 		expect(candidateQuery[0]).toContain('j."noteId" IS NULL');
 		expect(candidateQuery[1]).toEqual(['generation-1', 2]);
+		expect(candidateQuery[0]).not.toMatch(/n\.id\s*>=|createdAt|clock_timestamp|INTERVAL/);
 		const upsert = calls.find(([sql]) => sql.includes('INSERT INTO "hanami_note_judgement"'))!;
 		expect(upsert[0]).toContain('ON CONFLICT ("noteId") DO UPDATE SET');
 		expect(upsert[1]).toEqual(['old-version-reply', 'rule:reply', 2, [1, 0, 0, 0, 0]]);
@@ -184,25 +187,90 @@ describe('Hanami note judge integration', () => {
 		// The strict less-than predicate preserves rows exactly at the boundary and all newer rows.
 	});
 
-	test('cleanup followed by reconciliation excludes a historical ready candidate without an UPSERT or job', async () => {
+	test.each(['aid', 'aidx', 'meid', 'meidg', 'ulid', 'objectid'])('reconciles the generated-ID window for %s using current ready, unjudged candidates (modeled query)', async (format) => {
+		const now = Date.UTC(2026, 8, 16, 12);
+		const cutoff = now - 72 * 60 * 60 * 1000;
+		const settings = { ...createDefaultHanamiNoteJudgeSettings(), promptVersion: 9 };
+		const idService = new IdService({ id: format } as never);
+		const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
+		try {
+			const sinceId = idService.gen(cutoff);
+			const candidate = (id: string, overrides: { generationId?: string; status?: string; judgedVersion?: number } = {}) => ({
+				id, text: '運用に役立つ投稿です。', isBot: false, isReply: false,
+				generationId: 'latest-ready', status: 'ready', judgedVersion: undefined as number | undefined, ...overrides,
+			});
+			// Reuse the exact generated ID for equality: another ID generated at the
+			// same millisecond need not compare >= it. Whole-second gaps also cover objectid.
+			const older = candidate(idService.gen(cutoff - 1000));
+			const equal = candidate(sinceId);
+			const newer = candidate(idService.gen(cutoff + 1000));
+			const previousVersion = candidate(idService.gen(cutoff + 2000), { judgedVersion: 8 });
+			const fixtures = [
+				older, equal, newer, previousVersion,
+				candidate(idService.gen(cutoff + 3000), { judgedVersion: 9 }),
+				candidate(idService.gen(cutoff + 4000), { generationId: 'historical-ready' }),
+				candidate(idService.gen(cutoff + 5000), { status: 'building' }),
+			];
+			expect(older.id < sinceId).toBe(true);
+			expect(newer.id > sinceId).toBe(true);
+			const genSpy = jest.spyOn(idService, 'gen').mockReturnValue(sinceId);
+			try {
+				const query = jest.fn(async (sql: string, parameters?: unknown[]) => {
+					if (sql.includes('SELECT "hanamiNoteJudgeSettings"')) return [{ settings }];
+					if (!sql.includes('FROM "hanami_common_candidate"')) return [];
+					expect(sql).toContain('n.id >= $1');
+					expect(sql).not.toMatch(/n\."?createdAt"?|clock_timestamp|INTERVAL/);
+					expect(sql).toContain('c."generationId" = (');
+					expect(sql).toContain('SELECT state."latestReadyGenerationId" FROM "hanami_common_feed_state" state');
+					expect(sql).toContain('JOIN "hanami_common_generation" g ON g.id = c."generationId" AND g.status = \'ready\'');
+					expect(sql).toContain('LEFT JOIN "hanami_note_judgement" j ON j."noteId" = n.id AND j."promptVersion" = $2');
+					expect(sql).toContain('j."noteId" IS NULL');
+					expect(parameters).toEqual([sinceId, 9]);
+					// Model the asserted query contract over fixtures, not PostgreSQL execution.
+					const [boundSinceId, boundVersion] = parameters as [string, number];
+					return fixtures.filter(row => row.id >= boundSinceId
+						&& row.generationId === 'latest-ready' && row.status === 'ready'
+						&& row.judgedVersion !== boundVersion)
+						.sort((a, b) => a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+				});
+				await expect(batchService(query, undefined, idService).reconcileNoteJudgeJobs()).resolves.toEqual([
+					{ noteIds: [previousVersion.id, newer.id, equal.id], promptVersion: 9 },
+				]);
+				expect(genSpy).toHaveBeenCalledTimes(1);
+				expect(genSpy).toHaveBeenCalledWith(cutoff);
+				expect(query).toHaveBeenCalledTimes(2);
+			} finally {
+				genSpy.mockRestore();
+			}
+		} finally {
+			nowSpy.mockRestore();
+		}
+	});
+
+	test('cleanup followed by reconciliation excludes an older-ID ready candidate without an UPSERT or job (modeled query)', async () => {
 		const settings = createDefaultHanamiNoteJudgeSettings();
-		const historicalCandidate = { id: 'historical-note', text: '運用に役立つ投稿です。', isBot: false, isReply: false };
-		const query = jest.fn(async (sql: string) => {
-			if (sql.includes('DELETE FROM "hanami_note_judgement"')) return [[], 1];
+		const idService = new IdService({ id: 'aid' } as never);
+		const cutoff = Date.UTC(2026, 8, 13, 12);
+		const sinceId = idService.gen(cutoff);
+		const historicalCandidate = { id: idService.gen(cutoff - 1000), text: '運用に役立つ投稿です。', isBot: false, isReply: false };
+		let hasJudgement = true;
+		const query = jest.fn(async (sql: string, parameters?: unknown[]) => {
+			if (sql.includes('DELETE FROM "hanami_note_judgement"')) {
+				hasJudgement = false;
+				return [[], 1];
+			}
 			if (sql.includes('SELECT "hanamiNoteJudgeSettings"')) return [{ settings }];
 			if (sql.includes('FROM "hanami_common_candidate"')) {
-				// The mocked lifecycle exposes this old, otherwise judgeable row unless
-				// reconciliation constrains candidates to the current ready generation and 72h window.
-				const isCurrentReadyGeneration = sql.includes('c."generationId" = (')
-					&& sql.includes('SELECT state."latestReadyGenerationId" FROM "hanami_common_feed_state" state')
-					&& sql.includes("g.status = 'ready'");
-				const isWithinCurrentWindow = sql.includes('n."createdAt" >= clock_timestamp() - INTERVAL \'72 hours\'');
-				return isCurrentReadyGeneration && isWithinCurrentWindow ? [] : [historicalCandidate];
+				// Cleanup makes this otherwise eligible row pending again, but the bound
+				// ID window must prevent recreating the deleted judgement or emitting a job.
+				expect(hasJudgement).toBe(false);
+				expect(parameters).toEqual([sinceId, settings.promptVersion]);
+				return [historicalCandidate].filter(row => !hasJudgement && row.id >= (parameters![0] as string));
 			}
 			return [];
 		});
 		const insert = jest.fn(async () => undefined);
-		const service = new HanamiForYouBatchService({ query } as never, { insert, update: jest.fn() } as never, { set: jest.fn(async () => 'OK'), eval: jest.fn(async () => 1) } as never, { gen: () => 'run-id' } as never, {} as never);
+		const service = new HanamiForYouBatchService({ query } as never, { insert, update: jest.fn() } as never, { set: jest.fn(async () => 'OK'), eval: jest.fn(async () => 1) } as never, { gen: () => sinceId } as never, {} as never);
 
 		await expect(service.cleanupNoteJudgements()).resolves.toBe(1);
 		await expect(service.reconcileNoteJudgeJobs()).resolves.toEqual([]);
@@ -216,12 +284,13 @@ describe('Hanami note judge integration', () => {
 		expect(reconcileQuery).toContain('c."generationId" = (');
 		expect(reconcileQuery).toContain('"latestReadyGenerationId"');
 		expect(reconcileQuery).toContain("g.status = 'ready'");
-		expect(reconcileQuery).toContain("INTERVAL '72 hours'");
+		expect(reconcileQuery).toContain('n.id >= $1');
+		expect(reconcileQuery).not.toMatch(/n\."?createdAt"?/);
 		expect(query.mock.calls.some(([sql]) => sql.includes('INSERT INTO "hanami_note_judgement"'))).toBe(false);
 		expect(insert).not.toHaveBeenCalled();
 	});
 
-	test('does not create a run while the shared local-LLM lock is held, and reconciliation ignores historical candidates', async () => {
+	test('does not create a run while the shared local-LLM lock is held, and still permits reconciliation', async () => {
 		const settings = createDefaultHanamiNoteJudgeSettings();
 		const query = jest.fn(async (sql: string) => {
 			if (sql.includes('SELECT "hanamiNoteJudgeSettings"')) return [{ settings }];
@@ -235,7 +304,7 @@ describe('Hanami note judge integration', () => {
 		await service.reconcileNoteJudgeJobs();
 		const reconcileQuery = (query.mock.calls as unknown as Array<[string]>).find(([sql]) => sql.includes('FROM "hanami_common_candidate"'))![0];
 		expect(reconcileQuery).toContain('"latestReadyGenerationId"');
-		expect(reconcileQuery).toContain("INTERVAL '72 hours'");
+		expect(reconcileQuery).toContain('n.id >= $1');
 	});
 
 	test('releases the shared lock when createRun rejects', async () => {

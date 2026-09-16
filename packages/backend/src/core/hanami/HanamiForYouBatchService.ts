@@ -82,6 +82,7 @@ const EMBEDDING_PROCESS_TIMEOUT_MS = 30 * 60 * 1000;
 const NOTE_JUDGE_LOCK_KEY = 'hanami:llm:exclusive:v1';
 const NOTE_JUDGE_LOCK_TTL_SEC = 35 * 60;
 const NOTE_JUDGE_TIMEOUT_MS = 35 * 60 * 1000;
+const NOTE_JUDGE_WINDOW_MS = 72 * 60 * 60 * 1000;
 export const HANAMI_NOTE_JUDGE_LOCK_DELAY_MS = 60_000;
 
 /** Queue processors move this to delayed without consuming a Bull attempt. */
@@ -716,10 +717,13 @@ export class HanamiForYouBatchService {
 	/** Reconciles only the current ready common generation within its 72-hour candidate window. */
 	@bindThis
 	public async reconcileNoteJudgeJobs(): Promise<readonly HanamiNoteJudgeJobData[]> {
+		// Match the other ID-time windows: >= includes this generated ID, but ID
+		// suffixes (and ObjectID's second precision) limit timestamp-boundary accuracy.
+		const sinceId = this.idService.gen(Date.now() - NOTE_JUDGE_WINDOW_MS);
 		return await this.prepareNoteJudgeJobsForCandidates(`c."generationId" = (
 			SELECT state."latestReadyGenerationId" FROM "hanami_common_feed_state" state
 			WHERE state."latestReadyGenerationId" IS NOT NULL LIMIT 1
-		) AND n."createdAt" >= clock_timestamp() - INTERVAL '72 hours'`, []);
+		) AND n.id >= $1`, [sinceId]);
 	}
 
 	private async prepareNoteJudgeJobsForCandidates(candidateWhere: string, candidateParameters: readonly unknown[]): Promise<readonly HanamiNoteJudgeJobData[]> {
