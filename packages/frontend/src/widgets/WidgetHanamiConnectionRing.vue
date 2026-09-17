@@ -11,7 +11,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 	<div :class="$style.body">
 		<div :class="{ [$style.empty]: items.length === 0 }" :inert="items.length === 0">
-			<HanamiConnectionCloud :items="shownItems" :self="$i ?? undefined"/>
+			<HanamiConnectionCloud :items="shownItems" :self="$i ?? undefined" :distanceColors="widgetProps.distanceColors"/>
 		</div>
 		<div v-if="items.length === 0" :class="$style.status">
 			<MkLoading v-if="fetching"/>
@@ -42,6 +42,7 @@ const name = 'hanamiConnectionRing';
 
 const widgetPropsDef = {
 	showHeader: { type: 'boolean', default: true },
+	distanceColors: { type: 'boolean', default: false, label: i18n.ts._hana._affinity._cloud.distanceColors },
 	count: {
 		type: 'range',
 		label: i18n.ts._hana._affinity._cloud.count,

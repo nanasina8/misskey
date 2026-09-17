@@ -24,10 +24,16 @@ SPDX-License-Identifier: AGPL-3.0-only
 			class="_button" :class="[$style.peer, { [$style.selected]: selected?.user.id === point.item.user.id }]"
 			:aria-label="`${point.item.user.name ?? point.item.user.username} · ${distanceLabel(point.closeness)}`"
 			:data-user-id="point.item.user.id"
-			@focus="showFocused($event, point.item)" @blur="dismissTooltip" @click.stop="clickPeer($event, point.item)"
+			:data-band="distanceColors ? connectionDistanceBand(point.closeness) : undefined"
+			@focus="showFocused($event, point.item)" @blur="blurPeer" @click.stop="clickPeer($event, point.item)"
 		>
 			<MkAvatar :user="point.item.user" :class="$style.avatar"/>
 		</button>
+	</div>
+	<div v-if="distanceColors" :class="$style.legend">
+		<span data-band="0"><i aria-hidden="true"></i>{{ i18n.ts._hana._affinity._cloud.nearLabel }}</span> ·
+		<span data-band="1"><i aria-hidden="true"></i>{{ i18n.ts._hana._affinity._cloud.middleLabel }}</span> ·
+		<span data-band="2"><i aria-hidden="true"></i>{{ i18n.ts._hana._affinity._cloud.outerLabel }}</span>
 	</div>
 	<div :class="$style.footer">{{ i18n.ts._hana._affinity._cloud.footer }}</div>
 </div>
@@ -44,7 +50,7 @@ import { prefer } from '@/preferences.js';
 import { userPage } from '@/filters/user.js';
 
 type Item = Misskey.entities.UsersHanamiAffinityResponse['items'][number];
-const props = defineProps<{ items: Item[]; self?: Misskey.entities.UserLite; mock?: boolean }>();
+const props = defineProps<{ items: Item[]; self?: Misskey.entities.UserLite; mock?: boolean; distanceColors?: boolean }>();
 const stage = useTemplateRef('stage');
 const distanceLine = useTemplateRef('distanceLine');
 const paused = ref(!prefer.s.animation);
@@ -70,7 +76,7 @@ let hoverTarget: HTMLElement | null = null;
 let cursor: { x: number; y: number } | null = null;
 // Camera angular velocity in rad/s, shared by mouse, touch and automatic rotation.
 let velocity = { ...INITIAL };
-let drag: { id: number; x: number; y: number; startX: number; startY: number; started: number; updated: number; moved: boolean; longPressed: boolean; target: HTMLElement | null } | null = null;
+let drag: { id: number; pointerType: string; x: number; y: number; startX: number; startY: number; started: number; updated: number; moved: boolean; longPressed: boolean; target: HTMLElement | null } | null = null;
 let motionQuery: MediaQueryList | undefined;
 let visibilityObserver: IntersectionObserver | undefined;
 let resizeObserver: ResizeObserver | undefined;
@@ -188,7 +194,7 @@ function peerAt(target: EventTarget | null) {
 }
 
 function updateHover(target: HTMLElement | null) {
-	if (tooltip?.source === 'keyboard' || target === hoverTarget) return;
+	if (tooltip?.source === 'keyboard' || (target === hoverTarget && tooltip?.source !== 'touch')) return;
 	closeTooltip();
 	hoverTarget = target;
 	if (target) tooltipTimer = window.setTimeout(() => showTooltip(target, 'mouse'), 300);
@@ -199,7 +205,9 @@ function checkCursor() {
 	if (cursor && !drag) updateHover(peerAt(window.document.elementFromPoint(cursor.x, cursor.y)));
 }
 
-function leaveStage() {
+function leaveStage(event: PointerEvent) {
+	// Touch/pen also emit pointerleave on release; their details remain until dismissed.
+	if (event.pointerType !== 'mouse') return;
 	cursor = null;
 	updateHover(null);
 }
@@ -207,6 +215,11 @@ function leaveStage() {
 function showFocused(event: FocusEvent, item: Item) {
 	const element = peers.get(item.user.id);
 	if (event.target === element && element.matches(':focus-visible')) showTooltip(element, 'keyboard');
+}
+
+function blurPeer() {
+	// A touch tap moves focus after pointerup; blurring the previous peer must not close details.
+	if (tooltip?.source !== 'touch') dismissTooltip();
 }
 
 function openProfile(item: Item) {
@@ -224,12 +237,11 @@ function startDrag(event: PointerEvent) {
 	window.clearTimeout(hitTestTimer);
 	hitTestTimer = undefined;
 	if (event.pointerType !== 'mouse') {
-		closeTooltip();
 		hoverTarget = null;
 		cursor = null;
 	}
 	const now = performance.now();
-	drag = { id: event.pointerId, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, started: now, updated: now, moved: false, longPressed: false, target: peerAt(event.target) };
+	drag = { id: event.pointerId, pointerType: event.pointerType, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, started: now, updated: now, moved: false, longPressed: false, target: peerAt(event.target) };
 	syncAnimation();
 	if (event.pointerType !== 'mouse' && drag.target) touchTimer = window.setTimeout(() => {
 		if (!drag || drag.moved || !drag.target) return;
@@ -272,14 +284,24 @@ function movePointer(event: PointerEvent) {
 
 function endDrag(event: PointerEvent) {
 	if (drag?.id !== event.pointerId) return;
+	// Touch implicitly captures the avatar button that was pressed; moving that capture to the
+	// stage fires lostpointercapture on the button, which is not the end of the gesture.
+	if (event.type === 'lostpointercapture' && event.target !== stage.value) return;
 	const gesture = drag;
 	drag = null;
 	stage.value?.removeAttribute('data-dragging');
-	closeTooltip();
+	window.clearTimeout(touchTimer);
+	if (gesture.pointerType === 'mouse' || event.type !== 'pointerup') closeTooltip();
 	if (gesture.moved && (event.type !== 'pointerup' || performance.now() - gesture.updated >= 100)) velocity = { yaw: 0, pitch: 0 };
 	if (event.type === 'pointerup' && !gesture.moved && !gesture.longPressed && performance.now() - gesture.started < 300) {
 		const item = props.items.find(entry => entry.user.id === gesture.target?.dataset.userId);
-		if (item) openProfile(item);
+		if (!item || !gesture.target) {
+			closeTooltip();
+		} else if (gesture.pointerType === 'mouse' || (tooltip?.source === 'touch' && selected.value?.user.id === item.user.id)) {
+			openProfile(item);
+		} else {
+			showTooltip(gesture.target, 'touch');
+		}
 	}
 	if (stage.value?.hasPointerCapture(event.pointerId)) stage.value.releasePointerCapture(event.pointerId);
 	syncAnimation();
@@ -360,5 +382,12 @@ onBeforeUnmount(() => {
 .avatar { width: 100%; height: 100%; pointer-events: none; }
 .peer { position: absolute; left: 50%; top: 50%; width: var(--cloud-avatar-size); height: var(--cloud-avatar-size); border-radius: 50%; cursor: pointer; will-change: transform; box-shadow: 0 0 0 2px var(--MI_THEME-panel); &:focus-visible { outline: 2px solid var(--MI_THEME-accent); outline-offset: 3px; } }
 .selected { outline: 2px solid var(--MI_THEME-accent); outline-offset: 3px; opacity: 1 !important; z-index: 101 !important; }
-.footer { padding: 6px 12px 10px; font-size: 0.7em; line-height: 1.6; text-align: center; color: var(--MI_THEME-fgTransparentWeak); }
+.peer, .legend > span {
+	&[data-band="0"] { --cloud-ring: hsl(12 85% 58% / 0.9); }
+	&[data-band="1"] { --cloud-ring: hsl(42 90% 50% / 0.9); }
+	&[data-band="2"] { --cloud-ring: hsl(210 80% 60% / 0.85); }
+}
+.peer[data-band] { box-shadow: 0 0 0 2px var(--MI_THEME-panel), 0 0 0 4px var(--cloud-ring); }
+.legend, .footer { padding: 6px 12px 10px; font-size: 0.7em; line-height: 1.6; text-align: center; color: var(--MI_THEME-fgTransparentWeak); }
+.legend { display: flex; align-items: center; justify-content: center; gap: 6px; > span { display: inline-flex; align-items: center; gap: 4px; } i { width: 8px; height: 8px; border-radius: 50%; background: var(--cloud-ring); } }
 </style>

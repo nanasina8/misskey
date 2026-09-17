@@ -213,7 +213,7 @@ describe('native connection cloud', () => {
 			expect(velocity.yaw).toBeCloseTo(settlingSpeed(-1.8, frame + 1), 8);
 			expect(velocity.pitch).toBeCloseTo(settlingSpeed(-0.6, frame + 1), 8);
 		}
-		await fireEvent.pointerLeave(c.stage);
+		await fireEvent.pointerLeave(c.stage, { pointerType: 'mouse' });
 		const velocity = await frameVelocity(c);
 		expect(velocity.yaw).toBeCloseTo(settlingSpeed(-1.8, 5), 8);
 		expect(velocity.pitch).toBeCloseTo(settlingSpeed(-0.6, 5), 8);
@@ -235,6 +235,23 @@ describe('native connection cloud', () => {
 			// Moving up (negative y) pulls the near side up: pitch velocity matches the yaw sign here.
 			expect(velocity.pitch).toBeCloseTo(expected, 8);
 		}
+	});
+
+	test('touch drag started on an avatar survives the capture handoff from the button to the stage', async () => {
+		const c = setupCloud();
+		const [yaw] = c.angles();
+		await c.down(c.peer, 'touch');
+		await vi.advanceTimersByTimeAsync(34);
+		await c.move(150);
+		// Browsers implicitly capture touch on the pressed button; moving capture to the stage
+		// fires lostpointercapture on the button, which bubbles and must not end the gesture.
+		await fireEvent.lostPointerCapture(c.peer, { pointerId: 1 });
+		await c.move(200);
+		expect(c.angles()[0] - yaw).toBeCloseTo(1.6);
+		await fireEvent.lostPointerCapture(c.stage, { pointerId: 1 });
+		await c.move(250);
+		expect(c.angles()[0] - yaw).toBeCloseTo(1.6);
+		expect(os.pageWindow).not.toHaveBeenCalled();
 	});
 
 	test.each(['mouse', 'touch', 'pen'])('%s stops after holding still for exactly 100ms before release', async pointerType => {
@@ -375,7 +392,7 @@ describe('native connection cloud', () => {
 		const [centerYaw] = c.angles();
 		await c.tick(16);
 		expect(c.angles()[0] - centerYaw).toBeCloseTo(base.yaw * 0.016 / 4, 8);
-		await fireEvent.pointerLeave(c.stage);
+		await fireEvent.pointerLeave(c.stage, { pointerType: 'mouse' });
 		expect(props.showing.value).toBe(false);
 		expect(c.view.container.querySelector('svg')).toBeNull();
 		expect(c.callbacks.size).toBe(1);
@@ -405,23 +422,23 @@ describe('native connection cloud', () => {
 		expect(props.showing.value).toBe(false);
 	});
 
-	test.each(['mouse', 'touch', 'pen'])('%s short click below 3px opens once, while drag clicks never open a profile', async pointerType => {
+	test('mouse short click below 3px opens once, while drag clicks never open a profile', async () => {
 		const c = setupCloud();
-		await c.down(c.peer, pointerType);
+		await c.down(c.peer, 'mouse');
 		await vi.advanceTimersByTimeAsync(100);
 		await c.move(102);
 		await c.up();
 		await fireEvent.click(c.peer, { detail: 1 });
 		expect(os.pageWindow).toHaveBeenCalledExactlyOnceWith(`/@${items[0].user.username}`);
 		vi.mocked(os.pageWindow).mockClear();
-		await c.down(c.peer, pointerType);
+		await c.down(c.peer, 'mouse');
 		await vi.advanceTimersByTimeAsync(50);
 		await c.move(103);
 		await c.up();
 		await fireEvent.click(c.peer, { detail: 1 });
 		expect(os.pageWindow).not.toHaveBeenCalled();
 		// A subsequent real click is not suppressed by the previous drag.
-		await c.down(c.peer, pointerType);
+		await c.down(c.peer, 'mouse');
 		await c.up();
 		await fireEvent.click(c.peer, { detail: 1 });
 		expect(os.pageWindow).toHaveBeenCalledTimes(1);
@@ -432,6 +449,8 @@ describe('native connection cloud', () => {
 		await c.down(c.peer, pointerType);
 		await c.up();
 		await fireEvent.click(c.peer, { detail: 1 });
+		await c.down(c.peer, pointerType);
+		await c.up();
 		expect(os.pageWindow).not.toHaveBeenCalled();
 	});
 
@@ -470,28 +489,126 @@ describe('native connection cloud', () => {
 		expect(os.pageWindow).not.toHaveBeenCalled();
 	});
 
-	test('short taps open once, long presses close on release, cancellation and slow taps do not navigate', async () => {
+	test.each(['touch', 'pen'])('%s tap keeps details after release, retap opens the profile, another person switches details and blank space closes them', async pointerType => {
 		const c = setupCloud();
-		await c.down(c.peer);
+		await c.play();
+		await c.down(c.peer, pointerType);
 		await vi.advanceTimersByTimeAsync(100);
+		await c.move(102);
 		await c.up();
 		await fireEvent.click(c.peer, { detail: 1 });
+		const first = popupProps();
+		expect(first.anchorElement).toBe(c.peer);
+		expect(first.showing.value).toBe(true);
+		expect(c.view.container.querySelectorAll('svg line')).toHaveLength(1);
+		expect(os.pageWindow).not.toHaveBeenCalled();
+		await fireEvent.lostPointerCapture(c.peer, { pointerId: 1 });
+		await fireEvent.pointerLeave(c.stage, { pointerType });
+		await c.tick(500);
+		expect(first.showing.value).toBe(true);
+		await c.down(c.peer, pointerType);
+		expect(first.showing.value).toBe(true);
+		await c.up();
+		await fireEvent.click(c.peer, { detail: 1 });
+		expect(os.pageWindow).toHaveBeenCalledExactlyOnceWith(`/@${items[0].user.username}`);
+		expect(os.popup).toHaveBeenCalledTimes(1);
+		const other = c.view.container.querySelector(`[data-user-id="${items[1].user.id}"]`) as HTMLElement;
+		await c.down(other, pointerType);
+		await c.up();
+		// Browsers move focus after touch release, blurring the previously focused avatar.
+		await fireEvent.blur(c.peer, { relatedTarget: other });
+		await fireEvent.focus(other, { relatedTarget: c.peer });
+		const second = popupProps();
+		expect(first.showing.value).toBe(false);
+		expect(second.anchorElement).toBe(other);
+		expect(second.showing.value).toBe(true);
 		expect(os.pageWindow).toHaveBeenCalledTimes(1);
-		await c.down(c.peer);
+		await c.down(c.stage, pointerType);
+		await c.up();
+		expect(second.showing.value).toBe(false);
+		expect(c.view.container.querySelector('svg')).toBeNull();
+	});
+
+	test.each(['touch', 'pen'])('%s long press persists after release; cancellation and slow taps do not navigate', async pointerType => {
+		const c = setupCloud();
+		await c.down(c.peer, pointerType);
 		await vi.advanceTimersByTimeAsync(450);
 		const props = popupProps();
 		expect(props.showing.value).toBe(true);
 		await c.up();
-		expect(props.showing.value).toBe(false);
 		await fireEvent.click(c.peer, { detail: 1 });
-		await c.down(c.peer);
+		await c.tick(500);
+		expect(props.showing.value).toBe(true);
+		await c.down(c.peer, pointerType);
 		await fireEvent.pointerCancel(c.stage, { pointerId: 1 });
 		await vi.advanceTimersByTimeAsync(500);
+		expect(props.showing.value).toBe(false);
 		expect(os.popup).toHaveBeenCalledTimes(1);
-		await c.down(c.peer);
+		await c.down(c.peer, pointerType);
 		await vi.advanceTimersByTimeAsync(350);
 		await c.up();
-		expect(os.pageWindow).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(500);
+		expect(os.popup).toHaveBeenCalledTimes(1);
+		expect(os.pageWindow).not.toHaveBeenCalled();
+	});
+
+	test.each(['drag', 'escape', 'offscreen', 'hidden'])('persistent touch details close on %s', async action => {
+		const c = setupCloud();
+		await c.down(c.peer);
+		await c.up();
+		const props = popupProps();
+		if (action === 'drag') {
+			await c.down(c.peer);
+			expect(props.showing.value).toBe(true);
+			await c.move(103);
+		} else if (action === 'escape') {
+			await fireEvent.keyDown(c.peer, { key: 'Escape' });
+		} else if (action === 'offscreen') {
+			c.visibility(false);
+		} else {
+			vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(true);
+			await fireEvent(window.document, new Event('visibilitychange'));
+		}
+		expect(props.showing.value).toBe(false);
+		expect(os.pageWindow).not.toHaveBeenCalled();
+	});
+
+	test.each(['peer', 'blank'])('mouse hover replaces persistent touch details over %s', async target => {
+		const c = setupCloud();
+		await c.down(c.peer);
+		await c.up();
+		const props = popupProps();
+		await c.mouse(100, 100, target === 'peer' ? c.peer : c.stage);
+		expect(props.showing.value).toBe(false);
+		await vi.advanceTimersByTimeAsync(299);
+		expect(os.popup).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(os.popup).toHaveBeenCalledTimes(target === 'peer' ? 2 : 1);
+		if (target === 'peer') {
+			const hover = popupProps();
+			await fireEvent.pointerLeave(c.stage, { pointerType: 'mouse' });
+			expect(hover.showing.value).toBe(false);
+		}
+	});
+
+	test('distance colors are opt-in, match every distance band and can be toggled off without changing positions', async () => {
+		const c = setupCloud(true);
+		const peers = Array.from(c.view.container.querySelectorAll<HTMLElement>('[data-user-id]'));
+		const transforms = peers.map(peer => peer.style.transform);
+		expect(c.view.container.querySelector('[data-band]')).toBeNull();
+		for (const peer of peers) expect(peer.style.getPropertyValue('--cloud-ring')).toBe('');
+		expect(c.view.queryByText('近め')).toBeNull();
+		await c.view.rerender({ distanceColors: true });
+		const layout = buildConnectionLayout(items);
+		for (const point of layout) {
+			const peer = c.view.container.querySelector(`[data-user-id="${point.item.user.id}"]`);
+			expect(peer?.getAttribute('data-band')).toBe(String(connectionDistanceBand(point.closeness)));
+		}
+		for (const label of ['近め', '中ほど', '遠め']) expect(c.view.getByText(label)).toBeTruthy();
+		expect(peers.map(peer => peer.style.transform)).toEqual(transforms);
+		await c.view.rerender({ distanceColors: false });
+		expect(c.view.container.querySelector('[data-band]')).toBeNull();
+		expect(c.view.queryByText('近め')).toBeNull();
 	});
 
 	test('keyboard focus opens details; blur and Escape close them and native button activation opens the profile', async () => {

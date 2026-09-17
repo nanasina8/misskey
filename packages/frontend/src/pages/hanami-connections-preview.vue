@@ -13,7 +13,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<MkContainer>
 						<template #icon><i class="ti ti-users"></i></template>
 						<template #header>{{ text.nameCloud }}</template>
-						<HanamiConnectionCloud :items="items" :self="previewUsers[0]" mock/>
+						<HanamiConnectionCloud :items="items" :self="previewUsers[0]" :distanceColors="distanceColors" mock/>
 					</MkContainer>
 				</div>
 				<div class="_gaps" :class="$style.options">
@@ -24,6 +24,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<MkSelect v-model="width" :items="[{ value: 300, label: '300px' }, { value: 360, label: '360px' }]">
 						<template #label>{{ text.width }}</template>
 					</MkSelect>
+					<MkSwitch v-model="distanceColors">{{ i18n.ts._hana._affinity._cloud.distanceColors }}</MkSwitch>
 				</div>
 			</div>
 		</div>
@@ -38,6 +39,7 @@ import HanamiConnectionCloud from '@/components/HanamiConnectionCloud.vue';
 import MkContainer from '@/components/MkContainer.vue';
 import MkInput from '@/components/MkInput.vue';
 import MkSelect from '@/components/MkSelect.vue';
+import MkSwitch from '@/components/MkSwitch.vue';
 import MkInfo from '@/components/MkInfo.vue';
 import { CONNECTION_COUNT_DEFAULT, CONNECTION_COUNT_MIN, CONNECTION_COUNT_MAX, normalizeConnectionCount } from '@/utility/hanami-connection-layout.js';
 import { i18n } from '@/i18n.js';
@@ -47,6 +49,7 @@ const text = i18n.ts._hana._affinity._cloud;
 const countInput = ref(CONNECTION_COUNT_DEFAULT);
 const count = computed(() => normalizeConnectionCount(countInput.value));
 const width = ref<300 | 360>(300);
+const distanceColors = ref(false);
 const items = computed(() => selectPreviewItems(count.value));
 definePage(() => ({ title: text.preview, icon: 'ti ti-users' }));
 </script>

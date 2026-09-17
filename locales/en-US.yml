@@ -3451,6 +3451,10 @@ _qr:
 _hana:
   _affinity:
     _cloud:
+      distanceColors: "Color by distance"
+      nearLabel: "Close"
+      middleLabel: "Middle"
+      outerLabel: "Far"
       preview: "User cloud preview"
       period: "Past 90 days"
       play: "Resume rotation"

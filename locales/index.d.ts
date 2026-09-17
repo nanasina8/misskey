@@ -13383,6 +13383,22 @@ export interface Locale extends ILocale {
         "_affinity": {
             "_cloud": {
                 /**
+                 * 距離を色で示す
+                 */
+                "distanceColors": string;
+                /**
+                 * 近め
+                 */
+                "nearLabel": string;
+                /**
+                 * 中ほど
+                 */
+                "middleLabel": string;
+                /**
+                 * 遠め
+                 */
+                "outerLabel": string;
+                /**
                  * ユーザークラウドのプレビュー
                  */
                 "preview": string;

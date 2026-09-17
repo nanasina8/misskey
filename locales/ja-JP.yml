@@ -3585,6 +3585,10 @@ _qr:
 _hana:
   _affinity:
     _cloud:
+      distanceColors: "距離を色で示す"
+      nearLabel: "近め"
+      middleLabel: "中ほど"
+      outerLabel: "遠め"
       preview: "ユーザークラウドのプレビュー"
       period: "直近90日"
       play: "回転を再開"

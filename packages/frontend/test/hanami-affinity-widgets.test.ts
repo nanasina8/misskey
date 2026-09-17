@@ -30,15 +30,16 @@ vi.mock('@/components/MkContainer.vue', () => ({ default: { template: '<div><slo
 vi.mock('@/i18n.js', async () => {
 	const { default: locales } = await import('../../../locales/index.js');
 	return ({
-	i18n: {
-		ts: {
-			reload: 'Reload', somethingHappened: 'Error', close: 'Close', profile: 'Profile',
-			_widgets: { hanamiTalkedUsers: 'Talked', hanamiConnectionRing: 'Ring', hanamiLapsedUsers: 'Lapsed' },
-			_hana: { _affinity: { _cloud: locales['ja-JP']._hana._affinity._cloud, rankNew: 'new', lastInteraction: 'Last', talkedFooter: 'tf', ringInner: 'Close', ringOuter: 'Sometimes', ringFooter: 'rf', ringEmpty: 'ring empty', talkedEmpty: 'talked empty', lapsedEmpty: 'lapsed empty', lapsedFooter: 'lf', fewPerMonth: 'few per month', recentlyPosted: 'posted', birthdaySoon: 'birthday', viewNotes: 'View', mutual: 'mutual' } },
+		i18n: {
+			ts: {
+				reload: 'Reload', somethingHappened: 'Error', close: 'Close', profile: 'Profile',
+				_widgets: { hanamiTalkedUsers: 'Talked', hanamiConnectionRing: 'Ring', hanamiLapsedUsers: 'Lapsed' },
+				_hana: { _affinity: { _cloud: locales['ja-JP']._hana._affinity._cloud, rankNew: 'new', lastInteraction: 'Last', talkedFooter: 'tf', ringInner: 'Close', ringOuter: 'Sometimes', ringFooter: 'rf', ringEmpty: 'ring empty', talkedEmpty: 'talked empty', lapsedEmpty: 'lapsed empty', lapsedFooter: 'lf', fewPerMonth: 'few per month', recentlyPosted: 'posted', birthdaySoon: 'birthday', viewNotes: 'View', mutual: 'mutual' } },
+			},
+			tsx: { _hana: { _affinity: { daysAgo: ({ n }: { n: number }) => `${n}d`, perWeek: ({ n }: { n: number }) => `${n}/w`, counts: ({ reply }: { reply: number }) => `r${reply}` } } },
 		},
-		tsx: { _hana: { _affinity: { daysAgo: ({ n }: { n: number }) => `${n}d`, perWeek: ({ n }: { n: number }) => `${n}/w`, counts: ({ reply }: { reply: number }) => `r${reply}` } } },
-	},
-}); });
+	});
+});
 
 const stubs = {
 	MkLoading: true,
@@ -113,6 +114,31 @@ describe('WidgetHanamiConnectionRing', () => {
 		await fireEvent.click(peer, { detail: 0 });
 		expect(os.pageWindow).toHaveBeenCalledWith('/@person0');
 		expect(view.container.textContent).not.toContain('関係の良し悪し');
+	});
+
+	test('distance colors default to false and the saved setting reaches the cloud without refetching', async () => {
+		const candidates = [
+			{ user: user('a'), score: 100, counts },
+			{ user: user('b'), score: 50, counts },
+			{ user: user('c'), score: 0, counts },
+		];
+		api.mockResolvedValue({ items: candidates });
+		const view = render(Ring, { global: { stubs } });
+		expect(settings.current.distanceColors).toBe(false);
+		await interval.mock.calls.at(-1)?.[0]();
+		await waitFor(() => expect(view.container.querySelectorAll('[data-user-id]')).toHaveLength(3));
+		expect(view.container.querySelector('[data-band]')).toBeNull();
+		settings.current.distanceColors = true;
+		await waitFor(() => expect(view.container.querySelector('[data-user-id="a"]')?.getAttribute('data-band')).toBe('0'));
+		expect(view.container.querySelector('[data-user-id="b"]')?.getAttribute('data-band')).toBe('1');
+		expect(view.container.querySelector('[data-user-id="c"]')?.getAttribute('data-band')).toBe('2');
+		expect(view.getByText('近め')).toBeTruthy();
+		expect(api).toHaveBeenCalledTimes(1);
+		view.unmount();
+		const saved = render(Ring, { props: { widget: { id: 'saved', data: { distanceColors: true } } }, global: { stubs } });
+		expect(settings.current.distanceColors).toBe(true);
+		await interval.mock.calls.at(-1)?.[0]();
+		await waitFor(() => expect(saved.container.querySelectorAll('[data-user-id][data-band]')).toHaveLength(3));
 	});
 
 	test('renders fewer available users, handles empty and error states, and preserves data on refresh failure', async () => {
