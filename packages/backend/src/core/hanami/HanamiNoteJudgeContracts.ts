@@ -5,7 +5,11 @@
 
 export const HANAMI_NOTE_JUDGE_MODEL = 'Qwen/Qwen3-4B-Instruct-2507';
 export const HANAMI_NOTE_JUDGE_SETTINGS_SCHEMA_VERSION = 1;
+// ハード上限（ペイロード検証・Python 側 MAX_NOTES と一致させる）。
 export const HANAMI_NOTE_JUDGE_MAX_BATCH_SIZE = 64;
+// 既定の1ジョブ件数。CPU 4B 推論は実測 ~31s/件（i3-10100F）で、64件は35分のジョブタイムアウトに
+// 収まらず全損する。16件なら ~10-16分で収まる。HANAMI_NOTE_JUDGE_BATCH_SIZE で 1..64 に調整可。
+export const HANAMI_NOTE_JUDGE_DEFAULT_BATCH_SIZE = 16;
 
 export type HanamiNoteJudgeBasis = Readonly<{
 	ephemeralA: string;

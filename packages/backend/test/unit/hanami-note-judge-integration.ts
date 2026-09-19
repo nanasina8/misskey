@@ -23,7 +23,7 @@ function batchService(query: unknown, redis: unknown = { set: jest.fn(async () =
 }
 
 describe('Hanami note judge integration', () => {
-	test('rejudges rows selected against a changed prompt version, persists rule exclusions with UPSERT, and emits only <=64 jobs', async () => {
+	test('rejudges rows selected against a changed prompt version, persists rule exclusions with UPSERT, and emits only <=16 jobs by default', async () => {
 		const settings = { ...createDefaultHanamiNoteJudgeSettings(), promptVersion: 2 };
 		const query = jest.fn(async (sql: string) => {
 			if (sql.includes('SELECT "hanamiNoteJudgeSettings"')) return [{ settings }];
@@ -40,7 +40,10 @@ describe('Hanami note judge integration', () => {
 		const service = batchService(query);
 
 		await expect(service.prepareNoteJudgeJobs('generation-1')).resolves.toEqual([
-			{ noteIds: Array.from({ length: 64 }, (_, index) => `judge-${index}`), promptVersion: 2 },
+			{ noteIds: Array.from({ length: 16 }, (_, index) => `judge-${index}`), promptVersion: 2 },
+			{ noteIds: Array.from({ length: 16 }, (_, index) => `judge-${index + 16}`), promptVersion: 2 },
+			{ noteIds: Array.from({ length: 16 }, (_, index) => `judge-${index + 32}`), promptVersion: 2 },
+			{ noteIds: Array.from({ length: 16 }, (_, index) => `judge-${index + 48}`), promptVersion: 2 },
 			{ noteIds: ['judge-64'], promptVersion: 2 },
 		]);
 
@@ -57,6 +60,26 @@ describe('Hanami note judge integration', () => {
 		// prepareNoteJudgeJobs has no model/runtime dependency: the rule exclusion
 		// is durable before any Python job can be made.
 		expect(query).toHaveBeenCalledTimes(3);
+	});
+
+	test('honors HANAMI_NOTE_JUDGE_BATCH_SIZE within the 1..64 hard cap', async () => {
+		const settings = createDefaultHanamiNoteJudgeSettings();
+		const query = jest.fn(async (sql: string) => {
+			if (sql.includes('SELECT "hanamiNoteJudgeSettings"')) return [{ settings }];
+			if (sql.includes('FROM "hanami_common_candidate"')) {
+				return Array.from({ length: 65 }, (_, index) => ({ id: `judge-${index}`, text: 'SQLite の運用メモです。', isBot: false, isReply: false }));
+			}
+			return [];
+		});
+		const previous = process.env.HANAMI_NOTE_JUDGE_BATCH_SIZE;
+		process.env.HANAMI_NOTE_JUDGE_BATCH_SIZE = '33';
+		try {
+			const jobs = await batchService(query).prepareNoteJudgeJobs('generation-1');
+			expect(jobs.map(job => job.noteIds.length)).toEqual([33, 32]);
+		} finally {
+			if (previous == null) delete process.env.HANAMI_NOTE_JUDGE_BATCH_SIZE;
+			else process.env.HANAMI_NOTE_JUDGE_BATCH_SIZE = previous;
+		}
 	});
 
 	test('rejects an oversized model job before reading settings or invoking a runtime', async () => {
@@ -108,6 +131,50 @@ describe('Hanami note judge integration', () => {
 		try {
 			await expect(batchService(query).runNoteJudgeJob({ noteIds: ['prior-note'], promptVersion: 8 }, { warn: jest.fn() } as never)).resolves.toMatchObject({ status: 'ready', processedCount: 1 });
 			expect(query.mock.calls.some(([sql]) => sql.includes('SELECT "hanamiNoteJudgeSettings"'))).toBe(false);
+		} finally {
+			if (previous == null) delete process.env.HANAMI_NOTE_JUDGE_SCRIPT;
+			else process.env.HANAMI_NOTE_JUDGE_SCRIPT = previous;
+			await rm(scriptDir, { recursive: true, force: true });
+		}
+	});
+
+	test('salvages incrementally flushed judgements when the runtime is killed mid-batch', async () => {
+		const settings = createDefaultHanamiNoteJudgeSettings();
+		const modelRuns = {
+			insert: jest.fn(async () => undefined),
+			update: jest.fn(async () => undefined),
+		};
+		const query = jest.fn(async (sql: string) => {
+			if (sql.includes('SELECT "hanamiNoteJudgeSettings"')) return [{ settings }];
+			if (sql.includes('FROM note n JOIN "user"')) return [
+				{ id: 'note-a', text: '運用に役立つ投稿です。', hasFiles: false, isBot: false, isReply: false },
+				{ id: 'note-b', text: 'こちらも役立つ投稿です。', hasFiles: false, isBot: false, isReply: false },
+			];
+			return [];
+		});
+		const service = new HanamiForYouBatchService(
+			{ query } as never,
+			modelRuns as never,
+			{ set: jest.fn(async () => 'OK'), eval: jest.fn(async () => 1) } as never,
+			{ gen: () => 'run-id' } as never,
+			{} as never,
+		);
+		const scriptDir = await mkdtemp(Path.join(tmpdir(), 'hanami-note-judge-salvage-'));
+		const scriptPath = Path.join(scriptDir, 'judge.py');
+		const previous = process.env.HANAMI_NOTE_JUDGE_SCRIPT;
+		// Emulates a timeout kill: the runtime flushed note-a's judgement, then died.
+		await writeFile(scriptPath, `import json, sys\ninput_path, output_path = sys.argv[1:]\nwith open(input_path, encoding='utf-8') as source: job = json.load(source)\nnote = job['notes'][0]\nwith open(output_path, 'w', encoding='utf-8') as target: json.dump({'status': 'partial', 'promptVersion': job['settings']['promptVersion'], 'judgements': [{'noteId': note['noteId'], 'ephemeralScore': 0.25, 'interest': 4.0, 'interestDist': [0, 0, 0, 1, 0], 'contentType': 2}]}, target)\nsys.exit(1)\n`);
+		process.env.HANAMI_NOTE_JUDGE_SCRIPT = scriptPath;
+		try {
+			const result = await service.runNoteJudgeJob({ noteIds: ['note-a', 'note-b'], promptVersion: settings.promptVersion }, { warn: jest.fn() } as never);
+			expect(result).toMatchObject({ status: 'ready', processedCount: 1 });
+			const upserts = (query.mock.calls as unknown as Array<[string, unknown[]]>).filter(([sql]) => sql.includes('INSERT INTO "hanami_note_judgement"'));
+			expect(upserts.length).toBe(1);
+			expect(upserts[0][1]).toEqual(['note-a', 'Qwen/Qwen3-4B-Instruct-2507', settings.promptVersion, 0.25, 4, [0, 0, 0, 1, 0], 2]);
+			expect(modelRuns.update).toHaveBeenCalledWith(
+				{ id: 'run-id' },
+				expect.objectContaining({ status: 'ready', params: expect.objectContaining({ processedCount: 1, salvagedPartial: true }) }),
+			);
 		} finally {
 			if (previous == null) delete process.env.HANAMI_NOTE_JUDGE_SCRIPT;
 			else process.env.HANAMI_NOTE_JUDGE_SCRIPT = previous;

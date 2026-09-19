@@ -32,6 +32,7 @@ import {
 	HANAMI_NOTE_JUDGE_MAX_BATCH_SIZE,
 	HANAMI_NOTE_JUDGE_MODEL,
 	createDefaultHanamiNoteJudgeSettings,
+	HANAMI_NOTE_JUDGE_DEFAULT_BATCH_SIZE,
 	splitHanamiNoteJudgeBatches,
 	validateHanamiNoteJudgeSettings,
 	type HanamiNoteJudgeSettings,
@@ -726,6 +727,12 @@ export class HanamiForYouBatchService {
 		) AND n.id >= $1`, [sinceId]);
 	}
 
+	private noteJudgeBatchSize(): number {
+		const configured = Number(process.env.HANAMI_NOTE_JUDGE_BATCH_SIZE);
+		if (!Number.isFinite(configured)) return HANAMI_NOTE_JUDGE_DEFAULT_BATCH_SIZE;
+		return Math.min(HANAMI_NOTE_JUDGE_MAX_BATCH_SIZE, Math.max(1, Math.floor(configured)));
+	}
+
 	private async prepareNoteJudgeJobsForCandidates(candidateWhere: string, candidateParameters: readonly unknown[]): Promise<readonly HanamiNoteJudgeJobData[]> {
 		const settings = await this.noteJudgeSettings();
 		const rows = await this.db.query(`
@@ -747,10 +754,10 @@ export class HanamiForYouBatchService {
 				await this.db.query(`INSERT INTO "hanami_note_judgement" ("noteId",model,"promptVersion","ephemeralScore",interest,"interestDist","contentType","judgedAt") VALUES ($1,$2,$3,999,1,$4::real[],0,clock_timestamp()) ON CONFLICT ("noteId") DO UPDATE SET model=EXCLUDED.model,"promptVersion"=EXCLUDED."promptVersion","ephemeralScore"=EXCLUDED."ephemeralScore",interest=EXCLUDED.interest,"interestDist"=EXCLUDED."interestDist","contentType"=EXCLUDED."contentType","judgedAt"=EXCLUDED."judgedAt"`, [row.id, `rule:${rule.reason}`, settings.promptVersion, [1, 0, 0, 0, 0]]);
 			}
 		}
-		return Object.freeze(splitHanamiNoteJudgeBatches(judgeable, HANAMI_NOTE_JUDGE_MAX_BATCH_SIZE).map(noteIds => Object.freeze({ noteIds: Object.freeze(noteIds), promptVersion: settings.promptVersion })));
+		return Object.freeze(splitHanamiNoteJudgeBatches(judgeable, this.noteJudgeBatchSize()).map(noteIds => Object.freeze({ noteIds: Object.freeze(noteIds), promptVersion: settings.promptVersion })));
 	}
 
-	/** Executes one durable <=64 local-Qwen job; transient runtime failures are rethrown for Bull retry. */
+	/** Executes one durable local-Qwen job; transient runtime failures are rethrown for Bull retry, while interrupted runs salvage judgements already flushed by the Python side. */
 	@bindThis
 	public async runNoteJudgeJob(data: HanamiNoteJudgeJobData, logger: Logger): Promise<{ runId: string; status: 'ready' | 'failed'; processedCount: number }> {
 		if (data.noteIds.length === 0 || data.noteIds.length > HANAMI_NOTE_JUDGE_MAX_BATCH_SIZE) throw new RangeError(`Hanami note judge job must contain 1..${HANAMI_NOTE_JUDGE_MAX_BATCH_SIZE} notes`);
@@ -785,8 +792,22 @@ export class HanamiForYouBatchService {
 			const scriptPath = process.env.HANAMI_NOTE_JUDGE_SCRIPT ?? Path.join(resolveHanamiRepoRoot(), 'packages/backend/src/core/hanami/HanamiNoteJudgeCpu.py');
 			const command = prepareHanamiPythonCommand([scriptPath, inputPath, outputPath], { env: this.noteJudgePythonEnv() });
 			const judgeEnv = this.noteJudgePythonEnv();
-			await execFileAsync(command.file, command.args, { env: { ...command.env, OMP_NUM_THREADS: judgeEnv.HANAMI_LLM_MAX_THREADS, MKL_NUM_THREADS: judgeEnv.HANAMI_LLM_MAX_THREADS, OPENBLAS_NUM_THREADS: judgeEnv.HANAMI_LLM_MAX_THREADS, NUMEXPR_NUM_THREADS: judgeEnv.HANAMI_LLM_MAX_THREADS }, timeout: NOTE_JUDGE_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
-			const output = JSON.parse(await readFile(outputPath, 'utf8')) as { status?: string; error?: string; promptVersion?: number; judgements?: Array<{ noteId: string; ephemeralScore: number; interest: number; interestDist: number[]; contentType: number }> };
+			type JudgeOutput = { status?: string; error?: string; promptVersion?: number; judgements?: Array<{ noteId: string; ephemeralScore: number; interest: number; interestDist: number[]; contentType: number }> };
+			let output: JudgeOutput;
+			let salvaged = false;
+			try {
+				await execFileAsync(command.file, command.args, { env: { ...command.env, OMP_NUM_THREADS: judgeEnv.HANAMI_LLM_MAX_THREADS, MKL_NUM_THREADS: judgeEnv.HANAMI_LLM_MAX_THREADS, OPENBLAS_NUM_THREADS: judgeEnv.HANAMI_LLM_MAX_THREADS, NUMEXPR_NUM_THREADS: judgeEnv.HANAMI_LLM_MAX_THREADS }, timeout: NOTE_JUDGE_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+				output = JSON.parse(await readFile(outputPath, 'utf8')) as JudgeOutput;
+			} catch (error) {
+				// タイムアウト kill / クラッシュでも、Python 側が1件ごとに書き出した部分結果は救済する。
+				// 残りのノートは未判定のまま残り、reconcile が後続ジョブとして再投入する。
+				const recovered = await readFile(outputPath, 'utf8')
+					.then(text => JSON.parse(text) as JudgeOutput)
+					.catch(() => null);
+				if (recovered == null || recovered.promptVersion !== data.promptVersion || !Array.isArray(recovered.judgements) || recovered.judgements.length === 0) throw error;
+				output = recovered;
+				salvaged = true;
+			}
 			if (output.status === 'unavailable') throw new Error(`Hanami note judge unavailable: ${output.error ?? 'unknown error'}`);
 			if (output.status !== 'ok' && output.status !== 'partial') throw new Error(`Hanami note judge returned invalid status: ${String(output.status)}`);
 			if (output.promptVersion !== data.promptVersion) throw new Error('Hanami note judge returned a mismatched promptVersion');
@@ -796,6 +817,11 @@ export class HanamiForYouBatchService {
 				if (!data.noteIds.includes(judgement.noteId) || !Number.isFinite(judgement.ephemeralScore) || !Number.isFinite(judgement.interest) || judgement.interestDist.length !== 5 || !Number.isInteger(judgement.contentType)) continue;
 				accepted.add(judgement.noteId);
 				await this.db.query(`INSERT INTO "hanami_note_judgement" ("noteId",model,"promptVersion","ephemeralScore",interest,"interestDist","contentType","judgedAt") VALUES ($1,$2,$3,$4,$5,$6::real[],$7,clock_timestamp()) ON CONFLICT ("noteId") DO UPDATE SET model=EXCLUDED.model,"promptVersion"=EXCLUDED."promptVersion","ephemeralScore"=EXCLUDED."ephemeralScore",interest=EXCLUDED.interest,"interestDist"=EXCLUDED."interestDist","contentType"=EXCLUDED."contentType","judgedAt"=EXCLUDED."judgedAt"`, [judgement.noteId, HANAMI_NOTE_JUDGE_MODEL, data.promptVersion, judgement.ephemeralScore, judgement.interest, judgement.interestDist, judgement.contentType]);
+			}
+			if (salvaged) {
+				logger.warn(`hanami note judge: runtime interrupted; salvaged ${accepted.size}/${notes.length} judgements, remainder will be re-enqueued`);
+				await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, processedCount: accepted.size, secondsPerItem: accepted.size === 0 ? null : (Date.now() - startedAt) / 1000 / accepted.size, backlog: Math.max(0, notes.length - accepted.size), salvagedPartial: true }));
+				return { runId, status: 'ready', processedCount: accepted.size };
 			}
 			if (output.status === 'partial' || accepted.size !== notes.length) throw new Error(`Hanami note judge returned ${accepted.size}/${notes.length} judgements; pending notes will retry`);
 			await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, processedCount: judgements.length, secondsPerItem: judgements.length === 0 ? null : (Date.now() - startedAt) / 1000 / judgements.length, backlog: Math.max(0, notes.length - judgements.length) }));

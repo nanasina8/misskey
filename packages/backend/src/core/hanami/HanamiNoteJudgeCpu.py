@@ -23,9 +23,12 @@ def output(data, output_path=None):
         json.dump(data, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
         return
-    with open(output_path, "w", encoding="utf-8") as handle:
+    # 原子的に置き換える: 書き込み途中に kill されても truncate した JSON を残さない。
+    tmp_path = output_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
         json.dump(data, handle, ensure_ascii=False)
         handle.write("\n")
+    os.replace(tmp_path, output_path)
 
 
 def failure(message, output_path=None):
@@ -181,12 +184,18 @@ def main():
         failure(f"model/runtime unavailable: {type(exc).__name__}: {exc}", output_path)
         return
     judgements, errors = [], []
+
+    def flush(status):
+        output({"model": MODEL, "promptVersion": settings.get("promptVersion"), "status": status, "judgements": judgements, "errors": errors}, output_path)
+
+    # 1件ごとに部分結果を書き出す: タイムアウトで kill されても済んだ分は呼び出し側が救済する。
     for note in valid_notes:
         try:
             judgements.append(judge_one(torch, tokenizer, model, note, settings))
         except Exception as exc:
             errors.append({"noteId": note["noteId"], "error": f"{type(exc).__name__}: {exc}"})
-    output({"model": MODEL, "promptVersion": settings.get("promptVersion"), "status": "ok" if not errors else "partial", "judgements": judgements, "errors": errors}, output_path)
+        flush("partial")
+    flush("ok" if not errors else "partial")
 
 
 if __name__ == "__main__":
