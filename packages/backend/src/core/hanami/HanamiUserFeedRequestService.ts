@@ -4,7 +4,7 @@
  */
 
 import { performance } from 'node:perf_hooks';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import type Logger from '@/logger.js';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
@@ -16,6 +16,8 @@ import { QueueService } from '@/core/QueueService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { computeHanamiRefreshTokenDigest } from './HanamiFeedCodec.js';
 import { HanamiCommonHeadQueries } from './HanamiCommonHeadQueries.js';
+import { jstDay } from './HanamiMetricsContracts.js';
+import type { Redis } from 'ioredis';
 import type {
 	HanamiCommonFeedHeadSnapshot,
 	HanamiFeedHeadSnapshot,
@@ -113,6 +115,7 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 		private queueService: QueueService,
 		private loggerService: LoggerService,
 		private commonHeadQueries: HanamiCommonHeadQueries,
+		@Optional() @Inject(DI.redis) private metricsRedis?: Redis,
 	) {
 		this.logger = this.loggerService.getLogger('hanami-user-feed-request');
 	}
@@ -186,6 +189,10 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 
 	@bindThis
 	public async requestRefresh(userId: string, refreshToken: string): Promise<HanamiUserFeedRequestResult> {
+		// A missing counter means unavailable, not zero. Initialize only when this
+		// instrumentation actually observes requests; retain through the query horizon.
+		const metricsKey = `hanami:metrics:429:${jstDay()}`;
+		try { await this.metricsRedis?.set(metricsKey, '0', 'EX', 105 * 86400, 'NX'); } catch { /* serving remains independent */ }
 		let refreshDigest: Buffer;
 		try {
 			refreshDigest = computeHanamiRefreshTokenDigest(refreshToken);
@@ -313,6 +320,9 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 			throw error;
 		}
 
+		if (decision.result.kind === 'refreshRateLimited') {
+			try { await this.metricsRedis?.incr(metricsKey); } catch { /* serving remains independent */ }
+		}
 		return await this.dispatchAndWait(userId, decision);
 	}
 

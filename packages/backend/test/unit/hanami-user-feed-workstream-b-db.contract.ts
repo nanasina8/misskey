@@ -8,7 +8,10 @@ import { jest } from '@jest/globals';
 import { Client } from 'pg';
 import type { Config } from '@/config.js';
 import { HanamiCommonHeadQueries } from '@/core/hanami/HanamiCommonHeadQueries.js';
+import { encodeHanamiPersonalFeedEntryLocator } from '@/core/hanami/HanamiFeedCodec.js';
 import { HanamiFeedLifecycleService } from '@/core/hanami/HanamiFeedLifecycleService.js';
+import { HanamiMetricsCaptureService } from '@/core/hanami/HanamiMetricsCaptureService.js';
+import type { HanamiMetricsTimelineHealthService } from '@/core/hanami/HanamiMetricsTimelineHealthService.js';
 import { HanamiPersistedFeedReadService } from '@/core/hanami/HanamiPersistedFeedReadService.js';
 import { HanamiUserFeedGenerationService } from '@/core/hanami/HanamiUserFeedGenerationService.js';
 import { HanamiUserFeedRequestService } from '@/core/hanami/HanamiUserFeedRequestService.js';
@@ -141,6 +144,8 @@ const makeRuntime = (schema: string, options: {
 	queue?: (batchId: string) => Promise<unknown>;
 	idPrefix?: string;
 	policy?: boolean;
+	metricsCapture?: HanamiMetricsCaptureService;
+	metricsHealth?: Pick<HanamiMetricsTimelineHealthService, 'begin' | 'finish'>;
 } = {}) => {
 	const db = makeDataSource(schema);
 	const ids = makeIdService(options.idPrefix ?? 'wb');
@@ -160,7 +165,10 @@ const makeRuntime = (schema: string, options: {
 	} };
 	const runtimeConfig = config(options.config);
 	const common = new HanamiCommonHeadQueries();
-	const generation = new HanamiUserFeedGenerationService(db as never, runtimeConfig, ids as never, computation);
+	const generation = new HanamiUserFeedGenerationService(
+		db as never, runtimeConfig, ids as never, computation, common,
+		options.metricsCapture, options.metricsHealth as HanamiMetricsTimelineHealthService | undefined,
+	);
 	const request = new HanamiUserFeedRequestService(
 		db as never,
 		runtimeConfig,
@@ -201,6 +209,9 @@ const withMigratedSchema = async (run: (context: { schema: string; query: DbQuer
 			"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL
 		)`);
 		await new HanamiPersistedTimelinePhase11787097600000().up({ query } as never);
+		// Match 1789948800000-hanamiMetricsDaily without its unrelated metrics tables.
+		await query(`ALTER TABLE "hanami_user_feed_batch"
+			ADD COLUMN "failureKind" varchar(32), ADD COLUMN "failureMessage" varchar(512)`);
 		await query(`INSERT INTO "note" ("id") SELECT id FROM unnest($1::varchar[]) input(id)`, [[
 			'common-note-1', 'common-note-2', 'common-note-3',
 			'personal-note-1', 'personal-note-2', 'personal-note-3', 'personal-note-4',
@@ -233,6 +244,24 @@ const seedUser = async (query: DbQuery, userId: string, enabled = true): Promise
 
 const token = (byte: number): string => Buffer.alloc(32, byte).toString('base64url');
 
+// Only metrics publication contracts need this subset of 1789948800001-hanamiMetricsInsights.
+const createMetricsCandidateTable = async (query: DbQuery): Promise<void> => {
+	await query(`CREATE TABLE "hanami_metrics_candidate" (
+		"batchId" varchar(32) NOT NULL,
+		"userId" varchar(32) NOT NULL REFERENCES "user"("id") ON DELETE CASCADE,
+		"noteId" varchar(32) NOT NULL REFERENCES "note"("id") ON DELETE CASCADE,
+		"axis" varchar(32) NOT NULL,
+		"decision" varchar(32) NOT NULL CHECK ("decision" IN ('hiddenEphemeral', 'shown')),
+		"capturedAt" timestamptz NOT NULL,
+		PRIMARY KEY ("batchId", "userId", "noteId", "axis", "decision")
+	)`);
+};
+
+const makeMetricsHealth = () => ({
+	begin: jest.fn<HanamiMetricsTimelineHealthService['begin']>(),
+	finish: jest.fn<HanamiMetricsTimelineHealthService['finish']>(),
+});
+
 describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 	if (!databaseUrl) {
 		if (process.env.CI) {
@@ -244,6 +273,173 @@ describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 		}
 		return;
 	}
+
+	test('captures candidates only after guarded batch, state, and refresh publication', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await createMetricsCandidateTable(query);
+			await seedUser(query, 'metrics-publish');
+			const result: HanamiPersonalFeedComputationResult = {
+				...personalResult('personal-note-1'),
+				metricsCandidates: [
+					{ noteId: 'personal-note-1', axis: 'globalPopular', decision: 'shown' },
+					{ noteId: 'personal-note-2', axis: 'catchup', decision: 'hiddenEphemeral' },
+				],
+			};
+			const capture = new HanamiMetricsCaptureService();
+			const recordCandidates = capture.recordCandidates.bind(capture);
+			const health = makeMetricsHealth();
+			const record = jest.spyOn(capture, 'recordCandidates').mockImplementation(async (batchId, userId, rows, capturedAt, captureQuery) => {
+				// Inspect the actual publication transaction before delegating to the real INSERT.
+				expect(await captureQuery(`SELECT b."status", s."latestReadyBatchId", s."generatingBatchId",
+					s."latestSequence"::text, r."status" AS "refreshStatus",
+					(SELECT COUNT(*)::text FROM "hanami_metrics_candidate") AS candidates
+					FROM "hanami_user_feed_batch" b
+					JOIN "hanami_user_feed_state" s ON s."userId" = b."userId"
+					JOIN "hanami_user_feed_refresh" r ON r."requestedBatchId" = b."id"
+					WHERE b."id" = $1`, [batchId])).toEqual([{
+					status: 'ready', latestReadyBatchId: batchId, generatingBatchId: null,
+					latestSequence: '1', refreshStatus: 'ready', candidates: '0',
+				}]);
+				expect(health.begin).toHaveBeenCalledTimes(1);
+				expect(health.finish).not.toHaveBeenCalled();
+				return await recordCandidates(batchId, userId, rows, capturedAt, captureQuery);
+			});
+			const runtime = makeRuntime(schema, {
+				idPrefix: 'mp', computation: new Computation(result), metricsCapture: capture, metricsHealth: health,
+			});
+			const requested = await runtime.request.requestRefresh('metrics-publish', token(51));
+			if (requested.kind !== 'serve' || !requested.generationPending) throw new Error('expected metrics batch');
+			expect(await query(`SELECT * FROM "hanami_metrics_candidate"`)).toEqual([]);
+			expect(record).not.toHaveBeenCalled();
+			await expect(runtime.generation.runUserFeedGeneration(requested.requestedBatchId)).resolves.toMatchObject({
+				kind: 'published', attempt: 1, itemCount: 1, headSequence: '1',
+			});
+			expect(record).toHaveBeenCalledTimes(1);
+			expect(await query(`SELECT c."batchId", c."userId", c."noteId", c."axis", c."decision",
+				c."capturedAt" = e."generatedAt" AS "matchesGenerationTime"
+				FROM "hanami_metrics_candidate" c JOIN "hanami_user_feed_entry" e ON e."batchId" = c."batchId"
+				ORDER BY c."noteId"`)).toEqual(result.metricsCandidates!.map(row => ({
+				batchId: requested.requestedBatchId, userId: 'metrics-publish', ...row, matchesGenerationTime: true,
+			})));
+			const day = new Date(new Date(runtime.computation.inputs[0]!.generatedAt).getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+			expect(health.begin.mock.calls).toEqual([[day]]);
+			expect(health.finish.mock.calls).toEqual([[day, true]]);
+			// A repeated worker invocation must not capture the already-published batch again.
+			await runtime.generation.runUserFeedGeneration(requested.requestedBatchId);
+			expect(record).toHaveBeenCalledTimes(1);
+			expect(health.finish).toHaveBeenCalledTimes(1);
+		});
+	}, 20_000);
+
+	test('recovers the capture savepoint after a missing candidate note and commits publication', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await createMetricsCandidateTable(query);
+			await seedUser(query, 'metrics-failure');
+			const capture = new HanamiMetricsCaptureService();
+			const record = jest.spyOn(capture, 'recordCandidates');
+			const health = makeMetricsHealth();
+			const runtime = makeRuntime(schema, {
+				idPrefix: 'mf', metricsCapture: capture, metricsHealth: health,
+				computation: new Computation({
+					...personalResult('personal-note-1'),
+					metricsCandidates: [
+						{ noteId: 'personal-note-1', axis: 'globalPopular', decision: 'shown' },
+						{ noteId: 'missing-candidate-note', axis: 'catchup', decision: 'hiddenEphemeral' },
+					],
+				}),
+			});
+			const requested = await runtime.request.requestRefresh('metrics-failure', token(52));
+			if (requested.kind !== 'serve' || !requested.generationPending) throw new Error('expected metrics failure batch');
+			await expect(runtime.generation.runUserFeedGeneration(requested.requestedBatchId)).resolves.toMatchObject({
+				kind: 'published', attempt: 1, itemCount: 1, headSequence: '1',
+			});
+			expect(record).toHaveBeenCalledTimes(1);
+			await expect(record.mock.results[0]!.value).resolves.toBe(false);
+			expect(health.begin).toHaveBeenCalledTimes(1);
+			expect(health.finish.mock.calls).toEqual([[health.begin.mock.calls[0]![0], false]]);
+			expect(await query(`SELECT * FROM "hanami_metrics_candidate"`)).toEqual([]);
+			// Fresh connection checks prove COMMIT survived PostgreSQL's aborted INSERT state.
+			expect(await query(`SELECT b."status", b."failureKind", s."latestReadyBatchId", s."generatingBatchId",
+				s."latestSequence"::text, e."noteId", r."status" AS "refreshStatus", r."resultHeadBatchId"
+				FROM "hanami_user_feed_batch" b
+				JOIN "hanami_user_feed_state" s ON s."userId" = b."userId"
+				JOIN "hanami_user_feed_entry" e ON e."batchId" = b."id"
+				JOIN "hanami_user_feed_refresh" r ON r."requestedBatchId" = b."id"
+				WHERE b."id" = $1`, [requested.requestedBatchId])).toEqual([{
+				status: 'ready', failureKind: null, latestReadyBatchId: requested.requestedBatchId,
+				generatingBatchId: null, latestSequence: '1', noteId: 'personal-note-1',
+				refreshStatus: 'ready', resultHeadBatchId: requested.requestedBatchId,
+			}]);
+		});
+	}, 20_000);
+
+	test('does not call capture or insert candidates for a stale publication claim', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await createMetricsCandidateTable(query);
+			await seedUser(query, 'metrics-stale');
+			const capture = new HanamiMetricsCaptureService();
+			const record = jest.spyOn(capture, 'recordCandidates');
+			const health = makeMetricsHealth();
+			const computation = new Computation();
+			computation.compute = async () => {
+				// Invalidate the exact owner after claim, without sleep/heartbeat timing races.
+				expect(await query(`UPDATE "hanami_user_feed_batch" SET "leaseOwner" = 'replacement-owner'
+					WHERE "userId" = 'metrics-stale' AND "status" = 'generating' RETURNING "attempts"`)).toEqual([{ attempts: 1 }]);
+				return {
+					...personalResult('personal-note-1'),
+					metricsCandidates: [{ noteId: 'personal-note-1', axis: 'globalPopular', decision: 'shown' }],
+				};
+			};
+			const runtime = makeRuntime(schema, { idPrefix: 'ms', computation, metricsCapture: capture, metricsHealth: health });
+			const requested = await runtime.request.evaluateCursorless('metrics-stale');
+			if (requested.kind !== 'serve' || !requested.generationPending) throw new Error('expected stale metrics batch');
+			await expect(runtime.generation.runUserFeedGeneration(requested.requestedBatchId)).resolves.toEqual({
+				kind: 'stale', batchId: requested.requestedBatchId, attempt: 1,
+			});
+			expect(record).not.toHaveBeenCalled();
+			expect(health.begin).not.toHaveBeenCalled();
+			expect(health.finish).not.toHaveBeenCalled();
+			expect(await query(`SELECT * FROM "hanami_metrics_candidate"`)).toEqual([]);
+			expect(await query(`SELECT "noteId" FROM "hanami_user_feed_entry" WHERE "batchId" = $1`, [requested.requestedBatchId])).toEqual([]);
+			expect(await query(`SELECT "latestReadyBatchId", "generatingBatchId", "latestSequence"::text
+				FROM "hanami_user_feed_state" WHERE "userId" = 'metrics-stale'`)).toEqual([{
+				latestReadyBatchId: null, generatingBatchId: requested.requestedBatchId, latestSequence: '0',
+			}]);
+		});
+	}, 20_000);
+
+	test('excludes absent and differing metricsCandidates from the persisted publication checksum', async () => {
+		const publications: DbRow[] = [];
+		const variants: HanamiPersonalFeedComputationResult['metricsCandidates'][] = [
+			undefined,
+			[{ noteId: 'personal-note-1', axis: 'globalPopular', decision: 'shown' }],
+			[{ noteId: 'personal-note-2', axis: 'catchup', decision: 'hiddenEphemeral' }],
+		];
+		for (const metricsCandidates of variants) {
+			await withMigratedSchema(async ({ schema, query }) => {
+				await createMetricsCandidateTable(query);
+				await seedUser(query, 'metrics-checksum');
+				const result = personalResult('personal-note-1');
+				const health = makeMetricsHealth();
+				// Isolated schemas and identical ID sequences hold batchId/attempt/base/items constant.
+				const runtime = makeRuntime(schema, {
+					idPrefix: 'mc', metricsCapture: new HanamiMetricsCaptureService(), metricsHealth: health,
+					computation: new Computation(metricsCandidates == null ? result : { ...result, metricsCandidates }),
+				});
+				const requested = await runtime.request.evaluateCursorless('metrics-checksum');
+				if (requested.kind !== 'serve' || !requested.generationPending) throw new Error('expected checksum batch');
+				await expect(runtime.generation.runUserFeedGeneration(requested.requestedBatchId)).resolves.toMatchObject({ kind: 'published' });
+				const rows = await query(`SELECT "id", "attempts", "baseCommonGenerationId", "checksum"
+					FROM "hanami_user_feed_batch" WHERE "id" = $1`, [requested.requestedBatchId]);
+				expect(rows).toHaveLength(1);
+				expect(rows[0]!.checksum).toMatch(/^[a-f0-9]{64}$/);
+				publications.push(rows[0]!);
+				expect(await query(`SELECT "noteId", "axis", "decision" FROM "hanami_metrics_candidate"`)).toEqual(metricsCandidates ?? []);
+				expect(health.finish.mock.calls).toEqual(metricsCandidates == null ? [] : [[expect.any(String), true]]);
+			});
+		}
+		expect(publications).toEqual([publications[0], publications[0], publications[0]]);
+	}, 30_000);
 
 	test('checks role before profile and returns recommendation heads without creating durable work', async () => {
 		await withMigratedSchema(async ({ schema, query }) => {
@@ -513,6 +709,10 @@ describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 			if (skippedRefresh.kind !== 'serve' || !skippedRefresh.generationPending) throw new Error('expected refresh from skippedUnavailable');
 			await query(`UPDATE "hanami_user_feed_batch" SET "attempts" = 1 WHERE "id" = $1`, [skippedRefresh.requestedBatchId]);
 			await expect(skippedRuntime.generation.reconcileUserFeedGeneration(10)).resolves.toMatchObject({ failedBatchCount: 1 });
+			expect(await query(`SELECT "status", "failureKind", "failureMessage"
+				FROM "hanami_user_feed_batch" WHERE "id" = $1`, [skippedRefresh.requestedBatchId])).toEqual([{
+				status: 'failed', failureKind: 'unknown', failureMessage: 'generation reached maximum attempts without a recorded failure',
+			}]);
 			expect(await query(`SELECT "initialGenerationState" FROM "hanami_user_feed_state" WHERE "userId" = 'skipped-reload'`))
 				.toEqual([{ initialGenerationState: 'failed' }]);
 			expect(await query(`SELECT "status", "resultMode", "resultHeadBatchId", "resultHeadSequence"::text
@@ -525,6 +725,9 @@ describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 			const readyInitial = await readyRuntime.request.evaluateCursorless('ready-reload');
 			if (readyInitial.kind !== 'serve' || !readyInitial.generationPending) throw new Error('expected ready-reload initial batch');
 			await readyRuntime.generation.runUserFeedGeneration(readyInitial.requestedBatchId);
+			// Exercise refresh failure, not the 20-minute reuse of an unserved ready head.
+			await query(`UPDATE "hanami_user_feed_batch" SET "finishedAt" = clock_timestamp() - INTERVAL '21 minutes'
+				WHERE "id" = $1`, [readyInitial.requestedBatchId]);
 			const readyRefresh = await readyRuntime.request.requestRefresh('ready-reload', token(23));
 			if (readyRefresh.kind !== 'serve' || !readyRefresh.generationPending) throw new Error('expected refresh from ready');
 			await query(`UPDATE "hanami_user_feed_batch" SET "attempts" = 3 WHERE "id" = $1`, [readyRefresh.requestedBatchId]);
@@ -541,6 +744,9 @@ describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 			const initial = await firstRuntime.request.evaluateCursorless('refresh-user');
 			if (initial.kind !== 'serve' || !initial.generationPending) throw new Error('expected initial batch');
 			await firstRuntime.generation.runUserFeedGeneration(initial.requestedBatchId);
+			// Force new durable refresh work rather than reusing the unserved initial head for 20 minutes.
+			await query(`UPDATE "hanami_user_feed_batch" SET "finishedAt" = clock_timestamp() - INTERVAL '21 minutes'
+				WHERE "id" = $1`, [initial.requestedBatchId]);
 
 			const sameTokenResults = await Promise.all(Array.from({ length: 6 }, () => firstRuntime.request.requestRefresh('refresh-user', token(1))));
 			const requestedIds = sameTokenResults.map((result) => result.kind === 'serve' ? result.requestedBatchId : null);
@@ -593,14 +799,17 @@ describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 			const newRuntime = makeRuntime(schema, { computation: failing, idPrefix: 'fb', config: { hanamiGenerationMaxAttempts: 2 } });
 			await expect(newRuntime.generation.runUserFeedGeneration(initial.requestedBatchId)).resolves.toEqual({
 				kind: 'failed', batchId: initial.requestedBatchId, attempt: 2, terminal: true,
+				failureKind: 'exception', failureMessage: 'new owner failed',
 			});
 			held.reject(new Error('stale owner failed later'));
 			await expect(oldRun).resolves.toEqual({ kind: 'stale', batchId: initial.requestedBatchId, attempt: 1 });
 
 			const terminal = await newRuntime.request.requestRefresh('fence-user', token(8));
 			expect(terminal).toMatchObject({ kind: 'serve', generationPending: false, head: { kind: 'common', headSequence: '3' } });
-			expect(await query(`SELECT "status", "attempts", "leaseOwner" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [initial.requestedBatchId])).toEqual([{
+			expect(await query(`SELECT "status", "attempts", "leaseOwner", "failureKind", "failureMessage"
+				FROM "hanami_user_feed_batch" WHERE "id" = $1`, [initial.requestedBatchId])).toEqual([{
 				status: 'failed', attempts: 2, leaseOwner: null,
+				failureKind: 'exception', failureMessage: 'generation failed with an exception',
 			}]);
 
 			await seedUser(query, 'hibernate-user');
@@ -644,9 +853,24 @@ describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 			if (ordinaryRequest.kind !== 'serve' || !ordinaryRequest.generationPending) throw new Error('expected ordinary batch');
 			await expect(ordinaryRuntime.generation.runUserFeedGeneration(ordinaryRequest.requestedBatchId)).resolves.toEqual({
 				kind: 'failed', batchId: ordinaryRequest.requestedBatchId, attempt: 1, terminal: false,
+				failureKind: 'exception', failureMessage: 'ordinary generation error',
 			});
-			expect(await query(`SELECT "status", "epochId" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [ordinaryRequest.requestedBatchId]))
-				.toEqual([{ status: 'pending', epochId: expect.any(String) }]);
+			expect(await query(`SELECT "status", "epochId", "failureKind", "failureMessage"
+				FROM "hanami_user_feed_batch" WHERE "id" = $1`, [ordinaryRequest.requestedBatchId])).toEqual([{
+				status: 'pending', epochId: expect.any(String),
+				failureKind: 'exception', failureMessage: 'generation failed with an exception',
+			}]);
+
+			ordinary.compute = async () => personalResult('personal-note-1');
+			await query(`UPDATE "hanami_user_feed_batch" SET "availableAt" = clock_timestamp() - INTERVAL '1 millisecond'
+				WHERE "id" = $1`, [ordinaryRequest.requestedBatchId]);
+			await expect(ordinaryRuntime.generation.runUserFeedGeneration(ordinaryRequest.requestedBatchId)).resolves.toMatchObject({
+				kind: 'published', batchId: ordinaryRequest.requestedBatchId, attempt: 2, itemCount: 1, headSequence: '1',
+			});
+			expect(await query(`SELECT "status", "attempts", "failureKind", "failureMessage"
+				FROM "hanami_user_feed_batch" WHERE "id" = $1`, [ordinaryRequest.requestedBatchId])).toEqual([{
+				status: 'ready', attempts: 2, failureKind: null, failureMessage: null,
+			}]);
 
 			await seedUser(query, 'invalid-seed-user');
 			const invalid = new Computation();
@@ -677,7 +901,7 @@ describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 			FROM "hanami_user_feed_refresh" r WHERE r."userId" = 'invalid-seed-user'`)).toEqual([{
 				epochId: expect.any(String), requestedBatchId: result.replacementBatchId, status: 'pending', resultMode: null, resultHeadBatchId: null,
 			}]);
-			expect(await runtime.generation.runUserFeedGeneration(requested.requestedBatchId)).resolves.toEqual({
+			await expect(runtime.generation.runUserFeedGeneration(requested.requestedBatchId)).resolves.toEqual({
 				kind: 'obsolete', batchId: requested.requestedBatchId,
 			});
 		});
@@ -717,6 +941,14 @@ describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 				kind: 'page', entries: [{ sequence: '2' }, { sequence: '1' }], hasMore: false,
 			});
 
+			// Mark the oldest entry served so refresh creates a new head and retains both old cursor entries.
+			await query(`INSERT INTO "hanami_recommendation_event"
+				("id", "userId", "noteId", "eventType", "createdAt", "occurredAt", "feedKind", "feedEpochId", "feedEntryId")
+				VALUES ('personal-resume-served', 'personal-resume', 'personal-note-3', 'served',
+					clock_timestamp(), clock_timestamp(), 'personal', $1, $2)`, [
+				personalEpochId,
+				encodeHanamiPersonalFeedEntryLocator({ userId: 'personal-resume', epochId: personalEpochId, sequence: '1' }),
+			]);
 			computation.compute = async () => personalResult('personal-note-4');
 			const refresh = await runtime.request.requestRefresh('personal-resume', token(31));
 			if (refresh.kind !== 'serve' || !refresh.generationPending) throw new Error('expected personal resume refresh batch');

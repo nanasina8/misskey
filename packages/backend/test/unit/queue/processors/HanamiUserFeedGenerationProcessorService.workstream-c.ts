@@ -22,6 +22,7 @@ function createHarness() {
 	const logger = {
 		info: jest.fn(),
 		error: jest.fn(),
+		warn: jest.fn(),
 	};
 	const queueLoggerService = {
 		logger: {

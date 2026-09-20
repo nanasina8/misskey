@@ -47,6 +47,7 @@ import { AggregateRetentionProcessorService } from './processors/AggregateRetent
 import { CleanRemoteNotesProcessorService } from './processors/CleanRemoteNotesProcessorService.js';
 import { HanamiForYouBatchProcessorService } from './processors/HanamiForYouBatchProcessorService.js';
 import { HanamiTasteBatchProcessorService } from './processors/HanamiTasteBatchProcessorService.js';
+import { HanamiMetricsRollupProcessorService } from './processors/HanamiMetricsRollupProcessorService.js';
 import { HanamiCommonGenerationProcessorService } from './processors/HanamiCommonGenerationProcessorService.js';
 import { HanamiGenerationReconcileProcessorService } from './processors/HanamiGenerationReconcileProcessorService.js';
 import { HanamiUserFeedGenerationProcessorService } from './processors/HanamiUserFeedGenerationProcessorService.js';
@@ -167,6 +168,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 		private hanamiUserFeedGenerationProcessorService: HanamiUserFeedGenerationProcessorService,
 		private hanamiGenerationReconcileProcessorService: HanamiGenerationReconcileProcessorService,
 		private hanamiRecommendationEventCacheRepairProcessorService: HanamiRecommendationEventCacheRepairProcessorService,
+		private hanamiMetricsRollupProcessorService: HanamiMetricsRollupProcessorService,
 	) {
 		this.logger = this.queueLoggerService.logger;
 
@@ -213,6 +215,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 					case 'hanamiTasteSweep': return this.hanamiTasteBatchProcessorService.processSweep(job);
 					case 'hanamiTasteCluster': return this.hanamiTasteBatchProcessorService.processCluster(job);
 					case 'hanamiTasteRebuild': return this.hanamiTasteBatchProcessorService.processRebuild(job);
+					case 'hanamiMetricsRollup': return this.hanamiMetricsRollupProcessorService.process();
 					case 'maintainHanamiTimelinePartitions': return this.hanamiTimelinePartitionMaintenanceProcessorService.process();
 					default: throw new Error(`unrecognized job type ${job.name} for system`);
 				}

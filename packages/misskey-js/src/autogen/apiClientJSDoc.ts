@@ -571,8 +571,8 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
-     * Get local Hanami note judge aggregates.
-     *
+     * Get legacy last-24-hour judge aggregates. Supplying range or axis selects the served-exploration what-if cohort at the current interest threshold (max 30 days); cohort contains the result and legacy counts are null with empty legacy lists.
+     * 
      * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
      */
     request<E extends 'admin/hanami/judge-aggregate', P extends Endpoints[E]['req']>(
@@ -583,7 +583,7 @@ declare module '../api.js' {
 
     /**
      * Read or update local Hanami note judge settings.
-     *
+     * 
      * **Credential required**: *Yes* / **Permission**: *write:admin:queue*
      */
     request<E extends 'admin/hanami/judge-settings', P extends Endpoints[E]['req']>(
@@ -593,8 +593,9 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
-     * Get local Hanami note judge status and backlog.
-     *
+     * Get local Hanami note judge status and backlog. Set force to true to bypass the cached runtime probe.
+     * Backlog is null when no ready inventory exists. Optional candidateCount counts already-judged notes in the same inventory; add backlog for a full rejudgement estimate. Optional secPerNote reports available per-note timing.
+     * 
      * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
      */
     request<E extends 'admin/hanami/judge-status', P extends Endpoints[E]['req']>(
@@ -605,10 +606,83 @@ declare module '../api.js' {
 
     /**
      * List recent Hanami note judge trial candidates.
-     *
+     * 
      * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
      */
     request<E extends 'admin/hanami/judge-trial', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * Break down Hanami engagement by an allowlisted dimension, optionally filtering other dimensions. Cells below five users are suppressed, not zeroed. Lift compares engagement per seen with visible Hanami cells, not normal TL; denominator documents this privacy restriction.
+     *
+     * **Admin required**: *Yes*
+     * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+     */
+    request<E extends 'admin/hanami/metrics/breakdown', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * Get privacy-preserving Hanami generation error aggregates and sanitized recent failures. No raw user IDs, note IDs, or note content are returned.
+     *
+     * **Admin required**: *Yes*
+     * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+     */
+    request<E extends 'admin/hanami/metrics/errors', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * Get up to 20 public notes ranked by per-type engagement rate, with at least 20 served records and five users. Ranges contain at most 30 days; dimension and key must be supplied together. Visibility and safety are rechecked on cache hits.
+     *
+     * **Admin required**: *Yes*
+     * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+     */
+    request<E extends 'admin/hanami/metrics/notes', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * Get read-only Hanami allocation and content opportunities, supply snapshots, demand, hidden costs, and tuning distributions. Suggested caps are advisory; consult suppressed and unavailable fields. Hidden-cost rates use candidate records, not normal-TL exposures.
+     *
+     * **Admin required**: *Yes*
+     * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+     */
+    request<E extends 'admin/hanami/metrics/opportunities', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * Get anonymous Hanami usage, per-type DISTINCT reaction + reply + renote engagement, and generation aggregates. Suppressed or unavailable values are null; consult coverage.
+     * Each outcome type counts at most once per served row; reaction + reply counts as two.
+     *
+     * **Admin required**: *Yes*
+     * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+     */
+    request<E extends 'admin/hanami/metrics/summary', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * Compare exploration thresholds over the current-prompt judged served cohort. Ranges contain at most 30 days; each threshold array contains at most eight values (interest 1–5, ephemeral 0–1). Suppressed results are null; this is not a full safety/diversity replay.
+     *
+     * **Admin required**: *Yes*
+     * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+     */
+    request<E extends 'admin/hanami/metrics/what-if', P extends Endpoints[E]['req']>(
       endpoint: E,
       params: P,
       credential?: string | null,
@@ -1639,6 +1713,18 @@ declare module '../api.js' {
      * **Credential required**: *No*
      */
     request<E extends 'charts/federation', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * Successful REST timeline requests and authenticated unique users in UTC chart windows. JST metrics use the supplemental daily counters.
+     *
+     * **Admin required**: *Yes*
+     * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+     */
+    request<E extends 'charts/hanami-timeline', P extends Endpoints[E]['req']>(
       endpoint: E,
       params: P,
       credential?: string | null,
@@ -2851,6 +2937,18 @@ declare module '../api.js' {
      * **Credential required**: *No*
      */
     request<E extends 'get-online-users-count', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * Get admin-only anonymous Hanami statistics with weekly series and small-cell suppression. The query service caches this subset for 60 seconds; no public HTTP cache is enabled.
+     *
+     * **Admin required**: *Yes*
+     * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+     */
+    request<E extends 'hanami/stats', P extends Endpoints[E]['req']>(
       endpoint: E,
       params: P,
       credential?: string | null,
@@ -4711,7 +4809,7 @@ declare module '../api.js' {
 
     /**
      * No description provided.
-     *
+     * 
      * **Credential required**: *Yes* / **Permission**: *read:account*
      */
     request<E extends 'users/hanami-affinity', P extends Endpoints[E]['req']>(

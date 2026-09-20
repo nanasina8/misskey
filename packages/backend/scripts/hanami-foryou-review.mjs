@@ -14,15 +14,137 @@
  * 接続: 環境変数 DATABASE_URL、または PG*（PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE）。
  * 期間: 環境変数 SINCE_DAYS（既定14）。
  * 実行: node scripts/hanami-foryou-review.mjs
+ * 独立 metrics 比較: node scripts/hanami-foryou-review.mjs --metrics --from YYYY-MM-DD --to YYYY-MM-DD [--json]
+ * metrics の日付は JST・両端含む（最大90日）。少人数 source は非表示。
  */
 
 import pg from 'pg';
+import { pathToFileURL } from 'node:url';
 
 const { Pool } = pg;
-const pool = new Pool(process.env.DATABASE_URL ? { connectionString: process.env.DATABASE_URL } : undefined);
 const SINCE_DAYS = Number(process.env.SINCE_DAYS ?? 14);
+const DAY_MS = 86_400_000;
+
+class MetricsUsageError extends Error {}
+
+/** Pure CLI parser. today is an explicit JST YYYY-MM-DD supplied by the caller. */
+export function parseMetricsArgs(args, today) {
+	const options = new Map();
+	for (let i = 0; i < args.length; i++) {
+		const flag = args[i];
+		if (!['--metrics', '--from', '--to', '--json'].includes(flag) || options.has(flag)) {
+			throw new MetricsUsageError('Expected --metrics --from YYYY-MM-DD --to YYYY-MM-DD [--json], without duplicate flags.');
+		}
+		if (flag === '--from' || flag === '--to') {
+			options.set(flag, args[++i]);
+		} else {
+			options.set(flag, true);
+		}
+	}
+	const from = options.get('--from');
+	const to = options.get('--to');
+	const canonical = day => typeof day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(day)
+		&& day >= '0001-01-01' && Number.isFinite(Date.parse(`${day}T00:00:00Z`))
+		&& new Date(`${day}T00:00:00Z`).toISOString().slice(0, 10) === day;
+	if (!options.has('--metrics') || !canonical(from) || !canonical(to) || !canonical(today)) {
+		throw new MetricsUsageError('Metrics dates must be real, canonical YYYY-MM-DD dates.');
+	}
+	const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / DAY_MS + 1;
+	if (days < 1 || days > 90 || to > today) {
+		throw new MetricsUsageError('Metrics range must contain 1–90 inclusive days and no future JST dates.');
+	}
+	return { range: { from, to }, json: options.has('--json') };
+}
+
+/** Pure query builder; takes the validated range. No backend SQL/helpers are imported. */
+export function buildMetricsQuery(range) {
+	// Deliberately independent EXISTS implementation: duplicates of one outcome
+	// count once per served row, but reaction + reply count as TWO engagements.
+	const outcomes = ['seen', 'reaction', 'reply', 'renote'];
+	const flags = outcomes.map(type => `EXISTS (
+		SELECT 1 FROM hanami_metrics_event e
+		WHERE e."userId" = s."userId" AND e."noteId" = s."noteId"
+			AND e."eventType" = '${type}'
+			AND COALESCE(e."occurredAt", e."createdAt") >= s."createdAt"
+			AND COALESCE(e."occurredAt", e."createdAt") <= s."createdAt" + interval '336 hours'
+	) AS ${type}`).join(',\n');
+	const counts = outcomes.map(type => `COUNT(*) FILTER (WHERE ${type}) AS ${type}`).join(',\n');
+	return {
+		text: `WITH served_outcomes AS (
+			SELECT s."userId", COALESCE(NULLIF(s.dimensions ->> 'source', ''), 'unknown') AS key,
+				${flags}
+			FROM hanami_metrics_event s
+			WHERE s."eventType" = 'served'
+				AND s."createdAt" >= $1::timestamptz
+				AND s."createdAt" < $2::timestamptz
+		)
+		SELECT key, COUNT(DISTINCT "userId") AS users, COUNT(*) AS served, ${counts}
+		FROM served_outcomes GROUP BY key ORDER BY key`,
+		values: [
+			new Date(Date.parse(`${range.from}T00:00:00+09:00`)).toISOString(),
+			new Date(Date.parse(`${range.to}T00:00:00+09:00`) + DAY_MS).toISOString(),
+		],
+	};
+}
+
+/** Pure reducer of SQL aggregate rows; explicitly projects only public fields. */
+export function summarizeMetrics(aggregates, range) {
+	const visible = [];
+	const suppressed = [];
+	for (const aggregate of aggregates) {
+		const row = { key: aggregate.key };
+		for (const field of ['users', 'served', 'seen', 'reaction', 'reply', 'renote']) {
+			row[field] = Number(aggregate[field]);
+			if (!Number.isSafeInteger(row[field]) || row[field] < 0) {
+				throw new Error('Metrics counts must be nonnegative safe integers.');
+			}
+		}
+		if (row.users >= 1 && row.users <= 4) suppressed.push(row.key);
+		else visible.push(row);
+	}
+	const engagement = row => row.reaction + row.reply + row.renote;
+	const totalServed = visible.reduce((sum, row) => sum + row.served, 0);
+	const totalEngagement = visible.reduce((sum, row) => sum + engagement(row), 0);
+	const ratio = (numerator, denominator) => numerator === null || denominator === null || denominator === 0 ? null : numerator / denominator;
+	const baseline = ratio(totalEngagement, totalServed);
+	const rows = visible.map(row => {
+		const engaged = engagement(row);
+		const engagementRate = ratio(engaged, row.served);
+		return {
+			...row,
+			share: ratio(row.served, totalServed),
+			engagementShare: ratio(engaged, totalEngagement),
+			engagementRate,
+			seenRate: ratio(row.seen, row.served),
+			engagementPerSeen: ratio(engaged, row.seen),
+			lift: ratio(engagementRate, baseline),
+		};
+	});
+	return { dimension: 'source', rows, suppressed, denominator: 'visible', range: { from: range.from, to: range.to } };
+}
 
 async function main() {
+	if (process.argv.slice(2).includes('--metrics')) {
+		const today = new Date(Date.now() + 9 * 3_600_000).toISOString().slice(0, 10);
+		const { range, json } = parseMetricsArgs(process.argv.slice(2), today);
+		// Leave PG* and PGOPTIONS (including search_path) to node-postgres.
+		const pool = new Pool(process.env.DATABASE_URL ? { connectionString: process.env.DATABASE_URL } : undefined);
+		try {
+			const result = await pool.query(buildMetricsQuery(range));
+			const metrics = summarizeMetrics(result.rows, range);
+			if (json) console.log(JSON.stringify(metrics));
+			else {
+				console.log(`# はなみTL For You metrics (${range.from}–${range.to}, JST) — denominator: visible`);
+				console.table(metrics.rows);
+				console.log(`suppressed: ${JSON.stringify(metrics.suppressed)}`);
+			}
+		} finally {
+			await pool.end();
+		}
+		return;
+	}
+
+	const pool = new Pool(process.env.DATABASE_URL ? { connectionString: process.env.DATABASE_URL } : undefined);
 	const sinceClause = `"createdAt" > now() - ($1 || ' days')::interval`;
 	const arg = [String(SINCE_DAYS)];
 
@@ -64,7 +186,15 @@ async function main() {
 	await pool.end();
 }
 
-main().catch(err => {
-	console.error(err);
-	process.exit(1);
-});
+// Importing the pure helpers must never connect to a database or run the CLI.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+	main().catch(err => {
+		if (process.argv.slice(2).includes('--metrics')) {
+			// Driver errors may contain credentials, identifiers, or connection strings.
+			console.error(err instanceof MetricsUsageError ? err.message : 'Metrics review failed; check database configuration and metrics table availability.');
+		} else {
+			console.error(err);
+		}
+		process.exit(1);
+	});
+}

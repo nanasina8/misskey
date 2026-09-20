@@ -27,7 +27,8 @@ const response = {
 
 function fixture(result: HanamiTimelinePageResult = { kind: 'ok', response }) {
 	const serve = jest.fn<(input: HanamiTimelinePageInput) => Promise<HanamiTimelinePageResult>>(async () => result);
-	return { endpoint: new HanamiTimelineEndpoint({ serve } as never), serve };
+	const chart = { hit: jest.fn() };
+	return { endpoint: new HanamiTimelineEndpoint({ serve } as never, chart as never), serve };
 }
 
 describe('Hanami Phase 5 workstream C endpoint contract', () => {

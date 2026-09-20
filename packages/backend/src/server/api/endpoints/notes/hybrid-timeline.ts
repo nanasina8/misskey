@@ -8,6 +8,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { NotesRepository, ChannelFollowingsRepository, MiMeta } from '@/models/_.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import ActiveUsersChart from '@/core/chart/charts/active-users.js';
+import HanamiTimelineChart from '@/core/chart/charts/hanami-timeline.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { DI } from '@/di-symbols.js';
 import { RoleService } from '@/core/RoleService.js';
@@ -91,6 +92,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private channelMutingService: ChannelMutingService,
 		private channelFollowingService: ChannelFollowingService,
 		private fanoutTimelineEndpointService: FanoutTimelineEndpointService,
+		private hanamiTimelineChart: HanamiTimelineChart,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			const untilId = ps.untilId ?? (ps.untilDate ? this.idService.gen(ps.untilDate!) : null);
@@ -119,7 +121,9 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					this.activeUsersChart.read(me);
 				});
 
-				return await this.noteEntityService.packMany(timeline, me);
+				const packed = await this.noteEntityService.packMany(timeline, me);
+				await this.hanamiTimelineChart.hit('social', me.id);
+				return packed;
 			}
 
 			let timelineConfig: FanoutTimelineName[];
@@ -182,6 +186,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				this.activeUsersChart.read(me);
 			});
 
+			await this.hanamiTimelineChart.hit('social', me.id);
 			return redisTimeline;
 		});
 	}

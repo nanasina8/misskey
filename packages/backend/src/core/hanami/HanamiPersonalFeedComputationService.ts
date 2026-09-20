@@ -32,6 +32,7 @@ import { createHanamiExactTextFingerprint, createHanamiStrictBotTemplateFingerpr
 import { createHanamiQualityShadow, createHanamiQualityShadowFromJudgement, type HanamiRelationshipClass } from '@/core/hanami/HanamiForYouQualityContracts.js';
 import { selectHanamiDiscoveryCandidates } from '@/core/hanami/HanamiDiscoverySelection.js';
 import { HANAMI_NOTE_JUDGE_MODEL, createDefaultHanamiNoteJudgeSettings, validateHanamiNoteJudgeSettings, type HanamiNoteJudgeSettings } from '@/core/hanami/HanamiNoteJudgeContracts.js';
+import { createHanamiMetricsCandidateRows, type HanamiMetricsCandidateDecision } from '@/core/hanami/HanamiMetricsCaptureService.js';
 
 const MAX_SEGMENTS = 7;
 const SEGMENT_SIZE = 30;
@@ -75,6 +76,11 @@ type HanamiNoteJudgeFeedContext = Readonly<{
 type HanamiJudgeReason = 'llm' | 'bot' | 'reply' | 'template' | 'emptyText';
 
 export const HANAMI_PERSONAL_FEED_ALGORITHM_VERSION = 'hanami-personal-v1';
+
+/** Internal handoff to publication; not part of public item provenance. */
+export type HanamiPersonalFeedCapturedComputationResult = HanamiPersonalFeedComputationResult & {
+	readonly metricsCandidates: readonly HanamiMetricsCandidateDecision[];
+};
 
 /** Pure old-head check: a new item cannot repair an existing upper excess. */
 export function hanamiHasUnhealablePersonalSeedHead(seed: readonly ForYouCandidate[], unknownSufficient: boolean): boolean {
@@ -439,6 +445,7 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 		judgeContext: HanamiNoteJudgeFeedContext,
 		rawExplorationBaseScores: ReadonlyMap<string, number> = new Map(),
 		explorationPoolMaximum: number | undefined,
+		metricsCandidates: HanamiMetricsCandidateDecision[] = [],
 	): Promise<readonly HanamiPersonalFeedCandidate[]> {
 		const { settings } = judgeContext;
 		type WithJudge = HanamiPersonalFeedCandidate & { hanamiJudge?: { ephemeralScore: number; interest: number; contentType?: number | null } | null; hanamiJudgeReason?: HanamiJudgeReason; hanamiHasFiles?: boolean; hanamiCampaignTags?: string[] };
@@ -462,13 +469,15 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 		const otherAxes = typed.filter(candidate => candidate.axis !== 'exploration').filter(candidate => {
 			const judgement = candidate.hanamiJudge;
 			// Popular/trending retain unjudged candidates and direct follows.
-			return !judgeContext.reduceEphemeralPosts
+			const retained = !judgeContext.reduceEphemeralPosts
 				|| (candidate.axis !== 'globalPopular' && candidate.axis !== 'trending')
 				|| judgement == null
 				|| candidate.relationshipClass === 'directFollow'
 				|| candidate.hanamiJudgeReason !== 'llm'
 				|| candidate.hanamiHasFiles !== false
 				|| judgement.ephemeralScore <= settings.ephemeralThreshold;
+			if (!retained) metricsCandidates.push({ noteId: candidate.noteId, axis: candidate.axis, decision: 'hiddenEphemeral' });
+			return retained;
 		});
 		return [...otherAxes, ...explorationOutput];
 	}
@@ -493,7 +502,7 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 	}
 
 	@bindThis
-	public async computePersonalFeed(input: HanamiPersonalFeedComputationInput): Promise<HanamiPersonalFeedComputationResult> {
+	public async computePersonalFeed(input: HanamiPersonalFeedComputationInput): Promise<HanamiPersonalFeedCapturedComputationResult> {
 		this.validateInput(input);
 		this.throwIfAborted(input.signal);
 
@@ -513,7 +522,7 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 	private async computeWithRunner(
 		context: HanamiPersonalFeedGenerationContext,
 		persistedCommon: readonly HanamiPersistedCommonCandidate[],
-	): Promise<HanamiPersonalFeedComputationResult> {
+	): Promise<HanamiPersonalFeedCapturedComputationResult> {
 		const { signal } = context;
 		const rawExplorationBaseScores = new Map(persistedCommon.flatMap(candidate => (
 			candidate.axis === 'exploration' && Number.isFinite(candidate.baseScore)
@@ -552,12 +561,14 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 		));
 		const constrained = await this.boundary(signal, async () => await this.enrichAndExcludeEpochCandidates(context, rankedCandidates, judgeContext));
 
+		const metricsCandidates: HanamiMetricsCandidateDecision[] = [];
 		const finalCandidates = await this.applyJudgeSelection(
 			context,
 			constrained.candidates,
 			judgeContext,
 			rawExplorationBaseScores,
 			explorationPoolMaximum,
+			metricsCandidates,
 		);
 		// This is a refresh-wide eligibility fact, not a segment-local one. Reusing
 		// it for every interleave prevents later segments from silently dropping the
@@ -647,6 +658,7 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 			confidence: preparation.confidence,
 			items: Object.freeze(items),
 			segmentLengths: Object.freeze(segmentLengths),
+			metricsCandidates: createHanamiMetricsCandidateRows(metricsCandidates, items),
 		});
 	}
 }

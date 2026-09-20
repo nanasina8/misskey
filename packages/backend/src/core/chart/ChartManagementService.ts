@@ -10,6 +10,7 @@ import FederationChart from './charts/federation.js';
 import NotesChart from './charts/notes.js';
 import UsersChart from './charts/users.js';
 import ActiveUsersChart from './charts/active-users.js';
+import HanamiTimelineChart from './charts/hanami-timeline.js';
 import InstanceChart from './charts/instance.js';
 import PerUserNotesChart from './charts/per-user-notes.js';
 import PerUserPvChart from './charts/per-user-pv.js';
@@ -38,6 +39,7 @@ export class ChartManagementService implements OnApplicationShutdown {
 		private perUserFollowingChart: PerUserFollowingChart,
 		private perUserDriveChart: PerUserDriveChart,
 		private apRequestChart: ApRequestChart,
+		private hanamiTimelineChart: HanamiTimelineChart,
 	) {
 		this.charts = [
 			this.federationChart,
@@ -52,6 +54,7 @@ export class ChartManagementService implements OnApplicationShutdown {
 			this.perUserFollowingChart,
 			this.perUserDriveChart,
 			this.apRequestChart,
+			this.hanamiTimelineChart,
 		];
 	}
 

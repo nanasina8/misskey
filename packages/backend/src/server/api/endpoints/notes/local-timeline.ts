@@ -9,6 +9,7 @@ import type { MiMeta, NotesRepository } from '@/models/_.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import ActiveUsersChart from '@/core/chart/charts/active-users.js';
+import HanamiTimelineChart from '@/core/chart/charts/hanami-timeline.js';
 import { DI } from '@/di-symbols.js';
 import { RoleService } from '@/core/RoleService.js';
 import { IdService } from '@/core/IdService.js';
@@ -78,6 +79,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private fanoutTimelineEndpointService: FanoutTimelineEndpointService,
 		private queryService: QueryService,
 		private channelMutingService: ChannelMutingService,
+		private hanamiTimelineChart: HanamiTimelineChart,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			const untilId = ps.untilId ?? (ps.untilDate ? this.idService.gen(ps.untilDate!) : null);
@@ -105,7 +107,9 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					}
 				});
 
-				return await this.noteEntityService.packMany(timeline, me);
+				const packed = await this.noteEntityService.packMany(timeline, me);
+				await this.hanamiTimelineChart.hit('local', me?.id ?? null);
+				return packed;
 			}
 
 			const timeline = await this.fanoutTimelineEndpointService.timeline({
@@ -137,6 +141,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				}
 			});
 
+			await this.hanamiTimelineChart.hit('local', me?.id ?? null);
 			return timeline;
 		});
 	}

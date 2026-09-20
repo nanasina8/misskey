@@ -66,6 +66,7 @@ export class HanamiUserFeedGenerationProcessorService {
 					batchId: job.data.batchId,
 					attempt: result.attempt,
 					terminal: result.terminal,
+					failureKind: result.failureKind ?? null,
 					failureMessage: result.failureMessage ?? null,
 				});
 			}

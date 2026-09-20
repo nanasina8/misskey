@@ -26,6 +26,12 @@ export class MiHanamiUserFeedBatch {
 	@Column('varchar', { length: 32 })
 	public status: string;
 
+	@Column('varchar', { length: 32, nullable: true })
+	public failureKind: string | null;
+
+	@Column('varchar', { length: 512, nullable: true })
+	public failureMessage: string | null;
+
 	@Column('integer', { default: 0 })
 	public attempts: number;
 

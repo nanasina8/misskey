@@ -108,6 +108,7 @@ import { MiHanamiTrendSnapshotRepresentativeNote } from '@/models/HanamiTrendSna
 import { MiHanamiUserFeedEpoch } from '@/models/HanamiUserFeedEpoch.js';
 import { MiHanamiUserFeedState } from '@/models/HanamiUserFeedState.js';
 import { MiHanamiUserFeedBatch } from '@/models/HanamiUserFeedBatch.js';
+import { MiHanamiMetricsDaily } from '@/models/HanamiMetricsDaily.js';
 import { MiHanamiUserFeedEntry } from '@/models/HanamiUserFeedEntry.js';
 import { MiHanamiUserFeedRefresh } from '@/models/HanamiUserFeedRefresh.js';
 import { MiHanamiUserRecommendationState } from '@/models/HanamiUserRecommendationState.js';
@@ -304,6 +305,7 @@ export const entities = [
 	MiHanamiUserFeedEpoch,
 	MiHanamiUserFeedState,
 	MiHanamiUserFeedBatch,
+	MiHanamiMetricsDaily,
 	MiHanamiUserFeedEntry,
 	MiHanamiUserFeedRefresh,
 	MiHanamiUserRecommendationState,

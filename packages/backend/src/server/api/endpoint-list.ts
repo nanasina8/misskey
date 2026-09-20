@@ -65,6 +65,14 @@ export * as 'admin/hanami/taste-rebuild' from './endpoints/admin/hanami/taste-re
 export * as 'admin/hanami/taste-rebuild-status' from './endpoints/admin/hanami/taste-rebuild-status.js';
 export * as 'admin/hanami/judge-settings' from './endpoints/admin/hanami/judge-settings.js';
 export * as 'admin/hanami/judge-status' from './endpoints/admin/hanami/judge-status.js';
+export * as 'admin/hanami/metrics/summary' from './endpoints/admin/hanami/metrics/summary.js';
+export * as 'admin/hanami/metrics/breakdown' from './endpoints/admin/hanami/metrics/breakdown.js';
+export * as 'admin/hanami/metrics/errors' from './endpoints/admin/hanami/metrics/errors.js';
+export * as 'admin/hanami/metrics/opportunities' from './endpoints/admin/hanami/metrics/opportunities.js';
+export * as 'admin/hanami/metrics/what-if' from './endpoints/admin/hanami/metrics/what-if.js';
+export * as 'admin/hanami/metrics/notes' from './endpoints/admin/hanami/metrics/notes.js';
+export * as 'hanami/stats' from './endpoints/hanami/stats.js';
+export * as 'charts/hanami-timeline' from './endpoints/charts/hanami-timeline.js';
 export * as 'admin/hanami/judge-trial' from './endpoints/admin/hanami/judge-trial.js';
 export * as 'admin/hanami/judge-aggregate' from './endpoints/admin/hanami/judge-aggregate.js';
 export * as 'admin/hanami/suggestion-events-export' from './endpoints/admin/hanami/suggestion-events-export.js';

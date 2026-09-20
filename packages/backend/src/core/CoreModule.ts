@@ -125,6 +125,15 @@ import FederationChart from './chart/charts/federation.js';
 import NotesChart from './chart/charts/notes.js';
 import UsersChart from './chart/charts/users.js';
 import ActiveUsersChart from './chart/charts/active-users.js';
+import HanamiTimelineChart from './chart/charts/hanami-timeline.js';
+import { HanamiMetricsRollupService } from './hanami/HanamiMetricsRollupService.js';
+import { HanamiMetricsQueryService } from './hanami/HanamiMetricsQueryService.js';
+import { HanamiMetricsDiagnosticsService } from './hanami/HanamiMetricsDiagnosticsService.js';
+import { HanamiMetricsRetentionService } from './hanami/HanamiMetricsRetentionService.js';
+import { HanamiMetricsInsightsService } from './hanami/HanamiMetricsInsightsService.js';
+import { HanamiMetricsCaptureService } from './hanami/HanamiMetricsCaptureService.js';
+import { HanamiMetricsPageService } from './hanami/HanamiMetricsPageService.js';
+import { HanamiMetricsTimelineHealthService } from './hanami/HanamiMetricsTimelineHealthService.js';
 import InstanceChart from './chart/charts/instance.js';
 import PerUserNotesChart from './chart/charts/per-user-notes.js';
 import PerUserPvChart from './chart/charts/per-user-pv.js';
@@ -477,6 +486,15 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		NotesChart,
 		UsersChart,
 		ActiveUsersChart,
+		HanamiTimelineChart,
+		HanamiMetricsRollupService,
+		HanamiMetricsQueryService,
+		HanamiMetricsDiagnosticsService,
+		HanamiMetricsRetentionService,
+		HanamiMetricsInsightsService,
+		HanamiMetricsCaptureService,
+		HanamiMetricsPageService,
+		HanamiMetricsTimelineHealthService,
 		InstanceChart,
 		PerUserNotesChart,
 		PerUserPvChart,
@@ -831,6 +849,15 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		NotesChart,
 		UsersChart,
 		ActiveUsersChart,
+		HanamiTimelineChart,
+		HanamiMetricsRollupService,
+		HanamiMetricsQueryService,
+		HanamiMetricsDiagnosticsService,
+		HanamiMetricsRetentionService,
+		HanamiMetricsInsightsService,
+		HanamiMetricsCaptureService,
+		HanamiMetricsPageService,
+		HanamiMetricsTimelineHealthService,
 		InstanceChart,
 		PerUserNotesChart,
 		PerUserPvChart,

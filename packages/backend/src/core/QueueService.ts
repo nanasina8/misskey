@@ -171,6 +171,10 @@ const REPEATABLE_SYSTEM_JOB_DEF: RepeatableSystemJobDefinition[] = [{
 	// taste-clustered popular: evidence整理＋ユーザーごとk-means再構築（spec v0.2 §1.2-1.4）。
 	pattern: '40 4 * * *',
 }, {
+	name: 'hanamiMetricsRollup',
+	pattern: '30 3 * * *',
+	tz: 'Asia/Tokyo',
+}, {
 	name: 'maintainHanamiTimelinePartitions',
 	pattern: '17 0 * * *',
 	tz: 'UTC',

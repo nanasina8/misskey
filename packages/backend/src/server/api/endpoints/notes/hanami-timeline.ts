@@ -2,10 +2,12 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import { HanamiMetricsPageService } from '@/core/hanami/HanamiMetricsPageService.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { validateHanamiRefreshTokenFormat } from '@/core/hanami/HanamiFeedCodec.js';
 import { HanamiTimelinePageService } from '@/core/hanami/HanamiTimelinePageService.js';
+import HanamiTimelineChart from '@/core/chart/charts/hanami-timeline.js';
 import { ApiError } from '../../error.js';
 
 export const meta = {
@@ -104,6 +106,8 @@ export const paramDef = {
 export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-disable-line import/no-default-export
 	constructor(
 		private hanamiTimelinePageService: HanamiTimelinePageService,
+		private hanamiTimelineChart: HanamiTimelineChart,
+		@Optional() private metricsPage?: HanamiMetricsPageService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			const cursor = ps.cursor ?? null;
@@ -130,7 +134,12 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				},
 			});
 			switch (result.kind) {
-				case 'ok': return { ...result.response, items: [...result.response.items] };
+				case 'ok': {
+					const response = { ...result.response, items: [...result.response.items] };
+					await this.hanamiTimelineChart.hit('hanami', me.id);
+					await this.metricsPage?.record(me.id, response.items.map(item => item.feedEntryId));
+					return response;
+				}
 				case 'roleDisabled': throw new ApiError(meta.errors.hanamiTlDisabled);
 				case 'invalidCursor': throw new ApiError(meta.errors.invalidCursor);
 				case 'cursorExpired': throw new ApiError(meta.errors.cursorExpired);

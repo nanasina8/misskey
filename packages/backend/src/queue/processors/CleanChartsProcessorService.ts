@@ -9,6 +9,7 @@ import FederationChart from '@/core/chart/charts/federation.js';
 import NotesChart from '@/core/chart/charts/notes.js';
 import UsersChart from '@/core/chart/charts/users.js';
 import ActiveUsersChart from '@/core/chart/charts/active-users.js';
+import HanamiTimelineChart from '@/core/chart/charts/hanami-timeline.js';
 import InstanceChart from '@/core/chart/charts/instance.js';
 import PerUserNotesChart from '@/core/chart/charts/per-user-notes.js';
 import PerUserPvChart from '@/core/chart/charts/per-user-pv.js';
@@ -30,6 +31,7 @@ export class CleanChartsProcessorService {
 		private notesChart: NotesChart,
 		private usersChart: UsersChart,
 		private activeUsersChart: ActiveUsersChart,
+		private hanamiTimelineChart: HanamiTimelineChart,
 		private instanceChart: InstanceChart,
 		private perUserNotesChart: PerUserNotesChart,
 		private perUserPvChart: PerUserPvChart,
@@ -53,6 +55,7 @@ export class CleanChartsProcessorService {
 		await this.notesChart.clean();
 		await this.usersChart.clean();
 		await this.activeUsersChart.clean();
+		await this.hanamiTimelineChart.clean();
 		await this.instanceChart.clean();
 		await this.perUserNotesChart.clean();
 		await this.perUserPvChart.clean();

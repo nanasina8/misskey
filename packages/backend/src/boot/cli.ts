@@ -6,22 +6,24 @@
 import 'reflect-metadata';
 import { EventEmitter } from 'node:events';
 import { NestFactory } from '@nestjs/core';
-import { CommandModule } from '@/cli/CommandModule.js';
 import { NestLogger } from '@/NestLogger.js';
-import { CommandService } from '@/cli/CommandService.js';
+import { HanamiMetricsRollupCommandService, parseHanamiMetricsRollupArgs } from '@/cli/HanamiMetricsRollupCommandService.js';
 
 process.title = 'Misskey Cli';
 
 Error.stackTraceLimit = Infinity;
 EventEmitter.defaultMaxListeners = 128;
 
-const app = await NestFactory.createApplicationContext(CommandModule, {
+const command = process.argv[2] ?? 'help';
+const metricsArgs = process.argv.slice(3);
+// Validate before importing configuration or initializing any application context.
+const metricsNow = new Date();
+if (command === 'hanami:metrics-rollup') parseHanamiMetricsRollupArgs(metricsArgs, metricsNow);
+
+const { CommandModule, HanamiMetricsRollupCommandModule } = await import('@/cli/CommandModule.js');
+const app = await NestFactory.createApplicationContext(command === 'hanami:metrics-rollup' ? HanamiMetricsRollupCommandModule : CommandModule, {
 	logger: new NestLogger(),
 });
-
-const commandService = app.get(CommandService);
-
-const command = process.argv[2] ?? 'help';
 
 switch (command) {
 	case 'help': {
@@ -29,10 +31,21 @@ switch (command) {
 		console.log('  help - Displays this help message');
 		console.log('  reset-captcha - Resets the captcha');
 		console.log('  hanami-seed-recent [--days N] [--replay] [--cleanup] - (dev) clone the newest N days of notes/reactions into the present and replay the trend index');
+		console.log('  hanami:metrics-rollup --from YYYY-MM-DD [--to YYYY-MM-DD] - recompute inclusive JST dates (max 90; --to defaults to yesterday JST; use --from 14 days ago for 14 days)');
 		break;
 	}
 	case 'ping': {
-		await commandService.ping();
+		const { CommandService } = await import('@/cli/CommandService.js');
+		await app.get(CommandService).ping();
+		break;
+	}
+	case 'hanami:metrics-rollup': {
+		try {
+			const range = await app.get(HanamiMetricsRollupCommandService).run(metricsArgs, metricsNow);
+			console.log(`Hanami metrics rolled up: ${range.from} through ${range.to} (${range.days.length} days, JST).`);
+		} finally {
+			await app.close();
+		}
 		break;
 	}
 	case 'hanami-seed-recent': {
@@ -51,7 +64,8 @@ switch (command) {
 		break;
 	}
 	case 'reset-captcha': {
-		await commandService.resetCaptcha();
+		const { CommandService } = await import('@/cli/CommandService.js');
+		await app.get(CommandService).resetCaptcha();
 		console.log('Captcha has been reset.');
 		break;
 	}

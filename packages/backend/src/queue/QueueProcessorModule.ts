@@ -22,6 +22,7 @@ import { CheckModeratorsActivityProcessorService } from './processors/CheckModer
 import { CleanRemoteNotesProcessorService } from './processors/CleanRemoteNotesProcessorService.js';
 import { HanamiForYouBatchProcessorService } from './processors/HanamiForYouBatchProcessorService.js';
 import { HanamiTasteBatchProcessorService } from './processors/HanamiTasteBatchProcessorService.js';
+import { HanamiMetricsRollupProcessorService } from './processors/HanamiMetricsRollupProcessorService.js';
 import { HanamiCommonGenerationProcessorService } from './processors/HanamiCommonGenerationProcessorService.js';
 import { HanamiGenerationReconcileProcessorService } from './processors/HanamiGenerationReconcileProcessorService.js';
 import { HanamiRecommendationEventCacheRepairProcessorService } from './processors/HanamiRecommendationEventCacheRepairProcessorService.js';
@@ -101,6 +102,7 @@ import { EmojiImageFingerprintProcessorService } from './processors/EmojiImageFi
 		CleanRemoteNotesProcessorService,
 		HanamiForYouBatchProcessorService,
 		HanamiTasteBatchProcessorService,
+		HanamiMetricsRollupProcessorService,
 		HanamiCommonGenerationProcessorService,
 		HanamiGenerationReconcileProcessorService,
 		HanamiRecommendationEventCacheRepairProcessorService,

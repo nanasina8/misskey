@@ -103,6 +103,7 @@ import { MiHanamiTrendSnapshot } from '@/models/HanamiTrendSnapshot.js';
 import { MiHanamiTrendSnapshotEntry } from '@/models/HanamiTrendSnapshotEntry.js';
 import { MiHanamiTrendSnapshotRepresentativeNote } from '@/models/HanamiTrendSnapshotRepresentativeNote.js';
 import { MiHanamiUserFeedBatch } from '@/models/HanamiUserFeedBatch.js';
+import { MiHanamiMetricsDaily } from '@/models/HanamiMetricsDaily.js';
 import { MiHanamiUserFeedEntry } from '@/models/HanamiUserFeedEntry.js';
 import { MiHanamiUserFeedEpoch } from '@/models/HanamiUserFeedEpoch.js';
 import { MiHanamiUserFeedRefresh } from '@/models/HanamiUserFeedRefresh.js';
@@ -219,6 +220,7 @@ export {
 	MiHanamiUserFeedEpoch,
 	MiHanamiUserFeedState,
 	MiHanamiUserFeedBatch,
+	MiHanamiMetricsDaily,
 	MiHanamiUserFeedEntry,
 	MiHanamiUserFeedRefresh,
 	MiHanamiUserRecommendationState,

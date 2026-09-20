@@ -5,6 +5,8 @@
 
 import { hanamiInterleave, hanamiAxisOrder, type HanamiAxis, type HanamiAxisLevel, type ForYouCandidate } from '@/core/hanami/HanamiForYouInterleave.js';
 
+type ConstraintCandidate = Omit<ForYouCandidate, 'score'>;
+
 function cand(noteId: string, author: string, term?: string): ForYouCandidate {
 	return { noteId, userId: author, score: 1, term };
 }
@@ -20,7 +22,7 @@ function countBySource(out: { source: HanamiAxis }[]): Record<string, number> {
 	return c;
 }
 
-function expectFinalWindows(selected: readonly ForYouCandidate[], following: readonly ForYouCandidate[]): void {
+function expectFinalWindows(selected: readonly ConstraintCandidate[], following: readonly ConstraintCandidate[]): void {
 	const visible = [...selected, ...following];
 	for (const size of [10, 30, 210]) {
 		for (let start = 0; start + size <= visible.length; start++) {
@@ -43,7 +45,7 @@ function expectFinalWindows(selected: readonly ForYouCandidate[], following: rea
 	}
 }
 
-function expectPartialUpperFeasible(selected: readonly ForYouCandidate[], following: readonly ForYouCandidate[]): void {
+function expectPartialUpperFeasible(selected: readonly ConstraintCandidate[], following: readonly ConstraintCandidate[]): void {
 	const partial = [...selected, ...following];
 	for (const author of new Set(partial.map(value => value.userId).filter((value): value is string => value != null))) {
 		expect(partial.filter(value => value.userId === author).length).toBeLessThanOrEqual(1);
@@ -57,7 +59,7 @@ function expectPartialUpperFeasible(selected: readonly ForYouCandidate[], follow
 	expect(partial.filter(value => value.relationshipClass === 'directFollow' || value.relationshipClass === 'known').length).toBeLessThanOrEqual(12);
 }
 
-function bruteFinalValid(selected: readonly ForYouCandidate[], following: readonly ForYouCandidate[], unknownSufficient: boolean): boolean {
+function bruteFinalValid(selected: readonly ConstraintCandidate[], following: readonly ConstraintCandidate[], unknownSufficient: boolean): boolean {
 	const visible = [...selected, ...following];
 	for (const size of [10, 30, 210]) {
 		for (let start = 0; start + size <= visible.length && start < selected.length; start++) {
@@ -234,7 +236,7 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 				exactTextFingerprint: `fp-${prefix}-${run}-${index}`,
 				isBot: random() % 4 === 0, strictBotTemplateFingerprint: `tpl-${prefix}-${run}-${index}`,
 			});
-			const following = Array.from({ length: 30 }, (_, index) => ({ ...make('old', index), userId: `old-author-${run}-${index}`,
+			const following: ForYouCandidate[] = Array.from({ length: 30 }, (_, index) => ({ ...make('old', index), userId: `old-author-${run}-${index}`,
 				relationshipClass: unknownSufficient && index < 15 ? 'unknown' : undefined }));
 			const candidates = Array.from({ length: 45 }, (_, index) => make('new', index));
 			const out = hanamiInterleave({ confidence: 'none', limit: 30, personalConstraints: true, unknownSufficient,

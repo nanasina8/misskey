@@ -71,12 +71,26 @@ import type {
 	AdminGetTableStatsResponse,
 	AdminGetUserIpsRequest,
 	AdminGetUserIpsResponse,
+	AdminHanamiJudgeAggregateRequest,
 	AdminHanamiJudgeAggregateResponse,
 	AdminHanamiJudgeSettingsRequest,
 	AdminHanamiJudgeSettingsResponse,
+	AdminHanamiJudgeStatusRequest,
 	AdminHanamiJudgeStatusResponse,
 	AdminHanamiJudgeTrialRequest,
 	AdminHanamiJudgeTrialResponse,
+	AdminHanamiMetricsBreakdownRequest,
+	AdminHanamiMetricsBreakdownResponse,
+	AdminHanamiMetricsErrorsRequest,
+	AdminHanamiMetricsErrorsResponse,
+	AdminHanamiMetricsNotesRequest,
+	AdminHanamiMetricsNotesResponse,
+	AdminHanamiMetricsOpportunitiesRequest,
+	AdminHanamiMetricsOpportunitiesResponse,
+	AdminHanamiMetricsSummaryRequest,
+	AdminHanamiMetricsSummaryResponse,
+	AdminHanamiMetricsWhatIfRequest,
+	AdminHanamiMetricsWhatIfResponse,
 	AdminHanamiSuggestionEventsExportRequest,
 	AdminHanamiSuggestionEventsExportResponse,
 	AdminHanamiTasteRebuildRequest,
@@ -219,6 +233,8 @@ import type {
 	ChartsDriveResponse,
 	ChartsFederationRequest,
 	ChartsFederationResponse,
+	ChartsHanamiTimelineRequest,
+	ChartsHanamiTimelineResponse,
 	ChartsInstanceRequest,
 	ChartsInstanceResponse,
 	ChartsNotesRequest,
@@ -400,6 +416,8 @@ import type {
 	GalleryPostsUpdateResponse,
 	GetAvatarDecorationsResponse,
 	GetOnlineUsersCountResponse,
+	HanamiStatsRequest,
+	HanamiStatsResponse,
 	HashtagsListRequest,
 	HashtagsListResponse,
 	HashtagsSearchRequest,
@@ -740,10 +758,16 @@ export type Endpoints = {
 	'admin/get-index-stats': { req: EmptyRequest; res: AdminGetIndexStatsResponse };
 	'admin/get-table-stats': { req: EmptyRequest; res: AdminGetTableStatsResponse };
 	'admin/get-user-ips': { req: AdminGetUserIpsRequest; res: AdminGetUserIpsResponse };
-	'admin/hanami/judge-aggregate': { req: EmptyRequest; res: AdminHanamiJudgeAggregateResponse };
+	'admin/hanami/judge-aggregate': { req: AdminHanamiJudgeAggregateRequest; res: AdminHanamiJudgeAggregateResponse };
 	'admin/hanami/judge-settings': { req: AdminHanamiJudgeSettingsRequest; res: AdminHanamiJudgeSettingsResponse };
-	'admin/hanami/judge-status': { req: EmptyRequest; res: AdminHanamiJudgeStatusResponse };
+	'admin/hanami/judge-status': { req: AdminHanamiJudgeStatusRequest; res: AdminHanamiJudgeStatusResponse };
 	'admin/hanami/judge-trial': { req: AdminHanamiJudgeTrialRequest; res: AdminHanamiJudgeTrialResponse };
+	'admin/hanami/metrics/breakdown': { req: AdminHanamiMetricsBreakdownRequest; res: AdminHanamiMetricsBreakdownResponse };
+	'admin/hanami/metrics/errors': { req: AdminHanamiMetricsErrorsRequest; res: AdminHanamiMetricsErrorsResponse };
+	'admin/hanami/metrics/notes': { req: AdminHanamiMetricsNotesRequest; res: AdminHanamiMetricsNotesResponse };
+	'admin/hanami/metrics/opportunities': { req: AdminHanamiMetricsOpportunitiesRequest; res: AdminHanamiMetricsOpportunitiesResponse };
+	'admin/hanami/metrics/summary': { req: AdminHanamiMetricsSummaryRequest; res: AdminHanamiMetricsSummaryResponse };
+	'admin/hanami/metrics/what-if': { req: AdminHanamiMetricsWhatIfRequest; res: AdminHanamiMetricsWhatIfResponse };
 	'admin/hanami/suggestion-events-export': { req: AdminHanamiSuggestionEventsExportRequest; res: AdminHanamiSuggestionEventsExportResponse };
 	'admin/hanami/taste-rebuild': { req: AdminHanamiTasteRebuildRequest; res: AdminHanamiTasteRebuildResponse };
 	'admin/hanami/taste-rebuild-status': { req: EmptyRequest; res: AdminHanamiTasteRebuildStatusResponse };
@@ -837,6 +861,7 @@ export type Endpoints = {
 	'charts/ap-request': { req: ChartsApRequestRequest; res: ChartsApRequestResponse };
 	'charts/drive': { req: ChartsDriveRequest; res: ChartsDriveResponse };
 	'charts/federation': { req: ChartsFederationRequest; res: ChartsFederationResponse };
+	'charts/hanami-timeline': { req: ChartsHanamiTimelineRequest; res: ChartsHanamiTimelineResponse };
 	'charts/instance': { req: ChartsInstanceRequest; res: ChartsInstanceResponse };
 	'charts/notes': { req: ChartsNotesRequest; res: ChartsNotesResponse };
 	'charts/user/drive': { req: ChartsUserDriveRequest; res: ChartsUserDriveResponse };
@@ -947,6 +972,7 @@ export type Endpoints = {
 	'gallery/posts/update': { req: GalleryPostsUpdateRequest; res: GalleryPostsUpdateResponse };
 	'get-avatar-decorations': { req: EmptyRequest; res: GetAvatarDecorationsResponse };
 	'get-online-users-count': { req: EmptyRequest; res: GetOnlineUsersCountResponse };
+	'hanami/stats': { req: HanamiStatsRequest; res: HanamiStatsResponse };
 	'hashtags/list': { req: HashtagsListRequest; res: HashtagsListResponse };
 	'hashtags/search': { req: HashtagsSearchRequest; res: HashtagsSearchResponse };
 	'hashtags/show': { req: HashtagsShowRequest; res: HashtagsShowResponse };

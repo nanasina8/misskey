@@ -5,7 +5,10 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { HanamiMetricsCaptureService } from './HanamiMetricsCaptureService.js';
+import { HanamiMetricsTimelineHealthService } from './HanamiMetricsTimelineHealthService.js';
+import { jstDay } from './HanamiMetricsContracts.js';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { bindThis } from '@/decorators.js';
@@ -25,6 +28,7 @@ import {
 } from './HanamiUserFeedContracts.js';
 import { HanamiCommonHeadQueries } from './HanamiCommonHeadQueries.js';
 import { encodeHanamiPersonalFeedEntryLocator } from './HanamiFeedCodec.js';
+import { classifyHanamiMetricsFailure, type HanamiMetricsFailureKind } from './HanamiMetricsFailure.js';
 import type { DataSource, QueryRunner } from 'typeorm';
 
 const MAX_ITEMS = 210;
@@ -89,7 +93,7 @@ type BatchRow = {
 };
 
 type FailureResolution =
-	| { kind: 'failed'; terminal: boolean }
+	| { kind: 'failed'; terminal: boolean; failureKind: HanamiMetricsFailureKind }
 	| { kind: 'stale' }
 	| { kind: 'published'; itemCount: number; feedEpochId: string; headSequence: string };
 
@@ -120,6 +124,8 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 		private computation: HanamiPersonalFeedComputationPort,
 
 		private commonHeadQueries: HanamiCommonHeadQueries = new HanamiCommonHeadQueries(),
+		@Optional() private metricsCapture?: HanamiMetricsCaptureService,
+		@Optional() private metricsHealth?: HanamiMetricsTimelineHealthService,
 	) {}
 
 	@bindThis
@@ -188,7 +194,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 			const failureBudget = this.forkRemainingBudget(workerLease);
 			if (failureBudget == null) throw primaryError;
 			try {
-				const resolution = await this.resolveFailure(claim, failureBudget);
+				const resolution = await this.resolveFailure(claim, failureBudget, primaryError);
 				if (resolution.kind === 'stale') return { kind: 'stale', batchId, attempt: claim.attempt };
 				if (resolution.kind === 'published') {
 					return {
@@ -200,7 +206,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 						headSequence: resolution.headSequence,
 					};
 				}
-				return { kind: 'failed', batchId, attempt: claim.attempt, terminal: resolution.terminal, failureMessage: primaryError instanceof Error ? primaryError.message : String(primaryError) };
+				return { kind: 'failed', batchId, attempt: claim.attempt, terminal: resolution.terminal, failureKind: resolution.failureKind, failureMessage: primaryError instanceof Error ? primaryError.message : String(primaryError) };
 			} finally {
 				failureBudget.dispose();
 			}
@@ -479,12 +485,13 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 		budget: Budget,
 	): Promise<{ kind: 'published'; headSequence: string } | { kind: 'stale' }> {
 		const entryIds = computation.items.map(() => this.idService.gen());
+		const { metricsCandidates, ...checksumComputation } = computation;
 		const checksum = createHash('sha256').update(this.canonicalJson({
 			version: 1,
 			batchId: claim.batchId,
 			attempt: claim.attempt,
 			baseCommonGenerationId: claim.baseCommonGenerationId,
-			computation,
+			computation: checksumComputation,
 		}), 'utf8').digest('hex');
 
 		try {
@@ -547,7 +554,8 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 				const readyRows = hanamiReturningRows(await this.deadlineQuery(queryRunner, budget, `
 					UPDATE "hanami_user_feed_batch"
 					SET "status" = 'ready', "leaseOwner" = NULL, "leaseExpiresAt" = NULL,
-						"finishedAt" = clock_timestamp(), "itemCount" = $4, "checksum" = $5
+						"finishedAt" = clock_timestamp(), "itemCount" = $4, "checksum" = $5,
+						"failureKind" = NULL, "failureMessage" = NULL
 					WHERE "id" = $1 AND "status" = 'generating' AND "leaseOwner" = $2 AND "attempts" = $3
 						AND "leaseExpiresAt" > clock_timestamp() AND clock_timestamp() < $6::timestamptz
 					RETURNING "id" AS id
@@ -588,6 +596,17 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 						"resultHeadSequence" = $4::bigint
 					WHERE "userId" = $1 AND "epochId" = $2 AND "requestedBatchId" = $3 AND "status" = 'pending'
 				`, [claim.userId, claim.epochId, claim.batchId, publishedState.latest_sequence]);
+				if (this.metricsCapture && metricsCandidates) {
+					const day = jstDay(new Date(claim.generatedAt));
+					this.metricsHealth?.begin(day);
+					let captured = false;
+					try {
+						captured = await this.metricsCapture.recordCandidates(claim.batchId, claim.userId, metricsCandidates, claim.generatedAt,
+							async (sql, parameters) => sql.startsWith('ROLLBACK TO') || sql.startsWith('RELEASE SAVEPOINT')
+								? await queryRunner.query(sql, parameters)
+								: await this.deadlineQuery(queryRunner, budget, sql, parameters));
+					} finally { this.metricsHealth?.finish(day, captured); }
+				}
 				return { kind: 'published', headSequence: publishedState.latest_sequence } as const;
 			});
 		} catch (error) {
@@ -636,7 +655,8 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 		`, [claim.userId, claim.epochId, oldHeadBatchId, minServed.toString()]);
 	}
 
-	private async resolveFailure(claim: Claim, budget: Budget): Promise<FailureResolution> {
+	private async resolveFailure(claim: Claim, budget: Budget, error: unknown): Promise<FailureResolution> {
+		const failure = classifyHanamiMetricsFailure(error);
 		try {
 			return await this.withDeadlineTransaction(budget, async (queryRunner) => {
 				const users = await this.deadlineQuery(queryRunner, budget, `
@@ -666,23 +686,25 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 					const rows = hanamiReturningRows(await this.deadlineQuery(queryRunner, budget, `
 						UPDATE "hanami_user_feed_batch"
 						SET "status" = 'pending', "leaseOwner" = NULL, "leaseExpiresAt" = NULL,
-							"availableAt" = clock_timestamp() + ($4::text || ' milliseconds')::interval
+							"availableAt" = clock_timestamp() + ($4::text || ' milliseconds')::interval,
+							"failureKind" = $6, "failureMessage" = $7
 						WHERE "id" = $1 AND "status" = 'generating' AND "leaseOwner" = $2 AND "attempts" = $3
 							AND "leaseExpiresAt" > clock_timestamp() AND clock_timestamp() < $5::timestamptz
 						RETURNING "id" AS id
-					`, [claim.batchId, claim.leaseOwner, claim.attempt, String(backoffMs), this.databaseDeadlineAt(budget)]) as Array<{ id: string }>);
+					`, [claim.batchId, claim.leaseOwner, claim.attempt, String(backoffMs), this.databaseDeadlineAt(budget), failure.failureKind, failure.failureMessage]) as Array<{ id: string }>);
 					if (rows.length !== 1) return { kind: 'stale' } as const;
-					return { kind: 'failed', terminal: false } as const;
+					return { kind: 'failed', terminal: false, failureKind: failure.failureKind } as const;
 				}
 
 				const fallback = await this.requireFallbackHead(queryRunner, budget, state);
 				const failedRows = hanamiReturningRows(await this.deadlineQuery(queryRunner, budget, `
 					UPDATE "hanami_user_feed_batch"
-					SET "status" = 'failed', "leaseOwner" = NULL, "leaseExpiresAt" = NULL, "finishedAt" = clock_timestamp()
+					SET "status" = 'failed', "leaseOwner" = NULL, "leaseExpiresAt" = NULL, "finishedAt" = clock_timestamp(),
+						"failureKind" = $5, "failureMessage" = $6
 					WHERE "id" = $1 AND "status" = 'generating' AND "leaseOwner" = $2 AND "attempts" = $3
 						AND "leaseExpiresAt" > clock_timestamp() AND clock_timestamp() < $4::timestamptz
 					RETURNING "id" AS id
-				`, [claim.batchId, claim.leaseOwner, claim.attempt, this.databaseDeadlineAt(budget)]) as Array<{ id: string }>);
+				`, [claim.batchId, claim.leaseOwner, claim.attempt, this.databaseDeadlineAt(budget), failure.failureKind, failure.failureMessage]) as Array<{ id: string }>);
 				if (failedRows.length !== 1) return { kind: 'stale' } as const;
 
 				const stateRows = hanamiReturningRows(await this.deadlineQuery(queryRunner, budget, `
@@ -698,7 +720,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 				`, [claim.userId, claim.epochId, claim.batchId]) as Array<{ user_id: string }>);
 				if (stateRows.length !== 1) throw new HanamiUserFeedLeaseLostError();
 				await this.failPendingMappings(queryRunner, budget, claim.batchId, claim.userId, claim.epochId, fallback);
-				return { kind: 'failed', terminal: true } as const;
+				return { kind: 'failed', terminal: true, failureKind: failure.failureKind } as const;
 			});
 		} catch (error) {
 			if (error instanceof HanamiUserFeedLeaseLostError) return { kind: 'stale' };
@@ -872,9 +894,16 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 			if (batch.attempts >= this.config.hanamiGenerationMaxAttempts
 				&& (batch.status === 'pending' || !batch.lease_is_live)) {
 				const fallback = await this.requireFallbackHeadUnbounded(queryRunner, state);
+				// Keep the most recent recorded reason across retries. A worker killed
+				// at its deadline cannot record a failure after its budget expires.
 				await queryRunner.query(`
 					UPDATE "hanami_user_feed_batch"
-					SET "status" = 'failed', "leaseOwner" = NULL, "leaseExpiresAt" = NULL, "finishedAt" = clock_timestamp()
+					SET "status" = 'failed', "leaseOwner" = NULL, "leaseExpiresAt" = NULL, "finishedAt" = clock_timestamp(),
+						"failureKind" = COALESCE("failureKind", CASE WHEN "status" = 'generating' THEN 'lockTimeout' ELSE 'unknown' END),
+						"failureMessage" = COALESCE("failureMessage", CASE
+							WHEN "failureKind" IS NOT NULL THEN NULL
+							WHEN "status" = 'generating' THEN 'generation lease expired at maximum attempts'
+							ELSE 'generation reached maximum attempts without a recorded failure' END)
 					WHERE "id" = $1 AND "status" IN ('pending', 'generating')
 				`, [batch.id]);
 				await queryRunner.query(`

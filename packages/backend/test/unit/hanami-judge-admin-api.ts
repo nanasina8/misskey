@@ -189,7 +189,10 @@ describe('Hanami judge admin endpoint contracts', () => {
 
 	test('trial releases its shared LLM lock with its acquisition token after Python completes', async () => {
 		const query = jest.fn(async () => [{ noteId: 'note-1', text: 'useful operational note', reactionScore: 4, hasFiles: false, isBot: false, isReply: false }]);
-		const redis = { set: jest.fn(async () => 'OK'), eval: jest.fn(async () => 1) };
+		const redis = {
+			set: jest.fn(async (_key: string, _value: string, ..._options: unknown[]) => 'OK' as const),
+			eval: jest.fn(async () => 1),
+		};
 		const directory = await mkdtemp(Path.join(tmpdir(), 'hanami-judge-trial-lock-'));
 		const scriptPath = Path.join(directory, 'judge.py');
 		const previousScript = process.env.HANAMI_NOTE_JUDGE_SCRIPT;
@@ -200,7 +203,7 @@ describe('Hanami judge admin endpoint contracts', () => {
 			await expect(new JudgeTrialEndpoint({ query } as never, redis as never).exec({ settings: createDefaultHanamiNoteJudgeSettings() }, admin, null)).resolves.toMatchObject({
 				items: [expect.objectContaining({ noteId: 'note-1', ephemeralScore: 0.25, interest: 4, contentType: 2 })],
 			});
-			const token = redis.set.mock.calls[0]![1] as string;
+			const token = redis.set.mock.calls[0]![1] as unknown as string;
 			expect(redis.eval).toHaveBeenCalledWith(expect.stringContaining('redis.call("get", KEYS[1]) == ARGV[1]'), 1, 'hanami:llm:exclusive:v1', token);
 		} finally {
 			if (previousScript == null) delete process.env.HANAMI_NOTE_JUDGE_SCRIPT;

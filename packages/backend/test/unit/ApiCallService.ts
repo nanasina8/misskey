@@ -491,7 +491,7 @@ describe('ApiCallService activity updates', () => {
 			name: 'test/strict',
 			meta: {},
 			params: strictParamDef,
-			exec: new Endpoint({} as IEndpointMeta, strictParamDef, handler as never).exec,
+			exec: new (class extends Endpoint<IEndpointMeta, typeof strictParamDef> {})({} as IEndpointMeta, strictParamDef, handler as never).exec,
 		} as unknown as IEndpoint & { exec: jest.Mock };
 		authenticate.mockResolvedValue([null, null]);
 		const reply = new TestReply();

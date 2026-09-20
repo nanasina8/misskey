@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import type { HanamiMetricsFailureKind } from './HanamiMetricsFailure.js';
+
 export const HANAMI_USER_FEED_AXES = Object.freeze([
 	'globalPopular',
 	'neighborTrending',
@@ -182,6 +184,8 @@ export type HanamiPersonalFeedComputationInput = {
 };
 
 export type HanamiPersonalFeedComputationResult = {
+	/** Internal-only observed selection decisions; excluded from public items and publication checksum. */
+	readonly metricsCandidates?: readonly import('./HanamiMetricsCaptureService.js').HanamiMetricsCandidateDecision[];
 	readonly confidence: HanamiUserFeedConfidence;
 	readonly items: readonly HanamiPersonalFeedItem[];
 
@@ -281,6 +285,7 @@ export type HanamiUserFeedGenerationRunResult =
 		 * true means the batch and pending refresh mappings became failed.
 		 */
 		readonly terminal: boolean;
+		readonly failureKind?: HanamiMetricsFailureKind;
 		/** 生成を落とした例外のメッセージ（診断用。ログにしか出さない） */
 		readonly failureMessage?: string;
 	};

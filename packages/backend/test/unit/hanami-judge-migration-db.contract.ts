@@ -4,7 +4,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { Client } from 'pg';
+import { Client, type QueryResultRow } from 'pg';
 import { describe, expect, test } from '@jest/globals';
 import { HanamiNoteJudge1789344000000 } from '../../migration/1789344000000-hanamiNoteJudge.js';
 import { HanamiReduceEphemeralPosts1789430400000 } from '../../migration/1789430400000-hanamiReduceEphemeralPosts.js';
@@ -28,7 +28,7 @@ describe('Hanami judge migration DB-backed contracts', () => {
 		const schema = `hanami_judge_contract_${Date.now()}_${randomBytes(4).toString('hex')}`;
 		const schemaName = `"${schema}"`;
 		const client = new Client({ connectionString: databaseUrl });
-		const query = async <T = Record<string, unknown>>(sql: string, values: unknown[] = []): Promise<T[]> => (await client.query<T>(sql, values)).rows;
+		const query = async <T extends QueryResultRow = QueryResultRow>(sql: string, values: unknown[] = []): Promise<T[]> => (await client.query<T>(sql, values)).rows;
 		const runner = { query };
 
 		try {

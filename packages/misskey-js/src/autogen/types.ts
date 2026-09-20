@@ -470,7 +470,7 @@ export type paths = {
     '/admin/hanami/judge-aggregate': {
         /**
          * admin/hanami/judge-aggregate
-         * @description Get local Hanami note judge aggregates.
+         * @description Get legacy last-24-hour judge aggregates. Supplying range or axis selects the served-exploration what-if cohort at the current interest threshold (max 30 days); cohort contains the result and legacy counts are null with empty legacy lists.
          *
          *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
          */
@@ -502,6 +502,60 @@ export type paths = {
          *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
          */
         post: operations['admin___hanami___judge-trial'];
+    };
+    '/admin/hanami/metrics/breakdown': {
+        /**
+         * admin/hanami/metrics/breakdown
+         * @description Break down Hanami engagement by an allowlisted dimension, optionally filtering other dimensions. Cells below five users are suppressed, not zeroed. Lift compares engagement per seen with visible Hanami cells, not normal TL; denominator documents this privacy restriction.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['admin___hanami___metrics___breakdown'];
+    };
+    '/admin/hanami/metrics/errors': {
+        /**
+         * admin/hanami/metrics/errors
+         * @description Get privacy-preserving Hanami generation error aggregates and sanitized recent failures. No raw user IDs, note IDs, or note content are returned.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['admin___hanami___metrics___errors'];
+    };
+    '/admin/hanami/metrics/notes': {
+        /**
+         * admin/hanami/metrics/notes
+         * @description Get up to 20 public notes ranked by per-type engagement rate, with at least 20 served records and five users. Ranges contain at most 30 days; dimension and key must be supplied together. Visibility and safety are rechecked on cache hits.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['admin___hanami___metrics___notes'];
+    };
+    '/admin/hanami/metrics/opportunities': {
+        /**
+         * admin/hanami/metrics/opportunities
+         * @description Get read-only Hanami allocation and content opportunities, supply snapshots, demand, hidden costs, and tuning distributions. Suggested caps are advisory; consult suppressed and unavailable fields. Hidden-cost rates use candidate records, not normal-TL exposures.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['admin___hanami___metrics___opportunities'];
+    };
+    '/admin/hanami/metrics/summary': {
+        /**
+         * admin/hanami/metrics/summary
+         * @description Get anonymous Hanami usage, per-type DISTINCT reaction + reply + renote engagement, and generation aggregates. Suppressed or unavailable values are null; consult coverage.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['admin___hanami___metrics___summary'];
+    };
+    '/admin/hanami/metrics/what-if': {
+        /**
+         * admin/hanami/metrics/what-if
+         * @description Compare exploration thresholds over the current-prompt judged served cohort. Ranges contain at most 30 days; each threshold array contains at most eight values (interest 1–5, ephemeral 0–1). Suppressed results are null; this is not a full safety/diversity replay.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['admin___hanami___metrics___what-if'];
     };
     '/admin/hanami/suggestion-events-export': {
         /**
@@ -1346,6 +1400,15 @@ export type paths = {
          *     **Credential required**: *No*
          */
         post: operations['charts___federation'];
+    };
+    '/charts/hanami-timeline': {
+        /**
+         * charts/hanami-timeline
+         * @description Successful REST timeline requests and authenticated unique users in UTC chart windows. JST metrics use the supplemental daily counters.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['charts___hanami-timeline'];
     };
     '/charts/instance': {
         /**
@@ -2338,6 +2401,15 @@ export type paths = {
          *     **Credential required**: *No*
          */
         post: operations['get-online-users-count'];
+    };
+    '/hanami/stats': {
+        /**
+         * hanami/stats
+         * @description Get admin-only anonymous Hanami statistics with weekly series and small-cell suppression. The query service caches this subset for 60 seconds; no public HTTP cache is enabled.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['hanami___stats'];
     };
     '/hashtags/list': {
         /**
@@ -9507,6 +9579,20 @@ export interface operations {
         };
     };
     'admin___hanami___judge-aggregate': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Supplying range or axis selects cohort mode (at most 30 days). */
+                    range?: {
+                        days: 7 | 14 | 30 | 90;
+                    } | {
+                        from: string;
+                        to: string;
+                    };
+                    axis?: 'exploration';
+                };
+            };
+        };
         responses: {
             /** @description OK (with results) */
             200: {
@@ -9515,9 +9601,18 @@ export interface operations {
                 };
                 content: {
                     'application/json': {
-                        judged: number;
-                        ephemeral: number;
-                        interestFiltered: number;
+                        judged: number | null;
+                        ephemeral: number | null;
+                        interestFiltered: number | null;
+                        cohort?: {
+                            range: {
+                                from: string;
+                                to: string;
+                            };
+                            passed: number | null;
+                            suppressed: string[];
+                            unavailable: string[];
+                        };
                         typeBreakdown: {
                             contentType: number;
                             count: number;
@@ -9683,6 +9778,14 @@ export interface operations {
         };
     };
     'admin___hanami___judge-status': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Bypass the cached runtime probe. */
+                    force?: boolean;
+                };
+            };
+        };
         responses: {
             /** @description OK (with results) */
             200: {
@@ -9704,7 +9807,12 @@ export interface operations {
                             /** Format: date-time */
                             finishedAt: string | null;
                         } | null;
-                        backlog: number;
+                        /** @description Unjudged distinct notes in the latest ready generation and fence; null when no ready inventory exists. */
+                        backlog: number | null;
+                        /** @description Already-judged distinct notes in that same inventory at the current prompt version. Add backlog for a full rejudgement estimate. */
+                        candidateCount?: number;
+                        /** @description Seconds per item reported by the latest run, or wallDurationMs / processedCount / 1000 when available. */
+                        secPerNote?: number;
                         runtime: {
                             available: boolean;
                             device: string | null;
@@ -9809,6 +9917,727 @@ export interface operations {
                             /** @enum {string} */
                             reason: 'unjudged' | 'bot' | 'reply' | 'template' | 'emptyText' | 'ephemeral' | 'lowInterest' | 'eligible';
                         }[];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    admin___hanami___metrics___breakdown: {
+        requestBody: {
+            content: {
+                'application/json': {
+                    range?: {
+                        days: 7 | 14 | 30 | 90;
+                    } | {
+                        from: string;
+                        to: string;
+                    };
+                    dimension: 'source' | 'contentType' | 'relationshipClass' | 'media' | 'freshness' | 'authorLocality' | 'trendTerm' | 'cluster';
+                    filter?: {
+                        source?: string;
+                        contentType?: string;
+                        relationshipClass?: string;
+                        media?: string;
+                        freshness?: string;
+                        authorLocality?: string;
+                        trendTerm?: string;
+                        cluster?: string;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        range: {
+                            from: string;
+                            to: string;
+                        };
+                        dimension: 'source' | 'contentType' | 'relationshipClass' | 'media' | 'freshness' | 'authorLocality' | 'trendTerm' | 'cluster';
+                        coverage: {
+                            status: 'complete' | 'partial' | 'unavailable';
+                            startedAt: string | null;
+                            retainedFrom: string;
+                            completeDays: string[];
+                            partialDays: string[];
+                            outcomesThrough: string;
+                            unavailable: string[];
+                        };
+                        /** @description Shares and lift use only visible cells so hidden cells cannot be recovered by subtraction. */
+                        denominator: 'visible';
+                        rows: {
+                            key: string;
+                            users: number | null;
+                            served: number | null;
+                            seen: number | null;
+                            reaction: number | null;
+                            reply: number | null;
+                            renote: number | null;
+                            share: number | null;
+                            engagementRate: number | null;
+                            seenRate: number | null;
+                            engagementPerSeen: number | null;
+                            lift: number | null;
+                            engagementShare: number | null;
+                        }[];
+                        suppressed: string[];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    admin___hanami___metrics___errors: {
+        requestBody: {
+            content: {
+                'application/json': {
+                    range?: {
+                        days: 7 | 14 | 30 | 90;
+                    } | {
+                        from: string;
+                        to: string;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        range: {
+                            from: string;
+                            to: string;
+                        };
+                        coverage: {
+                            status: 'complete' | 'partial' | 'unavailable';
+                            startedAt: string | null;
+                            retainedFrom: string;
+                            completeDays: string[];
+                            partialDays: string[];
+                            outcomesThrough: string;
+                            unavailable: string[];
+                        };
+                        suppressed: string[];
+                        personal: {
+                            byKind: {
+                                emptyResult: number | null;
+                                candidateLimit: number | null;
+                                lockTimeout: number | null;
+                                exception: number | null;
+                                unknown: number | null;
+                            };
+                            byDay: {
+                                day: string;
+                                failed: number | null;
+                            }[];
+                            recent: {
+                                at: string;
+                                kind: 'emptyResult' | 'candidateLimit' | 'lockTimeout' | 'exception' | 'unknown';
+                                attempts: number;
+                                message: string;
+                                userBucket: string;
+                            }[];
+                        };
+                        common: {
+                            recent: {
+                                at: string;
+                                status: 'failed';
+                                message: string;
+                            }[];
+                        };
+                        judge: {
+                            recent: {
+                                at: string;
+                                status: 'failed';
+                                message: string;
+                            }[];
+                            backlog: number | null;
+                        };
+                        rateLimited: {
+                            byDay: {
+                                day: string;
+                                count: number | null;
+                            }[];
+                        };
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    admin___hanami___metrics___notes: {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Ranges contain at most 30 days. */
+                    range?: {
+                        days: 7 | 14 | 30 | 90;
+                    } | {
+                        from: string;
+                        to: string;
+                    };
+                    /** Supply dimension and key together, or omit both. */
+                    dimension?: 'source' | 'contentType' | 'relationshipClass' | 'media' | 'freshness' | 'authorLocality' | 'trendTerm' | 'cluster';
+                    key?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        range: {
+                            from: string;
+                            to: string;
+                        };
+                        notes: {
+                            noteId: string;
+                            text: string;
+                            authorLocality: string;
+                            source: string;
+                            contentType: number | string | null;
+                            served: number;
+                            reaction: number;
+                            reply: number;
+                            renote: number;
+                            engagementRate: number;
+                        }[];
+                        suppressed: string[];
+                        unavailable: string[];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    admin___hanami___metrics___opportunities: {
+        requestBody: {
+            content: {
+                'application/json': {
+                    range?: {
+                        days: 7 | 14 | 30 | 90;
+                    } | {
+                        from: string;
+                        to: string;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        range: {
+                            from: string;
+                            to: string;
+                        };
+                        allocation: {
+                            axis: string;
+                            share: number;
+                            engagementShare: number;
+                            ratio: number;
+                            capNow: {
+                                high: number;
+                                low: number;
+                                none: number;
+                            };
+                            verdict: 'under' | 'over' | 'balanced';
+                            suggestedCap: {
+                                high: number;
+                                low: number;
+                                none: number;
+                            };
+                        }[];
+                        content: {
+                            contentType: number | string | null;
+                            media: string;
+                            relationshipClass: string;
+                            served: number;
+                            engagementRate: number;
+                            lift: number | null;
+                            share: number;
+                            opportunity: number | null;
+                            note: string;
+                        }[];
+                        supplyWalls: {
+                            axis: string;
+                            dropped: {
+                                [key: string]: number;
+                            };
+                            passed: number;
+                            note: string;
+                        }[];
+                        demand: {
+                            axis: string;
+                            usersHigh: number;
+                            avgServedPerPageHigh: number;
+                            avgServedPerPageNormal: number;
+                            note: string;
+                        }[];
+                        /** Rates use candidate records, not normal-TL exposures, as their denominator. */
+                        hiddenCost: {
+                            axis: string;
+                            hidden: number;
+                            normalEngagementOfHidden: number;
+                            normalEngagementOfShown: number;
+                        }[];
+                        /** Latest captured day in range; effective levels, not summed daily users. */
+                        tuningDrift: {
+                            [key: string]: {
+                                [key: string]: number;
+                            };
+                        };
+                        unavailable: string[];
+                        suppressed: string[];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    admin___hanami___metrics___summary: {
+        requestBody: {
+            content: {
+                'application/json': {
+                    range?: {
+                        days: 7 | 14 | 30 | 90;
+                    } | {
+                        from: string;
+                        to: string;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        range: {
+                            from: string;
+                            to: string;
+                        };
+                        coverage: {
+                            status: 'complete' | 'partial' | 'unavailable';
+                            startedAt: string | null;
+                            retainedFrom: string;
+                            completeDays: string[];
+                            partialDays: string[];
+                            outcomesThrough: string;
+                            unavailable: string[];
+                        };
+                        suppressed: string[];
+                        /** @description Shares and lift use only visible cells so hidden cells cannot be recovered by subtraction. */
+                        denominator: 'visible';
+                        usage: {
+                            hanamiUsers: {
+                                day: number | null;
+                                week: number | null;
+                                month: number | null;
+                            };
+                            tlShare: {
+                                home: number | null;
+                                local: number | null;
+                                social: number | null;
+                                global: number | null;
+                                hanami: number | null;
+                            };
+                            manualRefreshPerUserDay: number | null;
+                            rateLimited429: number | null;
+                        };
+                        engagement: {
+                            users: number | null;
+                            served: number | null;
+                            seen: number | null;
+                            reaction: number | null;
+                            reply: number | null;
+                            renote: number | null;
+                            engagementRate: number | null;
+                            seenRate: number | null;
+                            normalBaseline: {
+                                reaction: number | null;
+                                reply: number | null;
+                                renote: number | null;
+                            };
+                        };
+                        generation: {
+                            personal: {
+                                batches: number | null;
+                                failed: number | null;
+                                failedRate: number | null;
+                                p50Ms: number | null;
+                                p95Ms: number | null;
+                                failedByKind: {
+                                    emptyResult: number | null;
+                                    candidateLimit: number | null;
+                                    lockTimeout: number | null;
+                                    exception: number | null;
+                                    unknown: number | null;
+                                };
+                            };
+                            common: {
+                                generations: number | null;
+                                failed: number | null;
+                                p50Ms: number | null;
+                                p95Ms: number | null;
+                            };
+                            judge: {
+                                runs: number | null;
+                                failed: number | null;
+                                p50Ms: number | null;
+                                p95Ms: number | null;
+                                backlog: number | null;
+                                secPerNote: number | null;
+                                runtime: string | null;
+                            };
+                        };
+                        series: {
+                            day: string[];
+                            hanamiUsers: (number | null)[];
+                            engagementRate: (number | null)[];
+                            failedBatches: (number | null)[];
+                        };
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___hanami___metrics___what-if': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Ranges contain at most 30 days. */
+                    range?: {
+                        days: 7 | 14 | 30 | 90;
+                    } | {
+                        from: string;
+                        to: string;
+                    };
+                    axis: 'exploration';
+                    thresholds: {
+                        /** At most eight values in 1–5. Omission uses the configured threshold. */
+                        interest?: number[];
+                        /** At most eight values in 0–1. Omission uses the configured threshold. */
+                        ephemeral?: number[];
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        range: {
+                            from: string;
+                            to: string;
+                        };
+                        interest: {
+                            theta: number;
+                            passed: number | null;
+                            passedEngagementRate: number | null;
+                        }[];
+                        ephemeral: {
+                            theta: number;
+                            passed: number | null;
+                            passedEngagementRate: number | null;
+                        }[];
+                        contentTypeBonus: {
+                            contentType: number;
+                            engagementRate: number | null;
+                            bonusNow: number;
+                        }[];
+                        unavailable: string[];
+                        suppressed: string[];
                     };
                 };
             };
@@ -16792,6 +17621,97 @@ export interface operations {
                         pubsub: number[];
                         subActive: number[];
                         pubActive: number[];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'charts___hanami-timeline': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @enum {string} */
+                    span: 'day' | 'hour';
+                    /** @default 30 */
+                    limit?: number;
+                    /** @default null */
+                    offset?: number | null;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        home: {
+                            users: (number | null)[];
+                            requests: (number | null)[];
+                        };
+                        local: {
+                            users: (number | null)[];
+                            requests: (number | null)[];
+                        };
+                        social: {
+                            users: (number | null)[];
+                            requests: (number | null)[];
+                        };
+                        global: {
+                            users: (number | null)[];
+                            requests: (number | null)[];
+                        };
+                        hanami: {
+                            users: (number | null)[];
+                            requests: (number | null)[];
+                        };
                     };
                 };
             };
@@ -24628,6 +25548,116 @@ export interface operations {
                 content: {
                     'application/json': {
                         count: number;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    hanami___stats: {
+        requestBody: {
+            content: {
+                'application/json': {
+                    range?: {
+                        days: 7 | 14 | 30 | 90;
+                    } | {
+                        from: string;
+                        to: string;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        range: {
+                            from: string;
+                            to: string;
+                        };
+                        coverage: {
+                            status: 'complete' | 'partial' | 'unavailable';
+                            unavailable: string[];
+                        };
+                        suppressed: string[];
+                        /** @description Shares and lift use only visible cells so hidden cells cannot be recovered by subtraction. */
+                        denominator: 'visible';
+                        usage: {
+                            hanamiUsers: {
+                                day: number | null;
+                                week: number | null;
+                                month: number | null;
+                            };
+                            tlShare: {
+                                home: number | null;
+                                local: number | null;
+                                social: number | null;
+                                global: number | null;
+                                hanami: number | null;
+                            };
+                        };
+                        engagement: {
+                            engagementRate: number | null;
+                        };
+                        sources: {
+                            key: string;
+                            share: number | null;
+                            engagementRate: number | null;
+                            lift: number | null;
+                        }[];
+                        series: {
+                            week: string;
+                            hanamiUsers: number | null;
+                            engagementRate: number | null;
+                        }[];
                     };
                 };
             };
@@ -38498,4 +39528,3 @@ export interface operations {
         };
     };
 }
-

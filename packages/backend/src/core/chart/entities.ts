@@ -7,6 +7,7 @@ import { entity as FederationChart } from './charts/entities/federation.js';
 import { entity as NotesChart } from './charts/entities/notes.js';
 import { entity as UsersChart } from './charts/entities/users.js';
 import { entity as ActiveUsersChart } from './charts/entities/active-users.js';
+import { entity as HanamiTimelineChart } from './charts/entities/hanami-timeline.js';
 import { entity as InstanceChart } from './charts/entities/instance.js';
 import { entity as PerUserNotesChart } from './charts/entities/per-user-notes.js';
 import { entity as PerUserPvChart } from './charts/entities/per-user-pv.js';
@@ -26,6 +27,7 @@ export const entities = [
 	NotesChart.hour, NotesChart.day,
 	UsersChart.hour, UsersChart.day,
 	ActiveUsersChart.hour, ActiveUsersChart.day,
+	HanamiTimelineChart.hour, HanamiTimelineChart.day,
 	InstanceChart.hour, InstanceChart.day,
 	PerUserNotesChart.hour, PerUserNotesChart.day,
 	PerUserPvChart.hour, PerUserPvChart.day,

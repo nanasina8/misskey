@@ -13,6 +13,7 @@ import { isUserRelated } from '@/misc/is-user-related.js';
 import { isInstanceMuted } from '@/misc/is-instance-muted.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import ActiveUsersChart from '@/core/chart/charts/active-users.js';
+import HanamiTimelineChart from '@/core/chart/charts/hanami-timeline.js';
 import { DI } from '@/di-symbols.js';
 import { RoleService } from '@/core/RoleService.js';
 import { removeMutedUsersReactions } from '@/misc/reactions-mute.js';
@@ -65,6 +66,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private queryService: QueryService,
 		private roleService: RoleService,
 		private activeUsersChart: ActiveUsersChart,
+		private hanamiTimelineChart: HanamiTimelineChart,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			const policies = await this.roleService.getUserPolicies(me ? me.id : null);
@@ -130,6 +132,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			await Promise.all(
 				packedNotes.map(note => removeMutedUsersReactions(note, userIdsWhoMeMuting)),
 			);
+			await this.hanamiTimelineChart.hit('global', me?.id ?? null);
 			return packedNotes;
 		});
 	}
