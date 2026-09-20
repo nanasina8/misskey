@@ -281,6 +281,8 @@ export type HanamiUserFeedGenerationRunResult =
 		 * true means the batch and pending refresh mappings became failed.
 		 */
 		readonly terminal: boolean;
+		/** 生成を落とした例外のメッセージ（診断用。ログにしか出さない） */
+		readonly failureMessage?: string;
 	};
 
 export type HanamiUserFeedGenerationReconcileResult = {

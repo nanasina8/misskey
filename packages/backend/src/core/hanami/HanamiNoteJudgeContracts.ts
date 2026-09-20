@@ -32,7 +32,17 @@ export type HanamiNoteJudgeSettings = Readonly<{
 	basis: HanamiNoteJudgeBasis;
 	examples: readonly string[];
 	templatePatterns: readonly string[];
+	/**
+	 * 発見枠の汎用スコアに足す種類（Q3 contentType 0〜9）ボーナス。index = contentType。
+	 * 反応 0〜3・興味 0〜10 と釣り合う範囲で、絵を落とし切らず文章を順位で寄せる（Kimi 試算 2026-09-20 案B）。
+	 */
+	contentTypeBonus: readonly number[];
 }>;
+
+export const HANAMI_NOTE_JUDGE_CONTENT_TYPE_COUNT = 10;
+export const HANAMI_NOTE_JUDGE_CONTENT_TYPE_BONUS_MAX = 10;
+// 0挨拶 / 1ニュース / 2解説 / 3意見 / 4体験談 / 5ユーモア / 6作品 / 7写真・日常 / 8告知 / 9独り言
+export const HANAMI_NOTE_JUDGE_DEFAULT_CONTENT_TYPE_BONUS = [0, 1, 2, 2, 2, 2, 0, 0, 0, 0] as const;
 
 const DEFAULT_BASIS: HanamiNoteJudgeBasis = {
 	ephemeralA: 'その場限りの投稿（挨拶、短い相づち、相手や文脈がないと意味が通らない独り言、bot/定型の自動投稿、フォロー募集や質問募集などの呼びかけだけ）',
@@ -62,7 +72,13 @@ export function createDefaultHanamiNoteJudgeSettings(): HanamiNoteJudgeSettings 
 		basis: { ...DEFAULT_BASIS },
 		examples: [],
 		templatePatterns: [...HANAMI_NOTE_JUDGE_DEFAULT_TEMPLATE_PATTERNS],
+		contentTypeBonus: [...HANAMI_NOTE_JUDGE_DEFAULT_CONTENT_TYPE_BONUS],
 	};
+}
+
+/** Prompt-affecting fields. Changing any of them requires a new promptVersion (re-judge); other fields do not. */
+export function hanamiNoteJudgePromptFingerprint(settings: HanamiNoteJudgeSettings): string {
+	return JSON.stringify({ basis: settings.basis, examples: settings.examples, templatePatterns: settings.templatePatterns });
 }
 
 export type HanamiNoteJudgeSettingsValidation =
@@ -97,6 +113,12 @@ export function validateHanamiNoteJudgeSettings(value: unknown): HanamiNoteJudge
 	for (const pattern of value.templatePatterns) {
 		try { void new RegExp(pattern, 'iu'); } catch { return { ok: false, error: 'templatePatterns contains an invalid regular expression' }; }
 	}
+	// 追加フィールド。ボーナス導入前に保存された設定は既定表で補う（promptVersion は変えない）。
+	const contentTypeBonus = value.contentTypeBonus === undefined ? [...HANAMI_NOTE_JUDGE_DEFAULT_CONTENT_TYPE_BONUS] : value.contentTypeBonus;
+	if (!Array.isArray(contentTypeBonus) || contentTypeBonus.length !== HANAMI_NOTE_JUDGE_CONTENT_TYPE_COUNT
+		|| !contentTypeBonus.every(bonus => isFiniteNumber(bonus) && bonus >= 0 && bonus <= HANAMI_NOTE_JUDGE_CONTENT_TYPE_BONUS_MAX)) {
+		return { ok: false, error: `contentTypeBonus must be ${HANAMI_NOTE_JUDGE_CONTENT_TYPE_COUNT} numbers in 0..${HANAMI_NOTE_JUDGE_CONTENT_TYPE_BONUS_MAX}` };
+	}
 
 	return {
 		ok: true,
@@ -110,6 +132,7 @@ export function validateHanamiNoteJudgeSettings(value: unknown): HanamiNoteJudge
 			basis: Object.fromEntries(basisKeys.map(key => [key, basis[key]])) as HanamiNoteJudgeBasis,
 			examples: [...value.examples] as string[],
 			templatePatterns: [...value.templatePatterns] as string[],
+			contentTypeBonus: [...contentTypeBonus] as number[],
 		},
 	};
 }

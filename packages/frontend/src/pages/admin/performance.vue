@@ -144,8 +144,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 									<MkInput v-model="judgeSettings.q2Examples"><template #label>Q2 examples</template></MkInput>
 									<MkTextarea v-model="judgeSettings.q2Templates"><template #label>Q2 templates</template></MkTextarea>
 									<MkInput v-for="key in judgeLimitKeys" :key="key" v-model="judgeSettings[key]" type="number"><template #label>{{ key }}</template></MkInput>
+									<MkInfo>種類ボーナス（Q3 の種類ごとに発見枠スコアへ加点。0〜10、減点なし。閾値・係数だけの変更は再判定を起こさない）</MkInfo>
+									<MkInput v-for="(label, index) in judgeContentTypeLabels" :key="index" v-model="judgeContentTypeBonus[index]" type="number"><template #label>{{ index }} {{ label }}</template></MkInput>
 									<MkButton primary @click="saveJudgeSettings">設定を保存</MkButton>
 									<MkButton @click="runJudgeTrial">下書き設定で試行（最新50件）</MkButton>
+									<MkInfo :warn="!judgeStatus.runtime?.available">実行環境: {{ judgeStatus.runtime?.available ? `${judgeStatus.runtime.device} (${judgeStatus.runtime.deviceName})` : `停止中 — ${judgeStatus.runtime?.reason ?? 'GPU なし'}` }}</MkInfo>
 									<MkInfo>モデル: {{ judgeStatus.model ?? '-' }} / 最新実行: {{ judgeStatus.latestRun ?? '-' }} / backlog: {{ judgeStatus.backlog ?? '-' }}</MkInfo>
 									<MkInfo>試行結果（除外理由を含む）</MkInfo>
 									<pre>{{ JSON.stringify(judgeTrial, null, 2) }}</pre>
@@ -416,6 +419,8 @@ type JudgeTrialItem = {
 const judgeLimitKeys = ['thetaEMax', 'thetaIMax', 'reactionMax', 'interestMax'] as const;
 const judgeSettings = ref<JudgeSettings>({ ephemeralA: '', ephemeralB: '', interest1: '', interest2: '', interest3: '', interest4: '', interest5: '', q1Examples: '', q1Templates: '', q2Examples: '', q2Templates: '', thetaEMax: 0, thetaIMax: 0, reactionMax: 0, interestMax: 0 });
 const judgeSettingsRaw = ref(await misskeyApi('admin/hanami/judge-settings'));
+const judgeContentTypeLabels = ['挨拶・相づち・定型文', 'ニュース・情報の共有', '解説・知識・ハウツー', '意見・考察・問題提起', '出来事・体験談・エピソード', 'ユーモア・ネタ・大喜利', '作品の投稿', '写真・食事・日常の記録', '告知・宣伝・募集・企画参加', '近況・独り言・感情の吐露'] as const;
+const judgeContentTypeBonus = ref<number[]>(Array.from({ length: 10 }, (_, index) => Number(judgeSettingsRaw.value.contentTypeBonus?.[index] ?? 0)));
 Object.assign(judgeSettings.value, {
 	ephemeralA: judgeSettingsRaw.value.basis?.ephemeralA ?? '',
 	ephemeralB: judgeSettingsRaw.value.basis?.ephemeralB ?? '',
@@ -444,6 +449,7 @@ function judgeDraftSettings() {
 		...judgeSettingsRaw.value,
 		ephemeralThreshold: Number(judgeSettings.value.thetaEMax), interestThreshold: Number(judgeSettings.value.thetaIMax),
 		reactionMax: Number(judgeSettings.value.reactionMax), interestMax: Number(judgeSettings.value.interestMax), examples, templatePatterns,
+		contentTypeBonus: judgeContentTypeBonus.value.map(value => Number(value)),
 		basis: {
 			...judgeSettingsRaw.value.basis,
 			ephemeralA: judgeSettings.value.ephemeralA,
@@ -464,6 +470,7 @@ async function runJudgeTrial() {
 async function saveJudgeSettings() {
 	const response = await misskeyApi('admin/hanami/judge-settings', { settings: judgeDraftSettings() });
 	judgeSettingsRaw.value = response;
+	judgeContentTypeBonus.value = Array.from({ length: 10 }, (_, index) => Number(response.contentTypeBonus?.[index] ?? 0));
 }
 
 type TasteRebuildStatus = {

@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as Path from 'node:path';
+import { afterAll, beforeAll, describe, expect, jest, test } from '@jest/globals';
 import * as Bull from 'bullmq';
 import { HanamiForYouBatchService } from '@/core/hanami/HanamiForYouBatchService.js';
 import { createDefaultHanamiNoteJudgeSettings } from '@/core/hanami/HanamiNoteJudgeContracts.js';
@@ -43,6 +43,15 @@ class MockBullNoteJudgeLifecycle {
 		}
 	}
 }
+
+// これらのテストは偽の Python スクリプトで実行経路を検証する。GPU ゲート（probe）は
+// HANAMI_NOTE_JUDGE_DEVICE=cpu の明示で迂回する（本番の CPU 強制と同じ経路）。
+const previousJudgeDevice = process.env.HANAMI_NOTE_JUDGE_DEVICE;
+beforeAll(() => { process.env.HANAMI_NOTE_JUDGE_DEVICE = 'cpu'; });
+afterAll(() => {
+	if (previousJudgeDevice == null) delete process.env.HANAMI_NOTE_JUDGE_DEVICE;
+	else process.env.HANAMI_NOTE_JUDGE_DEVICE = previousJudgeDevice;
+});
 
 describe('Hanami note judge lock Bull lifecycle', () => {
 	test('delays lock contention without an attempt, then persists after the lock becomes available', async () => {
@@ -86,7 +95,7 @@ describe('Hanami note judge lock Bull lifecycle', () => {
 		const scriptPath = Path.join(scriptDir, 'judge.py');
 		const previousScript = process.env.HANAMI_NOTE_JUDGE_SCRIPT;
 		const now = jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
-		await writeFile(scriptPath, `import json, sys\nwith open(sys.argv[1], encoding='utf-8') as source: job = json.load(source)\nnote = job['notes'][0]\nwith open(sys.argv[2], 'w', encoding='utf-8') as target: json.dump({'status': 'ok', 'promptVersion': job['settings']['promptVersion'], 'judgements': [{'noteId': note['noteId'], 'ephemeralScore': 0.25, 'interest': 4.0, 'interestDist': [0, 0, 0, 1, 0], 'contentType': 2}]}, target)\n`);
+		await writeFile(scriptPath, 'import json, sys\nwith open(sys.argv[1], encoding=\'utf-8\') as source: job = json.load(source)\nnote = job[\'notes\'][0]\nwith open(sys.argv[2], \'w\', encoding=\'utf-8\') as target: json.dump({\'status\': \'ok\', \'promptVersion\': job[\'settings\'][\'promptVersion\'], \'judgements\': [{\'noteId\': note[\'noteId\'], \'ephemeralScore\': 0.25, \'interest\': 4.0, \'interestDist\': [0, 0, 0, 1, 0], \'contentType\': 2}]}, target)\n');
 		process.env.HANAMI_NOTE_JUDGE_SCRIPT = scriptPath;
 
 		try {

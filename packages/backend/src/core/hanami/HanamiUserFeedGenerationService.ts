@@ -200,7 +200,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 						headSequence: resolution.headSequence,
 					};
 				}
-				return { kind: 'failed', batchId, attempt: claim.attempt, terminal: resolution.terminal };
+				return { kind: 'failed', batchId, attempt: claim.attempt, terminal: resolution.terminal, failureMessage: primaryError instanceof Error ? primaryError.message : String(primaryError) };
 			} finally {
 				failureBudget.dispose();
 			}

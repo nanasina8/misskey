@@ -12,6 +12,8 @@ export type HanamiDiscoveryCandidate = Readonly<{
 	reactionScore: number;
 	ephemeralScore?: number | null;
 	interest?: number | null;
+	/** Q3 の種類 0〜9。未判定/範囲外なら種類ボーナスは 0。 */
+	contentType?: number | null;
 	campaignTags?: readonly string[];
 	/** Compatibility with common-pool rows that already resolved the viewer FF relation. */
 	isFF?: boolean;
@@ -34,6 +36,14 @@ export type HanamiDiscoverySelectionParameters = Readonly<{
 	excludeEphemeral?: boolean;
 	/** The maximum reaction score in the common generation's complete pool. */
 	poolMaxReactionScore?: number;
+	/** index = contentType の加点表。省略時はボーナスなし。 */
+	contentTypeBonus?: readonly number[];
+	/**
+	 * 判定器（GPU）が無い間のフォールバック: 未判定の候補も「興味 = 閾値・その場限りでない」とみなして選ぶ。
+	 * ルール除外行（ephemeral=999）は判定済み扱いなので従来どおり落ちる。種類ボーナスは付けない。
+	 * 判定済みで合格した候補は興味 ≥ 閾値なので自然に未判定より上に来る。
+	 */
+	allowUnjudged?: boolean;
 	campaignTagMinAuthors?: number;
 	authorCapPerBatch?: number;
 	batchSize?: number;
@@ -65,6 +75,13 @@ function isJudged(candidate: HanamiDiscoveryCandidate): candidate is HanamiDisco
 	return Number.isFinite(candidate.ephemeralScore) && Number.isFinite(candidate.interest);
 }
 
+/** 種類ボーナス。未判定・範囲外・表の欠損は 0（減点にはしない: 絵を落とし切らない方針）。 */
+function contentTypeBonusOf(candidate: HanamiDiscoveryCandidate, table: readonly number[] | undefined): number {
+	if (table == null || !Number.isInteger(candidate.contentType)) return 0;
+	const bonus = table[candidate.contentType as number];
+	return Number.isFinite(bonus) ? Math.max(0, bonus) : 0;
+}
+
 function campaignTagsInPool(candidates: readonly HanamiDiscoveryCandidate[], minimumAuthors: number): ReadonlySet<string> {
 	const authorsByTag = new Map<string, Set<string>>();
 	for (const candidate of candidates) {
@@ -88,15 +105,16 @@ export function selectHanamiDiscoveryCandidates(input: HanamiDiscoverySelectionI
 	const poolMaximum = parameters.poolMaxReactionScore ?? Math.max(0, ...candidates.map(candidate => finiteNonNegative(candidate.reactionScore)));
 	const reactionDenominator = Math.log1p(finiteNonNegative(poolMaximum));
 	const scored = candidates.flatMap((candidate) => {
-		if (!isJudged(candidate)
+		const judged = isJudged(candidate);
+		if ((!judged && parameters.allowUnjudged !== true)
 			|| candidate.isFF === true
 			|| candidate.isSelf === true
 			|| candidate.authorId === parameters.viewerId
 			|| viewerFFAuthorIds.has(candidate.authorId)
 			|| candidate.relationshipClass === 'directFollow'
 			|| candidate.relationshipClass === 'known'
-			|| (parameters.excludeEphemeral !== false && candidate.ephemeralScore > parameters.thetaEphemeral)
-			|| candidate.interest < parameters.thetaInterest
+			|| (judged && parameters.excludeEphemeral !== false && candidate.ephemeralScore > parameters.thetaEphemeral)
+			|| (judged && candidate.interest < parameters.thetaInterest)
 			|| candidate.passesSafety === false
 			|| candidate.isMuted === true
 			|| candidate.isBlocked === true
@@ -104,9 +122,10 @@ export function selectHanamiDiscoveryCandidates(input: HanamiDiscoverySelectionI
 			|| candidate.isServed === true
 			|| (isEligible != null && !isEligible(candidate))) return [];
 		const reactionPoints = reactionDenominator === 0 ? 0 : Math.log1p(finiteNonNegative(candidate.reactionScore)) / reactionDenominator * parameters.reactionMax;
-		const normalizedInterest = Math.round(candidate.interest * 1000) / 1000;
+		const normalizedInterest = judged ? Math.round(candidate.interest * 1000) / 1000 : parameters.thetaInterest;
 		const interestPoints = (normalizedInterest - 1) / 4 * parameters.interestMax;
-		return [{ candidate, score: reactionPoints + interestPoints }];
+		const typeBonus = judged ? contentTypeBonusOf(candidate, parameters.contentTypeBonus) : 0;
+		return [{ candidate, score: reactionPoints + interestPoints + typeBonus }];
 	});
 
 	scored.sort((left, right) => right.score - left.score || left.candidate.noteId.localeCompare(right.candidate.noteId));

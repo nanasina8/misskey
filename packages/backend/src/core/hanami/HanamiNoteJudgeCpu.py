@@ -35,6 +35,37 @@ def failure(message, output_path=None):
     output({"model": MODEL, "status": "unavailable", "judgements": [], "error": message}, output_path)
 
 
+def resolve_runtime(torch):
+    """GPU があれば自動で使う。無ければ CPU。
+
+    - device: HANAMI_NOTE_JUDGE_DEVICE=cpu|cuda で強制可。既定は cuda。GPU が無ければ実行しない（unavailable）。
+    - dtype:  HANAMI_NOTE_JUDGE_DTYPE=float32|bfloat16|float16 で強制可。
+      既定は cuda → bfloat16（Ampere 以降。非対応なら float16）、cpu → float32。
+      CPU で bfloat16 を使うと AVX512-BF16 の無い CPU（i3-10100F 等）はエミュレーションで
+      実測 ~97 秒/件まで落ちるので、CPU の既定は float32（RAM は 4B で約 16 GB 必要）。
+    """
+    requested_device = os.environ.get("HANAMI_NOTE_JUDGE_DEVICE", "").strip().lower()
+    cuda_available = bool(getattr(torch, "cuda", None)) and torch.cuda.is_available()
+    if requested_device == "cuda" and not cuda_available:
+        raise RuntimeError("HANAMI_NOTE_JUDGE_DEVICE=cuda but CUDA is not available")
+    if requested_device == "" and not cuda_available:
+        # GPU 無しでは 4B を回さない（CPU は 10100F 実測 ~97 秒/件で実用外）。CPU で回したい場合だけ明示する。
+        raise RuntimeError("GPU (CUDA) is not available; Qwen3-4B judging is disabled. Set HANAMI_NOTE_JUDGE_DEVICE=cpu to force CPU.")
+    device = "cuda" if requested_device != "cpu" else "cpu"
+    requested_dtype = os.environ.get("HANAMI_NOTE_JUDGE_DTYPE", "").strip().lower()
+    dtype_names = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}
+    if requested_dtype:
+        if requested_dtype not in dtype_names:
+            raise RuntimeError(f"unsupported HANAMI_NOTE_JUDGE_DTYPE: {requested_dtype}")
+        dtype = dtype_names[requested_dtype]
+    elif device == "cuda":
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    else:
+        dtype = torch.float32
+    name = torch.cuda.get_device_name(0) if device == "cuda" else "cpu"
+    return device, dtype, {"device": device, "dtype": str(dtype).replace("torch.", ""), "deviceName": name}
+
+
 def configure_torch_threads(torch):
     threads = os.environ.get("HANAMI_LLM_MAX_THREADS", os.environ.get("HANAMI_TASTE_MAX_THREADS", "2"))
     try:
@@ -129,7 +160,7 @@ def judge_one(torch, tokenizer, model, note, settings):
     target_ids, positions = answer_positions(tokenizer, target)
     ids = prompt_ids + target_ids
     import torch.nn.functional as functional
-    input_ids = torch.tensor([ids], dtype=torch.long)
+    input_ids = torch.tensor([ids], dtype=torch.long, device=model.device)
     with torch.no_grad():
         logits = model(input_ids=input_ids).logits[0]
     base = len(prompt_ids)
@@ -150,9 +181,26 @@ def judge_one(torch, tokenizer, model, note, settings):
     }
 
 
+def probe():
+    """Node 側のゲート用: GPU の有無を JSON で stdout に出す（モデルはロードしない）。"""
+    result = {"cudaAvailable": False, "deviceName": None, "torch": None, "error": None}
+    try:
+        import torch
+        result["torch"] = getattr(torch, "__version__", None)
+        result["cudaAvailable"] = bool(torch.cuda.is_available())
+        if result["cudaAvailable"]:
+            result["deviceName"] = torch.cuda.get_device_name(0)
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    output(result)
+
+
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] == "--probe":
+        probe()
+        return
     if len(sys.argv) != 3:
-        failure("usage: HanamiNoteJudgeCpu.py INPUT_JSON OUTPUT_JSON")
+        failure("usage: HanamiNoteJudgeCpu.py INPUT_JSON OUTPUT_JSON | --probe")
         return
     input_path, output_path = sys.argv[1], sys.argv[2]
     try:
@@ -176,9 +224,12 @@ def main():
     try:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
-        configure_torch_threads(torch)
+        device, dtype, runtime = resolve_runtime(torch)
+        if device == "cpu":
+            configure_torch_threads(torch)
         tokenizer = AutoTokenizer.from_pretrained(MODEL, local_files_only=True)
-        model = AutoModelForCausalLM.from_pretrained(MODEL, local_files_only=True, torch_dtype=torch.bfloat16)
+        model = AutoModelForCausalLM.from_pretrained(MODEL, local_files_only=True, torch_dtype=dtype)
+        model.to(device)
         model.eval()
     except Exception as exc:
         failure(f"model/runtime unavailable: {type(exc).__name__}: {exc}", output_path)
@@ -186,7 +237,7 @@ def main():
     judgements, errors = [], []
 
     def flush(status):
-        output({"model": MODEL, "promptVersion": settings.get("promptVersion"), "status": status, "judgements": judgements, "errors": errors}, output_path)
+        output({"model": MODEL, "promptVersion": settings.get("promptVersion"), "status": status, "runtime": runtime, "judgements": judgements, "errors": errors}, output_path)
 
     # 1件ごとに部分結果を書き出す: タイムアウトで kill されても済んだ分は呼び出し側が救済する。
     for note in valid_notes:

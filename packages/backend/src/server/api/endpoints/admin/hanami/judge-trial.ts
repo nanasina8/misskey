@@ -15,7 +15,7 @@ import { Endpoint } from '@/server/api/endpoint-base.js';
 import { ApiError } from '@/server/api/error.js';
 import { createDefaultHanamiNoteJudgeSettings, validateHanamiNoteJudgeSettings, type HanamiNoteJudgeSettings } from '@/core/hanami/HanamiNoteJudgeContracts.js';
 import { applyHanamiNoteJudgeRules } from '@/core/hanami/HanamiNoteJudgeRules.js';
-import { prepareHanamiPythonCommand, resolveHanamiRepoRoot } from '@/core/hanami/HanamiPythonRuntime.js';
+import { prepareHanamiPythonCommand, probeHanamiNoteJudgeRuntime, resolveHanamiNoteJudgeScript } from '@/core/hanami/HanamiPythonRuntime.js';
 
 const execFileAsync = promisify(execFile);
 const TRIAL_TIMEOUT_MS = 5 * 60 * 1000;
@@ -35,6 +35,7 @@ const settingsRequestSchema = {
 		}, required: ['ephemeralA', 'ephemeralB', 'interest1', 'interest2', 'interest3', 'interest4', 'interest5'] },
 		examples: { type: 'array', items: { type: 'string' } },
 		templatePatterns: { type: 'array', items: { type: 'string' } },
+		contentTypeBonus: { type: 'array', items: { type: 'number' }, minItems: 10, maxItems: 10 },
 	},
 	required: ['schemaVersion', 'promptVersion', 'ephemeralThreshold', 'interestThreshold', 'reactionMax', 'interestMax', 'basis', 'examples', 'templatePatterns'],
 } as const;
@@ -45,6 +46,13 @@ export const meta = {
 			message: 'Hanami local LLM is busy. Retry this trial shortly.',
 			code: 'HANAMI_LLM_BUSY',
 			id: '4f3e9fbc-d850-4d07-b9d5-5cbd21856696',
+			kind: 'server',
+			httpStatusCode: 503,
+		},
+		runtimeUnavailable: {
+			message: 'Hanami note judge runtime is unavailable (no GPU). Set HANAMI_NOTE_JUDGE_DEVICE=cpu to force CPU.',
+			code: 'HANAMI_JUDGE_RUNTIME_UNAVAILABLE',
+			id: '2b7c1c0e-7f1a-4d7e-9c0a-5e2f0b6d4a11',
 			kind: 'server',
 			httpStatusCode: 503,
 		},
@@ -83,8 +91,7 @@ async function evaluateLocally(settings: HanamiNoteJudgeSettings, notes: Array<{
 		const inputPath = Path.join(directory, 'input.json');
 		const outputPath = Path.join(directory, 'output.json');
 		await writeFile(inputPath, JSON.stringify({ settings, notes }), 'utf8');
-		const scriptPath = process.env.HANAMI_NOTE_JUDGE_SCRIPT ?? Path.join(resolveHanamiRepoRoot(), 'packages/backend/src/core/hanami/HanamiNoteJudgeCpu.py');
-		const command = prepareHanamiPythonCommand([scriptPath, inputPath, outputPath]);
+		const command = prepareHanamiPythonCommand([resolveHanamiNoteJudgeScript(), inputPath, outputPath]);
 		await execFileAsync(command.file, command.args, { env: command.env, timeout: TRIAL_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
 		const output = JSON.parse(await readFile(outputPath, 'utf8')) as { status?: string; error?: string; judgements?: unknown[] };
 		if (output.status === 'unavailable') throw new Error(`Hanami note judge unavailable: ${output.error ?? 'unknown error'}`);
@@ -126,6 +133,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (notes.length === 0) {
 				judgements = new Map();
 			} else {
+				if (!(await probeHanamiNoteJudgeRuntime()).available) throw new ApiError(meta.errors.runtimeUnavailable);
 				const lockToken = await this.acquireLlmLock();
 				if (lockToken == null) throw new ApiError(meta.errors.llmBusy);
 				try {

@@ -9601,6 +9601,7 @@ export interface operations {
                         };
                         examples: string[];
                         templatePatterns: string[];
+                        contentTypeBonus?: number[];
                     } | null;
                 };
             };
@@ -9630,6 +9631,7 @@ export interface operations {
                         };
                         examples: string[];
                         templatePatterns: string[];
+                        contentTypeBonus: number[];
                     };
                 };
             };
@@ -9703,6 +9705,13 @@ export interface operations {
                             finishedAt: string | null;
                         } | null;
                         backlog: number;
+                        runtime: {
+                            available: boolean;
+                            device: string | null;
+                            deviceName: string | null;
+                            reason: string | null;
+                            probedAt: string;
+                        };
                     };
                 };
             };
@@ -9777,6 +9786,7 @@ export interface operations {
                         };
                         examples: string[];
                         templatePatterns: string[];
+                        contentTypeBonus?: number[];
                     } | null;
                 };
             };

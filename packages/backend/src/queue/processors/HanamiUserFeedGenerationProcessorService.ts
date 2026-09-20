@@ -60,6 +60,15 @@ export class HanamiUserFeedGenerationProcessorService {
 					});
 				}
 			}
+			if (result.kind === 'failed') {
+				// 生成本体の例外は resolveFailure で吸収されるので、ここで理由を残さないと本番ログに何も出ない。
+				this.logger.warn('hanami user feed generation failed', {
+					batchId: job.data.batchId,
+					attempt: result.attempt,
+					terminal: result.terminal,
+					failureMessage: result.failureMessage ?? null,
+				});
+			}
 			this.logger.info('hanami user feed generation delivery completed', {
 				batchId: job.data.batchId,
 				result: result.kind,

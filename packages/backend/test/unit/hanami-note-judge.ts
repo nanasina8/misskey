@@ -55,6 +55,16 @@ describe('Hanami note judge contracts', () => {
 		expect(validateHanamiNoteJudgeSettings({ ...settings, templatePatterns: ['('] })).toMatchObject({ ok: false, error: 'templatePatterns contains an invalid regular expression' });
 	});
 
+	it('defaults a missing content-type bonus table (pre-bonus stored settings) and validates its shape', () => {
+		const { contentTypeBonus: _omitted, ...legacy } = createDefaultHanamiNoteJudgeSettings();
+		expect(validateHanamiNoteJudgeSettings(legacy)).toMatchObject({ ok: true, value: { promptVersion: 1, contentTypeBonus: [0, 1, 2, 2, 2, 2, 0, 0, 0, 0] } });
+		expect(validateHanamiNoteJudgeSettings({ ...legacy, contentTypeBonus: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] })).toMatchObject({ ok: true });
+		expect(validateHanamiNoteJudgeSettings({ ...legacy, contentTypeBonus: [1, 2, 3] })).toMatchObject({ ok: false });
+		expect(validateHanamiNoteJudgeSettings({ ...legacy, contentTypeBonus: [0, 0, 0, 0, 0, 0, -1, 0, 0, 0] })).toMatchObject({ ok: false });
+		expect(validateHanamiNoteJudgeSettings({ ...legacy, contentTypeBonus: [0, 0, 0, 0, 0, 0, 11, 0, 0, 0] })).toMatchObject({ ok: false });
+		expect(validateHanamiNoteJudgeSettings({ ...legacy, contentTypeBonus: [0, 0, 0, 0, 0, 0, 'x', 0, 0, 0] })).toMatchObject({ ok: false });
+	});
+
 	it('keeps the prompt skeleton in code while including editable basis and examples', () => {
 		const settings = createDefaultHanamiNoteJudgeSettings();
 		const prompt = createHanamiNoteJudgePrompt({ cleanedText: '投稿本文', hasFiles: true, settings: { ...settings, basis: { ...settings.basis, ephemeralA: '編集済みのA基準' }, examples: ['編集済みの判定例'] } });

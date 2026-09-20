@@ -27,7 +27,7 @@ import {
 	HANAMI_EVENT_TTL_SERVED_SEEN_MS,
 	HANAMI_EVENT_TTL_PERSONAL_MS,
 } from './HanamiForYouKeys.js';
-import { HANAMI_PYTHON_THREAD_ENV, prepareHanamiPythonCommand, resolveHanamiRepoRoot } from './HanamiPythonRuntime.js';
+import { HANAMI_PYTHON_THREAD_ENV, prepareHanamiPythonCommand, probeHanamiNoteJudgeRuntime, resolveHanamiNoteJudgeScript, resolveHanamiRepoRoot } from './HanamiPythonRuntime.js';
 import {
 	HANAMI_NOTE_JUDGE_MAX_BATCH_SIZE,
 	HANAMI_NOTE_JUDGE_MODEL,
@@ -754,6 +754,9 @@ export class HanamiForYouBatchService {
 				await this.db.query(`INSERT INTO "hanami_note_judgement" ("noteId",model,"promptVersion","ephemeralScore",interest,"interestDist","contentType","judgedAt") VALUES ($1,$2,$3,999,1,$4::real[],0,clock_timestamp()) ON CONFLICT ("noteId") DO UPDATE SET model=EXCLUDED.model,"promptVersion"=EXCLUDED."promptVersion","ephemeralScore"=EXCLUDED."ephemeralScore",interest=EXCLUDED.interest,"interestDist"=EXCLUDED."interestDist","contentType"=EXCLUDED."contentType","judgedAt"=EXCLUDED."judgedAt"`, [row.id, `rule:${rule.reason}`, settings.promptVersion, [1, 0, 0, 0, 0]]);
 			}
 		}
+		// GPU が無ければ LLM ジョブは投入しない（ルール除外の記録だけ残す）。CPU 強制は HANAMI_NOTE_JUDGE_DEVICE=cpu。
+		// 常に probe して runtime キャッシュを温める（個人生成の未判定フォールバック判定は peek しか見ない）。
+		if (!(await probeHanamiNoteJudgeRuntime()).available) return Object.freeze([]);
 		return Object.freeze(splitHanamiNoteJudgeBatches(judgeable, this.noteJudgeBatchSize()).map(noteIds => Object.freeze({ noteIds: Object.freeze(noteIds), promptVersion: settings.promptVersion })));
 	}
 
@@ -764,6 +767,14 @@ export class HanamiForYouBatchService {
 		const startedAt = Date.now();
 		const startedCpu = process.cpuUsage();
 		const settings = await this.noteJudgeSettingsForVersion(data.promptVersion);
+		const runtime = await probeHanamiNoteJudgeRuntime();
+		if (!runtime.available) {
+			// 投入後に GPU が無くなった/無い環境に残っていたジョブ。モデルはロードせず記録だけ残す。
+			logger.warn(`hanami note judge skipped: ${runtime.reason ?? 'runtime unavailable'}`);
+			const runId = await this.createRun('note-judge', { model: HANAMI_NOTE_JUDGE_MODEL, promptVersion: data.promptVersion, requestedCount: data.noteIds.length });
+			await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, processedCount: 0, skippedReason: runtime.reason, backlog: data.noteIds.length }));
+			return { runId, status: 'ready', processedCount: 0 };
+		}
 		const lockToken = await this.acquireNoteJudgeLock();
 		if (lockToken == null) throw new HanamiNoteJudgeLockContentionError();
 		let runId: string | null = null;
@@ -789,10 +800,9 @@ export class HanamiForYouBatchService {
 			const inputPath = Path.join(tmpDir, 'input.json');
 			const outputPath = Path.join(tmpDir, 'output.json');
 			await writeFile(inputPath, JSON.stringify({ settings, notes }), 'utf8');
-			const scriptPath = process.env.HANAMI_NOTE_JUDGE_SCRIPT ?? Path.join(resolveHanamiRepoRoot(), 'packages/backend/src/core/hanami/HanamiNoteJudgeCpu.py');
-			const command = prepareHanamiPythonCommand([scriptPath, inputPath, outputPath], { env: this.noteJudgePythonEnv() });
+			const command = prepareHanamiPythonCommand([resolveHanamiNoteJudgeScript(), inputPath, outputPath], { env: this.noteJudgePythonEnv() });
 			const judgeEnv = this.noteJudgePythonEnv();
-			type JudgeOutput = { status?: string; error?: string; promptVersion?: number; judgements?: Array<{ noteId: string; ephemeralScore: number; interest: number; interestDist: number[]; contentType: number }> };
+			type JudgeOutput = { status?: string; error?: string; promptVersion?: number; runtime?: { device?: string; dtype?: string; deviceName?: string }; judgements?: Array<{ noteId: string; ephemeralScore: number; interest: number; interestDist: number[]; contentType: number }> };
 			let output: JudgeOutput;
 			let salvaged = false;
 			try {
@@ -820,11 +830,11 @@ export class HanamiForYouBatchService {
 			}
 			if (salvaged) {
 				logger.warn(`hanami note judge: runtime interrupted; salvaged ${accepted.size}/${notes.length} judgements, remainder will be re-enqueued`);
-				await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, processedCount: accepted.size, secondsPerItem: accepted.size === 0 ? null : (Date.now() - startedAt) / 1000 / accepted.size, backlog: Math.max(0, notes.length - accepted.size), salvagedPartial: true }));
+				await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, runtime: output.runtime ?? null, processedCount: accepted.size, secondsPerItem: accepted.size === 0 ? null : (Date.now() - startedAt) / 1000 / accepted.size, backlog: Math.max(0, notes.length - accepted.size), salvagedPartial: true }));
 				return { runId, status: 'ready', processedCount: accepted.size };
 			}
 			if (output.status === 'partial' || accepted.size !== notes.length) throw new Error(`Hanami note judge returned ${accepted.size}/${notes.length} judgements; pending notes will retry`);
-			await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, processedCount: judgements.length, secondsPerItem: judgements.length === 0 ? null : (Date.now() - startedAt) / 1000 / judgements.length, backlog: Math.max(0, notes.length - judgements.length) }));
+			await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, runtime: output.runtime ?? null, processedCount: judgements.length, secondsPerItem: judgements.length === 0 ? null : (Date.now() - startedAt) / 1000 / judgements.length, backlog: Math.max(0, notes.length - judgements.length) }));
 			return { runId, status: 'ready', processedCount: accepted.size };
 		} catch (error) {
 			logger.warn(`hanami note judge unavailable/failed: ${(error as Error).message}`);

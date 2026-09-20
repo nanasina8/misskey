@@ -97,3 +97,52 @@ test('orders equal displayed scores by note id despite different raw scores', ()
 
 	expect(selected.map(value => value.noteId)).toEqual(['a-raw-lower', 'z-raw-higher']);
 });
+
+test('adds the content-type bonus to the score without ever subtracting, and ignores unknown or out-of-range types', () => {
+	const bonus = [0, 1, 2, 2, 2, 2, 0, 0, 0, 0];
+	const selected = selectHanamiDiscoveryCandidates({
+		candidates: [
+			candidate('art', 'a', { interest: 3.4, contentType: 6 }), // 作品: 加点 0
+			candidate('humor', 'b', { interest: 3.0, contentType: 5 }), // ユーモア: +2 で作品を抜く
+			candidate('untyped', 'c', { interest: 3.2, contentType: null }),
+			candidate('bogus', 'd', { interest: 3.2, contentType: 42 }),
+		],
+		parameters: { ...parameters, contentTypeBonus: bonus },
+		viewerFFAuthorIds: new Set(),
+	});
+	const scoreOf = (noteId: string) => selected.find(item => item.noteId === noteId)!.score;
+	const base = (interest: number) => Math.log1p(1) / Math.log1p(10) * 3 + (interest - 1) / 4 * 10;
+	expect(scoreOf('humor')).toBeCloseTo(base(3.0) + 2, 9);
+	expect(scoreOf('art')).toBeCloseTo(base(3.4), 9);
+	expect(scoreOf('untyped')).toBeCloseTo(base(3.2), 9);
+	expect(scoreOf('bogus')).toBeCloseTo(base(3.2), 9);
+	expect(selected.map(item => item.noteId)).toEqual(['humor', 'art', 'bogus', 'untyped']); // 同点は noteId 順
+
+	const withoutTable = selectHanamiDiscoveryCandidates({
+		candidates: [candidate('humor', 'b', { interest: 3.0, contentType: 5 })],
+		parameters,
+		viewerFFAuthorIds: new Set(),
+	});
+	expect(withoutTable[0]!.score).toBeCloseTo(base(3.0), 9);
+});
+
+test('allowUnjudged (no judge runtime) admits unjudged candidates at threshold interest without bonus, keeps rule exclusions out, and ranks judged passes above', () => {
+	const bonus = [0, 1, 2, 2, 2, 2, 0, 0, 0, 0];
+	const pool = [
+		candidate('judged-pass', 'a', { interest: 3.2, contentType: 4, reactionScore: 1 }),
+		candidate('judged-fail', 'b', { interest: 2.5, contentType: 4, reactionScore: 5 }),
+		candidate('rule-excluded', 'c', { ephemeralScore: 999, interest: 1, reactionScore: 5 }),
+		candidate('unjudged-popular', 'd', { ephemeralScore: null, interest: null, reactionScore: 5 }),
+		candidate('unjudged-recent', 'e', { ephemeralScore: undefined, interest: undefined, reactionScore: 0 }),
+	];
+	const strict = selectHanamiDiscoveryCandidates({ candidates: pool, parameters: { ...parameters, contentTypeBonus: bonus }, viewerFFAuthorIds: new Set() });
+	expect(strict.map(item => item.noteId)).toEqual(['judged-pass']);
+
+	const fallback = selectHanamiDiscoveryCandidates({ candidates: pool, parameters: { ...parameters, contentTypeBonus: bonus, allowUnjudged: true }, viewerFFAuthorIds: new Set() });
+	expect(fallback.map(item => item.noteId)).toEqual(['judged-pass', 'unjudged-popular', 'unjudged-recent']);
+	const scoreOf = (noteId: string) => fallback.find(item => item.noteId === noteId)!.score;
+	const thresholdPoints = (2.95 - 1) / 4 * 10;
+	expect(scoreOf('unjudged-popular')).toBeCloseTo(Math.log1p(5) / Math.log1p(10) * 3 + thresholdPoints, 9);
+	expect(scoreOf('unjudged-recent')).toBeCloseTo(thresholdPoints, 9);
+	expect(scoreOf('judged-pass')).toBeGreaterThan(scoreOf('unjudged-popular'));
+});

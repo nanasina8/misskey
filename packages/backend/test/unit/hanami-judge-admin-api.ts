@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as Path from 'node:path';
+import { afterAll, beforeAll, describe, expect, jest, test } from '@jest/globals';
 import JudgeAggregateEndpoint from '@/server/api/endpoints/admin/hanami/judge-aggregate.js';
 import JudgeSettingsEndpoint from '@/server/api/endpoints/admin/hanami/judge-settings.js';
 import JudgeStatusEndpoint from '@/server/api/endpoints/admin/hanami/judge-status.js';
@@ -14,6 +14,15 @@ import JudgeTrialEndpoint from '@/server/api/endpoints/admin/hanami/judge-trial.
 import { HANAMI_NOTE_JUDGE_MODEL, createDefaultHanamiNoteJudgeSettings } from '@/core/hanami/HanamiNoteJudgeContracts.js';
 
 const admin = { id: 'admin' } as never;
+
+// これらのテストは偽の Python スクリプトで実行経路を検証する。GPU ゲート（probe）は
+// HANAMI_NOTE_JUDGE_DEVICE=cpu の明示で迂回する（本番の CPU 強制と同じ経路）。
+const previousJudgeDevice = process.env.HANAMI_NOTE_JUDGE_DEVICE;
+beforeAll(() => { process.env.HANAMI_NOTE_JUDGE_DEVICE = 'cpu'; });
+afterAll(() => {
+	if (previousJudgeDevice == null) delete process.env.HANAMI_NOTE_JUDGE_DEVICE;
+	else process.env.HANAMI_NOTE_JUDGE_DEVICE = previousJudgeDevice;
+});
 
 describe('Hanami judge admin endpoint contracts', () => {
 	test('settings gets defaults and persists validated updates with a server-owned promptVersion increment', async () => {
@@ -30,7 +39,7 @@ describe('Hanami judge admin endpoint contracts', () => {
 			return [];
 		});
 		const update = new JudgeSettingsEndpoint({ transaction: async (operation: (manager: unknown) => unknown) => await operation({ query: transactionQuery }) } as never, queue as never);
-		const requested = { ...createDefaultHanamiNoteJudgeSettings(), promptVersion: 99, interestThreshold: 3.5 };
+		const requested = { ...createDefaultHanamiNoteJudgeSettings(), promptVersion: 99, interestThreshold: 3.5, examples: ['判定例を足した'] };
 		await expect(update.exec({ settings: requested }, admin, null)).resolves.toMatchObject({ promptVersion: 8, interestThreshold: 3.5 });
 		const updateCalls = transactionQuery.mock.calls as unknown as Array<[string, unknown[] | undefined]>;
 		expect(updateCalls[0]![0]).toContain('FOR UPDATE');
@@ -39,6 +48,31 @@ describe('Hanami judge admin endpoint contracts', () => {
 		expect(JSON.parse(parameters![0] as string).basis).toEqual(requested.basis);
 		expect(updateCalls[3]![0]).toContain('INSERT INTO "hanami_note_judge_settings"');
 		expect(queue.enqueueHanamiGenerationReconcile).toHaveBeenCalledTimes(1);
+	});
+
+	test('threshold, score, and content-type bonus changes keep the promptVersion (no re-judge) and overwrite the same history row', async () => {
+		const current = { ...createDefaultHanamiNoteJudgeSettings(), promptVersion: 7 };
+		const transactionQuery = jest.fn(async (sql: string) => {
+			if (sql.includes('FROM meta')) return [{ id: 'meta-1', settings: current }];
+			if (sql.includes('MAX("promptVersion")')) return [{ promptVersion: 7 }];
+			return [];
+		});
+		const queue = { enqueueHanamiGenerationReconcile: jest.fn(async () => undefined) };
+		const update = new JudgeSettingsEndpoint({ transaction: async (operation: (manager: unknown) => unknown) => await operation({ query: transactionQuery }) } as never, queue as never);
+		const bonus = [0, 1, 3, 3, 3, 3, 0, 0, 0, 0];
+		const requested = { ...createDefaultHanamiNoteJudgeSettings(), promptVersion: 99, interestThreshold: 3.5, contentTypeBonus: bonus };
+		await expect(update.exec({ settings: requested }, admin, null)).resolves.toMatchObject({ promptVersion: 7, interestThreshold: 3.5, contentTypeBonus: bonus });
+		const updateCalls = transactionQuery.mock.calls as unknown as Array<[string, unknown[] | undefined]>;
+		expect(JSON.parse(updateCalls[2]![1]![0] as string)).toMatchObject({ promptVersion: 7, contentTypeBonus: bonus });
+		expect(updateCalls[3]![0]).toContain('ON CONFLICT ("promptVersion") DO UPDATE');
+		expect(updateCalls[3]![1]![0]).toBe(7);
+	});
+
+	test('rejects a content-type bonus table of the wrong shape or with negative values', async () => {
+		const queue = { enqueueHanamiGenerationReconcile: jest.fn(async () => undefined) };
+		const update = new JudgeSettingsEndpoint({ transaction: async () => { throw new Error('unreachable'); } } as never, queue as never);
+		await expect(update.exec({ settings: { ...createDefaultHanamiNoteJudgeSettings(), contentTypeBonus: [0, 1, 2] } }, admin, null)).rejects.toThrow(); // schema (minItems/maxItems)
+		await expect(update.exec({ settings: { ...createDefaultHanamiNoteJudgeSettings(), contentTypeBonus: [0, 1, 2, 2, 2, 2, -1, 0, 0, 0] } }, admin, null)).rejects.toThrow(/contentTypeBonus/);
 	});
 
 	test('concurrent material updates serialize on Meta and retain distinct immutable versions', async () => {
@@ -86,9 +120,9 @@ describe('Hanami judge admin endpoint contracts', () => {
 		};
 		const queue = { enqueueHanamiGenerationReconcile: jest.fn(async () => undefined) };
 		const endpoint = new JudgeSettingsEndpoint(db as never, queue as never);
-		const first = endpoint.exec({ settings: { ...createDefaultHanamiNoteJudgeSettings(), interestThreshold: 3.1 } }, admin, null);
+		const first = endpoint.exec({ settings: { ...createDefaultHanamiNoteJudgeSettings(), interestThreshold: 3.1, examples: ['例1'] } }, admin, null);
 		await firstReadPromise;
-		const second = endpoint.exec({ settings: { ...createDefaultHanamiNoteJudgeSettings(), interestThreshold: 4.2 } }, admin, null);
+		const second = endpoint.exec({ settings: { ...createDefaultHanamiNoteJudgeSettings(), interestThreshold: 4.2, examples: ['例2'] } }, admin, null);
 		await secondAttemptedPromise;
 		releaseFirstRead?.();
 		await expect(Promise.all([first, second])).resolves.toEqual([
@@ -113,6 +147,7 @@ describe('Hanami judge admin endpoint contracts', () => {
 			promptVersion: 4,
 			latestRun: { id: 'run-1', status: 'ready', params: { processedCount: 2 }, startedAt: 'start', finishedAt: 'end' },
 			backlog: 12,
+			runtime: expect.objectContaining({ available: true, device: 'cpu' }),
 		});
 		const calls = query.mock.calls as unknown as Array<[string, unknown[] | undefined]>;
 		expect(calls[2]![0]).toContain('j."promptVersion" = $1');
@@ -128,7 +163,7 @@ describe('Hanami judge admin endpoint contracts', () => {
 		});
 		expect(query).toHaveBeenCalledTimes(1);
 		const calls = query.mock.calls as unknown as Array<[string, unknown[] | undefined]>;
-		expect(calls[0]![0]).toContain("WHERE c.axis = 'exploration'");
+		expect(calls[0]![0]).toContain('WHERE c.axis = \'exploration\'');
 		expect(calls[0]![0]).not.toContain('hanami_note_judgement');
 		expect(calls[0]![1]).toEqual([50]);
 	});
@@ -158,7 +193,7 @@ describe('Hanami judge admin endpoint contracts', () => {
 		const directory = await mkdtemp(Path.join(tmpdir(), 'hanami-judge-trial-lock-'));
 		const scriptPath = Path.join(directory, 'judge.py');
 		const previousScript = process.env.HANAMI_NOTE_JUDGE_SCRIPT;
-		await writeFile(scriptPath, `import json, sys\nwith open(sys.argv[1], encoding='utf-8') as source: job = json.load(source)\nnote = job['notes'][0]\nwith open(sys.argv[2], 'w', encoding='utf-8') as target: json.dump({'status': 'ok', 'judgements': [{'noteId': note['noteId'], 'ephemeralScore': 0.25, 'interest': 4.0, 'contentType': 2}]}, target)\n`);
+		await writeFile(scriptPath, 'import json, sys\nwith open(sys.argv[1], encoding=\'utf-8\') as source: job = json.load(source)\nnote = job[\'notes\'][0]\nwith open(sys.argv[2], \'w\', encoding=\'utf-8\') as target: json.dump({\'status\': \'ok\', \'judgements\': [{\'noteId\': note[\'noteId\'], \'ephemeralScore\': 0.25, \'interest\': 4.0, \'contentType\': 2}]}, target)\n');
 		process.env.HANAMI_NOTE_JUDGE_SCRIPT = scriptPath;
 
 		try {

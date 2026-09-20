@@ -27,6 +27,7 @@ import {
 } from '@/core/hanami/HanamiForYouService.js';
 import { HanamiForYouSafetyService } from '@/core/hanami/HanamiForYouSafetyService.js';
 import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
+import { peekHanamiNoteJudgeRuntime } from '@/core/hanami/HanamiPythonRuntime.js';
 import { createHanamiExactTextFingerprint, createHanamiStrictBotTemplateFingerprint } from '@/core/hanami/HanamiForYouTextNormalization.js';
 import { createHanamiQualityShadow, createHanamiQualityShadowFromJudgement, type HanamiRelationshipClass } from '@/core/hanami/HanamiForYouQualityContracts.js';
 import { selectHanamiDiscoveryCandidates } from '@/core/hanami/HanamiDiscoverySelection.js';
@@ -67,6 +68,8 @@ type GenerationRunnerScope = {
 type HanamiNoteJudgeFeedContext = Readonly<{
 	settings: HanamiNoteJudgeSettings;
 	reduceEphemeralPosts: boolean;
+	/** 判定器が動いていない（GPU なし）間だけ true。発見枠を未判定候補で埋めるフォールバック。 */
+	allowUnjudgedDiscovery?: boolean;
 }>;
 
 type HanamiJudgeReason = 'llm' | 'bot' | 'reply' | 'template' | 'emptyText';
@@ -334,9 +337,13 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 			LIMIT 1
 		`, [context.userId]) as Array<{ settings: unknown; reduce_ephemeral_posts: boolean | null }>;
 		const validated = validateHanamiNoteJudgeSettings(rows[0]?.settings);
+		// runtime は判定ジョブ側が温めたキャッシュだけを見る（ここでプロセスは起動しない）。
+		// 未探索(null)は「判定あり」扱い＝厳格側に倒す。
+		const runtime = peekHanamiNoteJudgeRuntime();
 		return {
 			settings: validated.ok ? validated.value : createDefaultHanamiNoteJudgeSettings(),
 			reduceEphemeralPosts: rows[0]?.reduce_ephemeral_posts !== false,
+			allowUnjudgedDiscovery: runtime != null && !runtime.available,
 		};
 	}
 
@@ -359,14 +366,14 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 		const eligible = candidates.filter(candidate => !excluded.has(candidate.noteId));
 		const detailRows = await context.queryRunner.query(`
 			SELECT n.id AS note_id, n."userId" AS author_id, COALESCE(n.text, '') AS text, n.tags AS tags, n."fileIds" <> '{}' AS has_files, u."isBot" AS is_bot,
-				j.model AS judgement_model, j."ephemeralScore" AS ephemeral_score, j.interest AS interest,
+				j.model AS judgement_model, j."ephemeralScore" AS ephemeral_score, j.interest AS interest, j."contentType" AS content_type,
 				CASE WHEN EXISTS (SELECT 1 FROM following f WHERE f."followerId" = $1 AND f."followeeId" = n."userId") THEN 'directFollow'
 					WHEN EXISTS (SELECT 1 FROM following f WHERE (f."followerId" = $1 AND f."followeeId" = n."userId") OR (f."followerId" = n."userId" AND f."followeeId" = $1)) THEN 'known'
 					ELSE 'unknown' END AS relationship_class
 			FROM note n JOIN "user" u ON u.id = n."userId"
 			LEFT JOIN "hanami_note_judgement" j ON j."noteId" = n.id AND j."promptVersion" = $3
 			WHERE n.id = ANY($2::varchar[])
-		`, [context.userId, eligible.map(c => c.noteId), judgeContext.settings.promptVersion]) as Array<{ note_id: string; author_id: string; text: string; tags: string[]; has_files: boolean; is_bot: boolean; judgement_model: string | null; ephemeral_score: number | null; interest: number | null; relationship_class: HanamiRelationshipClass }>;
+		`, [context.userId, eligible.map(c => c.noteId), judgeContext.settings.promptVersion]) as Array<{ note_id: string; author_id: string; text: string; tags: string[]; has_files: boolean; is_bot: boolean; judgement_model: string | null; ephemeral_score: number | null; interest: number | null; content_type: number | null; relationship_class: HanamiRelationshipClass }>;
 		const detail = new Map(detailRows.map(row => [row.note_id, row]));
 		const enriched = eligible.flatMap(candidate => {
 			const row = detail.get(candidate.noteId);
@@ -375,7 +382,7 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 			if (row == null) return [candidate];
 			const text = row.text;
 			const judgement = Number.isFinite(row.ephemeral_score) && Number.isFinite(row.interest)
-				? { ephemeralScore: Number(row.ephemeral_score), interest: Number(row.interest) }
+				? { ephemeralScore: Number(row.ephemeral_score), interest: Number(row.interest), contentType: Number.isInteger(row.content_type) ? Number(row.content_type) : null }
 				: null;
 			const judgementReason: HanamiJudgeReason | undefined = judgement == null
 				? undefined
@@ -434,17 +441,17 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 		explorationPoolMaximum: number | undefined,
 	): Promise<readonly HanamiPersonalFeedCandidate[]> {
 		const { settings } = judgeContext;
-		type WithJudge = HanamiPersonalFeedCandidate & { hanamiJudge?: { ephemeralScore: number; interest: number } | null; hanamiJudgeReason?: HanamiJudgeReason; hanamiHasFiles?: boolean; hanamiCampaignTags?: string[] };
+		type WithJudge = HanamiPersonalFeedCandidate & { hanamiJudge?: { ephemeralScore: number; interest: number; contentType?: number | null } | null; hanamiJudgeReason?: HanamiJudgeReason; hanamiHasFiles?: boolean; hanamiCampaignTags?: string[] };
 		const typed = candidates as readonly WithJudge[];
 		const exploration = typed.filter(candidate => candidate.axis === 'exploration');
 		const selectedExploration = selectHanamiDiscoveryCandidates({
 			candidates: exploration.map(candidate => ({
 				noteId: candidate.noteId, authorId: candidate.authorId, reactionScore: rawExplorationBaseScores.get(candidate.noteId) ?? candidate.score,
-				ephemeralScore: candidate.hanamiJudge?.ephemeralScore, interest: candidate.hanamiJudge?.interest,
+				ephemeralScore: candidate.hanamiJudge?.ephemeralScore, interest: candidate.hanamiJudge?.interest, contentType: candidate.hanamiJudge?.contentType,
 				campaignTags: candidate.hanamiCampaignTags, relationshipClass: candidate.relationshipClass,
 				isSelf: candidate.authorId === context.userId,
 			})),
-			parameters: { reactionMax: settings.reactionMax, interestMax: settings.interestMax, thetaEphemeral: settings.ephemeralThreshold, thetaInterest: settings.interestThreshold, excludeEphemeral: judgeContext.reduceEphemeralPosts, ...(explorationPoolMaximum !== undefined ? { poolMaxReactionScore: explorationPoolMaximum } : {}) },
+			parameters: { reactionMax: settings.reactionMax, interestMax: settings.interestMax, thetaEphemeral: settings.ephemeralThreshold, thetaInterest: settings.interestThreshold, excludeEphemeral: judgeContext.reduceEphemeralPosts, contentTypeBonus: settings.contentTypeBonus, allowUnjudged: judgeContext.allowUnjudgedDiscovery === true, ...(explorationPoolMaximum !== undefined ? { poolMaxReactionScore: explorationPoolMaximum } : {}) },
 			viewerFFAuthorIds: new Set(),
 		});
 		const byId = new Map(exploration.map(candidate => [candidate.noteId, candidate]));

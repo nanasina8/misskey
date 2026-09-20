@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as Path from 'node:path';
+import { afterAll, beforeAll, describe, expect, jest, test } from '@jest/globals';
 import { IdService } from '@/core/IdService.js';
 import { HanamiForYouBatchService, HanamiNoteJudgeLockContentionError } from '@/core/hanami/HanamiForYouBatchService.js';
 import { createDefaultHanamiNoteJudgeSettings } from '@/core/hanami/HanamiNoteJudgeContracts.js';
@@ -21,6 +21,15 @@ type PersonalJudgeInternals = {
 function batchService(query: unknown, redis: unknown = { set: jest.fn(async () => 'OK'), eval: jest.fn(async () => 1) }, idService: Pick<IdService, 'gen'> = { gen: () => 'run-id' }): HanamiForYouBatchService {
 	return new HanamiForYouBatchService({ query } as never, { insert: jest.fn(async () => undefined), update: jest.fn(async () => undefined) } as never, redis as never, idService as never, {} as never);
 }
+
+// これらのテストは偽の Python スクリプトで実行経路を検証する。GPU ゲート（probe）は
+// HANAMI_NOTE_JUDGE_DEVICE=cpu の明示で迂回する（本番の CPU 強制と同じ経路）。
+const previousJudgeDevice = process.env.HANAMI_NOTE_JUDGE_DEVICE;
+beforeAll(() => { process.env.HANAMI_NOTE_JUDGE_DEVICE = 'cpu'; });
+afterAll(() => {
+	if (previousJudgeDevice == null) delete process.env.HANAMI_NOTE_JUDGE_DEVICE;
+	else process.env.HANAMI_NOTE_JUDGE_DEVICE = previousJudgeDevice;
+});
 
 describe('Hanami note judge integration', () => {
 	test('rejudges rows selected against a changed prompt version, persists rule exclusions with UPSERT, and emits only <=16 jobs by default', async () => {
@@ -100,7 +109,7 @@ describe('Hanami note judge integration', () => {
 		const scriptDir = await mkdtemp(Path.join(tmpdir(), 'hanami-note-judge-test-'));
 		const scriptPath = Path.join(scriptDir, 'judge.py');
 		const previous = process.env.HANAMI_NOTE_JUDGE_SCRIPT;
-		await writeFile(scriptPath, `import json, sys\ninput_path, output_path = sys.argv[1:]\nwith open(input_path, encoding='utf-8') as source: job = json.load(source)\nnote = job['notes'][0]\nwith open(output_path, 'w', encoding='utf-8') as target: json.dump({'status': 'ok', 'promptVersion': job['settings']['promptVersion'], 'judgements': [{'noteId': note['noteId'], 'ephemeralScore': 0.25, 'interest': 4.0, 'interestDist': [0, 0, 0, 1, 0], 'contentType': 2}]}, target)\n`);
+		await writeFile(scriptPath, 'import json, sys\ninput_path, output_path = sys.argv[1:]\nwith open(input_path, encoding=\'utf-8\') as source: job = json.load(source)\nnote = job[\'notes\'][0]\nwith open(output_path, \'w\', encoding=\'utf-8\') as target: json.dump({\'status\': \'ok\', \'promptVersion\': job[\'settings\'][\'promptVersion\'], \'judgements\': [{\'noteId\': note[\'noteId\'], \'ephemeralScore\': 0.25, \'interest\': 4.0, \'interestDist\': [0, 0, 0, 1, 0], \'contentType\': 2}]}, target)\n');
 		process.env.HANAMI_NOTE_JUDGE_SCRIPT = scriptPath;
 		try {
 			const result = await batchService(query).runNoteJudgeJob({ noteIds: ['note-a'], promptVersion: settings.promptVersion }, { warn: jest.fn() } as never);
@@ -126,7 +135,7 @@ describe('Hanami note judge integration', () => {
 		const scriptDir = await mkdtemp(Path.join(tmpdir(), 'hanami-note-judge-history-'));
 		const scriptPath = Path.join(scriptDir, 'judge.py');
 		const previous = process.env.HANAMI_NOTE_JUDGE_SCRIPT;
-		await writeFile(scriptPath, `import json, sys\nwith open(sys.argv[1], encoding='utf-8') as source: job = json.load(source)\nassert job['settings']['promptVersion'] == 8\nassert job['settings']['interestThreshold'] == 3.1\nassert job['settings']['templatePatterns'] == ['historical-only']\nnote = job['notes'][0]\nwith open(sys.argv[2], 'w', encoding='utf-8') as target: json.dump({'status': 'ok', 'promptVersion': 8, 'judgements': [{'noteId': note['noteId'], 'ephemeralScore': 0.1, 'interest': 4, 'interestDist': [0, 0, 0, 1, 0], 'contentType': 2}]}, target)\n`);
+		await writeFile(scriptPath, 'import json, sys\nwith open(sys.argv[1], encoding=\'utf-8\') as source: job = json.load(source)\nassert job[\'settings\'][\'promptVersion\'] == 8\nassert job[\'settings\'][\'interestThreshold\'] == 3.1\nassert job[\'settings\'][\'templatePatterns\'] == [\'historical-only\']\nnote = job[\'notes\'][0]\nwith open(sys.argv[2], \'w\', encoding=\'utf-8\') as target: json.dump({\'status\': \'ok\', \'promptVersion\': 8, \'judgements\': [{\'noteId\': note[\'noteId\'], \'ephemeralScore\': 0.1, \'interest\': 4, \'interestDist\': [0, 0, 0, 1, 0], \'contentType\': 2}]}, target)\n');
 		process.env.HANAMI_NOTE_JUDGE_SCRIPT = scriptPath;
 		try {
 			await expect(batchService(query).runNoteJudgeJob({ noteIds: ['prior-note'], promptVersion: 8 }, { warn: jest.fn() } as never)).resolves.toMatchObject({ status: 'ready', processedCount: 1 });
@@ -163,7 +172,7 @@ describe('Hanami note judge integration', () => {
 		const scriptPath = Path.join(scriptDir, 'judge.py');
 		const previous = process.env.HANAMI_NOTE_JUDGE_SCRIPT;
 		// Emulates a timeout kill: the runtime flushed note-a's judgement, then died.
-		await writeFile(scriptPath, `import json, sys\ninput_path, output_path = sys.argv[1:]\nwith open(input_path, encoding='utf-8') as source: job = json.load(source)\nnote = job['notes'][0]\nwith open(output_path, 'w', encoding='utf-8') as target: json.dump({'status': 'partial', 'promptVersion': job['settings']['promptVersion'], 'judgements': [{'noteId': note['noteId'], 'ephemeralScore': 0.25, 'interest': 4.0, 'interestDist': [0, 0, 0, 1, 0], 'contentType': 2}]}, target)\nsys.exit(1)\n`);
+		await writeFile(scriptPath, 'import json, sys\ninput_path, output_path = sys.argv[1:]\nwith open(input_path, encoding=\'utf-8\') as source: job = json.load(source)\nnote = job[\'notes\'][0]\nwith open(output_path, \'w\', encoding=\'utf-8\') as target: json.dump({\'status\': \'partial\', \'promptVersion\': job[\'settings\'][\'promptVersion\'], \'judgements\': [{\'noteId\': note[\'noteId\'], \'ephemeralScore\': 0.25, \'interest\': 4.0, \'interestDist\': [0, 0, 0, 1, 0], \'contentType\': 2}]}, target)\nsys.exit(1)\n');
 		process.env.HANAMI_NOTE_JUDGE_SCRIPT = scriptPath;
 		try {
 			const result = await service.runNoteJudgeJob({ noteIds: ['note-a', 'note-b'], promptVersion: settings.promptVersion }, { warn: jest.fn() } as never);
@@ -203,7 +212,7 @@ describe('Hanami note judge integration', () => {
 		const scriptDir = await mkdtemp(Path.join(tmpdir(), 'hanami-note-judge-all-errors-'));
 		const scriptPath = Path.join(scriptDir, 'judge.py');
 		const previous = process.env.HANAMI_NOTE_JUDGE_SCRIPT;
-		await writeFile(scriptPath, `import json, sys\nwith open(sys.argv[2], 'w', encoding='utf-8') as target: json.dump({'status': 'ok', 'promptVersion': 1, 'judgements': [], 'errors': [{'noteId': 'error-note', 'error': 'inference failed'}]}, target)\n`);
+		await writeFile(scriptPath, 'import json, sys\nwith open(sys.argv[2], \'w\', encoding=\'utf-8\') as target: json.dump({\'status\': \'ok\', \'promptVersion\': 1, \'judgements\': [], \'errors\': [{\'noteId\': \'error-note\', \'error\': \'inference failed\'}]}, target)\n');
 		process.env.HANAMI_NOTE_JUDGE_SCRIPT = scriptPath;
 		try {
 			await expect(service.runNoteJudgeJob({ noteIds: ['error-note'], promptVersion: 1 }, { warn: jest.fn() } as never)).rejects.toThrow('returned 0/1 judgements');
@@ -232,7 +241,7 @@ describe('Hanami note judge integration', () => {
 		const scriptDir = await mkdtemp(Path.join(tmpdir(), 'hanami-note-judge-fail-'));
 		const scriptPath = Path.join(scriptDir, 'judge.py');
 		const previous = process.env.HANAMI_NOTE_JUDGE_SCRIPT;
-		await writeFile(scriptPath, `import json, sys\nwith open(sys.argv[2], 'w', encoding='utf-8') as target: json.dump({'status': 'unavailable', 'error': 'stub failure'}, target)\n`);
+		await writeFile(scriptPath, 'import json, sys\nwith open(sys.argv[2], \'w\', encoding=\'utf-8\') as target: json.dump({\'status\': \'unavailable\', \'error\': \'stub failure\'}, target)\n');
 		process.env.HANAMI_NOTE_JUDGE_SCRIPT = scriptPath;
 		try {
 			const service = batchService(query);
@@ -350,7 +359,7 @@ describe('Hanami note judge integration', () => {
 		const reconcileQuery = calls[reconcileCall][0];
 		expect(reconcileQuery).toContain('c."generationId" = (');
 		expect(reconcileQuery).toContain('"latestReadyGenerationId"');
-		expect(reconcileQuery).toContain("g.status = 'ready'");
+		expect(reconcileQuery).toContain('g.status = \'ready\'');
 		expect(reconcileQuery).toContain('n.id >= $1');
 		expect(reconcileQuery).not.toMatch(/n\."?createdAt"?/);
 		expect(query.mock.calls.some(([sql]) => sql.includes('INSERT INTO "hanami_note_judgement"'))).toBe(false);
@@ -394,7 +403,7 @@ describe('Hanami note judge integration', () => {
 		const queryRunner = { query: jest.fn(async () => [{ settings: createDefaultHanamiNoteJudgeSettings() }]) };
 		const service = new HanamiPersonalFeedComputationService({} as never, {} as never, {} as never, {} as never, {} as never);
 		const context = { userId: 'viewer', queryRunner } as unknown as HanamiPersonalFeedGenerationContext;
-	const candidate = (noteId: string, axis: string, relationshipClass: 'directFollow' | 'unknown'): HanamiPersonalFeedCandidate => ({
+		const candidate = (noteId: string, axis: string, relationshipClass: 'directFollow' | 'unknown'): HanamiPersonalFeedCandidate => ({
 			noteId,
 			authorId: `author-${noteId}`,
 			axis: axis as HanamiPersonalFeedCandidate['axis'],
@@ -448,5 +457,49 @@ describe('Hanami note judge integration', () => {
 		], { settings: createDefaultHanamiNoteJudgeSettings(), reduceEphemeralPosts: true });
 
 		expect(selected.map(item => item.noteId)).toEqual(['empty-text-image', 'llm-image']);
+	});
+});
+
+describe('Hanami note judge GPU gate', () => {
+	test('without a GPU, rule exclusions are still recorded but no LLM job is emitted and queued jobs are skipped without loading the model', async () => {
+		const previousDevice = process.env.HANAMI_NOTE_JUDGE_DEVICE;
+		const previousScript = process.env.HANAMI_NOTE_JUDGE_SCRIPT;
+		const dir = await mkdtemp(Path.join(tmpdir(), 'hanami-judge-gate-'));
+		const scriptPath = Path.join(dir, 'judge.py');
+		// --probe は GPU なしを返し、判定モードで呼ばれたら失敗する（呼ばれてはいけない）。
+		await writeFile(scriptPath, 'import json, sys\nif sys.argv[1:] == [\'--probe\']:\n    print(json.dumps({\'cudaAvailable\': False, \'deviceName\': None, \'error\': None}))\n    sys.exit(0)\nsys.exit(99)\n');
+		delete process.env.HANAMI_NOTE_JUDGE_DEVICE;
+		process.env.HANAMI_NOTE_JUDGE_SCRIPT = scriptPath;
+		try {
+			const settings = createDefaultHanamiNoteJudgeSettings();
+			const query = jest.fn(async (sql: string) => {
+				if (sql.includes('SELECT "hanamiNoteJudgeSettings"')) return [{ settings }];
+				if (sql.includes('FROM "hanami_common_candidate"')) {
+					return [
+						{ id: 'text-1', text: 'SQLite の運用メモです。', isBot: false, isReply: false },
+						{ id: 'reply-1', text: 'reply', isBot: false, isReply: true },
+					];
+				}
+				if (sql.includes('FROM note n')) return [{ id: 'text-1', text: 'SQLite の運用メモです。', hasFiles: false, isBot: false, isReply: false }];
+				return [];
+			});
+			const insert = jest.fn(async () => undefined);
+			const update = jest.fn(async () => undefined);
+			const service = new HanamiForYouBatchService({ query } as never, { insert, update } as never, { set: jest.fn(async () => 'OK'), eval: jest.fn(async () => 1) } as never, { gen: () => 'run-id' } as never, {} as never);
+
+			await expect(service.prepareNoteJudgeJobs('generation-1')).resolves.toEqual([]);
+			const calls = query.mock.calls as unknown as Array<[string, unknown[] | undefined]>;
+			expect(calls.find(([sql]) => sql.includes('INSERT INTO "hanami_note_judgement"'))![1]).toEqual(['reply-1', 'rule:reply', 1, [1, 0, 0, 0, 0]]);
+
+			const logger = { warn: jest.fn(), info: jest.fn(), error: jest.fn() } as never;
+			await expect(service.runNoteJudgeJob({ noteIds: ['text-1'], promptVersion: 1 }, logger)).resolves.toEqual({ runId: 'run-id', status: 'ready', processedCount: 0 });
+			expect(update).toHaveBeenCalledWith({ id: 'run-id' }, expect.objectContaining({ status: 'ready', params: expect.objectContaining({ processedCount: 0, skippedReason: expect.stringContaining('GPU') }) }));
+			expect(calls.some(([sql]) => sql.includes('INSERT INTO "hanami_note_judgement"') && sql.includes('$4'))).toBe(true);
+			expect(calls.filter(([sql]) => sql.includes('FROM note n')).length).toBe(0);
+		} finally {
+			if (previousDevice == null) delete process.env.HANAMI_NOTE_JUDGE_DEVICE; else process.env.HANAMI_NOTE_JUDGE_DEVICE = previousDevice;
+			if (previousScript == null) delete process.env.HANAMI_NOTE_JUDGE_SCRIPT; else process.env.HANAMI_NOTE_JUDGE_SCRIPT = previousScript;
+			await rm(dir, { recursive: true, force: true });
+		}
 	});
 });
