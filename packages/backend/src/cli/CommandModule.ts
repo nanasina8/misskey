@@ -7,6 +7,7 @@ import { Module } from '@nestjs/common';
 import { CoreModule } from '@/core/CoreModule.js';
 import { GlobalModule } from '@/GlobalModule.js';
 import { CommandService } from './CommandService.js';
+import { HanamiSeedRecentService } from './HanamiSeedRecentService.js';
 
 @Module({
 	imports: [
@@ -15,9 +16,11 @@ import { CommandService } from './CommandService.js';
 	],
 	providers: [
 		CommandService,
+		HanamiSeedRecentService,
 	],
 	exports: [
 		CommandService,
+		HanamiSeedRecentService,
 	],
 })
 export class CommandModule {}

@@ -58,14 +58,14 @@ export class FeaturedService {
 	}
 
 	@bindThis
-	private getCurrentWindow(windowRange: number): number {
-		const passed = new Date().getTime() - featuredEpoc;
+	private getCurrentWindow(windowRange: number, at: number = Date.now()): number {
+		const passed = at - featuredEpoc;
 		return Math.floor(passed / windowRange);
 	}
 
 	@bindThis
-	private async updateRankingOf(name: string, windowRange: number, element: string, score = 1, ttlSeconds?: number): Promise<void> {
-		const currentWindow = this.getCurrentWindow(windowRange);
+	private async updateRankingOf(name: string, windowRange: number, element: string, score = 1, ttlSeconds?: number, at?: number): Promise<void> {
+		const currentWindow = this.getCurrentWindow(windowRange, at);
 		const ttl = ttlSeconds ?? Math.ceil((windowRange * 3) / 1000);
 		const redisTransaction = this.redisClient.multi();
 		redisTransaction.zincrby(
@@ -168,8 +168,9 @@ export class FeaturedService {
 	}
 
 	@bindThis
-	public updateGlobalNotesRanking(noteId: MiNote['id'], score = 1): Promise<void> {
-		return this.updateRankingOf('featuredGlobalNotesRanking', GLOBAL_NOTES_RANKING_WINDOW_MS, noteId, score, GLOBAL_NOTES_TTL_SECONDS);
+	/** at: 通常は現在時刻。開発用の再生（hanami-seed-recent）だけが過去窓へ積むために渡す */
+	public updateGlobalNotesRanking(noteId: MiNote['id'], score = 1, at?: number): Promise<void> {
+		return this.updateRankingOf('featuredGlobalNotesRanking', GLOBAL_NOTES_RANKING_WINDOW_MS, noteId, score, GLOBAL_NOTES_TTL_SECONDS, at);
 	}
 
 	@bindThis

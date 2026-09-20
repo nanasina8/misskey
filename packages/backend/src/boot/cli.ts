@@ -28,10 +28,26 @@ switch (command) {
 		console.log('Available commands:');
 		console.log('  help - Displays this help message');
 		console.log('  reset-captcha - Resets the captcha');
+		console.log('  hanami-seed-recent [--days N] [--replay] [--cleanup] - (dev) clone the newest N days of notes/reactions into the present and replay the trend index');
 		break;
 	}
 	case 'ping': {
 		await commandService.ping();
+		break;
+	}
+	case 'hanami-seed-recent': {
+		const { HanamiSeedRecentService } = await import('@/cli/HanamiSeedRecentService.js');
+		const seed = app.get(HanamiSeedRecentService);
+		if (process.argv.includes('--cleanup')) {
+			await seed.cleanup();
+		} else if (process.argv.includes('--replay')) {
+			await seed.replayOnly();
+		} else {
+			const daysArg = process.argv.indexOf('--days');
+			const days = daysArg >= 0 ? Number(process.argv[daysArg + 1]) : 14;
+			if (!Number.isFinite(days) || days <= 0 || days > 90) throw new Error('--days must be 1..90');
+			await seed.seed(days);
+		}
 		break;
 	}
 	case 'reset-captcha': {

@@ -122,7 +122,7 @@ export class HanamiTrendService {
 	 * 対象は public/home の本文ありオリジナルノートのみ（呼び出し側で絞る）。
 	 */
 	@bindThis
-	public async indexNote(note: MiNote): Promise<void> {
+	public async indexNote(note: MiNote, at: number = Date.now()): Promise<void> {
 		if (note.text == null || note.text.length === 0) return;
 
 		const tokens = await this.hanamiTokenizerService.tokenizeWithKind(note.text);
@@ -137,8 +137,9 @@ export class HanamiTrendService {
 			terms.push(tk);
 			if (terms.length >= MAX_TERMS_PER_NOTE) break;
 		}
-		const w = this.currentWindow();
-		const now = Date.now();
+		// at: 通常は現在時刻。開発用の再生（hanami-seed-recent）では複製ノートの時刻で過去窓へ積む
+		const w = Math.floor((at - trendEpoch) / TREND_WINDOW_MS);
+		const now = at;
 
 		// distinct author 判定（SADD の戻り値が要る）を1パス目で全用語まとめて実行し、
 		// 残りの書き込みを2パス目に集約する（用語ごとの逐次 await を避ける: 2往復で済む）。
