@@ -225,6 +225,11 @@ const menuDef = computed<SuperMenuDef[]>(() => [{
 		to: '/admin/system-webhook',
 		active: currentPage.value?.route.name === 'system-webhook',
 	}, {
+		icon: 'ti ti-flower-filled',
+		text: i18n.ts._hana.hanamiTimeline,
+		to: '/admin/hanami',
+		active: currentPage.value?.route.name === 'hanami',
+	}, {
 		icon: 'ti ti-bolt',
 		text: i18n.ts.performance,
 		to: '/admin/performance',
