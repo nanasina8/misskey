@@ -3696,6 +3696,7 @@ _hana:
       catchup: "見ていない間に伸びた投稿"
       trending: "トレンド"
       trendingTerm: "トレンド: {term}"
+      trendingTermSocial: "トレンド: {term} · つながりの{count}人が話題に"
       fof: "おすすめユーザーの投稿"
   _tasteClusters:
     title: "あなたの興味"

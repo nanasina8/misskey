@@ -13821,6 +13821,10 @@ export interface Locale extends ILocale {
                  */
                 "trendingTerm": ParameterizedString<"term">;
                 /**
+                 * トレンド: {term} · つながりの{count}人が話題に
+                 */
+                "trendingTermSocial": ParameterizedString<"term" | "count">;
+                /**
                  * おすすめユーザーの投稿
                  */
                 "fof": string;

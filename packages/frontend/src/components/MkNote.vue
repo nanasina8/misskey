@@ -300,7 +300,7 @@ const appearNote = getAppearNote(note) ?? note;
 // はなみTL おすすめの内部マーカーと理由ラベル。
 const hanamiRecommendationMeta = computed(() => props.note as {
 	_hanamiRecommended?: boolean;
-	_hanamiReason?: { reason: string; term?: string; clusterId?: number; bucket?: 'cluster' | 'recent' };
+	_hanamiReason?: { reason: string; term?: string; socialCount?: number; clusterId?: number; bucket?: 'cluster' | 'recent' };
 });
 const hanamiReason = computed(() => hanamiRecommendationMeta.value._hanamiReason ?? null);
 const hanamiRecommended = computed(() => hanamiRecommendationMeta.value._hanamiRecommended === true || hanamiReason.value != null);
@@ -316,7 +316,9 @@ const hanamiReasonLabel = computed(() => {
 		case 'neighborTrending': return reasonText.neighborTrending;
 		case 'reactionSimilar': return reasons.reactionSimilar;
 		case 'catchup': return reasons.catchup;
-		case 'trending': return r.term ? i18n.tsx._hana._recommendation._reason.trendingTerm({ term: r.term }) : reasons.trending;
+		case 'trending':
+			if (r.term && r.socialCount) return i18n.tsx._hana._recommendation._reason.trendingTermSocial({ term: r.term, count: r.socialCount });
+			return r.term ? i18n.tsx._hana._recommendation._reason.trendingTerm({ term: r.term }) : reasons.trending;
 		case 'fof': return reasons.fof;
 		default: return '';
 	}

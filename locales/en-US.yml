@@ -3562,6 +3562,7 @@ _hana:
       catchup: "Trended while you were away"
       trending: "Trending"
       trendingTerm: "Trending: {term}"
+      trendingTermSocial: "Trending: {term} · {count} of your connections are talking about it"
       fof: "From recommended users"
   _inDevelopment:
     title: "This feature is under development"
