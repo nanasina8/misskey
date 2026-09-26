@@ -5,6 +5,7 @@
 
 import { Injectable } from '@nestjs/common';
 import { bindThis } from '@/decorators.js';
+import { HANAMI_STOPWORDS } from './HanamiTokenizer.js';
 import type { HanamiTermToken, HanamiTokenizer } from './HanamiTokenizer.js';
 import { BuiltinTokenizer } from './BuiltinTokenizer.js';
 import { LinderaTokenizer } from './LinderaTokenizer.js';
@@ -57,8 +58,27 @@ export class HanamiTokenizerService {
 	public async tokenizeWithKind(text: string): Promise<HanamiTermToken[]> {
 		const tokenizer = await this.getActive();
 		const cleaned = this.clean(text);
-		if (tokenizer.tokenizeWithKind) return tokenizer.tokenizeWithKind(cleaned);
-		return (await tokenizer.tokenize(cleaned)).map(term => ({ term, proper: false }));
+		const tokens = tokenizer.tokenizeWithKind
+			? await tokenizer.tokenizeWithKind(cleaned)
+			: (await tokenizer.tokenize(cleaned)).map(term => ({ term, proper: false }));
+		const result = new Map<string, HanamiTermToken>();
+		for (const token of tokens) {
+			if (/^[ァ-ヶー]+$/.test(token.term) && token.term.length <= 2) {
+				for (let pos = cleaned.indexOf(token.term); pos !== -1; pos = cleaned.indexOf(token.term, pos + 1)) {
+					let start = pos;
+					let end = pos + token.term.length;
+					while (start > 0 && /[ァ-ヶー]/.test(cleaned[start - 1])) start--;
+					while (end < cleaned.length && /[ァ-ヶー]/.test(cleaned[end])) end++;
+					if (start === pos && end === pos + token.term.length) continue;
+					const term = cleaned.slice(start, end).replace(/^ー+/, '');
+					if (HANAMI_STOPWORDS.has(term.toLowerCase())) continue;
+					if (term.length >= 3 && term.length <= 30 && !result.has(term)) result.set(term, { term, proper: token.proper });
+				}
+			} else if (!result.has(token.term)) {
+				result.set(token.term, token);
+			}
+		}
+		return [...result.values()];
 	}
 
 	@bindThis

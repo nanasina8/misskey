@@ -101,8 +101,8 @@ describe('HanamiCommonFeedMaterializer', () => {
 		expect(shared).toEqual({
 			noteId: 'shared',
 			authorId: 'shared-author',
-			source: 'globalPopular',
-			sources: ['globalPopular', 'trending', 'exploration'],
+			source: 'trending',
+			sources: ['trending', 'exploration'],
 		});
 		expect(result.items.filter(item => item.noteId === 'shared')).toHaveLength(1);
 		expect(new Set(result.items.map(item => item.noteId)).size).toBe(result.items.length);
@@ -156,4 +156,12 @@ describe('HanamiCommonFeedMaterializer', () => {
 		expect(result.items).toHaveLength(35);
 		expect(result.items.every(item => item.source === 'trending' && item.sources.join(',') === 'trending')).toBe(true);
 	});
+});
+
+test('disabled trending leaves popular overlap in the common feed', () => {
+	const result = materializeHanamiCommonFeed({
+		source: source({ globalPopular: [candidate('shared', 'author', 1)], trending: [candidate('shared', 'author', 1, 'topic')] }, ['globalPopular']),
+		recentCommonNoteIds: new Set(),
+	});
+	expect(result.items[0]).toMatchObject({ noteId: 'shared', source: 'globalPopular', sources: ['globalPopular'] });
 });

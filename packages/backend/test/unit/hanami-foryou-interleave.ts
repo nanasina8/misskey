@@ -552,3 +552,14 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		expect(out.some(o => o.fallbackOverflow)).toBe(false);
 	});
 });
+
+it('preserves socialCount alongside the merged trend term across axes', () => {
+	const result = hanamiInterleave({
+		confidence: 'none', limit: 10,
+		axisCandidates: new Map<HanamiAxis, ForYouCandidate[]>([
+			['globalPopular', [cand('shared', 'author')]],
+			['trending', [{ ...cand('shared', 'author', 'topic'), socialCount: 3 }]],
+		]),
+	});
+	expect(result.find(c => c.noteId === 'shared')).toMatchObject({ term: 'topic', socialCount: 3 });
+});

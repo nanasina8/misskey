@@ -26,6 +26,7 @@ export type ForYouCandidate = {
 	noteId: string;
 	userId?: string | null; // 作者（dedup 用。orchestrator が事前解決）
 	score: number;
+	socialCount?: number;
 	term?: string; // trending の該当用語
 	clusterId?: number; // taste cluster 由来（globalPopular/reactionSimilar。provenance/インライン減らす用）
 	/** Generation-only fields. They are intentionally not emitted or persisted. */
@@ -41,6 +42,7 @@ export type InterleavedCandidate = {
 	userId?: string | null;
 	source: HanamiAxis;
 	sources: HanamiAxis[];
+	socialCount?: number;
 	term?: string;
 	clusterId?: number;
 	fallbackOverflow?: boolean;
@@ -160,14 +162,15 @@ export function hanamiInterleave(opts: {
 	// clusterId は統合しない: 軸ごとに割当クラスタが違い得るため、「枠を消費した軸自身の候補」の値を使う
 	//（さもないと globalPopular の general 枠で出たノートに reactionSimilar 側の c{k} が付き、
 	// クラスタ別転換率の計測が汚れる。v0.7 敵対レビューR2-M4）。
-	const merged = new Map<string, { sources: HanamiAxis[]; userId: string | null; term?: string }>();
+	const merged = new Map<string, { sources: HanamiAxis[]; userId: string | null; term?: string; socialCount?: number }>();
 	for (const axis of order) {
 		for (const c of opts.axisCandidates.get(axis) ?? []) {
 			let e = merged.get(c.noteId);
-			if (e == null) { e = { sources: [], userId: c.userId ?? null, term: c.term }; merged.set(c.noteId, e); }
+			if (e == null) { e = { sources: [], userId: c.userId ?? null, term: c.term, socialCount: c.socialCount }; merged.set(c.noteId, e); }
 			if (!e.sources.includes(axis)) e.sources.push(axis);
 			e.userId ??= c.userId ?? null;
 			e.term ??= c.term;
+			e.socialCount ??= c.socialCount;
 		}
 	}
 
@@ -314,7 +317,7 @@ export function hanamiInterleave(opts: {
 		if (!opts.personalConstraints && m.userId != null) authorCount.set(m.userId, (authorCount.get(m.userId) ?? 0) + 1);
 		lastAuthor = m.userId ?? null;
 		out.push({
-			noteId: c.noteId, userId: m.userId, source: axis, sources: [...m.sources], term: m.term, clusterId: c.clusterId,
+			noteId: c.noteId, userId: m.userId, source: axis, sources: [...m.sources], term: m.term, socialCount: m.socialCount, clusterId: c.clusterId,
 			...(c.relationshipClass !== undefined ? { relationshipClass: c.relationshipClass } : {}),
 			...(c.exactTextFingerprint !== undefined ? { exactTextFingerprint: c.exactTextFingerprint } : {}),
 			...(c.isBot !== undefined ? { isBot: c.isBot } : {}),

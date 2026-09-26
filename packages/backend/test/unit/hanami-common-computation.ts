@@ -474,3 +474,22 @@ describe('HanamiForYouSafetyService common eligibility', () => {
 		expect(cacheService.userMutingsCache.fetch).not.toHaveBeenCalled();
 	});
 });
+
+test('deduplicates only safe first representatives of higher-ranked terms', async () => {
+	const setup = createComputation({
+		trend: {
+			computedAt: new Date(NOW).toISOString(),
+			noteCandidates: [],
+			terms: [
+				{ term: 'first', score: 4, distinctAuthors: 3, representativeNoteIds: ['unsafe', 'shared', 'second'] },
+				{ term: 'next', score: 3, distinctAuthors: 3, representativeNoteIds: ['shared', 'second', 'other'] },
+				{ term: 'last', score: 2, distinctAuthors: 3, representativeNoteIds: ['shared', 'second', 'other', 'last'] },
+			],
+		},
+		safeAuthors: ids => new Map(ids.filter(id => id !== 'unsafe').map(id => [id, `author-${id}`])),
+	});
+	const result = await setup.service.buildSourceBundle(buildInput(new AbortController().signal));
+	expect(result.trendSnapshot.terms.map(term => term.representativeNoteIds)).toEqual([
+		['shared', 'second'], ['second', 'other'], ['other', 'last'],
+	]);
+});

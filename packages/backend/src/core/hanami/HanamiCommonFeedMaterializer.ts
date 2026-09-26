@@ -4,6 +4,7 @@
  */
 
 import { Injectable } from '@nestjs/common';
+import Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import {
 	HANAMI_COMMON_AXES,
@@ -18,6 +19,8 @@ import {
 	type HanamiAxis,
 	type HanamiAxisLevel,
 } from '@/core/hanami/HanamiForYouInterleave.js';
+
+const logger = new Logger('hanami');
 
 const COMMON_SEGMENT_SIZE = 30;
 const COMMON_SEGMENT_MAX = 7;
@@ -60,6 +63,14 @@ export function materializeHanamiCommonFeed(input: HanamiCommonFeedBuildInput): 
 			});
 		}
 		adjustedByAxis.set(axis, copied);
+	}
+
+	if (enabledAxes.includes('trending')) {
+		const trendingIds = new Set(input.source.candidates.trending.map(candidate => candidate.noteId));
+		const popular = adjustedByAxis.get('globalPopular') ?? [];
+		const remaining = popular.filter(candidate => !trendingIds.has(candidate.noteId));
+		adjustedByAxis.set('globalPopular', remaining);
+		logger.info(`hanami trend: moved ${popular.length - remaining.length} popular overlaps to trending`);
 	}
 
 	const selectedNoteIds = new Set<string>();

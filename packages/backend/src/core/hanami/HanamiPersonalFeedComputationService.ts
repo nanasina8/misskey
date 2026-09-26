@@ -604,6 +604,7 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 					userId: candidate.authorId,
 					score: candidate.score,
 					...(candidate.term !== undefined ? { term: candidate.term } : {}),
+					...(candidate.socialCount !== undefined ? { socialCount: candidate.socialCount } : {}),
 					...(candidate.clusterId !== undefined ? { clusterId: candidate.clusterId } : {}),
 					...(candidate.relationshipClass !== undefined ? { relationshipClass: candidate.relationshipClass } : {}),
 					...(candidate.exactTextFingerprint !== undefined ? { exactTextFingerprint: candidate.exactTextFingerprint } : {}),

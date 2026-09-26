@@ -127,6 +127,7 @@ export type HanamiPersonalFeedCandidate = {
 	readonly origin: HanamiUserFeedOrigin;
 	readonly score: number;
 	readonly term?: string;
+	readonly socialCount?: number;
 	readonly clusterId?: number;
 	readonly bucket?: HanamiUserFeedReasonBucket;
 	/** Transient only: never serialized in reasonMetadata. */
@@ -140,6 +141,7 @@ export type HanamiPersonalFeedCandidate = {
 export type HanamiUserFeedReasonMetadataV1 = {
 	readonly version: 1;
 	readonly term?: string;
+	readonly socialCount?: number;
 	readonly clusterId?: number;
 	readonly bucket?: HanamiUserFeedReasonBucket;
 	readonly fallbackOverflow?: true;

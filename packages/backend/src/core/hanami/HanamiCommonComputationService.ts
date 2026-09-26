@@ -292,10 +292,13 @@ export class HanamiCommonComputationService implements HanamiCommonComputationPo
 		});
 
 		const trendTerms: HanamiTrendSnapshotTerm[] = [];
+		const leadingRepresentativeIds = new Set<string>();
 		for (const term of snapshotTerms) {
 			const representativeNoteIds = [...new Set(term.representativeNoteIds)]
 				.filter(noteId => noteId.length > 0 && safeAuthors.has(noteId))
+				.filter(noteId => !leadingRepresentativeIds.has(noteId))
 				.slice(0, TREND_REPRESENTATIVE_NOTE_MAX);
+			if (representativeNoteIds.length > 0) leadingRepresentativeIds.add(representativeNoteIds[0]);
 			trendTerms.push(Object.freeze({
 				term: term.term,
 				score: term.score,

@@ -271,6 +271,7 @@ export class HanamiTimelinePageService {
 			(note as Record<string, unknown>)._hanamiReason = {
 				reason: entry.source,
 				...(metadata.term !== undefined ? { term: metadata.term } : {}),
+				...(metadata.socialCount !== undefined ? { socialCount: metadata.socialCount } : {}),
 				...(metadata.clusterId !== undefined ? { clusterId: metadata.clusterId } : {}),
 				...(metadata.bucket !== undefined ? { bucket: metadata.bucket } : {}),
 			};

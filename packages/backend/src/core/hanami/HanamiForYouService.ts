@@ -7,6 +7,7 @@ import { DataSource, type QueryRunner } from 'typeorm';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { DI } from '@/di-symbols.js';
+import Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import type { NotesRepository } from '@/models/_.js';
 import type { MiUser, MiLocalUser } from '@/models/User.js';
@@ -126,6 +127,10 @@ const SEEN_SCORE_PENALTY = 0.7;
 const SERVED_TTL_MS = 30 * 60 * 1000;
 const SEEN_TTL_MS = 7 * DAY_MS;
 
+const SOCIAL_WINDOW_MS = 24 * 60 * 60 * 1000;
+const SOCIAL_CIRCLE_MAX = 2000;
+const SOCIAL_MIN = 1;
+
 type ReasonBucket = 'cluster' | 'recent';
 type ReasonMeta = { source: HanamiAxis; sources: HanamiAxis[]; term?: string; clusterId?: number; bucket?: ReasonBucket };
 type ForYouCandidateWithReason = ForYouCandidate & { bucket?: ReasonBucket };
@@ -183,6 +188,7 @@ export function refreshHanamiForYouActiveMarker(redisClient: Redis.Redis, userId
  */
 @Injectable()
 export class HanamiForYouService {
+	private readonly logger = new Logger('hanami');
 	constructor(
 		@Inject(DI.db)
 		private db: DataSource,
@@ -361,6 +367,7 @@ export class HanamiForYouService {
 						: 'personalCandidate',
 					score: candidate.score,
 					...(candidate.term !== undefined ? { term: candidate.term } : {}),
+					...(candidate.socialCount !== undefined ? { socialCount: candidate.socialCount } : {}),
 					...(candidate.clusterId !== undefined ? { clusterId: candidate.clusterId } : {}),
 					...((candidate as ForYouCandidateWithReason).bucket !== undefined ? { bucket: (candidate as ForYouCandidateWithReason).bucket } : {}),
 				});
@@ -390,6 +397,7 @@ export class HanamiForYouService {
 				userId: candidate.authorId,
 				score: candidate.score,
 				...(candidate.term !== undefined ? { term: candidate.term } : {}),
+				...(candidate.socialCount !== undefined ? { socialCount: candidate.socialCount } : {}),
 				...(candidate.clusterId !== undefined ? { clusterId: candidate.clusterId } : {}),
 				...(candidate.bucket !== undefined ? { bucket: candidate.bucket } : {}),
 			} as ForYouCandidateWithReason);
@@ -496,12 +504,21 @@ export class HanamiForYouService {
 				userId: candidate.authorId,
 				score: candidate.score,
 				...(candidate.term !== undefined ? { term: candidate.term } : {}),
+				...(candidate.socialCount !== undefined ? { socialCount: candidate.socialCount } : {}),
 			});
 			commonByAxis.set(candidate.axis, list);
 		}
 
+		if (axisLevels.has('trending') && axisLevels.get('trending') !== 'off') {
+			const trendingIds = new Set((commonByAxis.get('trending') ?? []).map(candidate => candidate.noteId));
+			const popular = commonByAxis.get('globalPopular') ?? [];
+			const remaining = popular.filter(candidate => !trendingIds.has(candidate.noteId));
+			commonByAxis.set('globalPopular', remaining);
+			this.logger.info(`hanami trend: moved ${popular.length - remaining.length} popular overlaps to trending`);
+		}
+
 		const map = new Map<HanamiAxis, ForYouCandidate[]>();
-		const order = hanamiAxisOrder(confidence).filter(axis => axisLevels.has(axis));
+		const order = hanamiAxisOrder(confidence).filter(axis => axisLevels.has(axis) && axisLevels.get(axis) !== 'off');
 		for (const axis of order) {
 			try {
 				let candidates: ForYouCandidate[];
@@ -511,7 +528,39 @@ export class HanamiForYouService {
 						candidates = await this.applyTasteClusterOrdering(input.userId, affinity, noRecency, noRecency, input);
 						break;
 					}
-					case 'trending':
+					case 'trending': {
+						const trending = commonByAxis.get(axis) ?? [];
+						if (trending.length === 0) { candidates = []; break; }
+						const following = await this.generationDbQuery<Array<{ id: string }>>(input, `
+							SELECT "followeeId" AS id FROM following
+							WHERE "followerId" = $1 AND "followeeId" <> $1
+							ORDER BY following.id DESC LIMIT $2
+						`, [input.userId, SOCIAL_CIRCLE_MAX]);
+						const relations = await this.generationDbQuery<Array<{ id: string }>>(input, `
+							SELECT "otherUserId" AS id FROM hanami_foryou_relation
+							WHERE "userId" = $1 AND "relScore" > 0 AND "otherUserId" <> $1
+							ORDER BY "relScore" DESC, "otherUserId" ASC LIMIT $2
+						`, [input.userId, SOCIAL_CIRCLE_MAX]);
+						const circle = [...new Set([...following, ...relations].map(row => row.id))]
+							.filter(id => id !== input.userId).slice(0, SOCIAL_CIRCLE_MAX);
+						const terms = [...new Set(trending.flatMap(candidate => candidate.term === undefined ? [] : [candidate.term]))];
+						const counts = await this.generationBoundary(input, () => this.hanamiTrendService.countRecentTermAuthors(terms, circle, this.generationNow(input) - SOCIAL_WINDOW_MS));
+						const social: ForYouCandidate[] = [];
+						const other: ForYouCandidate[] = [];
+						for (const candidate of trending) {
+							const socialCount = counts.get(candidate.term ?? '') ?? 0;
+							if (socialCount >= SOCIAL_MIN) social.push({ ...candidate, socialCount });
+							else other.push({ ...candidate });
+						}
+						const ordered: ForYouCandidate[][] = [];
+						for (const tier of [social, other]) {
+							const affinity = await this.applyAuthorAffinityRerank(input.userId, alsRunId, tier, input);
+							ordered.push(await this.applyTasteClusterOrdering(input.userId, affinity, noRecency, noRecency, input));
+						}
+						candidates = ordered.flat();
+						candidates = candidates.map((candidate, index) => ({ ...candidate, score: (candidates.length - index) / candidates.length }));
+						break;
+					}
 					case 'exploration':
 						candidates = [...(commonByAxis.get(axis) ?? [])];
 						break;

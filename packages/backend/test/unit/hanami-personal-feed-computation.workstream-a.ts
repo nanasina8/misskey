@@ -20,6 +20,7 @@ import {
 	type HanamiPersonalFeedCandidatePreparation,
 	type HanamiPersonalFeedGenerationContext,
 } from '@/core/hanami/HanamiForYouService.js';
+import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
 import { HanamiUserRecommendationService } from '@/core/hanami/HanamiUserRecommendationService.js';
 import type { HanamiCommonGenerationReadContext, HanamiPersistedCommonCandidate } from '@/core/hanami/HanamiCommonGenerationContracts.js';
 import {
@@ -28,6 +29,7 @@ import {
 import type {
 	HanamiPersonalFeedCandidate,
 	HanamiPersonalFeedComputationInput,
+	HanamiUserFeedReasonMetadata,
 } from '@/core/hanami/HanamiUserFeedContracts.js';
 import { createHanamiExactTextFingerprint } from '@/core/hanami/HanamiForYouTextNormalization.js';
 import { HANAMI_NOTE_JUDGE_MODEL, createDefaultHanamiNoteJudgeSettings } from '@/core/hanami/HanamiNoteJudgeContracts.js';
@@ -156,7 +158,7 @@ function createComputation(options: {
 	const rankPersonalFeedCandidates = jest.fn(options.rank ?? (async (_computationInput: HanamiPersonalFeedGenerationContext, _preparation: HanamiPersonalFeedCandidatePreparation, safe: readonly HanamiPersonalFeedCandidate[]) => safe));
 	const getForYouPage = jest.fn();
 	const forYou = { gatherPersonalFeedCandidates, rankPersonalFeedCandidates, getForYouPage };
-	const buildReasonMetadata = jest.fn((value: Pick<HanamiPersonalFeedCandidate, 'term' | 'clusterId' | 'bucket'>, fallbackOverflow = false) => Object.freeze({
+	const buildReasonMetadata = jest.fn((value: Pick<HanamiPersonalFeedCandidate, 'term' | 'clusterId' | 'bucket'>, fallbackOverflow = false): HanamiUserFeedReasonMetadata => Object.freeze({
 		version: 1 as const,
 		...(value.term !== undefined ? { term: value.term } : {}),
 		...(value.clusterId !== undefined ? { clusterId: value.clusterId } : {}),
@@ -926,7 +928,7 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 
 	test('maps persisted and personal acquisition to the authoritative seven axes without Featured or trend calls', async () => {
 		const featured = { getGlobalNotesRankingWithScores: jest.fn() };
-		const trend = { getTrendingNoteIds: jest.fn() };
+		const trend = { getTrendingNoteIds: jest.fn(), countRecentTermAuthors: jest.fn(async () => new Map([['term', 3]])) };
 		const relationshipCaches = {
 			userProfileCache: { fetch: jest.fn() },
 			userFollowingsCache: { fetch: jest.fn() },
@@ -975,6 +977,7 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 		const result = await service.gatherPersonalFeedCandidates(generation, common);
 
 		expect(result.confidence).toBe('high');
+		expect(result.candidates.find(value => value.noteId === 'trend')).toMatchObject({ socialCount: 3, term: 'term' });
 		expect(new Set(result.candidates.map(value => value.axis))).toEqual(new Set(HANAMI_FOR_YOU_AXES));
 		for (const value of result.candidates) {
 			const commonAxis = value.axis === 'globalPopular' || value.axis === 'trending' || value.axis === 'exploration';
@@ -1243,4 +1246,14 @@ describe('HanamiUserRecommendationService personal-feed adapter', () => {
 		await expect(service.getPersonalFeedFoFNoteIds(generationInput(controller.signal), 10)).rejects.toBe(reason);
 		expect(redis.set).not.toHaveBeenCalled();
 	});
+});
+
+test('persists social trend metadata through safety, ranking and interleave', async () => {
+	const fixture = createComputation({
+		candidates: [candidate('trending', 'social', 'author-social', { term: 'topic', socialCount: 3 })],
+		axisLevels: new Map([['trending', 'normal']]),
+	});
+	fixture.provenance.buildReasonMetadata.mockImplementation(value => HanamiForYouProvenanceService.prototype.buildReasonMetadata(value));
+	const result = await fixture.service.computePersonalFeed({ ...input(), latestReadyBatchId: 'head' });
+	expect(result.items.find(item => item.noteId === 'social')?.reasonMetadata).toMatchObject({ version: 2, term: 'topic', socialCount: 3 });
 });

@@ -420,9 +420,10 @@ export class HanamiPersistedFeedReadService implements HanamiPersistedFeedReadPo
 
 	private validateReasonMetadata(value: unknown): import('./HanamiUserFeedContracts.js').HanamiUserFeedReasonMetadata {
 		if (typeof value !== 'object' || value == null || Array.isArray(value)) throw new Error('Invalid persisted Hanami reason metadata');
-		const metadata = value as Record<string, unknown>;
+		const metadata = { ...value } as Record<string, unknown>;
 		if (metadata.version !== 1 && metadata.version !== 2) throw new Error('Invalid persisted Hanami reason metadata version');
 		if (metadata.term != null && typeof metadata.term !== 'string') throw new Error('Invalid persisted Hanami reason term');
+		if (!Number.isInteger(metadata.socialCount) || (metadata.socialCount as number) < 1 || (metadata.socialCount as number) > 9999) delete metadata.socialCount;
 		if (metadata.clusterId != null && (!Number.isSafeInteger(metadata.clusterId) || (metadata.clusterId as number) < 0)) throw new Error('Invalid persisted Hanami reason clusterId');
 		if (metadata.bucket != null && metadata.bucket !== 'cluster' && metadata.bucket !== 'recent') throw new Error('Invalid persisted Hanami reason bucket');
 		if (metadata.fallbackOverflow != null && metadata.fallbackOverflow !== true) throw new Error('Invalid persisted Hanami fallbackOverflow');
