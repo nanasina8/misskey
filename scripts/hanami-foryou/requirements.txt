@@ -1,4 +1,4 @@
-# torch is installed separately from the PyTorch CPU wheel index in Dockerfile.
+# torch is installed separately in Dockerfile (TORCH_INDEX: cpu by default, cu128 etc. for NVIDIA GPU hosts).
 numpy
 scipy
 implicit

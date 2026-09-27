@@ -74,6 +74,10 @@ FROM --platform=$TARGETPLATFORM node:${NODE_VERSION}-slim AS runner
 
 ARG UID="991"
 ARG GID="991"
+# はなみ For You の PyTorch。既定は CPU 版（GPU の無いホスト向け・軽量）。
+# NVIDIA GPU を使うホストだけ cu128 など CUDA 版を指定する（compose.gpu.yml 参照）。
+# CUDA 版も GPU が見えなければ CPU で動く。
+ARG TORCH_INDEX="cpu"
 
 COPY --link ["scripts/hanami-foryou/requirements.txt", "/tmp/hanami-foryou-requirements.txt"]
 
@@ -95,7 +99,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 	python3 python3-venv python3-pip libgomp1 \
 	&& python3 -m venv /opt/hanami-foryou-venv \
 	&& /opt/hanami-foryou-venv/bin/python3 -m pip install --upgrade pip setuptools wheel \
-	&& /opt/hanami-foryou-venv/bin/python3 -m pip install --index-url https://download.pytorch.org/whl/cpu torch \
+	&& /opt/hanami-foryou-venv/bin/python3 -m pip install --index-url "https://download.pytorch.org/whl/${TORCH_INDEX}" torch \
 	&& /opt/hanami-foryou-venv/bin/python3 -m pip install -r /tmp/hanami-foryou-requirements.txt \
 	&& ln -s /usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2 /usr/local/lib/libjemalloc.so \
 	&& groupadd -g "${GID}" misskey \

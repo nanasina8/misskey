@@ -1,0 +1,21 @@
+# NVIDIA GPU を web コンテナに渡す追加設定（はなみTL のノート判定器を GPU で動かす）。
+# GPU と NVIDIA Container Toolkit があるホストだけで、本体の compose に重ねて使う。
+# GPU の無いホストでは使わない（本体の compose だけなら CPU 版の PyTorch で今までどおり動く）。
+#
+#   docker compose -f compose.yml -f compose.gpu.yml build web
+#   docker compose -f compose.yml -f compose.gpu.yml up -d
+#
+# TORCH_INDEX はホストのドライバに合わせる（nvidia-smi 右上の CUDA Version 以下: cu128 / cu126 など）。
+services:
+  web:
+    build:
+      context: .
+      args:
+        TORCH_INDEX: cu128
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
