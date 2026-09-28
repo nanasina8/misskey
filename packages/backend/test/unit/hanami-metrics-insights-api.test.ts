@@ -229,7 +229,7 @@ describe('HM-IMPLEMENT judge-aggregate compatibility and cohort parity', () => {
 		const result: unknown = await endpoint.exec({ range }, admin, null);
 		expect(insights.whatIf).toHaveBeenCalledWith({ range, axis: 'exploration', thresholds: { interest: [2.95] } });
 		expect(query).toHaveBeenCalledTimes(1);
-		expect(result).toEqual({ judged: null, ephemeral: null, interestFiltered: null, typeBreakdown: [], topServed: [], cohort: { range, passed, suppressed: responses.whatIf.suppressed, unavailable: [] } });
+		expect(result).toEqual({ judged: null, ruleExcluded: null, ephemeral: null, interestFiltered: null, typeBreakdown: [], topServed: [], cohort: { range, passed, suppressed: responses.whatIf.suppressed, unavailable: [] } });
 		await endpoint.exec({ axis: 'exploration' }, admin, null);
 		expect(insights.whatIf).toHaveBeenLastCalledWith({ range: undefined, axis: 'exploration', thresholds: { interest: [2.95] } });
 	});

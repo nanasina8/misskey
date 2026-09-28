@@ -73,7 +73,7 @@ const responses = {
 		common: { recent: [] }, judge: { recent: [], backlog: null }, rateLimited: { byDay: [] },
 	},
 	stats: {
-		range, coverage: { status: 'unavailable', unavailable: [] }, suppressed: ['fof'], denominator: 'visible', usage, engagement: { engagementRate: null },
+		range, coverage: { status: 'unavailable', unavailable: [] }, suppressed: [], denominator: 'visible', usage, engagement: { engagementRate: null },
 		sources: [{ key: 'fof', share: null, engagementRate: null, lift: null }],
 		series: [{ week: '2026-09-01', hanamiUsers: null, engagementRate: null }],
 	},
@@ -237,7 +237,7 @@ describe('HM-IMPLEMENT explicit response and privacy contracts', () => {
 		expect(JSON.stringify(result)).not.toMatch(/"(?:userId|noteId|text|authorId|clusterId)":/);
 	});
 
-	test('populated breakdown strips identifiers, omits small cells, and preserves the three-type numerator', async () => {
+	test('populated breakdown strips identifiers, includes small cells, and preserves the three-type numerator', async () => {
 		const { breakdown } = await loadEndpoints();
 		const rows = [
 			{ key: 'exploration', users: 5, served: 10, seen: 5, reaction: 1, reply: 1, renote: 1, userId: 'user-canary', noteId: 'note-canary', text: 'text-canary' },
@@ -255,8 +255,8 @@ describe('HM-IMPLEMENT explicit response and privacy contracts', () => {
 		} } as never);
 		const result: unknown = await new breakdown.default(service).exec({ range, dimension: 'source' }, admin, null);
 		expect(result).toMatchObject({
-			suppressed: ['fof'], denominator: 'visible',
-			rows: [{ key: 'exploration', users: 5, served: 10, reaction: 1, reply: 1, renote: 1, engagementRate: 0.3, share: 1, lift: 1 }],
+			suppressed: [], denominator: 'visible',
+			rows: [{ key: 'exploration', users: 5, served: 10, reaction: 1, reply: 1, renote: 1, engagementRate: 0.3, share: 10 / 110, lift: 1 }, { key: 'fof', users: 4, served: 100, engagementRate: 0.3 }],
 		});
 		expect(ajv.compile(breakdownResponseSchema)(result)).toBe(true);
 		expect(JSON.stringify(result)).not.toContain('canary');

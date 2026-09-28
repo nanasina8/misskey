@@ -10,7 +10,7 @@ import { metricsEndpointMeta, metricsQuery, queryRange, rangeParamDef, statsResp
 
 export const meta = {
 	...metricsEndpointMeta,
-	description: 'Get admin-only anonymous Hanami statistics with weekly series and small-cell suppression. The query service caches this subset for 60 seconds; no public HTTP cache is enabled.',
+	description: 'Get admin-only anonymous Hanami statistics with weekly series. The query service caches this subset for 60 seconds; no public HTTP cache is enabled.',
 	res: statsResponseSchema,
 } as const;
 

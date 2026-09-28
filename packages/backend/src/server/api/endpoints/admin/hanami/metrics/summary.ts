@@ -10,7 +10,7 @@ import { metricsEndpointMeta, metricsQuery, queryRange, rangeParamDef, summaryRe
 
 export const meta = {
 	...metricsEndpointMeta,
-	description: 'Get anonymous Hanami usage, per-type DISTINCT reaction + reply + renote engagement, and generation aggregates. Suppressed or unavailable values are null; consult coverage.',
+	description: 'Get anonymous Hanami usage, per-type DISTINCT reaction + reply + renote engagement, and generation aggregates. Unavailable values are null; consult coverage. Suppressed is always empty.',
 	res: summaryResponseSchema,
 } as const;
 

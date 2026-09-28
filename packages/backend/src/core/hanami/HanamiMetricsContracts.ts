@@ -72,10 +72,6 @@ export function metricRatio(numerator: Metric, denominator: Metric): Metric {
 	return numerator === null || denominator === null || denominator === 0 ? null : numerator / denominator;
 }
 
-export function isSuppressed(users: number): boolean {
-	return users > 0 && users < 5;
-}
-
 export interface HanamiMetricsCoverage {
 	status: 'complete' | 'partial' | 'unavailable';
 	startedAt: string | null;
@@ -209,8 +205,8 @@ export function metricsDailyEngagementSql(byDay = false): string {
  * Keep COUNT(DISTINCT), rather than COUNT(*), to exclude a nullable userId.
  */
 export function metricsRangeUsersSql(dimension = false): string {
-	const key = dimension ? `COALESCE(NULLIF(dimensions ->> $3::text, ''), CASE WHEN $3 = 'contentType' THEN 'unjudged' ELSE 'unknown' END)` : "'total'";
-	return `SELECT ${dimension ? 'key' : "'total' AS key"}, COUNT(DISTINCT "userId")::int AS users FROM (
+	const key = dimension ? 'COALESCE(NULLIF(dimensions ->> $3::text, \'\'), CASE WHEN $3 = \'contentType\' THEN \'unjudged\' ELSE \'unknown\' END)' : '\'total\'';
+	return `SELECT ${dimension ? 'key' : '\'total\' AS key'}, COUNT(DISTINCT "userId")::int AS users FROM (
 		SELECT ${key} AS key, "userId" FROM hanami_metrics_event
 		WHERE "eventType" = 'served' AND "createdAt" >= $1::timestamptz AND "createdAt" < $2::timestamptz
 		GROUP BY 1, 2

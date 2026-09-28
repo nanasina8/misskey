@@ -113,7 +113,7 @@ const tlShareSchema = object({ home: metric, local: metric, social: metric, glob
 const failureKindsSchema = object({ emptyResult: count, candidateLimit: count, lockTimeout: count, exception: count, unknown: count });
 
 const coverageStatusSchema = { ...string, enum: ['complete', 'partial', 'unavailable'] } as const;
-const denominatorSchema = { ...string, enum: ['visible'], description: 'Shares and lift use only visible cells so hidden cells cannot be recovered by subtraction.' } as const;
+const denominatorSchema = { ...string, enum: ['visible'], description: 'Shares and lift use all observed cells; the visible value is retained for compatibility.' } as const;
 
 export const coverageSchema = object({
 	status: coverageStatusSchema,

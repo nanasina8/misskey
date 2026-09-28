@@ -202,21 +202,11 @@ export class HanamiMetricsDiagnosticsService {
 		});
 	}
 
-	/** Safe convenience read. Rollup may read raw rows internally, but must apply the same suppression at its API boundary. */
+	/** Admin-only diagnostics include all measured cohorts. */
 	@bindThis
 	public async query(day: string): Promise<{ available: boolean; rows: HanamiMetricsDiagnosticRow[]; suppressed: string[] }> {
 		assertMetricsDay(day);
 		const stored = await this.db.query('SELECT scope,key,users,data,"capturedAt" FROM hanami_metrics_diagnostic WHERE day = $1::date ORDER BY scope,key', [day]) as HanamiMetricsDiagnosticRow[];
-		const suppressed: string[] = [];
-		const rows = stored.filter(row => {
-			const reasonUsers = row.data.reasonUsers as Counts | undefined;
-			// Suppress the entire summary if a component is small: totals could reveal it by subtraction.
-			if ((row.users > 0 && row.users < 5) || (reasonUsers != null && Object.values(reasonUsers).some(users => users > 0 && users < 5))) {
-				suppressed.push(`${row.scope}/${row.key}`);
-				return false;
-			}
-			return true;
-		});
-		return { available: stored.length > 0, rows, suppressed };
+		return { available: stored.length > 0, rows: stored, suppressed: [] };
 	}
 }

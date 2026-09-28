@@ -10,7 +10,7 @@ import { breakdownParamDef, breakdownResponseSchema, metricsEndpointMeta, metric
 
 export const meta = {
 	...metricsEndpointMeta,
-	description: 'Break down Hanami engagement by an allowlisted dimension, optionally filtering other dimensions. Cells below five users are suppressed, not zeroed. Lift compares engagement per seen with visible Hanami cells, not normal TL; denominator documents this privacy restriction.',
+	description: 'Break down Hanami engagement by an allowlisted dimension, optionally filtering other dimensions. All observed user cohorts are included. Lift compares engagement per seen with visible Hanami cells, not normal TL; denominator retains its compatibility value.',
 	res: breakdownResponseSchema,
 } as const;
 

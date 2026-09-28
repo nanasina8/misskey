@@ -10,7 +10,7 @@ import { createDefaultHanamiNoteJudgeSettings, validateHanamiNoteJudgeSettings }
 import { peekHanamiNoteJudgeRuntime } from './HanamiPythonRuntime.js';
 import {
 	HANAMI_METRICS_DIMENSIONS, HANAMI_METRICS_FAILURE_KINDS,
-	jstDay, shiftMetricsDay, resolveRange, rangeDays, rangeParameters, metricRatio, isSuppressed,
+	jstDay, shiftMetricsDay, resolveRange, rangeDays, rangeParameters, metricRatio,
 	metricsCohortSql, METRICS_NORMAL_SQL, metricsGenerationSql, METRICS_COLLECTION_GAP_SQL,
 	metricsDailyEngagementSql, metricsRangeUsersSql, METRICS_DAILY_PERSONAL_GENERATION_SQL,
 	METRICS_SUMMARY_USERS_SQL,
@@ -88,28 +88,27 @@ function complete(coverage: HanamiMetricsCoverage, range: HanamiMetricsResolvedR
 }
 
 function usable(row: MetricsAggregateRow | undefined, covered: boolean): row is MetricsAggregateRow {
-	return row !== undefined && !isSuppressed(row.users) && (row.users > 0 || covered);
+	return row !== undefined && (row.users > 0 || covered);
 }
 
 function safeCount(count: number, users: number, covered: boolean): Metric {
-	return isSuppressed(users) || (users === 0 && !covered) ? null : count;
+	return users === 0 && !covered ? null : count;
 }
 
 function failedDay(row: MetricsGenerationRow | undefined, covered: boolean): Metric {
-	if (row && (isSuppressed(row.users) || row.failures.some(failure => isSuppressed(failure.users)))) return null;
 	return safeCount(row?.failed ?? 0, row?.failedUsers ?? 0, covered);
 }
 
-/** Shares and lift are computed only over visible rows; no subtraction reveals hidden rows. */
+/** Admin metrics include every observed cohort, regardless of its user count. */
 export function presentMetricsBreakdown(rows: MetricsAggregateRow[]): Pick<HanamiMetricsBreakdown, 'rows' | 'suppressed' | 'denominator'> {
-	const visible = rows.filter(row => !isSuppressed(row.users));
+	const visible = rows;
 	const served = visible.reduce((sum, row) => sum + row.served, 0);
 	const seen = visible.reduce((sum, row) => sum + row.seen, 0);
 	const reactions = visible.reduce((sum, row) => sum + engaged(row), 0);
 	const overall = metricRatio(reactions, seen);
 	return {
 		denominator: 'visible',
-		suppressed: rows.filter(row => isSuppressed(row.users)).map(row => row.key),
+		suppressed: [],
 		rows: visible.map(row => ({
 			key: row.key, ...counts(row), share: metricRatio(row.served, served),
 			engagementShare: metricRatio(engaged(row), reactions), engagementRate: metricRatio(engaged(row), row.served),
@@ -119,22 +118,17 @@ export function presentMetricsBreakdown(rows: MetricsAggregateRow[]): Pick<Hanam
 	};
 }
 
-function presentGeneration(rows: MetricsGenerationRow[], covered: boolean, suppressed: string[]): HanamiMetricsGeneration {
+function presentGeneration(rows: MetricsGenerationRow[], covered: boolean): HanamiMetricsGeneration {
 	const personal = rows.find(row => row.key === 'personal');
 	const common = rows.find(row => row.key === 'common');
 	const judge = rows.find(row => row.key === 'judge');
-	const hidden = personal !== undefined && isSuppressed(personal.users);
-	if (hidden) suppressed.push('generation.personal');
 	const byKind = {} as HanamiMetricsFailureCounts;
 	for (const kind of HANAMI_METRICS_FAILURE_KINDS) {
 		const failure = personal?.failures.find(row => row.kind === kind);
-		byKind[kind] = hidden ? null : safeCount(failure?.count ?? 0, failure?.users ?? 0, covered);
-		if (failure && isSuppressed(failure.users)) suppressed.push(`generation.personal.failedByKind.${kind}`);
+		byKind[kind] = safeCount(failure?.count ?? 0, failure?.users ?? 0, covered);
 	}
-	const hasHiddenFailure = personal?.failures.some(row => isSuppressed(row.users)) ?? false;
-	const available = !hidden && (personal !== undefined || covered);
-	const failed = available && !hasHiddenFailure ? safeCount(personal?.failed ?? 0, personal?.failedUsers ?? 0, covered) : null;
-	if (personal && isSuppressed(personal.failedUsers)) suppressed.push('generation.personal.failed');
+	const available = personal !== undefined || covered;
+	const failed = available ? safeCount(personal?.failed ?? 0, personal?.failedUsers ?? 0, covered) : null;
 	return {
 		personal: {
 			batches: available ? personal?.total ?? 0 : null,
@@ -145,15 +139,6 @@ function presentGeneration(rows: MetricsGenerationRow[], covered: boolean, suppr
 		common: { generations: common?.total ?? (covered ? 0 : null), failed: common?.failed ?? (covered ? 0 : null), p50Ms: common?.p50Ms ?? null, p95Ms: common?.p95Ms ?? null },
 		judge: { runs: judge?.total ?? (covered ? 0 : null), failed: judge?.failed ?? (covered ? 0 : null), p50Ms: judge?.p50Ms ?? null, p95Ms: judge?.p95Ms ?? null, backlog: null, secPerNote: null, runtime: null },
 	};
-}
-
-/** A range failure total (including the sum of byKind) must not reveal a hidden daily cell. */
-function protectFailureTotals(generation: HanamiMetricsGeneration, daily: MetricsGenerationRow[], suppressed: string[]): void {
-	if (!daily.some(row => row.key === 'personal' && failedDay(row, true) === null)) return;
-	generation.personal.failed = null;
-	generation.personal.failedRate = null;
-	for (const kind of HANAMI_METRICS_FAILURE_KINDS) generation.personal.failedByKind[kind] = null;
-	suppressed.push('generation.personal.failureTotals');
 }
 
 @Injectable()
@@ -175,7 +160,7 @@ export class HanamiMetricsQueryService {
 			const [coverage, rows] = await Promise.all([
 				this.coverage(range),
 				raw ? this.db.query<MetricsAggregateRow[]>(metricsCohortSql('dimension'), [...rangeParameters(range), JSON.stringify(filter), request.dimension])
-					: this.dailyEngagement(range, request.dimension),
+				: this.dailyEngagement(range, request.dimension),
 			]);
 			return { range, dimension: request.dimension, ...presentMetricsBreakdown(rows), coverage };
 		};
@@ -200,59 +185,48 @@ export class HanamiMetricsQueryService {
 			this.judgeStatus(),
 			this.diagnosticUnavailable(range),
 		]);
-		const { total, daily, sources, windows } = engagement;
+		const { total, daily, windows } = engagement;
 		const covered = complete(coverage, range);
 		const suppressed: string[] = [];
 		const days = rangeDays(range);
 		const dayRows = new Map(daily.map(row => [row.day, row]));
 		const generationRows = new Map(dailyGenerations.filter(row => row.key === 'personal').map(row => [row.day, row]));
-		// Null aggregate counts if they could reveal suppressed day/source cells by subtraction.
-		const hiddenComponents = sources.some(row => isSuppressed(row.users)) || daily.some(row => isSuppressed(row.users));
-		const totalVisible = usable(total, covered) && !hiddenComponents;
-		if (!totalVisible && (isSuppressed(total.users) || hiddenComponents)) suppressed.push('engagement');
+		const totalVisible = usable(total, covered);
 		const normal = normalRows.at(0);
 		const baseline = { reaction: null, reply: null, renote: null } as HanamiMetricsSummary['engagement']['normalBaseline'];
 		for (const kind of ['reaction', 'reply', 'renote'] as const) {
 			const users = normal?.[`${kind}Users`] ?? 0;
 			baseline[kind] = safeCount(normal?.[kind] ?? 0, users, covered);
-			if (isSuppressed(users)) suppressed.push(`engagement.normalBaseline.${kind}`);
 		}
 		const hanamiUsers: HanamiMetricsSummary['usage']['hanamiUsers'] = { day: null, week: null, month: null };
 		for (const window of windows) {
 			const windowCovered = this.windowCovered(coverage, { from: window.from, to: range.to });
 			hanamiUsers[window.key] = safeCount(window.users, window.users, windowCovered);
-			if (isSuppressed(window.users)) suppressed.push(`usage.hanamiUsers.${window.key}`);
 		}
 		const tlShare: Record<HanamiMetricsTimelineKind, Metric> = { home: null, local: null, social: null, global: null, hanami: null };
 		const [health] = await this.db.query<{ gap: boolean }[]>(METRICS_COLLECTION_GAP_SQL, [range.from, range.to]);
-		const visibleTimeline = timeline.filter(row => !isSuppressed(row.users) && !(row.users === 0 && row.requests > 0));
+		const visibleTimeline = timeline;
 		const requests = visibleTimeline.reduce((sum, row) => sum + row.requests, 0);
 		for (const kind of TL_KINDS) {
 			const row = timeline.find(item => item.key === kind);
 			if (health?.gap) continue;
-			if (row && (isSuppressed(row.users) || (row.users === 0 && row.requests > 0))) suppressed.push(`usage.tlShare.${kind}`);
-			else tlShare[kind] = row || covered ? metricRatio(row?.requests ?? 0, requests) : null;
+			tlShare[kind] = row || covered ? metricRatio(row?.requests ?? 0, requests) : null;
 		}
 		if (health?.gap) coverage.unavailable.push('usage.tlShare.collectionGap');
 		if (range.to === jstDay()) coverage.unavailable.push('usage.tlShare.currentDayProvisional');
-		const refreshHidden = refreshes.some(row => isSuppressed(row.users));
-		if (refreshHidden) suppressed.push('usage.manualRefreshPerUserDay');
 		const userDays = daily.reduce((sum, row) => sum + row.users, 0); // person-days, NEVER range uniques
-		const manualRefresh = !refreshHidden && !hiddenComponents && covered ? metricRatio(refreshes.reduce((sum, row) => sum + row.refreshes, 0), userDays) : null;
-		const generation = presentGeneration(generations, covered, suppressed);
+		const manualRefresh = covered ? metricRatio(refreshes.reduce((sum, row) => sum + row.refreshes, 0), userDays) : null;
+		const generation = presentGeneration(generations, covered);
 		Object.assign(generation.judge, judgeStatus);
-		protectFailureTotals(generation, dailyGenerations, suppressed);
 		const series: HanamiMetricsSummary['series'] = { day: days, hanamiUsers: [], engagementRate: [], failedBatches: [] };
 		for (const day of days) {
 			const row = dayRows.get(day) ?? EMPTY_COUNTS;
 			const dayCovered = coverage.completeDays.includes(day);
 			const visible = usable(row, dayCovered);
-			if (isSuppressed(row.users)) suppressed.push(`series.${day}`);
 			series.hanamiUsers.push(visible ? row.users : null);
 			series.engagementRate.push(visible ? metricRatio(engaged(row), row.served) : null);
 			const failed = generationRows.get(day);
 			series.failedBatches.push(failedDay(failed, dayCovered));
-			if (failed && failedDay(failed, true) === null) suppressed.push(`series.failedBatches.${day}`);
 		}
 		for (const key of ['backlog', 'secPerNote', 'runtime'] as const) {
 			if (judgeStatus[key] === null) coverage.unavailable.push(`generation.judge.${key}`);
@@ -279,15 +253,14 @@ export class HanamiMetricsQueryService {
 			this.judgeBacklog(),
 		]);
 		const suppressed: string[] = [];
-		const generation = presentGeneration(generationRows, complete(coverage, range), suppressed);
-		protectFailureTotals(generation, daily, suppressed);
+		const generation = presentGeneration(generationRows, complete(coverage, range));
 		const personal = generationRows.find(row => row.key === 'personal');
 		const secret = process.env.HANAMI_METRICS_SALT;
 		const recent: HanamiMetricsErrors['personal']['recent'] = [];
 		if (!secret?.trim()) coverage.unavailable.push('personal.recent:HANAMI_METRICS_SALT missing');
-		else if (personal && personal.failedUsers >= 5) {
-			// Also gate individual failure groups. Rare kinds must not leak through recent entries.
-			const allowed = personal.failures.filter(row => row.users >= 5).map(row => row.kind);
+		else if (personal) {
+			// Keep the sanitized error kinds and daily pseudonyms.
+			const allowed = personal.failures.map(row => row.kind);
 			if (allowed.length > 0) {
 				const rows = await this.db.query<{ at: Date | string; userId: string; kind: string | null; attempts: number }[]>(`SELECT COALESCE("finishedAt", "createdAt") AS at, "userId", "failureKind" AS kind, attempts
 					FROM hanami_user_feed_batch WHERE status = 'failed' AND "createdAt" >= $1::timestamptz AND "createdAt" < $2::timestamptz
@@ -299,14 +272,13 @@ export class HanamiMetricsQueryService {
 					if (bucket !== null) recent.push({ at: at.toISOString(), ...sanitizeMetricsFailure(row.kind), attempts: row.attempts, userBucket: bucket });
 				}
 			}
-		} else if (personal && isSuppressed(personal.failedUsers)) suppressed.push('personal.recent');
+		}
 		const [common, judge] = await Promise.all([
 			this.db.query<{ at: Date | string }[]>('SELECT COALESCE("finishedAt", "startedAt") AS at FROM hanami_common_generation WHERE status = \'failed\' AND "startedAt" >= $1::timestamptz AND "startedAt" < $2::timestamptz ORDER BY at DESC LIMIT 20', bounds),
 			this.db.query<{ at: Date | string }[]>('SELECT COALESCE("finishedAt", "startedAt") AS at FROM hanami_foryou_model_run WHERE kind = \'note-judge\' AND status = \'failed\' AND "startedAt" >= $1::timestamptz AND "startedAt" < $2::timestamptz ORDER BY at DESC LIMIT 20', bounds),
 		]);
 		const byDay = rangeDays(range).map(day => {
 			const row = daily.find(item => item.key === 'personal' && item.day === day);
-			if (row && failedDay(row, true) === null) suppressed.push(`personal.byDay.${day}`);
 			return { day, failed: failedDay(row, coverage.completeDays.includes(day)) };
 		});
 		if (backlog === null) coverage.unavailable.push('judge.backlog');
@@ -325,13 +297,12 @@ export class HanamiMetricsQueryService {
 		if (this.statsCache?.key === key && this.statsCache.expiresAt > Date.now()) return structuredClone(this.statsCache.value);
 		const [summary, breakdown] = await Promise.all([this.summary(range), this.breakdown({ range, dimension: 'source' })]);
 		const series: HanamiMetricsStats['series'] = [];
-		const suppressed = [...breakdown.suppressed, ...summary.suppressed.filter(item => item.startsWith('usage.') || item === 'engagement')];
+		const suppressed: string[] = [];
 		// Weekly chunks, exact range distinct users; never sum daily distinct counts.
 		for (let from = range.from; from <= range.to; from = shiftMetricsDay(from, 7)) {
 			const to = shiftMetricsDay(from, 6) > range.to ? range.to : shiftMetricsDay(from, 6);
 			const [row = EMPTY_COUNTS] = await this.db.query<MetricsAggregateRow[]>(metricsCohortSql('total'), [...rangeParameters({ from, to }), '{}']);
 			const visible = usable(row, complete(summary.coverage, { from, to }));
-			if (isSuppressed(row.users)) suppressed.push(`series.${from}`);
 			series.push({ week: from, hanamiUsers: visible ? row.users : null, engagementRate: visible ? metricRatio(engaged(row), row.served) : null });
 		}
 		const value: HanamiMetricsStats = {

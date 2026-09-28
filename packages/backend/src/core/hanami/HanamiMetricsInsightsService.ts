@@ -129,12 +129,12 @@ export const INSIGHTS_NOTES_SQL = `${NOTE_COHORT_CTE}, grouped AS (
 	SELECT g.* FROM grouped g JOIN note n ON n.id=g."noteId" ${SAFE_NOTE_JOINS}
 	WHERE ${SAFE_NOTE_WHERE}
 ), ranked AS (
-	SELECT * FROM safe WHERE served>=20 AND users>=5
+	SELECT * FROM safe WHERE served>=20
 	ORDER BY (reaction+reply+renote)::float8/served DESC, served DESC,"noteId",source,"contentType" LIMIT 20
 )
 SELECT COALESCE((SELECT jsonb_agg(r ORDER BY (r.reaction+r.reply+r.renote)::float8/r.served DESC,
 	r.served DESC,r."noteId",r.source,r."contentType") FROM ranked r),'[]'::jsonb) AS rows,
-	EXISTS(SELECT 1 FROM safe WHERE served>=20 AND users<5) AS suppressed`;
+	false AS suppressed`;
 
 const NOTE_DETAILS_SQL = `SELECT n.id AS "noteId", left(COALESCE(n.text,''),160) AS text,
 	CASE WHEN author.host IS NULL THEN 'local' ELSE 'remote' END AS "authorLocality"
@@ -147,7 +147,7 @@ type WhatIfRow = { kind: string; theta: number; users: number; passed: number; s
 type NoteRow = { noteId: string; source: string; contentType: string; users: number; served: number; reaction: number; reply: number; renote: number };
 type CaptureState = { startedAt: string | Date | null; insightsStartedAt: string | Date | null };
 
-function contentType(value: string): string | number { return /^[0-9]$/.test(value) ? Number(value) : 'unjudged'; }
+function contentType(value: string): string | number { return /^[0-9]$/.test(value) ? Number(value) : value === 'ruleExcluded' ? 'ruleExcluded' : 'unjudged'; }
 
 function engaged(row: Pick<MetricsAggregateRow, 'reaction' | 'reply' | 'renote'>): number { return row.reaction + row.reply + row.renote; }
 
@@ -197,7 +197,7 @@ export class HanamiMetricsInsightsService {
 				...breakdown.coverage.unavailable, ...this.captureUnavailable(range, state, false),
 				...this.captureUnavailable(range, state, true), 'hiddenCost.normalExposureDenominator',
 			],
-			suppressed: breakdown.suppressed.map(key => `allocation.${key}`),
+			suppressed: [],
 		};
 		for (const row of breakdown.rows) {
 			if (!(HANAMI_FOR_YOU_AXES as readonly string[]).includes(row.key)) continue;
@@ -214,10 +214,9 @@ export class HanamiMetricsInsightsService {
 		const caps = suggestedCaps(result.allocation);
 		result.allocation.forEach((row, index) => { row.suggestedCap = caps[index]; });
 		// All visible joint cells define the denominator, including cells below the 300 minimum.
-		const visible = contentRows.filter(row => row.users >= 5);
+		const visible = contentRows;
 		const totalServed = visible.reduce((sum, row) => sum + row.served, 0);
 		const overallPerSeen = metricRatio(visible.reduce((sum, row) => sum + engaged(row), 0), visible.reduce((sum, row) => sum + row.seen, 0));
-		if (contentRows.some(row => row.users < 5)) result.suppressed.push('content');
 		for (const row of visible.filter(row => row.served >= 300)) {
 			const share = row.served / totalServed;
 			const lift = metricRatio(metricRatio(engaged(row), row.seen), overallPerSeen);
@@ -236,8 +235,7 @@ export class HanamiMetricsInsightsService {
 		for (const axis of HANAMI_FOR_YOU_AXES) {
 			const high = demandRows.find(row => row.axis === axis && row.level === 'high');
 			const normal = demandRows.find(row => row.axis === axis && row.level === 'normal');
-			if ((high && high.users < 5) || (normal && normal.users < 5)) result.suppressed.push(`demand.${axis}`);
-			if (high && normal && high.users >= 5 && normal.users >= 5 && high.pages > 0 && normal.pages > 0) {
+			if (high && normal && high.pages > 0 && normal.pages > 0) {
 				result.demand.push({
 					axis, usersHigh: high.users, avgServedPerPageHigh: Number(high.average), avgServedPerPageNormal: Number(normal.average),
 					note: 'Successful REST pages; effective levels and per-source counts captured at serving time (page-weighted).',
@@ -245,15 +243,13 @@ export class HanamiMetricsInsightsService {
 			} else if (!high || !normal) result.unavailable.push(`demand.${axis}.comparison`);
 			const hidden = hiddenRows.find(row => row.axis === axis && row.decision === 'hiddenEphemeral');
 			const shown = hiddenRows.find(row => row.axis === axis && row.decision === 'shown');
-			if ((hidden && hidden.users < 5) || (shown && shown.users < 5)) result.suppressed.push(`hiddenCost.${axis}`);
-			if (hidden && shown && hidden.users >= 5 && shown.users >= 5 && hidden.candidates > 0 && shown.candidates > 0) {
+			if (hidden && shown && hidden.candidates > 0 && shown.candidates > 0) {
 				result.hiddenCost.push({ axis, hidden: hidden.candidates, normalEngagementOfHidden: hidden.engaged / hidden.candidates, normalEngagementOfShown: shown.engaged / shown.candidates });
 			} else if (!hidden || !shown) result.unavailable.push(`hiddenCost.${axis}.comparison`);
 		}
 		const day = days.at(0)?.day;
 		if (day) {
 			const diagnostic = await this.diagnostics.query(day);
-			result.suppressed.push(...diagnostic.suppressed.map(key => `snapshot.${key}`));
 			// Structured numeric distributions only; no arbitrary diagnostic metadata escapes.
 			for (const row of diagnostic.rows) {
 				if (row.scope === 'dropped' && row.key === 'exploration' && row.data.available === true) {
@@ -272,7 +268,7 @@ export class HanamiMetricsInsightsService {
 					const axis = String(row.data.axis);
 					const level = String(row.data.level);
 					if (row.data.available === false) continue;
-					if (([...HANAMI_FOR_YOU_AXES, 'hideEphemeral'] as string[]).includes(axis) && ['off', 'low', 'normal', 'high', 'on'].includes(level) && row.users >= 5) {
+					if (([...HANAMI_FOR_YOU_AXES, 'hideEphemeral'] as string[]).includes(axis) && ['off', 'low', 'normal', 'high', 'on'].includes(level)) {
 						(result.tuningDrift[axis] ??= {})[level] = row.users;
 					}
 				}
@@ -324,17 +320,15 @@ export class HanamiMetricsInsightsService {
 		for (const kind of ['interest', 'ephemeral'] as const) {
 			for (const theta of kind === 'interest' ? interest : ephemeral) {
 				const row = rows.find(item => item.kind === kind && item.theta === theta);
-				// Even an empty qualifying group cannot establish the required five-user cohort.
-				const visible = row !== undefined && row.users >= 5;
-				if (!visible) result.suppressed.push(`${kind}.${theta}`);
+				// A measured cohort can have zero passes; an absent cohort is still unknown.
+				const visible = row !== undefined && (cohort?.served ?? 0) > 0;
 				result[kind].push({ theta, passed: visible ? row.passed : null, passedEngagementRate: visible ? metricRatio(row.engaged, row.served) : null });
 			}
 		}
 		for (let type = 0; type < settings.contentTypeBonus.length; type++) {
 			const row = rows.find(item => item.kind === 'contentType' && item.theta === type);
-			if (row && row.users < 5) result.suppressed.push(`contentTypeBonus.${type}`);
 			if (!row) result.unavailable.push(`contentTypeBonus.${type}`);
-			result.contentTypeBonus.push({ contentType: type, engagementRate: row && row.users >= 5 ? metricRatio(row.engaged, row.served) : null, bonusNow: settings.contentTypeBonus[type] });
+			result.contentTypeBonus.push({ contentType: type, engagementRate: row ? metricRatio(row.engaged, row.served) : null, bonusNow: settings.contentTypeBonus[type] });
 		}
 		this.remember(key, result);
 		return result;
@@ -353,9 +347,9 @@ export class HanamiMetricsInsightsService {
 				this.db.query<{ rows: NoteRow[]; suppressed: boolean }[]>(INSIGHTS_NOTES_SQL, [...rangeParameters(range), JSON.stringify(filter)]),
 				this.captureState(),
 			]);
-			result = { range, notes: [], suppressed: groups[0]?.suppressed ? ['notes.smallCohort'] : [], unavailable: this.captureUnavailable(range, state, false) };
+			result = { range, notes: [], suppressed: [], unavailable: this.captureUnavailable(range, state, false) };
 			for (const row of groups[0]?.rows ?? []) {
-				if (row.served < 20 || row.users < 5) continue;
+				if (row.served < 20) continue;
 				result.notes.push({
 					noteId: row.noteId, text: '', authorLocality: 'unknown', source: row.source, contentType: contentType(row.contentType),
 					served: row.served, reaction: row.reaction, reply: row.reply, renote: row.renote, engagementRate: engaged(row) / row.served,

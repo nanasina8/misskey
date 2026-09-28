@@ -11,7 +11,7 @@ import { notesParamDef, notesResponseSchema } from './insights-schemas.js';
 
 export const meta = {
 	...metricsEndpointMeta,
-	description: 'Get up to 20 public, currently visible notes from cohorts with at least 20 serves and five users, at most 30 inclusive days. Text is limited to 160 characters; the service rechecks visibility even on cache hits.',
+	description: 'Get up to 20 public, currently visible notes from cohorts with at least 20 serves, at most 30 inclusive days. Text is limited to 160 characters; the service rechecks visibility even on cache hits.',
 	res: notesResponseSchema,
 } as const;
 export const paramDef = notesParamDef;

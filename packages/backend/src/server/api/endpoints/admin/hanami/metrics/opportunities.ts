@@ -11,7 +11,7 @@ import { opportunitiesParamDef, opportunitiesResponseSchema } from './insights-s
 
 export const meta = {
 	...metricsEndpointMeta,
-	description: 'Get read-only Hanami improvement suggestions from visible aggregate cohorts. Suggestions are never applied automatically; consult suppressed and unavailable.',
+	description: 'Get read-only Hanami improvement suggestions from visible aggregate cohorts. Suggestions are never applied automatically; consult unavailable; suppressed is always empty.',
 	res: opportunitiesResponseSchema,
 } as const;
 export const paramDef = opportunitiesParamDef;

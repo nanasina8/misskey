@@ -11,6 +11,7 @@ import { ApiError } from '@/server/api/error.js';
 import { metricsQuery, queryRange, rangeSchema } from './metrics/schemas.js';
 import { explorationAxisSchema, judgeCohortSchema } from './metrics/insights-schemas.js';
 export const meta = { tags: ['admin'], requireCredential: true, requireAdmin: true, kind: 'read:admin:queue', description: 'Get legacy last-24-hour judge aggregates. Supplying range or axis selects the served-exploration what-if cohort at the current interest threshold (max 30 days); cohort contains the result and legacy counts are null with empty legacy lists.', res: { type: 'object', optional: false, nullable: false, properties: {
+	ruleExcluded: { type: 'integer', optional: false, nullable: true },
 	judged: { type: 'integer', optional: false, nullable: true },
 	ephemeral: { type: 'integer', optional: false, nullable: true },
 	interestFiltered: { type: 'integer', optional: false, nullable: true },
@@ -41,13 +42,36 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				const insights = this.insights;
 				const result = await metricsQuery(() => insights.whatIf({ range: queryRange(ps.range), axis: 'exploration', thresholds: { interest: [settings.interestThreshold] } }));
 				return {
-					judged: null, ephemeral: null, interestFiltered: null, typeBreakdown: [], topServed: [],
+					judged: null, ruleExcluded: null, ephemeral: null, interestFiltered: null, typeBreakdown: [], topServed: [],
 					cohort: { range: result.range, passed: result.interest.find(point => point.theta === settings.interestThreshold)?.passed ?? null, suppressed: result.suppressed, unavailable: result.unavailable },
 				};
 			}
-			const [counts] = await this.db.query('SELECT count(*)::int AS judged, count(*) FILTER (WHERE "ephemeralScore" > $1)::int AS ephemeral, count(*) FILTER (WHERE interest < $2)::int AS "interestFiltered" FROM "hanami_note_judgement" WHERE "judgedAt" >= clock_timestamp() - INTERVAL \'24 hours\'', [settings.ephemeralThreshold, settings.interestThreshold]);
-			const typeBreakdown = await this.db.query('SELECT "contentType", count(*)::int AS count FROM "hanami_note_judgement" WHERE "judgedAt" >= clock_timestamp() - INTERVAL \'24 hours\' GROUP BY "contentType" ORDER BY "contentType"');
-			const topServed = await this.db.query('SELECT e."noteId" AS "noteId", left(COALESCE(n.text, \'\'), 160) AS text, c."baseScore" AS "reactionScore", j.interest, j."ephemeralScore" FROM "hanami_recommendation_event" e JOIN note n ON n.id = e."noteId" LEFT JOIN "hanami_common_candidate" c ON c."noteId" = e."noteId" AND c.axis = \'exploration\' LEFT JOIN "hanami_note_judgement" j ON j."noteId" = e."noteId" AND j."promptVersion" = $1 WHERE e."eventType" = \'served\' AND e."occurredAt" >= clock_timestamp() - INTERVAL \'24 hours\' ORDER BY e."occurredAt" DESC LIMIT 20', [settings.promptVersion]);
+			const [counts] = await this.db.query(`SELECT
+				count(*) FILTER (WHERE model NOT LIKE 'rule:%')::int AS judged,
+				count(*) FILTER (WHERE model LIKE 'rule:%')::int AS "ruleExcluded",
+				count(*) FILTER (WHERE model NOT LIKE 'rule:%' AND "ephemeralScore" > $1)::int AS ephemeral,
+				count(*) FILTER (WHERE model NOT LIKE 'rule:%' AND interest < $2)::int AS "interestFiltered"
+				FROM hanami_note_judgement WHERE "judgedAt" >= clock_timestamp() - INTERVAL '24 hours'`, [settings.ephemeralThreshold, settings.interestThreshold]);
+			const typeBreakdown = await this.db.query(`SELECT "contentType", count(*)::int AS count FROM hanami_note_judgement
+				WHERE "judgedAt" >= clock_timestamp() - INTERVAL '24 hours' AND model NOT LIKE 'rule:%'
+				GROUP BY "contentType" ORDER BY "contentType"`);
+			const topServed = await this.db.query(`WITH latest_served AS (
+				SELECT DISTINCT ON (e."noteId") e."noteId", e."occurredAt", e.id
+				FROM hanami_recommendation_event e WHERE e."eventType" = 'served' AND e.source = 'exploration'
+					AND e."occurredAt" >= clock_timestamp() - INTERVAL '24 hours'
+				ORDER BY e."noteId", e."occurredAt" DESC, e.id DESC
+			) SELECT e."noteId", left(COALESCE(n.text, ''), 160) AS text,
+				c."baseScore" AS "reactionScore", j.interest, j."ephemeralScore"
+				FROM latest_served e JOIN note n ON n.id = e."noteId"
+				LEFT JOIN LATERAL (
+					SELECT candidate."baseScore" FROM hanami_common_candidate candidate
+					JOIN hanami_common_generation g ON g.id = candidate."generationId" AND g."generationFence" = candidate."generationFence"
+					JOIN hanami_common_feed_state state ON state."latestReadyGenerationId" = g.id
+					WHERE candidate."noteId" = e."noteId" AND candidate.axis = 'exploration'
+					ORDER BY candidate."generatedMonth" DESC, candidate.rank LIMIT 1
+				) c ON true
+				LEFT JOIN hanami_note_judgement j ON j."noteId" = e."noteId" AND j."promptVersion" = $1
+				ORDER BY e."occurredAt" DESC, e.id DESC LIMIT 20`, [settings.promptVersion]);
 			return { ...counts, typeBreakdown, topServed };
 		});
 	}

@@ -176,23 +176,22 @@ describe('current-only atomic captures (mock persistence)', () => {
 		expect(mock.query.mock.calls.filter(([sql]) => sql.startsWith('INSERT')).every(([sql]) => sql.includes('ON CONFLICT (day,scope,key) DO NOTHING'))).toBe(true);
 	});
 
-	test('does not manufacture old snapshots; reads retained history and suppresses small groups', async () => {
+	test('does not manufacture old snapshots; reads retained history including small groups', async () => {
 		const mock = fixture(4);
 		expect(await mock.service.query('2026-09-20')).toEqual({ available: false, rows: [], suppressed: [] });
 		await mock.service.capture('2026-09-21');
 		jest.setSystemTime(new Date('2026-09-22T00:00:00Z'));
 		const result = await mock.service.query('2026-09-21');
-		expect(result.suppressed).toContain('dropped/exploration');
-		expect(result.suppressed).toContain('tuning/hideEphemeral:on');
-		expect(result.rows.every(row => row.users === 0)).toBe(true);
+		expect(result.suppressed).toEqual([]);
+		expect(result.rows).toEqual(mock.stored);
 	});
 
-	test('five users pass privacy threshold, but any small reason subgroup hides the whole summary', async () => {
+	test('small reason subgroups remain visible', async () => {
 		const mock = fixture();
 		await mock.service.capture('2026-09-21');
 		expect((await mock.service.query('2026-09-21')).suppressed).toEqual([]);
 		(mock.stored[0].data.reasonUsers as Record<string, number>).ff = 1;
-		expect((await mock.service.query('2026-09-21')).suppressed).toEqual(['dropped/exploration']);
+		expect((await mock.service.query('2026-09-21')).suppressed).toEqual([]);
 	});
 
 	test('reads every eligible viewer through bounded pages, not a fixed sample', async () => {

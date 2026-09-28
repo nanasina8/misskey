@@ -506,7 +506,7 @@ export type paths = {
     '/admin/hanami/metrics/breakdown': {
         /**
          * admin/hanami/metrics/breakdown
-         * @description Break down Hanami engagement by an allowlisted dimension, optionally filtering other dimensions. Cells below five users are suppressed, not zeroed. Lift compares engagement per seen with visible Hanami cells, not normal TL; denominator documents this privacy restriction.
+         * @description Break down Hanami engagement by an allowlisted dimension, optionally filtering other dimensions. All observed user cohorts are included. Lift compares engagement per seen with visible Hanami cells, not normal TL; denominator retains its compatibility value.
          *
          *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
          */
@@ -524,7 +524,7 @@ export type paths = {
     '/admin/hanami/metrics/notes': {
         /**
          * admin/hanami/metrics/notes
-         * @description Get up to 20 public notes ranked by per-type engagement rate, with at least 20 served records and five users. Ranges contain at most 30 days; dimension and key must be supplied together. Visibility and safety are rechecked on cache hits.
+         * @description Get up to 20 public notes ranked by per-type engagement rate, with at least 20 served records. Ranges contain at most 30 days; dimension and key must be supplied together. Visibility and safety are rechecked on cache hits.
          *
          *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
          */
@@ -533,7 +533,7 @@ export type paths = {
     '/admin/hanami/metrics/opportunities': {
         /**
          * admin/hanami/metrics/opportunities
-         * @description Get read-only Hanami allocation and content opportunities, supply snapshots, demand, hidden costs, and tuning distributions. Suggested caps are advisory; consult suppressed and unavailable fields. Hidden-cost rates use candidate records, not normal-TL exposures.
+         * @description Get read-only Hanami allocation and content opportunities, supply snapshots, demand, hidden costs, and tuning distributions. Suggested caps are advisory; consult unavailable fields; suppressed is always empty. Hidden-cost rates use candidate records, not normal-TL exposures.
          *
          *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
          */
@@ -542,7 +542,7 @@ export type paths = {
     '/admin/hanami/metrics/summary': {
         /**
          * admin/hanami/metrics/summary
-         * @description Get anonymous Hanami usage, per-type DISTINCT reaction + reply + renote engagement, and generation aggregates. Suppressed or unavailable values are null; consult coverage.
+         * @description Get anonymous Hanami usage, per-type DISTINCT reaction + reply + renote engagement, and generation aggregates. Unavailable values are null; consult coverage. Suppressed is always empty.
          *
          *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
          */
@@ -551,7 +551,7 @@ export type paths = {
     '/admin/hanami/metrics/what-if': {
         /**
          * admin/hanami/metrics/what-if
-         * @description Compare exploration thresholds over the current-prompt judged served cohort. Ranges contain at most 30 days; each threshold array contains at most eight values (interest 1–5, ephemeral 0–1). Suppressed results are null; this is not a full safety/diversity replay.
+         * @description Compare exploration thresholds over the current-prompt judged served cohort. Ranges contain at most 30 days; each threshold array contains at most eight values (interest 1–5, ephemeral 0–1). Missing results are null; this is not a full safety/diversity replay.
          *
          *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
          */
@@ -2405,7 +2405,7 @@ export type paths = {
     '/hanami/stats': {
         /**
          * hanami/stats
-         * @description Get admin-only anonymous Hanami statistics with weekly series and small-cell suppression. The query service caches this subset for 60 seconds; no public HTTP cache is enabled.
+         * @description Get admin-only anonymous Hanami statistics with weekly series. The query service caches this subset for 60 seconds; no public HTTP cache is enabled.
          *
          *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
          */
@@ -9601,6 +9601,7 @@ export interface operations {
                 };
                 content: {
                     'application/json': {
+                        ruleExcluded: number | null;
                         judged: number | null;
                         ephemeral: number | null;
                         interestFiltered: number | null;
@@ -10013,7 +10014,7 @@ export interface operations {
                             outcomesThrough: string;
                             unavailable: string[];
                         };
-                        /** @description Shares and lift use only visible cells so hidden cells cannot be recovered by subtraction. */
+                        /** @description Shares and lift use all observed cells; the visible value is retained for compatibility. */
                         denominator: 'visible';
                         rows: {
                             key: string;
@@ -10468,7 +10469,7 @@ export interface operations {
                             unavailable: string[];
                         };
                         suppressed: string[];
-                        /** @description Shares and lift use only visible cells so hidden cells cannot be recovered by subtraction. */
+                        /** @description Shares and lift use all observed cells; the visible value is retained for compatibility. */
                         denominator: 'visible';
                         usage: {
                             hanamiUsers: {
@@ -25628,7 +25629,7 @@ export interface operations {
                             unavailable: string[];
                         };
                         suppressed: string[];
-                        /** @description Shares and lift use only visible cells so hidden cells cannot be recovered by subtraction. */
+                        /** @description Shares and lift use all observed cells; the visible value is retained for compatibility. */
                         denominator: 'visible';
                         usage: {
                             hanamiUsers: {

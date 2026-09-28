@@ -11,7 +11,7 @@ import { whatIfParamDef, whatIfResponseSchema } from './insights-schemas.js';
 
 export const meta = {
 	...metricsEndpointMeta,
-	description: 'Evaluate exploration thresholds against the current-prompt served cohort, at most 30 inclusive days. Small cohorts return null, not zero. Omitted threshold arrays use current settings.',
+	description: 'Evaluate exploration thresholds against the current-prompt served cohort, at most 30 inclusive days. All observed user cohorts are included; missing cohorts return null. Omitted threshold arrays use current settings.',
 	res: whatIfResponseSchema,
 } as const;
 export const paramDef = whatIfParamDef;

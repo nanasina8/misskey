@@ -79,7 +79,7 @@ describe('allocation and current cap parity', () => {
 
 	test.each(['high', 'low', 'none'] as const)('%s base caps match actual interleave, including exploration', confidence => {
 		const axisCandidates = new Map(HANAMI_FOR_YOU_AXES.map(axis => [axis,
-			Array.from({ length: 1100 }, (_, index) => ({ noteId: `${axis}-${index}`, userId: `${axis}-author-${index}`, score: 1100 - index })),
+																																																																		Array.from({ length: 1100 }, (_, index) => ({ noteId: `${axis}-${index}`, userId: `${axis}-author-${index}`, score: 1100 - index })),
 		]));
 		const actual = hanamiInterleave({ confidence, limit: 1000, axisCandidates });
 		for (const axis of HANAMI_FOR_YOU_AXES) {
@@ -167,7 +167,7 @@ describe('opportunities use observed cohorts, not reconstructions', () => {
 		expect(result.supplyWalls).toEqual([{ axis: 'exploration', dropped: { ephemeral: 9, hideMedia: 3 }, passed: 10, note: expect.stringContaining('Snapshot 2026-09-06') }]);
 		expect(result.tuningDrift).toEqual({ exploration: { high: 8 } });
 		expect(result.unavailable).toContain('tuningDrift.defaultRelativeDelta:snapshot:2026-09-06:effectiveLevelsOnly');
-		expect(result.suppressed).toContain('snapshot.tuning/fof:low');
+		expect(result.suppressed).toEqual([]);
 		expect(JSON.stringify(result)).not.toMatch(/secret|"(?:userId|noteId|text|authorId|clusterId)":/);
 	});
 
@@ -177,24 +177,24 @@ describe('opportunities use observed cohorts, not reconstructions', () => {
 			aggregate({ key: 'unknown', served: 100, reaction: 40 }), aggregate({ key: 'fof', users: 4, served: 10000 }));
 		const expected = presentMetricsBreakdown(f.sourceRows as never);
 		const result = await f.service.opportunities(range);
-		expect(result.allocation.map(row => row.axis)).toEqual(['exploration', 'globalPopular']);
+		expect(result.allocation.map(row => row.axis)).toEqual(['exploration', 'globalPopular', 'fof']);
 		for (const row of result.allocation) {
 			const source = expected.rows.find(item => item.key === row.axis)!;
 			expect(row.share).toBe(source.share);
 			expect(row.engagementShare).toBe(source.engagementShare);
 			expect(row.ratio).toBe(source.engagementShare! / source.share!);
 		}
-		expect(result.suppressed).toContain('allocation.fof');
+		expect(result.suppressed).toEqual([]);
 	});
 
-	test('content has joint cells, >=300 served and >=5 users; hidden cells never enter denominators', async () => {
+	test('content has joint cells, >=300 served; all cohorts enter denominators', async () => {
 		const f = fixture();
 		f.data.content = [joint(), joint({ contentType: '3', served: 299 }), joint({ contentType: '4', users: 4, served: 10000 })];
 		const result = await f.service.opportunities(range);
-		expect(result.content).toHaveLength(1);
-		expect(result.content[0].share).toBe(300 / 599);
+		expect(result.content).toHaveLength(2);
+		expect(result.content[0].share).toBe(300 / 10599);
 		expect(result.content[0].opportunity).toBe(1);
-		expect(result.suppressed).toContain('content');
+		expect(result.suppressed).toEqual([]);
 	});
 
 	test('no seen denominator means null lift/opportunity, never an invented zero', async () => {
@@ -221,20 +221,20 @@ describe('opportunities use observed cohorts, not reconstructions', () => {
 		expect(result.allocation).toEqual([]);
 	});
 
-	test.each(['high', 'normal'])('demand requires >=5 exact distinct users in BOTH groups: %s', async level => {
+	test.each(['high', 'normal'])('demand includes small groups: %s', async level => {
 		const f = fixture();
 		f.data.demand.find(row => row.level === level)!.users = 4;
 		const result = await f.service.opportunities(range);
-		expect(result.demand).toEqual([]);
-		expect(result.suppressed).toContain('demand.exploration');
+		expect(result.demand).toHaveLength(1);
+		expect(result.suppressed).toEqual([]);
 	});
 
-	test.each(['hiddenEphemeral', 'shown'])('hiddenCost requires both groups to be safe: %s', async decision => {
+	test.each(['hiddenEphemeral', 'shown'])('hiddenCost includes small groups: %s', async decision => {
 		const f = fixture();
 		f.data.hidden.find(row => row.decision === decision)!.users = 4;
 		const result = await f.service.opportunities(range);
-		expect(result.hiddenCost).toEqual([]);
-		expect(result.suppressed).toContain('hiddenCost.globalPopular');
+		expect(result.hiddenCost).toHaveLength(1);
+		expect(result.suppressed).toEqual([]);
 	});
 
 	test('historical capture gaps and absent snapshots are explicit, not fabricated zero rows', async () => {
@@ -272,26 +272,26 @@ describe('opportunities use observed cohorts, not reconstructions', () => {
 		expect(result.hiddenCost[0]).toMatchObject({ normalEngagementOfHidden: 0, normalEngagementOfShown: 3 });
 	});
 
-	test('suppressed snapshots cannot leak distributions or fabricate zero supply', async () => {
+	test('absent snapshots do not fabricate zero supply', async () => {
 		const f = fixture();
 		f.diagnostic.rows = [];
 		f.diagnostic.suppressed = ['dropped/exploration', 'tuning/exploration:high'];
 		const result = await f.service.opportunities(range);
 		expect(result.supplyWalls).toEqual([]);
 		expect(result.tuningDrift).toEqual({});
-		expect(result.suppressed).toEqual(expect.arrayContaining(['snapshot.dropped/exploration', 'snapshot.tuning/exploration:high']));
+		expect(result.suppressed).toEqual([]);
 		expect(result.unavailable).toEqual(expect.arrayContaining(['supplyWalls.snapshot', 'tuningDrift.snapshot']));
 	});
 
-	test('suppressed/undefined source ratios do not become balanced fake-zero recommendations', async () => {
+	test('small cohorts participate in source ratios', async () => {
 		const f = fixture();
 		f.sourceRows.push(aggregate({ key: 'fof', users: 4 }));
 		f.sourceRows[0].reaction = 0;
 		f.sourceRows[0].reply = 0;
 		const result = await f.service.opportunities(range);
-		expect(result.allocation).toEqual([]);
-		expect(result.unavailable).toContain('allocation.exploration.ratio');
-		expect(result.suppressed).toContain('allocation.fof');
+		expect(result.allocation.map(row => row.axis)).toEqual(['exploration', 'fof']);
+		expect(result.allocation[0].ratio).toBe(0);
+		expect(result.suppressed).toEqual([]);
 	});
 });
 
@@ -316,24 +316,24 @@ describe('what-if contract, privacy and bounds', () => {
 		expect(result.ephemeral.map(row => [row.theta, row.passed])).toEqual([[1, 3], [0, 1], [0.5, 2]]);
 	});
 
-	test('empty qualifying sets are suppressed, while observed zero outcomes are not null', async () => {
+	test('empty qualifying sets have zero passes, while observed zero outcomes are not null', async () => {
 		const f = fixture();
 		Object.assign(f.data.whatIf[0], { engaged: 0 });
 		Object.assign(f.data.whatIf[2], { users: 0, passed: 0, served: 0, engaged: 0 });
 		const result = await f.service.whatIf(request);
 		expect(result.interest[0]).toMatchObject({ passed: 3, passedEngagementRate: 0 });
-		expect(result.interest[2]).toMatchObject({ passed: null, passedEngagementRate: null });
-		expect(result.suppressed).toContain('interest.4');
+		expect(result.interest[2]).toMatchObject({ passed: 0, passedEngagementRate: null });
+		expect(result.suppressed).toEqual([]);
 	});
 
-	test('suppresses each qualifying cohort independently, even if overall users >=5', async () => {
+	test('includes small qualifying cohorts', async () => {
 		const f = fixture();
 		f.data.whatIf[1].users = 4;
 		f.data.whatIf[6].users = 4;
 		const result = await f.service.whatIf(request);
-		expect(result.interest[1]).toEqual({ theta: 3, passed: null, passedEngagementRate: null });
-		expect(result.contentTypeBonus[2].engagementRate).toBeNull();
-		expect(result.suppressed).toEqual(expect.arrayContaining(['interest.3', 'contentTypeBonus.2']));
+		expect(result.interest[1]).toEqual({ theta: 3, passed: 2, passedEngagementRate: 0.2 });
+		expect(result.contentTypeBonus[2].engagementRate).toBe(0.1);
+		expect(result.suppressed).toEqual([]);
 	});
 
 	test('empty history and missing current-PV judgements report unavailable instead of fake zero', async () => {
@@ -465,11 +465,11 @@ describe('notes and bounded raw ranges', () => {
 		expect(whatIf.unavailable).toEqual(expect.arrayContaining(['served.currentDayProvisional', 'served.outcomesProvisional']));
 	});
 
-	test('>=20 served, >=5 users, snippet160 codepoints, and explicit fields only', async () => {
+	test('>=20 served, all users, snippet160 codepoints, and explicit fields only', async () => {
 		const f = fixture();
 		f.data.notes.push(note({ served: 19 }), note({ users: 4 }));
 		const result = await f.service.notes({ range, dimension: 'source', key: 'exploration' });
-		expect(result.notes).toHaveLength(1);
+		expect(result.notes).toHaveLength(2);
 		expect(result.notes[0]).toEqual({ noteId: 'public-note', text: '😀'.repeat(160), authorLocality: 'local', source: 'exploration', contentType: 2, served: 20, reaction: 1, reply: 1, renote: 0, engagementRate: 0.1 });
 		expect(f.query).toHaveBeenCalledWith(INSIGHTS_NOTES_SQL, ['2026-09-01T00:00:00+09:00', '2026-09-08T00:00:00+09:00', '{"source":"exploration"}']);
 	});
@@ -509,7 +509,7 @@ describe('notes and bounded raw ranges', () => {
 				expect(sql).toContain(`${alias}."isSuspended"=false`);
 				expect(sql).toContain(`${alias}."isDeleted"=false`);
 			}
-			expect(sql).toContain("n.visibility='public'");
+			expect(sql).toContain('n.visibility=\'public\'');
 		}
 	});
 
@@ -529,7 +529,7 @@ describe('notes and bounded raw ranges', () => {
 		f.data.notes = [];
 		f.data.notesSuppressed = true;
 		const result = await f.service.notes({ range });
-		expect(result.suppressed).toEqual(['notes.smallCohort']);
+		expect(result.suppressed).toEqual([]);
 		expect(result.notes).toEqual([]);
 	});
 
@@ -570,7 +570,7 @@ describe('SQL invariants (storage execution belongs to main integration gate)', 
 		expect(INSIGHTS_WHAT_IF_SQL).toContain('COUNT(DISTINCT j."noteId")');
 		expect(INSIGHTS_WHAT_IF_SQL).toContain('COUNT(DISTINCT j."userId")');
 		expect(INSIGHTS_WHAT_IF_SQL).toContain('j."promptVersion"=$4');
-		expect(INSIGHTS_WHAT_IF_SQL).toContain("j.model NOT LIKE 'rule:%'");
+		expect(INSIGHTS_WHAT_IF_SQL).toContain('j.model NOT LIKE \'rule:%\'');
 		expect(INSIGHTS_WHAT_IF_SQL).not.toContain('"judgedAt"');
 		expect(INSIGHTS_WHAT_IF_SQL).toContain('j.interest >= CASE');
 		expect(INSIGHTS_WHAT_IF_SQL).toContain('j."ephemeralScore" <= CASE');
@@ -592,11 +592,11 @@ describe('SQL invariants (storage execution belongs to main integration gate)', 
 
 	test('notes enforce safe public targets before top20 selection and sort per-type outcome rate', () => {
 		expect(INSIGHTS_NOTES_SQL).toContain('FROM cohort GROUP BY "noteId"');
-		expect(INSIGHTS_NOTES_SQL).toContain('served>=20 AND users>=5');
+		expect(INSIGHTS_NOTES_SQL).toContain('served>=20');
 		expect(INSIGHTS_NOTES_SQL).toContain('(reaction+reply+renote)::float8/served DESC');
 		expect(INSIGHTS_NOTES_SQL).toContain('LIMIT 20');
 		expect(INSIGHTS_NOTES_SQL).toContain('jsonb_agg(r ORDER BY');
-		expect(INSIGHTS_NOTES_SQL).toContain('EXISTS(SELECT 1 FROM safe WHERE served>=20 AND users<5)');
+		expect(INSIGHTS_NOTES_SQL).toContain('false AS suppressed');
 		for (const alias of ['author', 'reply_author', 'renote_author']) {
 			expect(INSIGHTS_NOTES_SQL).toContain(`${alias}."isSuspended"=false`);
 			expect(INSIGHTS_NOTES_SQL).toContain(`${alias}."isDeleted"=false`);

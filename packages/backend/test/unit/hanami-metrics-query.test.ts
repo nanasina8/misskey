@@ -49,7 +49,7 @@ function mockDatabase(input: Partial<Fixture> = {}, route?: (sql: string, params
 		if (routed !== undefined) return routed;
 		if (sql.includes('FROM meta LIMIT 1')) return [{ settings: fixture.settings }];
 		if (sql.startsWith('WITH latest_ready')) return fixture.backlog === null ? [] : [{ backlog: fixture.backlog }];
-		if (sql.includes("params->'secondsPerItem'")) return fixture.judgeRuns;
+		if (sql.includes('params->\'secondsPerItem\'')) return fixture.judgeRuns;
 		if (sql.includes('FROM hanami_metrics_diagnostic')) return fixture.diagnostics;
 		if (sql.includes('FROM hanami_metrics_state')) return fixture.startedAt ? [{ startedAt: fixture.startedAt }] : [];
 		if (sql.startsWith('WITH cohort')) {
@@ -68,8 +68,8 @@ function mockDatabase(input: Partial<Fixture> = {}, route?: (sql: string, params
 		if (sql.includes('FROM hanami_metrics_timeline')) return fixture.timeline;
 		if (sql.includes('FROM hanami_metrics_gap')) return [{ gap: fixture.gap }];
 		if (sql.includes('FROM hanami_metrics_daily')) {
-			if (sql.includes("scope = 'generation'")) return fixture.dailyGenres;
-			if (sql.includes("scope = 'engagement'")) return sql.includes('SUM(served)') ? (params?.[3] === 'total' ? fixture.totals : fixture.dimensions) : fixture.daily;
+			if (sql.includes('scope = \'generation\'')) return fixture.dailyGenres;
+			if (sql.includes('scope = \'engagement\'')) return sql.includes('SUM(served)') ? (params?.[3] === 'total' ? fixture.totals : fixture.dimensions) : fixture.daily;
 			return [];
 		}
 		if (sql.includes('FROM hanami_metrics_event')) return (params?.length === 3 ? fixture.dimensions : fixture.totals).map(({ key, users }) => ({ key, users }));
@@ -116,13 +116,14 @@ describe('range and JST', () => {
 });
 
 describe('breakdown', () => {
-	test('suppresses 1–4 users and recomputes all denominators solely from visible rows', () => {
-		const value = presentMetricsBreakdown([row('a', 5, 100, 50, 20), row('b', 8, 300, 150, 20), row('small', 4, 1000, 800, 300)]);
-		expect(value.suppressed).toEqual(['small']);
-		expect(value.rows).toHaveLength(2);
-		expect(value.rows[0]).toMatchObject({ share: 0.25, engagementShare: 0.5, lift: 2, engagementRate: 0.2, seenRate: 0.5 });
-		expect(value.rows[1].lift).toBeCloseTo(2 / 3);
-		expect(value.denominator).toBe('visible');
+	test.each([1, 2, 3, 4])('includes %i users in every denominator', users => {
+		const value = presentMetricsBreakdown([row('a', 5, 100, 50, 20), row('b', 8, 300, 150, 20), row('small', users, 1000, 800, 300)]);
+		expect(value.suppressed).toEqual([]);
+		expect(value.rows).toHaveLength(3);
+		expect(value.rows[2]).toMatchObject({ users, served: 1000, share: 1000 / 1400 });
+		expect(value.rows[0].share).toBe(100 / 1400);
+		expect(value.rows[0].engagementShare).toBe(20 / 340);
+		expect(value.rows[0].lift).toBeCloseTo((20 / 50) / (340 / 1000));
 		expect(metricRatio(0, 0)).toBeNull();
 	});
 
@@ -188,7 +189,7 @@ function threeDayFixture() {
 			persisted.push({ ...row(source, 10, 10, 8, d < 2 ? 5 : 0), reply: 2, renote: d === 2 ? 6 : 0, day, dimension: 'source' });
 			for (let i = 0; i < 10; i++) {
 				const item = { userId: `user-${i}`, noteId: `${day}-${source}-${i}`, at: Date.parse(`${day}T00:00:00+09:00`) + i * 1000,
-					dimensions: { source, media: i % 2 === 0 ? 'image' : 'text', contentType: '', freshness: '0-6h', authorLocality: 'local', cluster: 'c1', trendTerm: 'term' } };
+																			dimensions: { source, media: i % 2 === 0 ? 'image' : 'text', contentType: '', freshness: '0-6h', authorLocality: 'local', cluster: 'c1', trendTerm: 'term' } };
 				served.push(item);
 				const flags = { seen: i < 8, reaction: d === 0 ? i < 5 : d === 1 && i % 2 === 0, reply: i === 0 || i === 9, renote: d === 2 && i < 6 };
 				for (const kind of kinds) {
@@ -224,7 +225,7 @@ function threeDayFixture() {
 		return [...grouped.values()].map(group => group.row).sort((a, b) => a.key.localeCompare(b.key));
 	};
 	const mock = mockDatabase({}, (sql, params) => {
-		if (sql.includes('FROM hanami_metrics_daily') && sql.includes("scope = 'engagement'")) {
+		if (sql.includes('FROM hanami_metrics_daily') && sql.includes('scope = \'engagement\'')) {
 			const [from, to, today, dimension] = params as string[];
 			const selected = persisted.filter(row => row.day >= from && row.day <= to && row.day < today && row.dimension === dimension);
 			if (!sql.includes('SUM(served)')) return selected;
@@ -256,7 +257,7 @@ describe('deduplicated served-only user queries', () => {
 		expect(sql).not.toContain('COUNT(*)');
 		expect(sql).not.toContain('LATERAL');
 		if (dimension) {
-			expect(sql).toContain("COALESCE(NULLIF(dimensions ->> $3::text, ''), CASE WHEN $3 = 'contentType' THEN 'unjudged' ELSE 'unknown' END)");
+			expect(sql).toContain('COALESCE(NULLIF(dimensions ->> $3::text, \'\'), CASE WHEN $3 = \'contentType\' THEN \'unjudged\' ELSE \'unknown\' END)');
 			expect(sql).toContain(') distinct_users GROUP BY key ORDER BY key');
 		} else {
 			// An ungrouped outer aggregate still emits total=0 when no served rows exist.
@@ -314,15 +315,15 @@ describe('deduplicated served-only user queries', () => {
 	test('shared SQL scans the union of range and month, groups once, and retains all zero windows for empty facts', () => {
 		const sql = METRICS_SUMMARY_USERS_SQL;
 		expect(sql.match(/FROM hanami_metrics_event/g)).toHaveLength(1);
-		expect(sql).toContain("LEAST($1::timestamptz, $2::timestamptz - interval '720 hours')");
+		expect(sql).toContain('LEAST($1::timestamptz, $2::timestamptz - interval \'720 hours\')');
 		expect(sql).toContain('AND "createdAt" < $2::timestamptz');
-		expect(sql).toContain("COALESCE(NULLIF(dimensions ->> 'source', ''), 'unknown')");
+		expect(sql).toContain('COALESCE(NULLIF(dimensions ->> \'source\', \'\'), \'unknown\')');
 		expect(sql).toContain('MAX("createdAt") AS max_at, BOOL_OR("createdAt" >= $1::timestamptz) AS in_range');
 		expect(sql).toContain('GROUP BY 1, 2');
 		expect(sql).toContain('COUNT(DISTINCT "userId") FILTER (WHERE in_range)');
 		expect(sql).toContain('FROM keyed_users WHERE in_range GROUP BY key');
-		expect(sql).toContain("u.max_at >= $2::timestamptz - w.days * interval '24 hours'");
-		expect(sql).toContain("($2::timestamptz AT TIME ZONE 'Asia/Tokyo') - w.days * interval '1 day'");
+		expect(sql).toContain('u.max_at >= $2::timestamptz - w.days * interval \'24 hours\'');
+		expect(sql).toContain('($2::timestamptz AT TIME ZONE \'Asia/Tokyo\') - w.days * interval \'1 day\'');
 		expect(sql).toContain('LEFT JOIN keyed_users u ON true');
 		expect(sql).not.toContain('LATERAL');
 		expect(sql).not.toContain('COUNT(*)');
@@ -352,7 +353,7 @@ describe('daily read path and current-day supplement', () => {
 			expect(result).toMatchObject(presentMetricsBreakdown(mock.raw(...rangeParameters(mock.span), dimension)));
 		}
 		expect(mock.query.mock.calls.some(([sql]) => sql.includes('LATERAL'))).toBe(false);
-		const historicalCounts = mock.query.mock.calls.filter(([sql]) => sql.includes("scope = 'engagement'"));
+		const historicalCounts = mock.query.mock.calls.filter(([sql]) => sql.includes('scope = \'engagement\''));
 		expect(historicalCounts).toHaveLength(4);
 		expect(historicalCounts.filter(([sql]) => sql.includes('SUM(served)'))).toHaveLength(3);
 		const sharedUsers = mock.query.mock.calls.filter(([sql]) => sql === METRICS_SUMMARY_USERS_SQL);
@@ -375,7 +376,7 @@ describe('daily read path and current-day supplement', () => {
 		expect(mock.query.mock.calls.some(([sql]) => sql.includes('LATERAL'))).toBe(false);
 		expect(mock.query.mock.calls.find(([sql]) => sql.includes('SUM(served)'))?.[1]).toEqual([mock.span.from, mock.span.to, '2026-09-21', dimension]);
 		const [sql, params] = mock.query.mock.calls.find(([sql]) => sql.includes(') distinct_users'))!;
-		expect(sql).toContain("CASE WHEN $3 = 'contentType' THEN 'unjudged' ELSE 'unknown' END");
+		expect(sql).toContain('CASE WHEN $3 = \'contentType\' THEN \'unjudged\' ELSE \'unknown\' END');
 		expect(sql).toContain('GROUP BY 1, 2');
 		expect(sql).toContain('COUNT(DISTINCT "userId")::int');
 		expect(params?.[2]).toBe(dimension);
@@ -400,7 +401,7 @@ describe('daily read path and current-day supplement', () => {
 		const cohorts = mock.query.mock.calls.filter(([sql]) => sql.includes('LATERAL'));
 		expect(cohorts).toHaveLength(2);
 		for (const [, params] of cohorts) expect(params?.slice(0, 2)).toEqual(['2026-09-20T00:00:00+09:00', '2026-09-21T00:00:00+09:00']);
-		for (const [sql, params] of mock.query.mock.calls.filter(([sql]) => sql.includes("scope = 'engagement'"))) {
+		for (const [sql, params] of mock.query.mock.calls.filter(([sql]) => sql.includes('scope = \'engagement\''))) {
 			expect(sql).toContain('day < $3::date');
 			expect(params?.[2]).toBe('2026-09-20');
 		}
@@ -438,7 +439,7 @@ describe('raw endpoint cache', () => {
 			const input = explicit ? { from: '2026-09-14', to: different ? '2026-09-19' : '2026-09-20' } : { days: 7 as const };
 			if (endpoint === 'errors') return mock.service.errors(input);
 			return mock.service.breakdown({ range: input, dimension: endpoint === 'filtered' ? 'source' : 'trendTerm',
-				filter: endpoint === 'filtered' ? (explicit ? { contentType: '2', media: 'image' } : { media: 'image', contentType: '2' }) : undefined });
+																																			filter: endpoint === 'filtered' ? (explicit ? { contentType: '2', media: 'image' } : { media: 'image', contentType: '2' }) : undefined });
 		};
 		const first = await call(false);
 		const expected = structuredClone(first);
@@ -490,13 +491,13 @@ describe('summary privacy and missing series', () => {
 		expect(result.coverage.status).toBe('partial');
 	});
 
-	test('small cohorts suppress all counts/rates and daily series, including a small contributing source', async () => {
+	test('small cohorts retain counts/rates and daily series including contributing sources', async () => {
 		const mock = mockDatabase({ totals: [row('total', 7)], daily: [{ ...row('total', 3), day: range.from }], dimensions: [row('a', 5), row('b', 2)] });
 		const value = await mock.service.summary(range);
-		for (const key of ['users', 'served', 'seen', 'reaction', 'reply', 'renote', 'engagementRate', 'seenRate'] as const) expect(value.engagement[key]).toBeNull();
-		expect(value.series.hanamiUsers[0]).toBeNull();
-		expect(value.series.engagementRate[0]).toBeNull();
-		expect(value.suppressed).toContain('engagement');
+		expect(value.engagement).toMatchObject({ users: 7, served: 100, seen: 50, reaction: 10, engagementRate: 0.1, seenRate: 0.5 });
+		expect(value.series.hanamiUsers[0]).toBe(3);
+		expect(value.series.engagementRate[0]).toBe(0.1);
+		expect(value.suppressed).toEqual([]);
 	});
 
 	test('exposes exact overlapping users (not sum of daily uniques) and per-type engagement', async () => {
@@ -508,15 +509,15 @@ describe('summary privacy and missing series', () => {
 		expect(value.series.hanamiUsers).toEqual([5, 5, 0]);
 	});
 
-	test('normal per-type groups, manual refresh users and timeline shares are privacy gated', async () => {
+	test('normal per-type groups, manual refresh and timeline shares include small cohorts', async () => {
 		const value = await mockDatabase({ totals: [row('total', 5)], dimensions: [row('a', 5)], daily: [{ ...row('total', 5), day: range.from }], normal: [{ ...row('normal', 10), reactionUsers: 4, replyUsers: 0, renoteUsers: 0 }], refreshes: [{ day: range.from, users: 2, refreshes: 20 }], timeline: [{ key: 'home', users: 5, requests: 100 }, { key: 'hanami', users: 2, requests: 100 }] }).service.summary(range);
-		expect(value.engagement.normalBaseline.reaction).toBeNull();
-		expect(value.usage.manualRefreshPerUserDay).toBeNull();
-		expect(value.usage.tlShare.home).toBe(1);
-		expect(value.usage.tlShare.hanami).toBeNull();
+		expect(value.engagement.normalBaseline.reaction).toBe(10);
+		expect(value.usage.manualRefreshPerUserDay).toBe(4);
+		expect(value.usage.tlShare.home).toBe(0.5);
+		expect(value.usage.tlShare.hanami).toBe(0.5);
 	});
 
-	test('timeline shares exclude anonymous-only groups from the visible denominator', async () => {
+	test('timeline shares include measured anonymous requests', async () => {
 		const value = await mockDatabase({
 			totals: [row('total', 5)],
 			daily: [{ ...row('total', 5), day: range.from }],
@@ -525,8 +526,8 @@ describe('summary privacy and missing series', () => {
 				{ key: 'local', users: 0, requests: 50 },
 			],
 		}).service.summary(range);
-		expect(value.usage.tlShare.home).toBe(1);
-		expect(value.usage.tlShare.local).toBeNull();
+		expect(value.usage.tlShare.home).toBe(0.5);
+		expect(value.usage.tlShare.local).toBe(0.5);
 	});
 
 	test('timeline shares are unavailable when collection health reports a gap', async () => {
@@ -556,7 +557,7 @@ describe('current judge metrics and diagnostic capture coverage', () => {
 		expect(calls).toHaveLength(2);
 		for (const [sql, params] of calls) {
 			expect(params).toEqual([7]);
-			expect(sql).toContain("WHERE status = 'ready' ORDER BY ordinal DESC LIMIT 1");
+			expect(sql).toContain('WHERE status = \'ready\' ORDER BY ordinal DESC LIMIT 1');
 			expect(sql).toContain('COUNT(DISTINCT c."noteId") FILTER (WHERE j."noteId" IS NULL)');
 			expect(sql).toContain('c."generationId" = g.id AND c."generationFence" = g."generationFence"');
 			expect(sql).toContain('j."noteId" = c."noteId" AND j."promptVersion" = $1');
@@ -602,11 +603,11 @@ describe('current judge metrics and diagnostic capture coverage', () => {
 		const summary = await mock.service.summary(range);
 		expect(summary.generation.judge.secPerNote).toBe(expected);
 		expect(summary.coverage.unavailable.includes('generation.judge.secPerNote')).toBe(expected === null);
-		const sql = mock.query.mock.calls.find(([query]) => query.includes("params->'secondsPerItem'"))?.[0];
-		expect(sql).toContain("FROM hanami_foryou_model_run WHERE kind = 'note-judge' AND status = 'ready'");
+		const sql = mock.query.mock.calls.find(([query]) => query.includes('params->\'secondsPerItem\''))?.[0];
+		expect(sql).toContain('FROM hanami_foryou_model_run WHERE kind = \'note-judge\' AND status = \'ready\'');
 		expect(sql).toContain('ORDER BY "startedAt" DESC, id DESC LIMIT 1');
-		expect(sql).toContain("params->'wallDurationMs'");
-		expect(sql).toContain("params->'processedCount'");
+		expect(sql).toContain('params->\'wallDurationMs\'');
+		expect(sql).toContain('params->\'processedCount\'');
 		expect(sql).not.toContain('"createdAt"');
 	});
 
@@ -641,9 +642,9 @@ describe('current judge metrics and diagnostic capture coverage', () => {
 		expect(summary.coverage.unavailable).not.toContain('tuning.historical');
 		const call = mock.query.mock.calls.find(([sql]) => sql.includes('FROM hanami_metrics_diagnostic'));
 		expect(call?.[1]).toEqual([range.from, range.to]);
-		expect(call?.[0]).toContain("SELECT DISTINCT to_char(day, 'YYYY-MM-DD') AS day, scope");
+		expect(call?.[0]).toContain('SELECT DISTINCT to_char(day, \'YYYY-MM-DD\') AS day, scope');
 		expect(call?.[0]).toContain('day >= $1::date AND day <= $2::date');
-		expect(call?.[0]).toContain("scope = 'dropped' AND key = 'exploration'");
+		expect(call?.[0]).toContain('scope = \'dropped\' AND key = \'exploration\'');
 		for (const forbidden of ['data', 'users', 'userId', 'noteId']) expect(call?.[0]).not.toContain(forbidden);
 	});
 
@@ -687,15 +688,15 @@ describe('errors and HMAC', () => {
 		expect(mock.query.mock.calls.some(([sql]) => sql.startsWith('SELECT COALESCE') && sql.includes('FROM hanami_user_feed_batch'))).toBe(false);
 	});
 
-	test('rare failed users are suppressed even when overall successful batch users exceed five', async () => {
+	test('rare failures remain available', async () => {
 		process.env.HANAMI_METRICS_SALT = 'test-secret';
 		const small = { ...personal, failed: 3, failedUsers: 3, failures: [{ kind: 'exception' as const, count: 3, users: 3 }] };
 		const mock = mockDatabase({ genres: [small], dailyGenres: [{ ...small, day: range.from }] });
 		const value = await mock.service.errors(range);
-		expect(value.personal.byKind.exception).toBeNull();
-		expect(value.personal.byDay[0].failed).toBeNull();
+		expect(value.personal.byKind.exception).toBe(3);
+		expect(value.personal.byDay[0].failed).toBe(3);
 		expect(value.personal.recent).toEqual([]);
-		expect(value.suppressed).toContain('personal.recent');
+		expect(value.suppressed).toEqual([]);
 	});
 
 	test('recent uses an allowlist, never emits raw SQL/messages/identifiers or arbitrary kinds', async () => {
@@ -723,37 +724,37 @@ describe('errors and HMAC', () => {
 		];
 		const today = { ...personal, day: span.to, failed: 8, failedUsers: 8, failures: [{ kind: 'exception' as const, count: 8, users: 8 }] };
 		const mock = mockDatabase({ genres: [personal], dailyGenres: [today] }, (sql, params) => {
-			if (!sql.includes('FROM hanami_metrics_daily') || !sql.includes("scope = 'generation'")) return undefined;
+			if (!sql.includes('FROM hanami_metrics_daily') || !sql.includes('scope = \'generation\'')) return undefined;
 			return persisted.filter(row => row.day >= String(params[0]) && row.day <= String(params[1]) && row.day < String(params[2]))
 				.map(row => ({ ...row.extra, key: row.key, day: row.day, users: row.users }));
 		});
 		const value = await mock.service.summary(span);
-		expect(value.series.failedBatches).toEqual([5, null, 8]);
-		expect(value.suppressed).toContain('series.failedBatches.2026-09-19');
-		expect(value.generation.personal).toMatchObject({ p50Ms: 123, p95Ms: 456, failed: null, failedRate: null });
-		expect(Object.values(value.generation.personal.failedByKind)).toEqual([null, null, null, null, null]);
-		const [dailySql, params] = mock.query.mock.calls.find(([sql]) => sql.includes("scope = 'generation'"))!;
+		expect(value.series.failedBatches).toEqual([5, 7, 8]);
+		expect(value.suppressed).toEqual([]);
+		expect(value.generation.personal).toMatchObject({ p50Ms: 123, p95Ms: 456, failed: 6, failedRate: 0.3 });
+		expect(value.generation.personal.failedByKind.exception).toBe(6);
+		const [dailySql, params] = mock.query.mock.calls.find(([sql]) => sql.includes('scope = \'generation\''))!;
 		expect(params).toEqual([span.from, span.to, span.to]);
-		expect(dailySql).toContain("dimension = 'personal' AND key = 'personal'");
-		expect(dailySql).toContain("(extra->>'failed')::int AS failed");
-		expect(dailySql).toContain("COALESCE((extra->>'failedUsers')::int, 0)");
-		expect(dailySql).toContain("COALESCE(extra->'failures', '[]'::jsonb)");
+		expect(dailySql).toContain('dimension = \'personal\' AND key = \'personal\'');
+		expect(dailySql).toContain('(extra->>\'failed\')::int AS failed');
+		expect(dailySql).toContain('COALESCE((extra->>\'failedUsers\')::int, 0)');
+		expect(dailySql).toContain('COALESCE(extra->\'failures\', \'[]\'::jsonb)');
 		const runs = mock.query.mock.calls.filter(([sql]) => sql.startsWith('WITH runs'));
 		expect(runs).toHaveLength(2);
 		expect(runs.find(([sql]) => sql.includes('r.day'))?.[1]).toEqual(rangeParameters({ from: span.to, to: span.to }));
 		expect(runs.find(([sql]) => !sql.includes('r.day'))?.[1]).toEqual(rangeParameters(span));
 	});
 
-	test('range failure totals cannot reconstruct suppressed daily failures by subtraction', async () => {
+	test('range failure totals and daily failures are both available', async () => {
 		const daily = { ...personal, day: range.from, failedUsers: 2, failed: 2, failures: [{ kind: 'exception' as const, count: 2, users: 2 }] };
 		const mock = mockDatabase({ genres: [personal], dailyGenres: [daily] });
 		const summary = await mock.service.summary(range);
-		expect(summary.generation.personal.failed).toBeNull();
-		expect(summary.generation.personal.failedRate).toBeNull();
-		expect(Object.values(summary.generation.personal.failedByKind)).toEqual([null, null, null, null, null]);
+		expect(summary.generation.personal.failed).toBe(6);
+		expect(summary.generation.personal.failedRate).toBe(0.3);
+		expect(summary.generation.personal.failedByKind.exception).toBe(6);
 		const errors = await mock.service.errors(range);
-		expect(errors.personal.byDay[0].failed).toBeNull();
-		expect(Object.values(errors.personal.byKind)).toEqual([null, null, null, null, null]);
+		expect(errors.personal.byDay[0].failed).toBe(2);
+		expect(errors.personal.byKind.exception).toBe(6);
 	});
 });
 

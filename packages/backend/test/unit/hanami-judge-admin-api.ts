@@ -216,13 +216,14 @@ describe('Hanami judge admin endpoint contracts', () => {
 		const settings = { ...createDefaultHanamiNoteJudgeSettings(), promptVersion: 6, ephemeralThreshold: 0.5, interestThreshold: 4 };
 		const query = jest.fn(async (sql: string) => {
 			if (sql.includes('FROM meta')) return [{ settings }];
-			if (sql.includes('FILTER')) return [{ judged: 10, ephemeral: 2, interestFiltered: 3 }];
+			if (sql.includes('FILTER')) return [{ judged: 10, ruleExcluded: 7, ephemeral: 2, interestFiltered: 3 }];
 			if (sql.includes('GROUP BY')) return [{ contentType: 2, count: 4 }];
 			return [{ noteId: 'served-1', interest: 5, ephemeralScore: 0 }];
 		});
 
 		await expect(new JudgeAggregateEndpoint({ query } as never).exec({}, admin, null)).resolves.toEqual({
 			judged: 10,
+			ruleExcluded: 7,
 			ephemeral: 2,
 			interestFiltered: 3,
 			typeBreakdown: [{ contentType: 2, count: 4 }],
