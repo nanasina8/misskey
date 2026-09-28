@@ -8,7 +8,6 @@ export const judgeBasisKeys = ['ephemeralA', 'ephemeralB', 'interest1', 'interes
 export type JudgeSettings = {
 	schemaVersion: number;
 	promptVersion: number;
-	enabled?: boolean;
 	ephemeralThreshold: number;
 	interestThreshold: number;
 	reactionMax: number;
@@ -96,4 +95,11 @@ export function createJudgeDebounce(run: () => void, delay = 600) {
 			timer = globalThis.setTimeout(() => { timer = undefined; run(); }, delay);
 		},
 	};
+}
+
+// Fixed Japanese choices used by the model and both admin tabs.
+export const judgeContentTypes = ['挨拶・相づち・定型文', 'ニュース・情報の共有', '解説・知識・ハウツー', '意見・考察・問題提起', '出来事・体験談・エピソード', 'ユーモア・ネタ・大喜利', '作品の投稿', '写真・食事・日常の記録', '告知・宣伝・募集・企画参加', '近況・独り言・感情の吐露'];
+export function typeLabel(value: number | string | null | undefined, unjudged: string): string {
+	if (value == null) return '—';
+	return /^[0-9]$/.test(String(value)) ? judgeContentTypes[Number(value)] : unjudged;
 }

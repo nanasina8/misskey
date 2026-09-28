@@ -7,12 +7,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 <div class="_gaps" :class="$style.root">
 	<div :class="$style.legend"><span :class="$style.servedKey"></span>{{ t.share }} <span :class="$style.engagementKey"></span>{{ t.engagementShare }}</div>
 	<div v-for="row in rows" :key="row.key">
-		<div :class="$style.heading"><span>{{ row.label ?? row.key }}</span><strong>{{ display(metricRatio(row.engagementShare, row.share), 'ratio') }}</strong></div>
-		<div :class="$style.track"><span v-if="shareWidth(row.share) !== null" :class="$style.served" :style="{ width: shareWidth(row.share) ?? undefined }"></span><span :class="$style.value">{{ t.share }}: {{ display(row.share, 'percent') }}</span></div>
-		<div :class="$style.track"><span v-if="shareWidth(row.engagementShare) !== null" :class="$style.engagement" :style="{ width: shareWidth(row.engagementShare) ?? undefined }"></span><span :class="$style.value">{{ t.engagementShare }}: {{ display(row.engagementShare, 'percent') }}</span></div>
+		<div :class="$style.heading"><span>{{ row.label ?? row.key }}</span><strong><span v-tooltip="metricRatio(row.engagementShare, row.share) == null ? t.noValueYet : undefined">{{ display(metricRatio(row.engagementShare, row.share), 'ratio') }}</span></strong></div>
+		<div :class="$style.track"><span v-if="shareWidth(row.share) !== null" :class="$style.served" :style="{ width: shareWidth(row.share) ?? undefined }"></span><span :class="$style.value">{{ t.share }}: <span v-tooltip="row.share == null ? t.noValueYet : undefined">{{ display(row.share, 'percent') }}</span></span></div>
+		<div :class="$style.track"><span v-if="shareWidth(row.engagementShare) !== null" :class="$style.engagement" :style="{ width: shareWidth(row.engagementShare) ?? undefined }"></span><span :class="$style.value">{{ t.engagementShare }}: <span v-tooltip="row.engagementShare == null ? t.noValueYet : undefined">{{ display(row.engagementShare, 'percent') }}</span></span></div>
 	</div>
-	<div v-for="key in suppressed" :key="`suppressed:${key}`">{{ labelForKey?.(key) ?? key }}: {{ t.suppressedFewUsers }}</div>
-	<p v-if="rows.length === 0 && suppressed.length === 0">{{ t.noData }}</p>
+	<p v-if="rows.length === 0">{{ t.noData }}</p>
 </div>
 </template>
 
@@ -21,11 +20,9 @@ import type { Metric } from '@/scripts/hanami-metrics.js';
 import { i18n } from '@/i18n.js';
 import { formatMetric, metricRatio, shareWidth } from '@/scripts/hanami-metrics.js';
 
-withDefaults(defineProps<{
+defineProps<{
 	rows: { key: string; label?: string; share: Metric; engagementShare: Metric }[];
-	suppressed?: string[];
-	labelForKey?: (key: string) => string;
-}>(), { suppressed: () => [], labelForKey: key => key });
+}>();
 const t = i18n.ts._hana._admin;
 const display = (value: Metric, kind: 'percent' | 'ratio') => formatMetric(value, t.unavailable, kind);
 </script>

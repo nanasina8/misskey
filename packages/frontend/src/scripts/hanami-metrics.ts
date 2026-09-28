@@ -5,6 +5,8 @@
 
 import { onScopeDispose, ref, shallowRef, watch } from 'vue';
 import type { Endpoints } from 'misskey-js';
+import { i18n } from '@/i18n.js';
+import { typeLabel } from '@/scripts/hanami-judge-form.js';
 
 export type Metric = number | null;
 export type MetricsSummary = Endpoints['admin/hanami/metrics/summary']['res'];
@@ -33,9 +35,6 @@ export function sumMetrics(values: readonly Metric[]): Metric {
 }
 export function metricDifference(current: Metric, previous: Metric): Metric {
 	return finiteMetric(current) && finiteMetric(previous) ? current - previous : null;
-}
-export function isMetricSuppressed(path: string, suppressed: readonly string[]): boolean {
-	return suppressed.some(key => path === key || path.startsWith(`${key}.`));
 }
 export function formatMetric(value: Metric | undefined, unavailable: string, kind: 'number' | 'percent' | 'ratio' = 'number'): string {
 	if (!finiteMetric(value)) return unavailable;
@@ -100,4 +99,46 @@ export function useMetricsResource<P, T>(parameters: () => P, fetcher: (params: 
 	watch(parameters, reload, { immediate: true, deep: true });
 	onScopeDispose(() => { version++; controller?.abort(); });
 	return { data, loading, failed, reload };
+}
+
+/** API diagnostic keys are never user-facing copy. */
+export function partialNotice(coverage?: { startedAt?: string | null }): string {
+	return coverage?.startedAt
+		? i18n.tsx._hana._admin.partialNotice({ startedAt: new Date(coverage.startedAt).toLocaleDateString() })
+		: i18n.ts._hana._admin.partialNoticeNoDate;
+}
+
+export function failureKindLabel(key: string): string {
+	const t = i18n.ts._hana._admin;
+	switch (key) {
+		case 'emptyResult': return t._failureKind.emptyResult;
+		case 'candidateLimit': return t._failureKind.candidateLimit;
+		case 'lockTimeout': return t._failureKind.lockTimeout;
+		case 'exception': return t._failureKind.exception;
+		case 'failed': return t.failed;
+		default: return t._failureKind.unknown;
+	}
+}
+
+export function dimensionValueLabel(dimension: MetricsDimension, value: string | number | null): string {
+	if (value === null) return i18n.ts._hana._admin.unavailable;
+	const t = i18n.ts._hana._admin._dimensionValue;
+	const key = String(value);
+	switch (dimension) {
+		case 'source': return sourceLabel(key, i18n.ts._hana._recommendation._reason);
+		case 'contentType': return key === 'ruleExcluded' ? t.ruleExcluded : typeLabel(value, t.unjudged);
+		case 'relationshipClass': return key === 'directFollow' ? t.directFollow : key === 'known' ? t.known : t.unknownRelationship;
+		case 'freshness':
+			switch (key) {
+				case '0-6h': return t.within6h;
+				case '6-24h': return t.within24h;
+				case '1-3d': return t.within3d;
+				case '3d+': return t.older3d;
+				default: return t.unknown;
+			}
+		case 'media': return key === 'image' ? t.image : key === 'text' ? t.text : t.unknown;
+		case 'authorLocality': return key === 'local' ? t.local : key === 'remote' ? t.remote : t.unknown;
+		case 'cluster': return key === 'none' ? t.none : key === 'clustered' ? t.clustered : t.unknown;
+		case 'trendTerm': return key === '_other' ? t.other : key;
+	}
 }

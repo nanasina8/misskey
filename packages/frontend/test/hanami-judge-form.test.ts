@@ -15,7 +15,7 @@ const apiMock = vi.hoisted(() => vi.fn());
 const confirmMock = vi.hoisted(() => vi.fn());
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: apiMock }));
 vi.mock('@/os.js', () => ({ confirm: confirmMock, alert: vi.fn() }));
-vi.mock('@/i18n.js', () => ({ i18n: { ts: { _hana: { _admin: new Proxy({}, { get: (_target, key) => key }), _recommendation: { _reason: {} } } } } }));
+vi.mock('@/i18n.js', () => ({ i18n: { ts: { _hana: { _admin: new Proxy({}, { get: (_target, key) => key === '_dimensionValue' ? { unjudged: '未判定' } : key }), _recommendation: { _reason: {} } } } } }));
 vi.mock('@/components/MkFolder.vue', () => ({ default: { template: '<section><slot name="label"/><slot/><slot name="footer"/></section>' } }));
 vi.mock('@/components/MkInfo.vue', () => ({ default: { template: '<aside><slot/></aside>' } }));
 vi.mock('@/components/MkKeyValue.vue', () => ({ default: { template: '<div><slot name="key"/><slot name="value"/></div>' } }));
@@ -36,7 +36,7 @@ vi.mock('@/components/MkSwitch.vue', () => ({ default: { template: '<div><slot/>
 
 function settings(): JudgeSettings {
 	return {
-		schemaVersion: 1, promptVersion: 7, enabled: true,
+		schemaVersion: 1, promptVersion: 7,
 		ephemeralThreshold: 0, interestThreshold: 2.95, reactionMax: 3, interestMax: 10,
 		basis: { ephemeralA: 'A', ephemeralB: 'B', interest1: '1', interest2: '2', interest3: '3', interest4: '4', interest5: '5' },
 		examples: ['a\nmultiline example', 'another example', 'another example'],
@@ -61,7 +61,7 @@ describe('Hanami judge draft', () => {
 
 	test('only basis, examples and template patterns require prompt confirmation', () => {
 		const original = settings();
-		for (const patch of [{ enabled: false }, { ephemeralThreshold: 1 }, { interestThreshold: 3.5 }, { reactionMax: 4 }, { interestMax: 12 }, { contentTypeBonus: Array(10).fill(3) }, { promptVersion: 8 }]) {
+		for (const patch of [{ ephemeralThreshold: 1 }, { interestThreshold: 3.5 }, { reactionMax: 4 }, { interestMax: 12 }, { contentTypeBonus: Array(10).fill(3) }, { promptVersion: 8 }]) {
 			expect(judgePromptChanged(original, { ...original, ...patch })).toBe(false);
 		}
 		for (const patch of [{ basis: { ...original.basis, interest3: 'new' } }, { examples: ['new'] }, { templatePatterns: ['new'] }]) {
@@ -133,7 +133,7 @@ describe('Hanami judge save and what-if lifecycle', () => {
 		apiMock.mockImplementation((endpoint: string, params?: { settings?: JudgeSettings }, _token?: string, signal?: AbortSignal) => {
 			if (endpoint === 'admin/hanami/judge-settings') return Promise.resolve(params?.settings ?? settings());
 			if (endpoint === 'admin/hanami/judge-status') return Promise.resolve({ promptVersion: 7, backlog: 12, candidateCount: 20, secPerNote: 1.5, runtime: { available: false } });
-			if (endpoint === 'admin/hanami/judge-aggregate') return Promise.resolve({ judged: 0, ephemeral: 0, interestFiltered: 0, typeBreakdown: [], topServed: [] });
+			if (endpoint === 'admin/hanami/judge-aggregate') return Promise.resolve({ judged: 0, ruleExcluded: 0, ephemeral: 0, interestFiltered: 0, typeBreakdown: [], topServed: [] });
 			if (endpoint === 'admin/hanami/metrics/opportunities') return Promise.resolve({ hiddenCost: [], suppressed: [], unavailable: [] });
 			if (endpoint === 'admin/hanami/metrics/what-if') return new Promise(resolve => pending.push({ resolve, signal: signal! }));
 			throw new Error(`Unexpected endpoint: ${endpoint}`);
@@ -143,8 +143,27 @@ describe('Hanami judge save and what-if lifecycle', () => {
 	const settle = async () => { await nextTick(); await nextTick(); await nextTick(); };
 	const whatIf = (passed: number) => ({ range: { from: '2026-09-01', to: '2026-09-20' }, interest: [{ theta: 2.95, passed, passedEngagementRate: null }], contentTypeBonus: [], unavailable: [], suppressed: [] });
 
+	test('separates rule counts, removes enabled, and replaces empty what-if tables', async () => {
+		const implementation = apiMock.getMockImplementation()!;
+		apiMock.mockImplementation((endpoint: string, ...args: unknown[]) => endpoint === 'admin/hanami/judge-aggregate'
+			? Promise.resolve({ judged: 15, ruleExcluded: 1446, ephemeral: 2, interestFiltered: 3, typeBreakdown: [{ contentType: 2, count: 15 }], topServed: [{ noteId: 'n1', text: 'Note', reactionScore: null, ephemeralScore: null, interest: null }] })
+			: implementation(endpoint, ...args));
+		const view = mount();
+		await settle();
+		expect(view.container.textContent).toContain('llmJudged15');
+		expect(view.container.textContent).toContain(`ruleExcluded${(1446).toLocaleString()}`);
+		expect(view.getAllByText('未判定')).toHaveLength(2);
+		expect(view.queryByText('enabled')).toBeNull();
+		await vi.advanceTimersByTimeAsync(600);
+		pending[0].resolve({ ...whatIf(0), interest: [{ theta: 2.95, passed: null, passedEngagementRate: null }], unavailable: ['served.missing', 'usage.missing', 'snapshot.missing'], suppressed: ['series.old'] });
+		await settle();
+		expect(view.getByText('whatIfNotReady')).toBeTruthy();
+		expect(view.queryByRole('columnheader', { name: 'passed' })).toBeNull();
+		expect(view.container.textContent).not.toMatch(/\b(series|served|hiddenCost|usage|demand|snapshot)\./);
+	});
+
 	test.each([
-		{ suppressed: ['hiddenCost.fof'], unavailable: [], total: '—' },
+		{ suppressed: ['hiddenCost.fof'], unavailable: [], total: '42' },
 		{ suppressed: [], unavailable: ['hiddenCost.fof.comparison'], total: '—' },
 		{ suppressed: [], unavailable: ['hiddenCost.normalExposureDenominator'], total: '42' },
 	])('hidden-cost count does not present incomplete cohorts as a total: %j', async ({ suppressed, unavailable, total }) => {
@@ -154,9 +173,9 @@ describe('Hanami judge save and what-if lifecycle', () => {
 			: implementation(endpoint, ...args));
 		const view = mount();
 		await settle();
-		expect(view.getByText(`hiddenCost (30d)${total}`)).toBeTruthy();
-		expect(view.getByText('hiddenCost 42')).toBeTruthy();
-		for (const key of [...suppressed, ...unavailable]) expect(view.getByText(new RegExp(key.replaceAll('.', '\\.')))).toBeTruthy();
+		expect(view.container.textContent).toContain(`hiddenCost (30d)${total}`);
+		expect(view.container.textContent).toContain('hiddenCost 42');
+		expect(view.container.textContent).not.toMatch(/\b(series|served|hiddenCost|usage|demand|snapshot)\./);
 	});
 
 	test('saved bonuses invalidate in-flight and displayed results without a prompt confirmation', async () => {

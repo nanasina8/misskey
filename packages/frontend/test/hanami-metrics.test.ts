@@ -8,8 +8,8 @@ import { effectScope, nextTick, ref } from 'vue';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/vue';
 import type { ChartConfiguration } from 'chart.js';
-import { engagementTotal, finiteMetric, formatMetric, isMetricSuppressed, metricDifference, metricRatio, safeUserBucket, seriesValues, shareWidth, sourceLabel, sumMetrics, useMetricsResource } from '@/scripts/hanami-metrics.js';
 import type { Metric, MetricsNotes, MetricsOpportunities } from '@/scripts/hanami-metrics.js';
+import { engagementTotal, finiteMetric, formatMetric, dimensionValueLabel, partialNotice, metricDifference, metricRatio, safeUserBucket, seriesValues, shareWidth, sourceLabel, sumMetrics, useMetricsResource } from '@/scripts/hanami-metrics.js';
 import MkHanamiShareBars from '@/components/MkHanamiShareBars.vue';
 import MkHanamiSeriesChart from '@/components/MkHanamiSeriesChart.vue';
 import HanamiOverview from '@/pages/admin/hanami.overview.vue';
@@ -39,9 +39,9 @@ vi.mock('@/components/MkSelect.vue', () => ({ default: {
 } }));
 vi.mock('@/i18n.js', () => {
 	const keys = 'overview stats usage engagement engagementRate served seen reaction reply renote activeUsersDay activeUsersWeek generationErrors breakdown dimension filter period opportunities topReactedNotes partialData lift users source contentType relationshipClass media freshness authorLocality trendTerm cluster all days7 days14 days30 days90 tlShare manualRefresh rateLimited failed attempts message userBucket date allocation contentOpportunities supplyWalls demand hiddenCost tuningDrift current suggested under over balanced loading error retry perTypeEngagement judge'.split(' ');
-	return { i18n: { ts: { _time: { day: 'Day(s)' }, dayOverDayChanges: 'Day over day', _timelines: { home: 'Home', local: 'Local', social: 'Social', global: 'Global' }, _hana: {
+	return { i18n: { tsx: { _hana: { _admin: { partialNotice: ({ startedAt }: { startedAt: string }) => `計測は ${startedAt} から始まったため、それより前の期間は一部の値しかありません` } } }, ts: { _time: { day: 'Day(s)' }, dayOverDayChanges: 'Day over day', _timelines: { home: 'Home', local: 'Local', social: 'Social', global: 'Global' }, _hana: {
 		hanamiTimeline: 'Hanami',
-		_admin: { ...Object.fromEntries(keys.map(key => [key, key])), share: 'Served share', engagementShare: 'Engagement share', unavailable: 'Unavailable', suppressedFewUsers: '<5 users', noData: 'No data' },
+		_admin: { ...Object.fromEntries(keys.map(key => [key, key])), share: 'Served share', engagementShare: 'Engagement share', unavailable: '—', noData: 'No data', noValueYet: 'まだ値がありません', partialNoticeNoDate: 'まだ計測が始まっていない、または一部の値しかありません', personal: '個人', common: '共通', _failureKind: { emptyResult: '候補が空', candidateLimit: '候補数の上限超過', lockTimeout: 'ロック待ちの時間切れ', exception: '例外', unknown: '不明' }, _dimensionValue: { unjudged: '未判定', ruleExcluded: 'ルールで除外', directFollow: 'フォロー中', known: '知り合い', unknownRelationship: 'つながりなし', within6h: '6時間以内', within24h: '6〜24時間', within3d: '1〜3日', older3d: '3日より前', unknown: '不明', image: '画像あり', text: '文字だけ', local: 'このサーバー', remote: 'ほかのサーバー', none: 'クラスタなし', clustered: 'クラスタあり', other: 'その他（少数の語）' } },
 		_recommendation: { _reason: { exploration: 'Explore' }, axisConfidenceHigh: 'High', axisConfidenceLow: 'Low', axisConfidenceNone: 'None' },
 	} } } };
 });
@@ -89,11 +89,7 @@ describe('Hanami metrics: nulls and approved per-type engagement', () => {
 		expect(metricDifference(null, 5)).toBeNull();
 		expect(metricDifference(5, 6)).toBe(-1);
 	});
-	test('suppression applies to a whole subtree, not a similarly named metric', () => {
-		expect(isMetricSuppressed('engagement.engagementRate', ['engagement'])).toBe(true);
-		expect(isMetricSuppressed('usage.hanamiUsers.day', ['usage.hanamiUsers.day'])).toBe(true);
-		expect(isMetricSuppressed('engagementRate', ['engagement'])).toBe(false);
-	});
+
 	test('only the daily pseudonymous user bucket may be rendered', () => {
 		expect(safeUserBucket('u#a30f')).toBe('u#a30f');
 		for (const bucket of ['raw-user-id', 'u#a3', 'u#a30ff', '@user@example.com', '<script>']) expect(safeUserBucket(bucket)).toBeNull();
@@ -107,27 +103,27 @@ describe('Hanami metrics: nulls and approved per-type engagement', () => {
 });
 
 describe('MkHanamiShareBars', () => {
-	test('renders paired shares, ratio, and a suppressed label without a fabricated bar', () => {
-		const view = render(MkHanamiShareBars, { props: { rows: [{ key: 'exploration', label: 'Explore', share: .1, engagementShare: .2 }], suppressed: ['fof'] } });
+	test('renders paired shares and ratio', () => {
+		const view = render(MkHanamiShareBars, { props: { rows: [{ key: 'exploration', label: 'Explore', share: .1, engagementShare: .2 }] } });
 		expect(view.getByText('Explore')).toBeTruthy();
 		expect(view.getByText('2×')).toBeTruthy();
-		expect(view.getByText('Served share: 10%')).toBeTruthy();
-		expect(view.getByText('Engagement share: 20%')).toBeTruthy();
-		expect(view.getByText('fof: <5 users')).toBeTruthy();
+		expect(view.container.textContent).toContain('Served share: 10%');
+		expect(view.container.textContent).toContain('Engagement share: 20%');
+		expect(view.container.textContent).not.toContain('<5 users');
 		expect(view.container.querySelectorAll('[style*="width"]')).toHaveLength(2);
 	});
 	test('null shares are unavailable and have no zero-width bar', () => {
 		const view = render(MkHanamiShareBars, { props: { rows: [{ key: 'unknown', share: null, engagementShare: null }] } });
-		expect(view.getByText('Served share: Unavailable')).toBeTruthy();
-		expect(view.getByText('Engagement share: Unavailable')).toBeTruthy();
+		expect(view.container.textContent).toContain('Served share: —');
+		expect(view.container.textContent).toContain('Engagement share: —');
 		expect(view.container.querySelectorAll('[style*="width"]')).toHaveLength(0);
 		expect(view.container.textContent).not.toContain('0%');
 	});
 	test('server-provided text is escaped, not interpreted as HTML', () => {
 		const view = render(MkHanamiShareBars, { props: { rows: [{ key: '<img src=x onerror=alert(1)>', share: 0, engagementShare: 0 }] } });
 		expect(view.container.querySelector('img')).toBeNull();
-		expect(view.getByText('Served share: 0%')).toBeTruthy();
-		expect(view.getByText('Unavailable')).toBeTruthy();
+		expect(view.container.textContent).toContain('Served share: 0%');
+		expect(view.getByText('—')).toBeTruthy();
 	});
 	test('an empty response is explicitly identified', () => {
 		const view = render(MkHanamiShareBars, { props: { rows: [] } });
@@ -193,13 +189,14 @@ describe('MkHanamiSeriesChart', () => {
 	});
 	test('an entirely unavailable series is labelled as such', () => {
 		const view = render(MkHanamiSeriesChart, { props: { days: ['2026-09-20'], values: [null], label: 'Usage' } });
-		expect(view.getByText('Unavailable')).toBeTruthy();
+		expect(view.getByText('—')).toBeTruthy();
 		expect(chartMock.configs.at(-1)?.data.datasets[0].data).toEqual([null]);
 	});
 });
 
-const coverage = { status: 'partial' as const, startedAt: null, retainedFrom: '2026-09-01', completeDays: [], partialDays: ['2026-09-20'], outcomesThrough: '2026-09-06', unavailable: ['usage.tlShare.global'] };
+const coverage = { status: 'partial' as const, startedAt: null, retainedFrom: '2026-09-01', completeDays: [], partialDays: ['2026-09-20'], outcomesThrough: '2026-09-06', unavailable: ['usage.tlShare.global', 'series.2026-09-07', 'served.missing', 'snapshot.missing'] };
 const range = { from: '2026-09-01', to: '2026-09-20' };
+
 function breakdownResponse(dimension = 'source') {
 	return { range, dimension, coverage, denominator: 'visible', suppressed: ['fof'], rows: [
 		{ key: dimension === 'media' ? 'text' : 'exploration', users: 5, served: 5, seen: 5, reaction: 5, reply: 5, renote: 0, share: 1, engagementShare: 1, engagementRate: 2, seenRate: 1, engagementPerSeen: 2, lift: 1 },
@@ -217,20 +214,23 @@ describe('metrics pages', () => {
 				{ at: range.to, kind: 'exception', attempts: 1, message: 'Second message', userBucket: 'u#a30f' },
 			] }, common: { recent: [] }, judge: { recent: [], backlog: null }, rateLimited: { byDay: [] } };
 			return { range, coverage, denominator: 'visible', suppressed: ['usage.hanamiUsers.day'],
-				usage: { hanamiUsers: { day: null, week: 7, month: 9 }, tlShare: { home: .5, local: 0, social: 0, global: null, hanami: .5 }, manualRefreshPerUserDay: null, rateLimited429: null },
-				engagement: { users: 5, served: 5, seen: 5, reaction: 5, reply: 5, renote: 0, engagementRate: 2, seenRate: 1, normalBaseline: { reaction: null, reply: null, renote: null } },
-				generation: { personal: { batches: 5, failed: null, failedRate: null, p50Ms: null, p95Ms: null, failedByKind }, common: { generations: 0, failed: 0, p50Ms: null, p95Ms: null }, judge: { runs: 0, failed: 0, p50Ms: null, p95Ms: null, backlog: null, secPerNote: null, runtime: null } },
-				series: { day: [range.to], hanamiUsers: [null], engagementRate: [2], failedBatches: [null] },
+												usage: { hanamiUsers: { day: null, week: 7, month: 9 }, tlShare: { home: .5, local: 0, social: 0, global: null, hanami: .5 }, manualRefreshPerUserDay: null, rateLimited429: null },
+												engagement: { users: 5, served: 5, seen: 5, reaction: 5, reply: 5, renote: 0, engagementRate: 2, seenRate: 1, normalBaseline: { reaction: null, reply: null, renote: null } },
+												generation: { personal: { batches: 5, failed: 2, failedRate: null, p50Ms: null, p95Ms: null, failedByKind }, common: { generations: 0, failed: 3, p50Ms: null, p95Ms: null }, judge: { runs: 0, failed: 39000, p50Ms: null, p95Ms: null, backlog: null, secPerNote: null, runtime: null } },
+												series: { day: [range.to], hanamiUsers: [null], engagementRate: [2], failedBatches: [null] },
 			};
 		});
 		const view = render(HanamiOverview, { global: { directives: { tooltip: {} } } });
-		await waitFor(() => expect(view.getByText('Home: 50%')).toBeTruthy());
-		expect(view.getByText('manualRefresh / users / Day(s): Unavailable')).toBeTruthy();
-		expect(view.getByText('Global: Unavailable')).toBeTruthy();
-		expect(view.getByText('200%')).toBeTruthy();
+		await waitFor(() => expect(view.container.textContent).toContain('Home: 50%'));
+		expect(view.container.textContent).toContain('manualRefresh / users / Day(s): —');
+		expect(view.container.textContent).toContain('Global: —');
+		expect(view.getAllByText('200%').length).toBeGreaterThan(0);
 		expect(view.getByText('u#a30f')).toBeTruthy();
+		expect(view.getByText('generationErrors', { selector: 'div' }).parentElement?.textContent).toBe('5generationErrors');
 		expect(view.container.textContent).not.toContain('raw-user-id');
-		expect(view.getByText('emptyResult: <5 users')).toBeTruthy();
+		expect(view.container.textContent).not.toMatch(/\b(series|served|hiddenCost|usage|demand|snapshot)\./);
+		expect(view.container.textContent).not.toContain('利用者が少ないため非表示');
+		expect(view.container.textContent).toContain('候補が空: —');
 		expect(apiMock).toHaveBeenCalledWith('admin/hanami/metrics/breakdown', { range: { days: 30 }, dimension: 'source' }, undefined, expect.any(AbortSignal));
 		await fireEvent.update(view.getByRole('combobox'), '7');
 		await waitFor(() => expect(apiMock).toHaveBeenCalledWith('admin/hanami/metrics/summary', { range: { days: 7 } }, undefined, expect.any(AbortSignal)));
@@ -243,7 +243,7 @@ describe('metrics pages', () => {
 			return { range, notes: [{ noteId: 'n1', text: '<img src=x>' + 'x'.repeat(200), authorLocality: 'local', source: 'exploration', contentType: 2, served: 20, reaction: 20, reply: 20, renote: 0, engagementRate: 2 }], suppressed: [], unavailable: [] };
 		});
 		const view = render(HanamiStats);
-		await waitFor(() => expect(view.getByText('200%')).toBeTruthy());
+		await waitFor(() => expect(view.getAllByText('200%').length).toBeGreaterThan(0));
 		await waitFor(() => expect(view.getByRole('alert')).toBeTruthy());
 		expect(view.getByRole('button', { name: 'retry' })).toBeTruthy();
 		await waitFor(() => expect(view.container.querySelector('article p')?.textContent?.length).toBe(160));
@@ -254,6 +254,7 @@ describe('metrics pages', () => {
 		await waitFor(() => expect(view.getByLabelText('filter (source)')).toBeTruthy());
 		await waitFor(() => expect(apiMock).toHaveBeenCalledWith('admin/hanami/metrics/breakdown', { range: { days: 30 }, dimension: 'contentType' }, undefined, expect.any(AbortSignal)));
 		expect(view.queryByRole('button', { name: /apply/i })).toBeNull();
+		expect(view.container.textContent).not.toMatch(/\b(series|served|hiddenCost|usage|demand|snapshot)\./);
 	});
 	test('SDK-backed panels preserve nulls and scope notes independently to at most 30 days', async () => {
 		apiMock.mockReset();
@@ -261,29 +262,32 @@ describe('metrics pages', () => {
 			if (endpoint.endsWith('/breakdown')) return breakdownResponse(params.dimension);
 			if (endpoint.endsWith('/notes')) return { range, notes: [{ noteId: 'n1', text: 'Snippet', authorLocality: 'local', source: 'exploration', contentType: null, served: 20, reaction: 20, reply: 20, renote: 0, engagementRate: 2 }], suppressed: [], unavailable: [] } satisfies MetricsNotes;
 			return { range, suppressed: ['demand.fof'], unavailable: ['hiddenCost'],
-				allocation: [{ axis: 'exploration', share: .1, engagementShare: .2, ratio: 2, capNow: { high: .1, low: .1, none: .1 }, verdict: 'under', suggestedCap: { high: .2, low: .2, none: .2 } }],
-				content: [
-					{ contentType: null, media: 'text', relationshipClass: 'unknown', served: 300, engagementRate: 2, lift: null, share: .1, opportunity: null, note: 'Content diagnostic' },
-					{ contentType: 0, media: 'text', relationshipClass: 'unknown', served: 300, engagementRate: 0, lift: 0, share: 0, opportunity: 0, note: 'Zero diagnostic' },
-					{ contentType: 'unjudged', media: 'text', relationshipClass: 'unknown', served: 300, engagementRate: 1.5, lift: 1.5, share: .1, opportunity: .9, note: 'Unjudged diagnostic' },
-				],
-				supplyWalls: [{ axis: 'exploration', dropped: { unjudged: 10 }, passed: 5, note: 'Supply diagnostic' }],
-				demand: [{ axis: 'exploration', usersHigh: 5, avgServedPerPageHigh: 3, avgServedPerPageNormal: 2, note: 'Demand diagnostic' }],
-				hiddenCost: [], tuningDrift: { exploration: { high: 5, low: 10 } },
+												allocation: [{ axis: 'exploration', share: .1, engagementShare: .2, ratio: 2, capNow: { high: .1, low: .1, none: .1 }, verdict: 'under', suggestedCap: { high: .2, low: .2, none: .2 } }],
+												content: [
+													{ contentType: null, media: 'text', relationshipClass: 'unknown', served: 300, engagementRate: 2, lift: null, share: .1, opportunity: null, note: 'Content diagnostic' },
+													{ contentType: 0, media: 'text', relationshipClass: 'unknown', served: 300, engagementRate: 0, lift: 0, share: 0, opportunity: 0, note: 'Zero diagnostic' },
+													{ contentType: 'unjudged', media: 'text', relationshipClass: 'unknown', served: 300, engagementRate: 1.5, lift: 1.5, share: .1, opportunity: .9, note: 'Unjudged diagnostic' },
+												],
+												supplyWalls: [{ axis: 'exploration', dropped: { unjudged: 10 }, passed: 5, note: 'Supply diagnostic' }],
+												demand: [{ axis: 'exploration', usersHigh: 5, avgServedPerPageHigh: 3, avgServedPerPageNormal: 2, note: 'Demand diagnostic' }],
+												hiddenCost: [], tuningDrift: { exploration: { high: 5, low: 10 } },
 			} satisfies MetricsOpportunities;
 		});
 		const view = render(HanamiStats);
-		await waitFor(() => expect(view.getByText('Content diagnostic')).toBeTruthy());
-		expect(Array.from(view.getByText('Content diagnostic').closest('tr')!.querySelectorAll('td'), cell => cell.textContent)).toEqual(['Unavailable', 'text', 'unknown', '300', '200%', 'Unavailable', '10%', 'Unavailable', 'Content diagnostic']);
-		expect(view.getByText('Zero diagnostic').closest('tr')?.querySelector('td')?.textContent).toBe('0');
-		expect(view.getByText('Unjudged diagnostic').closest('tr')?.querySelector('td')?.textContent).toBe('unjudged');
-		expect(view.container.querySelector('article')?.textContent).toContain('contentType: Unavailable');
+		await waitFor(() => expect(view.getAllByText('300')).toHaveLength(3));
+		const contentRows = Array.from(view.container.querySelectorAll('table tbody tr')).filter(row => row.textContent?.includes('300'));
+		expect(Array.from(contentRows[0].querySelectorAll('td'), cell => cell.textContent)).toEqual(['—', '文字だけ', 'つながりなし', '300', '200%', '—', '10%', '—']);
+		expect(contentRows[1].querySelector('td')?.textContent).toBe('挨拶・相づち・定型文');
+		expect(contentRows[2].querySelector('td')?.textContent).toBe('未判定');
+		expect(view.container.textContent).not.toContain('Content diagnostic');
+		expect(view.container.querySelector('article')?.textContent).toContain('contentType: —');
 		expect(view.container.querySelector('article')?.textContent).toContain('engagementRate: 200%');
 		for (const label of ['allocation', 'contentOpportunities', 'supplyWalls', 'demand', 'hiddenCost', 'tuningDrift']) expect(view.getByRole('heading', { name: label })).toBeTruthy();
 		expect(view.getByText('High: 20% / Low: 20% / None: 20%')).toBeTruthy();
 		expect(view.getByText('under')).toBeTruthy();
 		expect(view.getByText('unjudged: 10')).toBeTruthy();
 		expect(view.queryByRole('button', { name: /apply/i })).toBeNull();
+		expect(view.container.textContent).not.toMatch(/\b(series|served|hiddenCost|usage|demand|snapshot)\./);
 		await fireEvent.click(view.getByRole('button', { name: 'topReactedNotes' }));
 		await waitFor(() => expect(apiMock).toHaveBeenCalledWith('admin/hanami/metrics/notes', { range: { days: 30 }, dimension: 'source', key: 'exploration' }, undefined, expect.any(AbortSignal)));
 		await fireEvent.update(view.getByRole('combobox', { name: 'period' }), '90');
@@ -299,5 +303,55 @@ describe('metrics pages', () => {
 		await waitFor(() => expect(apiMock).toHaveBeenCalledWith('admin/hanami/metrics/notes', { range: { days: 14 } }, undefined, expect.any(AbortSignal)));
 		expect(view.queryByText(/partialData — topReactedNotes:/)).toBeNull();
 		expect(apiMock.mock.calls.filter(([endpoint]) => endpoint === 'admin/hanami/metrics/notes').every(([, request]) => request.range.days <= 30)).toBe(true);
+	});
+});
+
+const localizedDimensions = [
+	['contentType', 'unjudged', '未判定'], ['contentType', 'ruleExcluded', 'ルールで除外'],
+	['relationshipClass', 'directFollow', 'フォロー中'], ['relationshipClass', 'known', '知り合い'], ['relationshipClass', 'unknown', 'つながりなし'],
+	['freshness', '0-6h', '6時間以内'], ['freshness', '6-24h', '6〜24時間'], ['freshness', '1-3d', '1〜3日'], ['freshness', '3d+', '3日より前'], ['freshness', 'unknown', '不明'],
+	['media', 'image', '画像あり'], ['media', 'text', '文字だけ'],
+	['authorLocality', 'local', 'このサーバー'], ['authorLocality', 'remote', 'ほかのサーバー'],
+	['cluster', 'none', 'クラスタなし'], ['cluster', 'clustered', 'クラスタあり'], ['trendTerm', '_other', 'その他（少数の語）'],
+] as const;
+
+describe('admin UI acceptance', () => {
+	test.each(localizedDimensions)('localizes %s/%s', (dimension, key, label) => {
+		expect(dimensionValueLabel(dimension, key)).toBe(label);
+	});
+	test('shares all ten model types and preserves literal trend terms', () => {
+		const expected = ['挨拶・相づち・定型文', 'ニュース・情報の共有', '解説・知識・ハウツー', '意見・考察・問題提起', '出来事・体験談・エピソード', 'ユーモア・ネタ・大喜利', '作品の投稿', '写真・食事・日常の記録', '告知・宣伝・募集・企画参加', '近況・独り言・感情の吐露'];
+		for (const [type, label] of expected.entries()) expect(dimensionValueLabel('contentType', String(type))).toBe(label);
+		expect(dimensionValueLabel('trendTerm', '花見')).toBe('花見');
+	});
+
+	test('renders every translated dimension in the stats table', async () => {
+		apiMock.mockImplementation(async (endpoint: string, params: { dimension?: string }) => {
+			if (endpoint.endsWith('/breakdown')) return { ...breakdownResponse(params.dimension), rows: localizedDimensions.filter(([dimension]) => dimension === params.dimension).map(([, key]) => ({ ...breakdownResponse().rows[0], key })) };
+			if (endpoint.endsWith('/notes')) return { range, notes: [], suppressed: [], unavailable: ['served.missing'] };
+			return { range, allocation: [], content: [], supplyWalls: [], demand: [], hiddenCost: [], tuningDrift: {}, suppressed: ['snapshot.old'], unavailable: ['hiddenCost.missing', 'demand.missing'] };
+		});
+		const view = render(HanamiStats, { global: { directives: { tooltip: {} } } });
+		for (const dimension of new Set(localizedDimensions.map(([dimension]) => dimension))) {
+			await fireEvent.update(view.getByLabelText('dimension'), dimension);
+			for (const [, key, label] of localizedDimensions.filter(([candidate]) => candidate === dimension)) {
+				await waitFor(() => expect(view.getByRole('rowheader', { name: label })).toBeTruthy());
+				expect(view.queryByRole('rowheader', { name: key })).toBeNull();
+			}
+		}
+		expect(view.container.textContent).not.toMatch(/\b(series|served|hiddenCost|usage|demand|snapshot)\./);
+	});
+
+	test('missing cells have a tooltip while observed zero shares do not', () => {
+		const tooltip = { mounted: (element: HTMLElement, binding: { value?: string }) => { if (binding.value) element.title = binding.value; } };
+		const view = render(MkHanamiShareBars, { props: { rows: [{ key: 'empty', share: null, engagementShare: null }, { key: 'zero', share: 0, engagementShare: 0 }] }, global: { directives: { tooltip } } });
+		expect(view.getAllByTitle('まだ値がありません')).toHaveLength(4);
+		for (const element of view.getAllByTitle('まだ値がありません')) expect(element.textContent).toBe('—');
+		expect(view.container.textContent).toContain('Served share: 0%');
+	});
+
+	test('partial notices contain a date only and have an explicit no-date fallback', () => {
+		expect(partialNotice({ startedAt: '2026-09-20T00:00:00Z' })).toBe(`計測は ${new Date('2026-09-20T00:00:00Z').toLocaleDateString()} から始まったため、それより前の期間は一部の値しかありません`);
+		expect(partialNotice()).toBe('まだ計測が始まっていない、または一部の値しかありません');
 	});
 });

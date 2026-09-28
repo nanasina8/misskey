@@ -15,24 +15,21 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<div :class="$style.stats">
 			<div v-for="card in cards" :key="card.path" class="_panel" :class="$style.card">
 				<i :class="['ti', card.icon, $style.icon]"></i>
-				<div><div :class="$style.value">
-					<template v-if="finiteMetric(card.value)">
-						<span v-if="card.percent">{{ display(card.value, card.path, 'percent') }}</span>
-						<MkNumber v-else :value="card.value"/>
-						<MkNumberDiff v-if="card.diff !== null" v-tooltip="i18n.ts.dayOverDayChanges" :value="card.diff" :class="$style.diff"/>
-					</template>
-					<span v-else>{{ display(card.value, card.path) }}</span>
-				</div><div :class="$style.label">{{ card.label }}</div></div>
+				<div>
+					<div :class="$style.value">
+						<template v-if="finiteMetric(card.value)">
+							<span v-if="card.percent"><span v-tooltip="card.value == null ? t.noValueYet : undefined">{{ display(card.value, card.path, 'percent') }}</span></span>
+							<MkNumber v-else :value="card.value"/>
+							<MkNumberDiff v-if="card.diff !== null" v-tooltip="i18n.ts.dayOverDayChanges" :value="card.diff" :class="$style.diff"/>
+						</template>
+						<span v-else><span v-tooltip="card.value == null ? t.noValueYet : undefined">{{ display(card.value, card.path) }}</span></span>
+					</div><div :class="$style.label">{{ card.label }}</div>
+				</div>
 			</div>
 		</div>
 		<small>{{ summary.range.from }} — {{ summary.range.to }}</small>
 	</template>
-	<MkInfo v-for="entry in coverageWarnings" :key="entry.name" warn>
-		{{ entry.name }}: {{ entry.coverage.status === 'unavailable' ? t.unavailable : t.partialData }}
-		<div v-if="entry.coverage.unavailable.length">{{ entry.coverage.unavailable.join(', ') }}</div>
-		<small>retainedFrom: {{ entry.coverage.retainedFrom }} · outcomesThrough: {{ entry.coverage.outcomesThrough }}</small>
-	</MkInfo>
-	<MkInfo v-if="summary?.suppressed.length" warn>{{ t.suppressedFewUsers }}: {{ summary.suppressed.join(', ') }}</MkInfo>
+	<MkInfo v-for="entry in coverageWarnings" :key="entry.name" warn>{{ partialNotice(entry.coverage) }}</MkInfo>
 	<MkFolder :defaultOpen="true">
 		<template #label>{{ t.usage }}</template>
 		<div v-if="summary" class="_gaps">
@@ -44,10 +41,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div :class="$style.chips">
 				<span v-for="row in timelineShares" :key="row.key" :class="$style.chip">{{ row.label }}: {{ display(row.value, `usage.tlShare.${row.key}`, 'percent') }}</span>
 			</div>
-			<div>{{ t.manualRefresh }} / {{ t.users }} / {{ i18n.ts._time.day }}: {{ display(summary.usage.manualRefreshPerUserDay, 'usage.manualRefreshPerUserDay') }}</div>
-			<div>{{ t.rateLimited }} (429): {{ display(summary.usage.rateLimited429, 'usage.rateLimited429') }}</div>
+			<div>{{ t.manualRefresh }} / {{ t.users }} / {{ i18n.ts._time.day }}: <span v-tooltip="summary.usage.manualRefreshPerUserDay == null ? t.noValueYet : undefined">{{ display(summary.usage.manualRefreshPerUserDay, 'usage.manualRefreshPerUserDay') }}</span></div>
+			<div>{{ t.rateLimited }}: <span v-tooltip="summary.usage.rateLimited429 == null ? t.noValueYet : undefined">{{ display(summary.usage.rateLimited429, 'usage.rateLimited429') }}</span></div>
 		</div>
-		<p v-else>{{ summaryLoading ? t.loading : t.unavailable }}</p>
+		<p v-else v-tooltip="!summaryLoading ? t.noValueYet : undefined">{{ summaryLoading ? t.loading : t.unavailable }}</p>
 	</MkFolder>
 	<MkFolder :defaultOpen="true">
 		<template #label>{{ t.engagement }}</template>
@@ -59,25 +56,24 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</template>
 			<p v-if="breakdownLoading" role="status">{{ t.loading }}</p>
 			<div v-if="breakdownFailed" role="alert">{{ t.error }} — {{ t.breakdown }}<MkButton @click="reloadBreakdown">{{ t.retry }}</MkButton></div>
-			<MkHanamiShareBars v-if="breakdown" :rows="shareRows" :suppressed="breakdown.suppressed" :labelForKey="axisLabel"/>
+			<MkHanamiShareBars v-if="breakdown" :rows="shareRows"/>
 		</div>
 	</MkFolder>
 	<MkFolder :defaultOpen="true">
 		<template #label>{{ t.generationErrors }}</template>
 		<div class="_gaps">
-			<MkHanamiSeriesChart v-if="errors" :days="errors.personal.byDay.map(row => row.day)" :values="errors.personal.byDay.map(row => row.failed)" :label="`${t.generationErrors} (personal)`"/>
+			<MkHanamiSeriesChart v-if="errors" :days="errors.personal.byDay.map(row => row.day)" :values="errors.personal.byDay.map(row => row.failed)" :label="`${t.generationErrors} (${t.personal})`"/>
 			<p v-if="errorsLoading" role="status">{{ t.loading }}</p>
 			<div v-if="errorsFailed" role="alert">{{ t.error }} — {{ t.generationErrors }}<MkButton @click="reloadErrors">{{ t.retry }}</MkButton></div>
 			<template v-if="errors">
-				<MkInfo v-if="errors.suppressed.length" warn>{{ t.suppressedFewUsers }}: {{ errors.suppressed.join(', ') }}</MkInfo>
-				<div :class="$style.chips"><span v-for="(count, kind) in errors.personal.byKind" :key="kind" :class="$style.chip">{{ kind }}: {{ errorCount(count, kind) }}</span></div>
+				<div :class="$style.chips"><span v-for="(count, kind) in errors.personal.byKind" :key="kind" :class="$style.chip">{{ failureKindLabel(kind) }}: <span v-tooltip="count == null ? t.noValueYet : undefined">{{ fmt(count) }}</span></span></div>
 				<div class="_panel" :class="$style.tableScroll">
 					<table :class="$style.table">
 						<thead><tr><th>{{ t.date }}</th><th>{{ t.source }}</th><th>{{ t.failed }}</th><th>{{ t.attempts }}</th><th>{{ t.message }}</th><th>{{ t.userBucket }}</th></tr></thead>
-						<tbody><tr v-for="(row, index) in recentErrors" :key="index"><td>{{ row.at }}</td><td>{{ row.source }}</td><td>{{ row.kind }}</td><td>{{ fmt(row.attempts) }}</td><td :class="$style.message">{{ row.message }}</td><td>{{ row.userBucket ?? t.unavailable }}</td></tr></tbody>
+						<tbody><tr v-for="(row, index) in recentErrors" :key="index"><td>{{ row.at }}</td><td>{{ row.source }}</td><td>{{ failureKindLabel(row.kind) }}</td><td><span v-tooltip="row.attempts == null ? t.noValueYet : undefined">{{ fmt(row.attempts) }}</span></td><td :class="$style.message">{{ row.message }}</td><td v-tooltip="row.userBucket === null ? t.noValueYet : undefined">{{ row.userBucket ?? t.unavailable }}</td></tr></tbody>
 					</table>
 				</div>
-				<p v-if="recentErrors.length === 0">{{ errors.coverage.status === 'unavailable' ? t.unavailable : errors.suppressed.includes('personal.recent') ? t.suppressedFewUsers : t.noData }}</p>
+				<p v-if="recentErrors.length === 0" v-tooltip="errors.coverage.status === 'unavailable' ? t.noValueYet : undefined">{{ errors.coverage.status === 'unavailable' ? t.unavailable : t.noData }}</p>
 			</template>
 		</div>
 	</MkFolder>
@@ -97,7 +93,7 @@ import MkHanamiSeriesChart from '@/components/MkHanamiSeriesChart.vue';
 import MkHanamiShareBars from '@/components/MkHanamiShareBars.vue';
 import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
-import { finiteMetric, formatMetric, isMetricSuppressed, metricDifference, safeUserBucket, shareWidth, sourceLabel, sumMetrics, useMetricsResource } from '@/scripts/hanami-metrics.js';
+import { finiteMetric, formatMetric, partialNotice, failureKindLabel, metricDifference, safeUserBucket, shareWidth, sourceLabel, sumMetrics, useMetricsResource } from '@/scripts/hanami-metrics.js';
 
 const t = i18n.ts._hana._admin;
 const days = ref<MetricsDays>(30);
@@ -107,7 +103,7 @@ const { data: summary, loading: summaryLoading, failed: summaryFailed, reload: r
 const { data: errors, loading: errorsLoading, failed: errorsFailed, reload: reloadErrors } = useMetricsResource(params, (p, signal) => misskeyApi('admin/hanami/metrics/errors', p, undefined, signal));
 const { data: breakdown, loading: breakdownLoading, failed: breakdownFailed, reload: reloadBreakdown } = useMetricsResource(params, (p, signal) => misskeyApi('admin/hanami/metrics/breakdown', { ...p, dimension: 'source' }, undefined, signal));
 const fmt = (value: Metric, kind: 'number' | 'percent' = 'number') => formatMetric(value, t.unavailable, kind);
-const display = (value: Metric, path: string, kind: 'number' | 'percent' = 'number') => value === null && isMetricSuppressed(path, summary.value?.suppressed ?? []) ? t.suppressedFewUsers : fmt(value, kind);
+const display = (value: Metric, path: string, kind: 'number' | 'percent' = 'number') => fmt(value, kind);
 const axisLabel = (key: string) => sourceLabel(key, i18n.ts._hana._recommendation._reason);
 const shareRows = computed(() => breakdown.value?.rows.map(row => ({ ...row, label: axisLabel(row.key) })) ?? []);
 const cards = computed(() => {
@@ -117,7 +113,7 @@ const cards = computed(() => {
 		{ label: t.activeUsersDay, path: 'usage.hanamiUsers.day', value: s.usage.hanamiUsers.day, icon: 'ti-users', diff: metricDifference(s.usage.hanamiUsers.day, s.series.hanamiUsers.at(-2) ?? null), percent: false },
 		{ label: t.activeUsersWeek, path: 'usage.hanamiUsers.week', value: s.usage.hanamiUsers.week, icon: 'ti-users-group', diff: null, percent: false },
 		{ label: t.engagementRate, path: 'engagement.engagementRate', value: s.engagement.engagementRate, icon: 'ti-heart', diff: null, percent: true },
-		{ label: t.generationErrors, path: 'generation.personal.failed', value: sumMetrics([s.generation.personal.failed, s.generation.common.failed, s.generation.judge.failed]), icon: 'ti-alert-triangle', diff: null, percent: false },
+		{ label: t.generationErrors, path: 'generation.personal.failed', value: sumMetrics([s.generation.personal.failed, s.generation.common.failed]), icon: 'ti-alert-triangle', diff: null, percent: false },
 	];
 });
 const coverageWarnings = computed(() => [
@@ -144,17 +140,12 @@ const engagementMetrics = computed(() => {
 	] : [];
 });
 
-function errorCount(value: Metric, kind: string) {
-	const suppressed = errors.value?.suppressed ?? [];
-	return value === null && (isMetricSuppressed(`generation.personal.failedByKind.${kind}`, suppressed) || isMetricSuppressed(`personal.byKind.${kind}`, suppressed)) ? t.suppressedFewUsers : fmt(value);
-}
-
 const recentErrors = computed(() => {
 	const data = errors.value;
 	if (!data) return [];
 	return [
-		...data.personal.recent.map(row => ({ ...row, source: 'personal', userBucket: safeUserBucket(row.userBucket) })),
-		...data.common.recent.map(row => ({ ...row, source: 'common', kind: row.status, attempts: null, userBucket: null })),
+		...data.personal.recent.map(row => ({ ...row, source: t.personal, userBucket: safeUserBucket(row.userBucket) })),
+		...data.common.recent.map(row => ({ ...row, source: t.common, kind: row.status, attempts: null, userBucket: null })),
 		...data.judge.recent.map(row => ({ ...row, source: t.judge, kind: row.status, attempts: null, userBucket: null })),
 	].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 20);
 });

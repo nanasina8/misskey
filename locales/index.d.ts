@@ -14161,122 +14161,607 @@ export interface Locale extends ILocale {
          */
         "notesCreatedInHanaModeWillBeExcluded": string;
         "_admin": {
+            /**
+             * 概要
+             */
             "overview": string;
+            /**
+             * 統計
+             */
             "stats": string;
+            /**
+             * おすすめの種類
+             */
             "axes": string;
+            /**
+             * 判定器
+             */
             "judge": string;
+            /**
+             * トレンド
+             */
             "trends": string;
+            /**
+             * 嗜好クラスタ
+             */
             "taste": string;
+            /**
+             * 運用
+             */
             "ops": string;
+            /**
+             * 利用状況
+             */
             "usage": string;
+            /**
+             * 1日のはなみ利用者数
+             */
             "activeUsersDay": string;
+            /**
+             * 1週間のはなみ利用者数
+             */
             "activeUsersWeek": string;
+            /**
+             * 反応
+             */
             "engagement": string;
+            /**
+             * 反応率
+             */
             "engagementRate": string;
+            /**
+             * 配信
+             */
             "served": string;
+            /**
+             * 表示
+             */
             "seen": string;
+            /**
+             * リアクション
+             */
             "reaction": string;
+            /**
+             * 返信
+             */
             "reply": string;
+            /**
+             * リノート
+             */
             "renote": string;
+            /**
+             * すべて
+             */
             "all": string;
+            /**
+             * データなし
+             */
             "noData": string;
+            /**
+             * 読み込み中
+             */
             "loading": string;
+            /**
+             * エラー
+             */
             "error": string;
+            /**
+             * 再試行
+             */
             "retry": string;
+            /**
+             * 反応=リアクション+返信+リノート、各種類で重複を除く（同じ投稿へのリアクションと返信は2件）
+             */
             "perTypeEngagement": string;
+            /**
+             * 判定基準を変更して再判定しますか？
+             */
             "promptChangeConfirm": string;
+            /**
+             * 保存
+             */
             "save": string;
+            /**
+             * キャンセル
+             */
             "cancel": string;
+            /**
+             * 生成エラー
+             */
             "generationErrors": string;
+            /**
+             * 内訳
+             */
             "breakdown": string;
+            /**
+             * 切り口
+             */
             "dimension": string;
+            /**
+             * フィルター
+             */
             "filter": string;
+            /**
+             * 期間
+             */
             "period": string;
+            /**
+             * おすすめの改善候補
+             */
             "opportunities": string;
+            /**
+             * 反応の多いノート
+             */
             "topReactedNotes": string;
-            "suppressedFewUsers": string;
+            /**
+             * —
+             */
             "unavailable": string;
+            /**
+             * 計測は {startedAt} から始まったため、それより前の期間は一部の値しかありません
+             */
+            "partialNotice": ParameterizedString<"startedAt">;
+            /**
+             * まだ計測が始まっていない、または一部の値しかありません
+             */
+            "partialNoticeNoDate": string;
+            /**
+             * まだ値がありません
+             */
+            "noValueYet": string;
+            /**
+             * まだ試算できるだけのデータがありません
+             */
+            "whatIfNotReady": string;
+            /**
+             * LLM の判定
+             */
+            "llmJudged": string;
+            /**
+             * ルールで除外
+             */
+            "ruleExcluded": string;
+            /**
+             * 個人
+             */
+            "personal": string;
+            /**
+             * 共通
+             */
+            "common": string;
+            "_failureKind": {
+                /**
+                 * 候補が空
+                 */
+                "emptyResult": string;
+                /**
+                 * 候補数の上限超過
+                 */
+                "candidateLimit": string;
+                /**
+                 * ロック待ちの時間切れ
+                 */
+                "lockTimeout": string;
+                /**
+                 * 例外
+                 */
+                "exception": string;
+                /**
+                 * 不明
+                 */
+                "unknown": string;
+            };
+            "_dimensionValue": {
+                /**
+                 * 未判定
+                 */
+                "unjudged": string;
+                /**
+                 * ルールで除外
+                 */
+                "ruleExcluded": string;
+                /**
+                 * フォロー中
+                 */
+                "directFollow": string;
+                /**
+                 * 知り合い
+                 */
+                "known": string;
+                /**
+                 * つながりなし
+                 */
+                "unknownRelationship": string;
+                /**
+                 * 6時間以内
+                 */
+                "within6h": string;
+                /**
+                 * 6〜24時間
+                 */
+                "within24h": string;
+                /**
+                 * 1〜3日
+                 */
+                "within3d": string;
+                /**
+                 * 3日より前
+                 */
+                "older3d": string;
+                /**
+                 * 不明
+                 */
+                "unknown": string;
+                /**
+                 * 画像あり
+                 */
+                "image": string;
+                /**
+                 * 文字だけ
+                 */
+                "text": string;
+                /**
+                 * このサーバー
+                 */
+                "local": string;
+                /**
+                 * ほかのサーバー
+                 */
+                "remote": string;
+                /**
+                 * クラスタなし
+                 */
+                "none": string;
+                /**
+                 * クラスタあり
+                 */
+                "clustered": string;
+                /**
+                 * その他（少数の語）
+                 */
+                "other": string;
+            };
+            "_confidence": {
+                /**
+                 * 反応や返信が {n} 回以上あり、好みの学習が済んでいる人
+                 */
+                "high": ParameterizedString<"n">;
+                /**
+                 * 反応が {n} 回以上、またはフォロー・関係値がある人
+                 */
+                "low": ParameterizedString<"n">;
+                /**
+                 * それ以外（新しい人）
+                 */
+                "none": string;
+            };
+            /**
+             * 一部のデータのみ利用可能
+             */
             "partialData": string;
+            /**
+             * 配信割合
+             */
             "share": string;
+            /**
+             * 反応の割合
+             */
             "engagementShare": string;
+            /**
+             * 全体に対する反応率の倍率
+             */
             "lift": string;
+            /**
+             * 利用者数
+             */
             "users": string;
+            /**
+             * おすすめの種類
+             */
             "source": string;
+            /**
+             * 投稿の種類
+             */
             "contentType": string;
+            /**
+             * 投稿者との関係
+             */
             "relationshipClass": string;
+            /**
+             * メディア
+             */
             "media": string;
+            /**
+             * 投稿からの経過時間
+             */
             "freshness": string;
+            /**
+             * 投稿者のサーバー区分
+             */
             "authorLocality": string;
+            /**
+             * トレンド語
+             */
             "trendTerm": string;
+            /**
+             * クラスタ
+             */
             "cluster": string;
+            /**
+             * 7日
+             */
             "days7": string;
+            /**
+             * 14日
+             */
             "days14": string;
+            /**
+             * 30日
+             */
             "days30": string;
+            /**
+             * 90日
+             */
             "days90": string;
+            /**
+             * タイムラインの利用割合
+             */
             "tlShare": string;
+            /**
+             * 手動更新
+             */
             "manualRefresh": string;
+            /**
+             * 手動更新の回数制限に当たった回数
+             */
             "rateLimited": string;
+            /**
+             * 失敗
+             */
             "failed": string;
+            /**
+             * 試行回数
+             */
             "attempts": string;
+            /**
+             * メッセージ
+             */
             "message": string;
+            /**
+             * 匿名化された利用者グループ
+             */
             "userBucket": string;
+            /**
+             * 日付
+             */
             "date": string;
+            /**
+             * 配分
+             */
             "allocation": string;
+            /**
+             * 投稿内容から見た改善候補
+             */
             "contentOpportunities": string;
+            /**
+             * 候補が不足する要因
+             */
             "supplyWalls": string;
+            /**
+             * 需要
+             */
             "demand": string;
+            /**
+             * 非表示による機会損失
+             */
             "hiddenCost": string;
+            /**
+             * 利用者による調整の傾向
+             */
             "tuningDrift": string;
+            /**
+             * 現在
+             */
             "current": string;
+            /**
+             * 提案
+             */
             "suggested": string;
+            /**
+             * 不足
+             */
             "under": string;
+            /**
+             * 過剰
+             */
             "over": string;
+            /**
+             * 均衡
+             */
             "balanced": string;
+            /**
+             * この画面は準備中です。
+             */
             "prepare": string;
+            /**
+             * 状態
+             */
             "status": string;
+            /**
+             * 実行環境
+             */
             "runtime": string;
+            /**
+             * 判定待ちのノート数
+             */
             "backlog": string;
+            /**
+             * 1ノートあたりの処理時間（秒）
+             */
             "secondsPerNote": string;
+            /**
+             * 今すぐ更新
+             */
             "refreshNow": string;
+            /**
+             * 有効
+             */
             "enabled": string;
+            /**
+             * フォールバック
+             */
             "fallback": string;
+            /**
+             * 質問1：その場限りの投稿か
+             */
             "q1": string;
+            /**
+             * 質問2：第三者の興味を引くか
+             */
             "q2": string;
+            /**
+             * 質問3：投稿の種類は何か
+             */
             "q3": string;
+            /**
+             * 判定例
+             */
             "examples": string;
+            /**
+             * 定型文のパターン
+             */
             "templatePatterns": string;
+            /**
+             * 無効な正規表現
+             */
             "invalidRegex": string;
+            /**
+             * 判定器の実行環境が利用できないため、試行判定は実行できません。おすすめの種類ごとの判定方針を確認してください。
+             */
             "fallbackDescription": string;
+            /**
+             * 未保存の興味の閾値で、通過するノート数と反応率を試算します。その場限りの閾値には保存済みの値を使い、他の未保存の変更は反映しません。設定を適用するには保存してください。
+             */
             "whatIfDraftDescription": string;
+            /**
+             * 定型文として除外するパターンを、1行に1つの正規表現で入力してください。大文字・小文字を区別せず、Unicode対応で照合します。空行は無視されます。最大100件、各512文字までです。
+             */
             "templatePatternsDescription": string;
+            /**
+             * 投稿の種類ごとの反応
+             */
             "contentTypeEngagement": string;
+            /**
+             * プロンプトバージョン
+             */
             "promptVersion": string;
+            /**
+             * 推定時間
+             */
             "estimatedTime": string;
+            /**
+             * 試行判定
+             */
             "trial": string;
+            /**
+             * 判定器の実行環境が利用できないため、試行判定は実行できません。
+             */
             "trialUnavailable": string;
+            /**
+             * すべての理由
+             */
             "allReasons": string;
+            /**
+             * 閾値変更の試算
+             */
             "whatIf": string;
+            /**
+             * 合格
+             */
             "passed": string;
+            /**
+             * 候補数の増減
+             */
             "stockChange": string;
+            /**
+             * その場限りの閾値
+             */
             "thetaEphemeral": string;
+            /**
+             * 興味の閾値
+             */
             "thetaInterest": string;
+            /**
+             * リアクション上限
+             */
             "reactionMax": string;
+            /**
+             * 興味の上限
+             */
             "interestMax": string;
+            /**
+             * 投稿の種類ごとの加点
+             */
             "contentTypeBonus": string;
+            /**
+             * 判定方針
+             */
             "judgePolicy": string;
+            /**
+             * 合格のみ
+             */
             "passOnly": string;
+            /**
+             * その場限りを隠す
+             */
             "hideEphemeral": string;
+            /**
+             * 判定なし
+             */
             "noJudge": string;
+            /**
+             * 利用可能
+             */
             "available": string;
+            /**
+             * デフォルトで有効
+             */
             "defaultOn": string;
+            /**
+             * 最大枠
+             */
             "maximumShare": string;
+            /**
+             * 1ページ内の同じ投稿者の上限
+             */
             "authorCap": string;
+            /**
+             * おすすめ量の倍率
+             */
             "volumeMultiplier": string;
+            /**
+             * 信頼度
+             */
             "confidence": string;
+            /**
+             * 嗜好クラスタを再構築
+             */
             "tasteRebuild": string;
+            /**
+             * 理由
+             */
             "reason": string;
+            /**
+             * ノート
+             */
             "note": string;
+            /**
+             * スコア
+             */
             "score": string;
+            /**
+             * 判定基準
+             */
             "basis": string;
         };
     };

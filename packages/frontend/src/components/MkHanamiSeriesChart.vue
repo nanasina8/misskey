@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <div :class="$style.root">
 	<canvas ref="canvas" role="img" :aria-label="label"></canvas>
-	<p v-if="!values.some(finiteMetric)" :class="$style.empty">{{ i18n.ts._hana._admin.unavailable }}</p>
+	<p v-if="!values.some(finiteMetric)" v-tooltip="i18n.ts._hana._admin.noValueYet" :class="$style.empty">{{ i18n.ts._hana._admin.unavailable }}</p>
 </div>
 </template>
 

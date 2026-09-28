@@ -15,7 +15,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<XJudge v-else-if="tab === 'judge'"/>
 					<XTrends v-else-if="tab === 'trends'"/>
 					<XTaste v-else-if="tab === 'taste'"/>
-					<XOps v-else-if="tab === 'ops'"/>
 				</div>
 				<template #fallback><MkLoading/></template>
 			</Suspense>
@@ -32,7 +31,6 @@ import XAxes from './hanami.axes.vue';
 import XJudge from './hanami.judge.vue';
 import XTrends from './hanami.trends.vue';
 import XTaste from './hanami.taste.vue';
-import XOps from './hanami.ops.vue';
 import { i18n } from '@/i18n.js';
 import { definePage } from '@/page.js';
 
@@ -44,7 +42,6 @@ const headerTabs = computed(() => [
 	{ key: 'judge', title: i18n.ts._hana._admin.judge, icon: 'ti ti-scale' },
 	{ key: 'trends', title: i18n.ts._hana._admin.trends, icon: 'ti ti-trending-up' },
 	{ key: 'taste', title: i18n.ts._hana._admin.taste, icon: 'ti ti-database' },
-	{ key: 'ops', title: i18n.ts._hana._admin.ops, icon: 'ti ti-settings' },
 ]);
 
 definePage(() => ({

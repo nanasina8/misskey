@@ -11,10 +11,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<template #label>{{ t.status }}</template>
 			<div class="_gaps">
 				<div :class="$style.cards">
-					<MkKeyValue :class="$style.card"><template #key>{{ t.runtime }}</template><template #value>{{ runtimeText }}</template></MkKeyValue>
-					<MkKeyValue :class="$style.card"><template #key>{{ t.promptVersion }}</template><template #value>{{ metric(status?.promptVersion) }}</template></MkKeyValue>
-					<MkKeyValue :class="$style.card"><template #key>{{ t.backlog }}</template><template #value>{{ metric(status?.backlog) }}</template></MkKeyValue>
-					<MkKeyValue :class="$style.card"><template #key>{{ t.secondsPerNote }}</template><template #value>{{ metric(secondsPerNote) }}</template></MkKeyValue>
+					<MkKeyValue :class="$style.card"><template #key>{{ t.runtime }}</template><template #value><span v-tooltip="runtimeText === t.unavailable ? t.noValueYet : undefined">{{ runtimeText }}</span></template></MkKeyValue>
+					<MkKeyValue :class="$style.card"><template #key>{{ t.promptVersion }}</template><template #value><span v-tooltip="status?.promptVersion == null ? t.noValueYet : undefined">{{ metric(status?.promptVersion) }}</span></template></MkKeyValue>
+					<MkKeyValue :class="$style.card"><template #key>{{ t.backlog }}</template><template #value><span v-tooltip="status?.backlog == null ? t.noValueYet : undefined">{{ metric(status?.backlog) }}</span></template></MkKeyValue>
+					<MkKeyValue :class="$style.card"><template #key>{{ t.secondsPerNote }}</template><template #value><span v-tooltip="secondsPerNote == null ? t.noValueYet : undefined">{{ metric(secondsPerNote) }}</span></template></MkKeyValue>
 				</div>
 				<div v-if="status" :class="$style.caption">{{ status.model }} · {{ status.latestRun?.status ?? '—' }} · {{ date(status.latestRun?.finishedAt ?? status.latestRun?.startedAt) }}</div>
 				<MkInfo v-if="status?.runtime.available === false" warn>{{ t.trialUnavailable }} — {{ status.runtime.reason }}</MkInfo>
@@ -34,8 +34,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<template #suffix>v{{ form.savedState.promptVersion }}<span v-if="form.modified.value" class="_modified">{{ i18n.ts.modified }}</span></template>
 				<template #footer><MkFormFooter :form="footerForm" :canSaving="valid && !saving"/></template>
 				<div class="_gaps" :inert="saving">
-					<MkSwitch v-if="typeof form.state.enabled === 'boolean'" v-model="form.state.enabled">{{ t.enabled }}</MkSwitch>
-					<MkKeyValue v-else><template #key>{{ t.enabled }}</template><template #value>{{ t.unavailable }}</template></MkKeyValue>
 					<MkFolder>
 						<template #label>{{ t.q1 }}</template>
 						<div class="_gaps">
@@ -91,22 +89,22 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<template #icon><i class="ti ti-adjustments"></i></template>
 				<template #label>{{ axisLabels.exploration }} · {{ t.whatIf }}</template>
 				<div class="_gaps">
-					<MkRange v-model="form.state.interestThreshold" :min="1" :max="5" :step="0.05" :continuousUpdate="true" :disabled="saving"><template #label>{{ t.thetaInterest }}: {{ metric(form.state.interestThreshold) }}</template><template #caption>{{ t.save }}: θi {{ metric(form.savedState.interestThreshold) }} → {{ metric(form.state.interestThreshold) }} · θe {{ metric(form.savedState.ephemeralThreshold) }} ({{ t.whatIf }})</template></MkRange>
+					<MkRange v-model="form.state.interestThreshold" :min="1" :max="5" :step="0.05" :continuousUpdate="true" :disabled="saving"><template #label>{{ t.thetaInterest }}: <span v-tooltip="form.state.interestThreshold == null ? t.noValueYet : undefined">{{ metric(form.state.interestThreshold) }}</span></template><template #caption>{{ t.save }}: θi <span v-tooltip="form.savedState.interestThreshold == null ? t.noValueYet : undefined">{{ metric(form.savedState.interestThreshold) }}</span> → <span v-tooltip="form.state.interestThreshold == null ? t.noValueYet : undefined">{{ metric(form.state.interestThreshold) }}</span> · θe <span v-tooltip="form.savedState.ephemeralThreshold == null ? t.noValueYet : undefined">{{ metric(form.savedState.ephemeralThreshold) }}</span> ({{ t.whatIf }})</template></MkRange>
 					<MkInfo>{{ t.whatIfDraftDescription }}</MkInfo>
 					<MkInfo v-if="whatIfLoading">{{ t.loading }}</MkInfo>
 					<MkInfo v-if="whatIfError" warn>{{ t.error }}: {{ whatIfError }}</MkInfo>
 					<MkButton v-if="whatIfError" @click="refreshWhatIf">{{ t.retry }}</MkButton>
 					<template v-if="whatIfResult">
 						<div :class="$style.caption">{{ whatIfResult.range.from }} – {{ whatIfResult.range.to }}</div>
-						<div :class="$style.tableScroll">
+						<p v-if="!whatIfReady">{{ t.whatIfNotReady }}</p>
+						<div v-else :class="$style.tableScroll">
 							<table :class="$style.table">
 								<thead><tr><th scope="col">{{ t.thetaInterest }}</th><th scope="col">{{ t.passed }}</th><th scope="col">{{ t.stockChange }}</th><th scope="col">{{ t.engagementRate }}</th></tr></thead>
-								<tbody><tr v-for="row in whatIfResult.interest" :key="row.theta" :class="{ [$style.selected]: row.theta === form.state.interestThreshold }"><th scope="row">{{ metric(row.theta) }}</th><td>{{ metric(row.passed) }}</td><td>{{ stockDelta(row.passed) }}</td><td>{{ percent(row.passedEngagementRate) }}</td></tr></tbody>
+								<tbody><tr v-for="row in whatIfResult.interest" :key="row.theta" :class="{ [$style.selected]: row.theta === form.state.interestThreshold }"><th scope="row"><span v-tooltip="row.theta == null ? t.noValueYet : undefined">{{ metric(row.theta) }}</span></th><td><span v-tooltip="row.passed == null ? t.noValueYet : undefined">{{ metric(row.passed) }}</span></td><td v-tooltip="stockDelta(row.passed) === t.unavailable ? t.noValueYet : undefined">{{ stockDelta(row.passed) }}</td><td><span v-tooltip="row.passedEngagementRate == null ? t.noValueYet : undefined">{{ percent(row.passedEngagementRate) }}</span></td></tr></tbody>
 							</table>
 						</div>
-						<div class="_gaps_s"><strong>{{ t.contentTypeEngagement }}</strong><div v-for="row in whatIfResult.contentTypeBonus" :key="row.contentType" :class="$style.typeRate"><span>{{ typeLabel(row.contentType) }}</span><span>{{ percent(row.engagementRate) }} · {{ t.contentTypeBonus }} {{ metric(row.bonusNow) }}</span></div></div>
-						<MkInfo v-if="whatIfResult.unavailable.length">{{ t.unavailable }}: {{ whatIfResult.unavailable.join(', ') }}</MkInfo>
-						<MkInfo v-if="whatIfResult.suppressed.length">{{ t.suppressedFewUsers }}: {{ whatIfResult.suppressed.join(', ') }}</MkInfo>
+						<div class="_gaps_s"><strong>{{ t.contentTypeEngagement }}</strong><div v-for="row in whatIfResult.contentTypeBonus" :key="row.contentType" :class="$style.typeRate"><span>{{ typeLabel(row.contentType) }}</span><span><span v-tooltip="row.engagementRate == null ? t.noValueYet : undefined">{{ percent(row.engagementRate) }}</span> · {{ t.contentTypeBonus }} <span v-tooltip="row.bonusNow == null ? t.noValueYet : undefined">{{ metric(row.bonusNow) }}</span></span></div></div>
+						<MkInfo v-if="whatIfResult.unavailable.length">{{ partialNotice() }}</MkInfo>
 					</template>
 				</div>
 			</MkFolder>
@@ -127,7 +125,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 						<div :class="$style.tableScroll">
 							<table :class="$style.table">
 								<thead><tr><th scope="col">{{ t.note }}</th><th scope="col">{{ t.score }}</th><th scope="col">Q1</th><th scope="col">Q2</th><th scope="col">Q3</th><th scope="col">{{ t.reason }}</th></tr></thead>
-								<tbody><tr v-for="(item, index) in filteredTrial" :key="`${item.noteId}:${index}`"><td :class="$style.note"><MkA :to="`/notes/${item.noteId}`">{{ item.text || item.noteId }}</MkA></td><td>{{ metric(item.reactionScore) }}</td><td>{{ metric(item.ephemeralScore) }}</td><td>{{ metric(item.interest) }}</td><td>{{ typeLabel(item.contentType) }}</td><td>{{ reasonLabel(item.reason) }}</td></tr></tbody>
+								<tbody><tr v-for="(item, index) in filteredTrial" :key="`${item.noteId}:${index}`"><td :class="$style.note"><MkA :to="`/notes/${item.noteId}`">{{ item.text || item.noteId }}</MkA></td><td><span v-tooltip="item.reactionScore == null ? t.noValueYet : undefined">{{ metric(item.reactionScore) }}</span></td><td><span v-tooltip="item.ephemeralScore == null ? t.noValueYet : undefined">{{ metric(item.ephemeralScore) }}</span></td><td><span v-tooltip="item.interest == null ? t.noValueYet : undefined">{{ metric(item.interest) }}</span></td><td v-tooltip="item.contentType === null ? t.noValueYet : undefined">{{ typeLabel(item.contentType) }}</td><td>{{ reasonLabel(item.reason) }}</td></tr></tbody>
 							</table>
 						</div>
 					</div>
@@ -142,32 +140,33 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<MkInfo v-if="aggregateError" warn>{{ t.error }}: {{ aggregateError }}</MkInfo>
 				<MkButton :disabled="aggregateLoading" @click="refreshAggregate">{{ aggregateLoading ? t.loading : t.refreshNow }}</MkButton>
 				<div :class="$style.cards">
-					<MkKeyValue :class="$style.card"><template #key>{{ t.judge }}</template><template #value>{{ metric(aggregate?.judged) }}</template></MkKeyValue>
-					<MkKeyValue :class="$style.card"><template #key>{{ t.q1 }}</template><template #value>{{ metric(aggregate?.ephemeral) }}</template></MkKeyValue>
-					<MkKeyValue :class="$style.card"><template #key>{{ t.q2 }}</template><template #value>{{ metric(aggregate?.interestFiltered) }}</template></MkKeyValue>
-					<MkKeyValue :class="$style.card"><template #key>{{ t.hiddenCost }} (30d)</template><template #value>{{ metric(hiddenTotal) }}</template></MkKeyValue>
+					<MkKeyValue :class="$style.card"><template #key>{{ t.llmJudged }}</template><template #value><span v-tooltip="aggregate?.judged == null ? t.noValueYet : undefined">{{ metric(aggregate?.judged) }}</span></template></MkKeyValue>
+					<MkKeyValue :class="$style.card"><template #key>{{ t.ruleExcluded }}</template><template #value><span v-tooltip="aggregate?.ruleExcluded == null ? t.noValueYet : undefined">{{ metric(aggregate?.ruleExcluded) }}</span></template></MkKeyValue>
+					<MkKeyValue :class="$style.card"><template #key>{{ t.q1 }}</template><template #value><span v-tooltip="aggregate?.ephemeral == null ? t.noValueYet : undefined">{{ metric(aggregate?.ephemeral) }}</span></template></MkKeyValue>
+					<MkKeyValue :class="$style.card"><template #key>{{ t.q2 }}</template><template #value><span v-tooltip="aggregate?.interestFiltered == null ? t.noValueYet : undefined">{{ metric(aggregate?.interestFiltered) }}</span></template></MkKeyValue>
+					<MkKeyValue :class="$style.card"><template #key>{{ t.hiddenCost }} (30d)</template><template #value><span v-tooltip="hiddenTotal == null ? t.noValueYet : undefined">{{ metric(hiddenTotal) }}</span></template></MkKeyValue>
 				</div>
 				<div v-if="aggregate" class="_gaps_s">
-					<div v-for="row in aggregate.typeBreakdown" :key="row.contentType" :class="$style.typeRow"><span>{{ typeLabel(row.contentType) }}</span><meter v-if="aggregate.judged != null" :min="0" :max="Math.max(1, aggregate.judged)" :value="row.count" :aria-label="typeLabel(row.contentType)"></meter><span v-else>{{ t.unavailable }}</span><span>{{ metric(row.count) }}</span></div>
+					<strong>{{ t.llmJudged }}</strong>
+					<div v-for="row in aggregate.typeBreakdown" :key="row.contentType" :class="$style.typeRow"><span>{{ typeLabel(row.contentType) }}</span><meter v-if="aggregate.judged != null" :min="0" :max="Math.max(1, aggregate.judged)" :value="row.count" :aria-label="typeLabel(row.contentType)"></meter><span v-else><span v-tooltip="t.noValueYet">{{ t.unavailable }}</span></span><span><span v-tooltip="row.count == null ? t.noValueYet : undefined">{{ metric(row.count) }}</span></span></div>
 					<div :class="$style.tableScroll">
 						<table :class="$style.table">
-							<caption>{{ t.served }} · 20 (24h)</caption>
+							<caption>{{ axisLabels.exploration }} · {{ t.served }} · 20 (24h)</caption>
 							<thead><tr><th scope="col">{{ t.note }}</th><th scope="col">{{ t.score }}</th><th scope="col">Q1</th><th scope="col">Q2</th></tr></thead>
-							<tbody><tr v-for="(item, index) in aggregate.topServed.slice(0, 20)" :key="`${item.noteId}:${index}`"><td :class="$style.note"><MkA :to="`/notes/${item.noteId}`">{{ item.text || item.noteId }}</MkA></td><td>{{ metric(item.reactionScore) }}</td><td>{{ metric(item.ephemeralScore) }}</td><td>{{ metric(item.interest) }}</td></tr></tbody>
+							<tbody><tr v-for="(item, index) in aggregate.topServed.slice(0, 20)" :key="`${item.noteId}:${index}`"><td :class="$style.note"><MkA :to="`/notes/${item.noteId}`">{{ item.text || item.noteId }}</MkA></td><td><span v-tooltip="item.reactionScore == null ? t.noValueYet : undefined">{{ metric(item.reactionScore) }}</span></td><td>{{ item.ephemeralScore === null ? t._dimensionValue.unjudged : metric(item.ephemeralScore) }}</td><td>{{ item.interest === null ? t._dimensionValue.unjudged : metric(item.interest) }}</td></tr></tbody>
 						</table>
 					</div>
 				</div>
 				<MkInfo v-if="hiddenError" warn>{{ t.hiddenCost }}: {{ hiddenError }}</MkInfo>
-				<MkInfo v-if="hiddenSuppressed.length" warn>{{ t.suppressedFewUsers }}: {{ hiddenSuppressed.join(', ') }}</MkInfo>
-				<MkInfo v-if="hiddenUnavailable.length" warn>{{ t.partialData }} — {{ t.unavailable }}: {{ hiddenUnavailable.join(', ') }}</MkInfo>
-				<div v-for="row in hiddenCosts" :key="row.axis" :class="$style.typeRate"><span>{{ axisLabel(row.axis) }}</span><span>{{ t.hiddenCost }} {{ metric(row.hidden) }}</span></div>
+				<MkInfo v-if="hiddenMetrics?.unavailable.length" warn>{{ partialNotice() }}</MkInfo>
+				<div v-for="row in hiddenCosts" :key="row.axis" :class="$style.typeRate"><span>{{ axisLabel(row.axis) }}</span><span>{{ t.hiddenCost }} <span v-tooltip="row.hidden == null ? t.noValueYet : undefined">{{ metric(row.hidden) }}</span></span></div>
 			</div>
 		</MkFolder>
 
 		<MkFolder>
 			<template #icon><i class="ti ti-lock"></i></template>
 			<template #label>{{ t.judgePolicy }}</template>
-			<div class="_gaps_s"><MkKeyValue v-for="axis in axes" :key="axis" oneline><template #key>{{ axisLabels[axis] }}</template><template #value>{{ axis === 'exploration' ? t.passOnly : axis === 'globalPopular' || axis === 'trending' ? t.hideEphemeral : t.noJudge }}</template></MkKeyValue></div>
+			<div class="_gaps_s"><MkKeyValue v-for="axis in axes" :key="axis" oneline><template #key>{{ axisLabel(axis) }}</template><template #value>{{ axis === 'exploration' ? t.passOnly : axis === 'globalPopular' || axis === 'trending' ? t.hideEphemeral : t.noJudge }}</template></MkKeyValue></div>
 		</MkFolder>
 	</div>
 </SearchMarker>
@@ -184,22 +183,21 @@ import MkInfo from '@/components/MkInfo.vue';
 import MkInput from '@/components/MkInput.vue';
 import MkKeyValue from '@/components/MkKeyValue.vue';
 import MkRange from '@/components/MkRange.vue';
-import MkSwitch from '@/components/MkSwitch.vue';
 import MkTextarea from '@/components/MkTextarea.vue';
+import { partialNotice, sourceLabel } from '@/scripts/hanami-metrics.js';
 import { useForm } from '@/composables/use-form.js';
 import { i18n } from '@/i18n.js';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
-import { createJudgeDebounce, judgeFormToSettings, judgeFormValid, judgePromptChanged, judgeRegexRows, judgeRejudgeEstimate, judgeSecondsPerNote, judgeSettingsToForm, judgeTrialAvailable } from '@/scripts/hanami-judge-form.js';
+import { judgeContentTypes as contentTypes, typeLabel as judgeTypeLabel, createJudgeDebounce, judgeFormToSettings, judgeFormValid, judgePromptChanged, judgeRegexRows, judgeRejudgeEstimate, judgeSecondsPerNote, judgeSettingsToForm, judgeTrialAvailable } from '@/scripts/hanami-judge-form.js';
 
 defineOptions({ name: 'HanamiJudge' });
 
 const t = i18n.ts._hana._admin;
 const axes = ['globalPopular', 'exploration', 'trending', 'neighborTrending', 'reactionSimilar', 'catchup', 'fof'] as const;
 const axisLabels = i18n.ts._hana._recommendation._reason;
-const axisLabel = (axis: string) => axes.includes(axis as typeof axes[number]) ? axisLabels[axis as typeof axes[number]] : axis;
+const axisLabel = (axis: string) => sourceLabel(axis, axisLabels);
 // These labels describe the fixed Japanese model choices, not editable prompt fields.
-const contentTypes = ['挨拶・相づち・定型文', 'ニュース・情報の共有', '解説・知識・ハウツー', '意見・考察・問題提起', '出来事・体験談・エピソード', 'ユーモア・ネタ・大喜利', '作品の投稿', '写真・食事・日常の記録', '告知・宣伝・募集・企画参加', '近況・独り言・感情の吐露'];
 const q1Basis = [{ key: 'ephemeralA', label: 'A · その場限りの投稿' }, { key: 'ephemeralB', label: 'B · 単独で読める投稿' }] as const;
 const q2Basis = [{ key: 'interest1', label: '1 · 第三者が読む価値がない' }, { key: 'interest2', label: '2 · ありふれた近況や独り言' }, { key: 'interest3', label: '3 · 普通' }, { key: 'interest4', label: '4 · 得るものや面白さがある' }, { key: 'interest5', label: '5 · 新しい情報・視点・気づき' }] as const;
 
@@ -211,13 +209,12 @@ const aggregateLoading = ref(false);
 const aggregateError = ref('');
 const hiddenMetrics = ref<entities.AdminHanamiMetricsOpportunitiesResponse | null>(null);
 const hiddenCosts = computed(() => hiddenMetrics.value?.hiddenCost ?? null);
-const hiddenSuppressed = computed(() => hiddenMetrics.value?.suppressed.filter(key => key.includes('hiddenCost')) ?? []);
 const hiddenUnavailable = computed(() => hiddenMetrics.value?.unavailable.filter(key => key.includes('hiddenCost')) ?? []);
 const hiddenError = ref('');
 const hiddenTotal = computed(() => {
 	// A normal-TL exposure denominator affects rates, not candidate counts. All
-	// other missing/suppressed hidden-cost cohorts make the count total unknown.
-	if (hiddenSuppressed.value.length || hiddenUnavailable.value.some(key => key !== 'hiddenCost.normalExposureDenominator')) return null;
+	// other missing hidden-cost cohorts make the count total unknown.
+	if (hiddenUnavailable.value.some(key => key !== 'hiddenCost.normalExposureDenominator')) return null;
 	return hiddenCosts.value?.length ? hiddenCosts.value.reduce<number | null>((sum, row) => sum == null || row.hidden == null ? null : sum + row.hidden, 0) : null;
 });
 const secondsPerNote = computed(() => status.value?.secPerNote ?? judgeSecondsPerNote(status.value?.latestRun?.params));
@@ -228,7 +225,7 @@ const settingsError = ref('');
 const saving = ref(false);
 let disposed = false;
 const form = useForm(judgeSettingsToForm({
-	schemaVersion: 1, promptVersion: 1, enabled: undefined,
+	schemaVersion: 1, promptVersion: 1,
 	ephemeralThreshold: 0, interestThreshold: 2.95, reactionMax: 3, interestMax: 10,
 	basis: { ephemeralA: '', ephemeralB: '', interest1: '', interest2: '', interest3: '', interest4: '', interest5: '' },
 	examples: [], templatePatterns: [], contentTypeBonus: [],
@@ -244,7 +241,7 @@ const footerForm = { ...form, save: saveSettings, discard: () => { if (!saving.v
 const metric = (value: number | null | undefined) => value == null || !Number.isFinite(value) ? '—' : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 const percent = (value: number | null | undefined) => value == null ? '—' : `${metric(value * 100)}%`;
 const date = (value: string | null | undefined) => value == null ? '—' : new Date(value).toLocaleString();
-const typeLabel = (value: number | null) => value == null ? '—' : contentTypes[value] ?? String(value);
+const typeLabel = (value: number | null) => judgeTypeLabel(value, t._dimensionValue.unjudged);
 const errorText = (error: unknown) => error instanceof Error ? error.message : typeof error === 'object' && error != null && 'message' in error ? String(error.message) : String(error);
 
 async function loadSettings() {
@@ -336,6 +333,7 @@ async function runTrial() {
 	}
 }
 
+const whatIfReady = computed(() => whatIfResult.value?.interest.some(row => row.passed !== null || row.passedEngagementRate !== null) ?? false);
 const whatIfResult = ref<entities.AdminHanamiMetricsWhatIfResponse | null>(null);
 const whatIfLoading = ref(false);
 const whatIfError = ref('');

@@ -9,11 +9,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<template v-else>
 		<MkInfo>{{ i18n.ts._hana._recommendation.axisConfigDescription }}</MkInfo>
 		<MkFolder v-for="axis in axisKeys" :key="axis">
-			<template #label>{{ hanamiReasonLabels[axis] }}</template>
+			<template #label>{{ axisLabel(axis) }}</template>
 			<template #suffix>
-				<span :class="$style.summary">{{ i18n.ts._hana._admin.maximumShare }}: {{ shareText(axis) }} · {{ i18n.ts._hana._admin[judgePolicy(axis)] }}</span>
+				<span :class="$style.summary">{{ i18n.ts._hana._admin.maximumShare }}: {{ shareText(axis) }} · {{ judgePolicy(axis) }}</span>
 			</template>
-			<template #caption>{{ i18n.ts._hana._admin.confidence }}: high / low / none · {{ axis === 'exploration' ? 'EXPLORATION_SHARE (quota, normal)' : 'AXIS_MAX_SHARE (cap, normal)' }} · {{ i18n.ts._hana._admin.judgePolicy }}</template>
+			<template #caption>{{ i18n.ts._hana._admin.judgePolicy }}: {{ judgePolicy(axis) }}</template>
 			<div class="_gaps_s">
 				<MkSwitch v-model="hanamiRecForm.state[`${axis}Available`]" :disabled="saving">
 					<template #label>{{ i18n.ts._hana._admin.available }}<span v-if="hanamiRecForm.modifiedStates[`${axis}Available`]" class="_modified">{{ i18n.ts.modified }}</span></template>
@@ -40,10 +40,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<MkKeyValue>
 			<template #key>{{ i18n.ts._hana._admin.confidence }}</template>
 			<template #value>
-				<div>engagement = {{ i18n.ts.reaction }} + {{ i18n.ts.reply }} / {{ i18n.ts.renote }}</div>
-				<div>high: engagement ≥ {{ CONFIDENCE_HIGH_ENGAGEMENT }} ∧ ALS factor ∧ centroid</div>
-				<div>low: ¬high ∧ (engagement ≥ {{ CONFIDENCE_LOW_ENGAGEMENT }} ∨ following ∨ relation)</div>
-				<div>none: ¬high ∧ ¬low</div>
+				<div>{{ i18n.tsx._hana._admin._confidence.high({ n: CONFIDENCE_HIGH_ENGAGEMENT }) }}</div>
+				<div>{{ i18n.tsx._hana._admin._confidence.low({ n: CONFIDENCE_LOW_ENGAGEMENT }) }}</div>
+				<div>{{ i18n.ts._hana._admin._confidence.none }}</div>
 			</template>
 		</MkKeyValue>
 	</div>
@@ -52,6 +51,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script lang="ts" setup>
 import { ref } from 'vue';
+import { sourceLabel } from '@/scripts/hanami-metrics.js';
 import MkButton from '@/components/MkButton.vue';
 import MkFolder from '@/components/MkFolder.vue';
 import MkInfo from '@/components/MkInfo.vue';
@@ -76,7 +76,7 @@ const axisConfigKeys: Record<AxisKey, readonly (AxisKey | 'popular')[]> = {
 	trending: ['trending'],
 	fof: ['fof'],
 };
-const hanamiReasonLabels = i18n.ts._hana._recommendation._reason;
+const axisLabel = (axis: string) => sourceLabel(axis, i18n.ts._hana._recommendation._reason);
 
 // Read-only P2 snapshots of backend/core/hanami/HanamiForYouInterleave.ts.
 // Six ordinary caps and the independent exploration quota must stay separate.
@@ -98,8 +98,9 @@ function shareText(axis: AxisKey): string {
 	return (['high', 'low', 'none'] as const).map(confidence => `${Math.round(100 * (axis === 'exploration' ? EXPLORATION_SHARE[confidence] : AXIS_MAX_SHARE[confidence][axis]))}%`).join(' / ');
 }
 
-function judgePolicy(axis: AxisKey): 'passOnly' | 'hideEphemeral' | 'noJudge' {
-	return axis === 'exploration' ? 'passOnly' : axis === 'globalPopular' || axis === 'trending' ? 'hideEphemeral' : 'noJudge';
+function judgePolicy(axis: AxisKey): string {
+	const t = i18n.ts._hana._admin;
+	return axis === 'exploration' ? t.passOnly : axis === 'globalPopular' || axis === 'trending' ? t.hideEphemeral : t.noJudge;
 }
 
 const loadError = ref<string | null>(null);
