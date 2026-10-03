@@ -28,23 +28,48 @@ export const isFocusable = (input: MaybeHTMLElement | null | undefined): input i
 
 export const focusPrev = (input: MaybeHTMLElement | null | undefined, self = false, scroll = true) => {
 	const element = self ? input : getElementOrNull(input)?.previousElementSibling;
-	if (element == null) return;
+	if (element == null) {
+		const parent = getElementOrNull(input)?.parentElement;
+		if (parent?.hasAttribute('data-focus-container')) focusPrev(parent, false, scroll);
+		return;
+	}
 	if (isFocusable(element)) {
 		focusOrScroll(element, scroll);
 	} else {
+		const child = findFocusContainerChild(element, true);
+		if (child) return focusOrScroll(child, scroll);
 		focusPrev(element, false, scroll);
 	}
 };
 
 export const focusNext = (input: MaybeHTMLElement | null | undefined, self = false, scroll = true) => {
 	const element = self ? input : getElementOrNull(input)?.nextElementSibling;
-	if (element == null) return;
+	if (element == null) {
+		const parent = getElementOrNull(input)?.parentElement;
+		if (parent?.hasAttribute('data-focus-container')) focusNext(parent, false, scroll);
+		return;
+	}
 	if (isFocusable(element)) {
 		focusOrScroll(element, scroll);
 	} else {
+		const child = findFocusContainerChild(element, false);
+		if (child) return focusOrScroll(child, scroll);
 		focusNext(element, false, scroll);
 	}
 };
+
+function findFocusContainerChild(input: MaybeHTMLElement, reverse: boolean): HTMLElement | null {
+	const element = getElementOrNull(input);
+	if (!element?.hasAttribute('data-focus-container')) return null;
+	let child = reverse ? element.lastElementChild : element.firstElementChild;
+	while (child) {
+		if (isFocusable(child)) return child;
+		const nested = findFocusContainerChild(child, reverse);
+		if (nested) return nested;
+		child = reverse ? child.previousElementSibling : child.nextElementSibling;
+	}
+	return null;
+}
 
 export const focusParent = (input: MaybeHTMLElement | null | undefined, self = false, scroll = true) => {
 	const element = self ? input : getNodeOrNull(input)?.parentElement;

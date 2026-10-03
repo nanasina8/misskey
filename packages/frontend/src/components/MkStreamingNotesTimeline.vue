@@ -32,23 +32,23 @@ SPDX-License-Identifier: AGPL-3.0-only
 			:moveClass="$style.transition_x_move"
 			tag="div"
 		>
-			<template v-for="(item, i) in items" :key="itemKey(item)">
-				<div v-if="showDateSeparators && i > 0 && isSeparatorNeeded(itemNote(items[i - 1]).createdAt, itemNote(item).createdAt)" :data-scroll-anchor="itemKey(item)">
+			<MkOffscreenKeeper v-for="(item, i) in items" :key="itemKey(item)" :data-scroll-anchor="itemKey(item)">
+				<template v-if="showDateSeparators && i > 0 && isSeparatorNeeded(itemNote(items[i - 1]).createdAt, itemNote(item).createdAt)">
 					<div :class="$style.date">
 						<span><i class="ti ti-chevron-up"></i> {{ getSeparatorInfo(itemNote(items[i - 1]).createdAt, itemNote(item).createdAt)?.prevText }}</span>
 						<span style="height: 1em; width: 1px; background: var(--MI_THEME-divider);"></span>
 						<span>{{ getSeparatorInfo(itemNote(items[i - 1]).createdAt, itemNote(item).createdAt)?.nextText }} <i class="ti ti-chevron-down"></i></span>
 					</div>
 					<MkNote :class="$style.note" :note="itemNote(item)" :hanamiFeedEntryId="itemFeedEntryId(item)" :withHardMute="true"/>
-				</div>
-				<div v-else-if="itemNote(item)._shouldInsertAd_" :data-scroll-anchor="itemKey(item)">
+				</template>
+				<template v-else-if="itemNote(item)._shouldInsertAd_">
 					<MkNote :class="$style.note" :note="itemNote(item)" :hanamiFeedEntryId="itemFeedEntryId(item)" :withHardMute="true"/>
 					<div :class="$style.ad">
 						<MkAd :preferForms="['horizontal', 'horizontal-big']"/>
 					</div>
-				</div>
-				<MkNote v-else :class="$style.note" :note="itemNote(item)" :hanamiFeedEntryId="itemFeedEntryId(item)" :withHardMute="true" :data-scroll-anchor="itemKey(item)"/>
-			</template>
+				</template>
+				<MkNote v-else :class="$style.note" :note="itemNote(item)" :hanamiFeedEntryId="itemFeedEntryId(item)" :withHardMute="true"/>
+			</MkOffscreenKeeper>
 		</component>
 		<button v-show="canFetchOlder" key="_more_" v-appear="prefer.s.enableInfiniteScroll ? fetchOlder : null" :disabled="fetchingOlder" class="_button" :class="$style.more" @click="fetchOlder">
 			<div v-if="!fetchingOlder">{{ i18n.ts.loadMore }}</div>
@@ -76,6 +76,7 @@ import { instance } from '@/instance.js';
 import { prefer } from '@/preferences.js';
 import { store } from '@/store.js';
 import MkNote from '@/components/MkNote.vue';
+import MkOffscreenKeeper from '@/components/MkOffscreenKeeper.vue';
 import { i18n } from '@/i18n.js';
 import { useGlobalEvent } from '@/events.js';
 import { isSeparatorNeeded, getSeparatorInfo } from '@/utility/timeline-date-separate.js';
