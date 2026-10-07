@@ -6,8 +6,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <div :class="$style.row">
 	<div :class="$style.head">
-		<MkA :class="$style.term" :to="`/search?q=${encodeURIComponent(item.term)}`" :title="item.term">{{ item.term }}</MkA>
-		<span :class="$style.authors">{{ i18n.tsx._hana._trends.authors({ n: item.distinctAuthors }) }}</span>
+		<MkA :class="$style.term" :to="`/search?q=${encodeURIComponent(item.term)}`" :title="heading">{{ heading }}</MkA>
+		<span v-if="showAuthors" :class="$style.authors">{{ i18n.tsx._hana._trends.authors({ n: item.distinctAuthors }) }}</span>
 		<span :class="$style.rank">{{ rank }}</span>
 	</div>
 	<MkA v-if="item.representativeNote" :class="$style.note" :to="`/notes/${item.representativeNote.id}`">
@@ -25,10 +25,16 @@ import { computed } from 'vue';
 import type * as Misskey from 'misskey-js';
 import { i18n } from '@/i18n.js';
 
-const props = defineProps<{
-	item: Misskey.entities.NotesHanamiTrendsResponse['items'][number];
+const props = withDefaults(defineProps<{
+	item: Pick<Misskey.entities.NotesHanamiTrendsResponse['items'][number], 'term' | 'relatedTerms' | 'distinctAuthors' | 'representativeNote'>;
 	rank: number;
-}>();
+	showAuthors?: boolean;
+}>(), { showAuthors: true });
+
+const heading = computed(() => {
+	const related = props.item.relatedTerms?.slice(0, 3) ?? [];
+	return props.item.term + (related.length > 0 ? `（${related.join('・')}）` : '');
+});
 
 // 代表ノートは1行だけ。改行と連続空白を潰し、長文は切る（CW があれば CW を見せる）
 const summary = computed(() => {

@@ -13566,6 +13566,54 @@ export interface Locale extends ILocale {
         };
         "_trends": {
             /**
+             * この話題の投稿を見る
+             */
+            "showTopicNotes": string;
+            /**
+             * 閉じる
+             */
+            "hideTopicNotes": string;
+            /**
+             * 表示できる投稿がありません
+             */
+            "noTopicNotes": string;
+            /**
+             * 読み込めませんでした
+             */
+            "topicNotesFailed": string;
+            /**
+             * 深夜
+             */
+            "blockNight0": string;
+            /**
+             * 朝
+             */
+            "blockMorning": string;
+            /**
+             * 昼
+             */
+            "blockDaytime": string;
+            /**
+             * 夜
+             */
+            "blockEvening": string;
+            /**
+             * {date} {name}（{from}〜{to}）
+             */
+            "blockHeading": ParameterizedString<"date" | "name" | "from" | "to">;
+            /**
+             * {from}〜{to}
+             */
+            "period": ParameterizedString<"from" | "to">;
+            /**
+             * 前の区切りから
+             */
+            "continuedFromBefore": string;
+            /**
+             * 最大{n}人
+             */
+            "peakAuthors": ParameterizedString<"n">;
+            /**
              * 話している人 {n}人
              */
             "authors": ParameterizedString<"n">;
