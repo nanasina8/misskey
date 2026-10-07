@@ -524,7 +524,7 @@ export type paths = {
     '/admin/hanami/metrics/notes': {
         /**
          * admin/hanami/metrics/notes
-         * @description Get up to 20 public notes ranked by per-type engagement rate, with at least 20 served records. Ranges contain at most 30 days; dimension and key must be supplied together. Visibility and safety are rechecked on cache hits.
+         * @description Get up to 20 public, currently visible notes from cohorts with at least 20 serves, at most 30 inclusive days. Text is limited to 160 characters; the service rechecks visibility even on cache hits.
          *
          *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
          */
@@ -533,7 +533,7 @@ export type paths = {
     '/admin/hanami/metrics/opportunities': {
         /**
          * admin/hanami/metrics/opportunities
-         * @description Get read-only Hanami allocation and content opportunities, supply snapshots, demand, hidden costs, and tuning distributions. Suggested caps are advisory; consult unavailable fields; suppressed is always empty. Hidden-cost rates use candidate records, not normal-TL exposures.
+         * @description Get read-only Hanami improvement suggestions from visible aggregate cohorts. Suggestions are never applied automatically; consult unavailable; suppressed is always empty.
          *
          *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
          */
@@ -551,7 +551,7 @@ export type paths = {
     '/admin/hanami/metrics/what-if': {
         /**
          * admin/hanami/metrics/what-if
-         * @description Compare exploration thresholds over the current-prompt judged served cohort. Ranges contain at most 30 days; each threshold array contains at most eight values (interest 1–5, ephemeral 0–1). Missing results are null; this is not a full safety/diversity replay.
+         * @description Evaluate exploration thresholds against the current-prompt served cohort, at most 30 inclusive days. All observed user cohorts are included; missing cohorts return null. Omitted threshold arrays use current settings.
          *
          *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
          */
@@ -3272,6 +3272,24 @@ export type paths = {
          *     **Credential required**: *Yes* / **Permission**: *read:account*
          */
         post: operations['notes___hanami-timeline-seen'];
+    };
+    '/notes/hanami-trend-history': {
+        /**
+         * notes/hanami-trend-history
+         * @description No description provided.
+         *
+         *     **Credential required**: *No*
+         */
+        post: operations['notes___hanami-trend-history'];
+    };
+    '/notes/hanami-trend-topic-notes': {
+        /**
+         * notes/hanami-trend-topic-notes
+         * @description No description provided.
+         *
+         *     **Credential required**: *No*
+         */
+        post: operations['notes___hanami-trend-topic-notes'];
     };
     '/notes/hanami-trends': {
         /**
@@ -9582,13 +9600,13 @@ export interface operations {
         requestBody: {
             content: {
                 'application/json': {
-                    /** Supplying range or axis selects cohort mode (at most 30 days). */
                     range?: {
-                        days: 7 | 14 | 30 | 90;
+                        days: number | 7 | 14 | 30 | 90;
                     } | {
                         from: string;
                         to: string;
                     };
+                    /** @enum {string} */
                     axis?: 'exploration';
                 };
             };
@@ -9782,7 +9800,7 @@ export interface operations {
         requestBody: {
             content: {
                 'application/json': {
-                    /** Bypass the cached runtime probe. */
+                    /** @default false */
                     force?: boolean;
                 };
             };
@@ -9973,11 +9991,12 @@ export interface operations {
             content: {
                 'application/json': {
                     range?: {
-                        days: 7 | 14 | 30 | 90;
+                        days: number | 7 | 14 | 30 | 90;
                     } | {
                         from: string;
                         to: string;
                     };
+                    /** @enum {string} */
                     dimension: 'source' | 'contentType' | 'relationshipClass' | 'media' | 'freshness' | 'authorLocality' | 'trendTerm' | 'cluster';
                     filter?: {
                         source?: string;
@@ -10004,8 +10023,10 @@ export interface operations {
                             from: string;
                             to: string;
                         };
+                        /** @enum {string} */
                         dimension: 'source' | 'contentType' | 'relationshipClass' | 'media' | 'freshness' | 'authorLocality' | 'trendTerm' | 'cluster';
                         coverage: {
+                            /** @enum {string} */
                             status: 'complete' | 'partial' | 'unavailable';
                             startedAt: string | null;
                             retainedFrom: string;
@@ -10014,7 +10035,10 @@ export interface operations {
                             outcomesThrough: string;
                             unavailable: string[];
                         };
-                        /** @description Shares and lift use all observed cells; the visible value is retained for compatibility. */
+                        /**
+                         * @description Shares and lift use all observed cells; the visible value is retained for compatibility.
+                         * @enum {string}
+                         */
                         denominator: 'visible';
                         rows: {
                             key: string;
@@ -10087,7 +10111,7 @@ export interface operations {
             content: {
                 'application/json': {
                     range?: {
-                        days: 7 | 14 | 30 | 90;
+                        days: number | 7 | 14 | 30 | 90;
                     } | {
                         from: string;
                         to: string;
@@ -10108,6 +10132,7 @@ export interface operations {
                             to: string;
                         };
                         coverage: {
+                            /** @enum {string} */
                             status: 'complete' | 'partial' | 'unavailable';
                             startedAt: string | null;
                             retainedFrom: string;
@@ -10131,6 +10156,7 @@ export interface operations {
                             }[];
                             recent: {
                                 at: string;
+                                /** @enum {string} */
                                 kind: 'emptyResult' | 'candidateLimit' | 'lockTimeout' | 'exception' | 'unknown';
                                 attempts: number;
                                 message: string;
@@ -10140,6 +10166,7 @@ export interface operations {
                         common: {
                             recent: {
                                 at: string;
+                                /** @enum {string} */
                                 status: 'failed';
                                 message: string;
                             }[];
@@ -10147,6 +10174,7 @@ export interface operations {
                         judge: {
                             recent: {
                                 at: string;
+                                /** @enum {string} */
                                 status: 'failed';
                                 message: string;
                             }[];
@@ -10212,14 +10240,13 @@ export interface operations {
         requestBody: {
             content: {
                 'application/json': {
-                    /** Ranges contain at most 30 days. */
                     range?: {
-                        days: 7 | 14 | 30 | 90;
+                        days: number | 7 | 14 | 30 | 90;
                     } | {
                         from: string;
                         to: string;
                     };
-                    /** Supply dimension and key together, or omit both. */
+                    /** @enum {string} */
                     dimension?: 'source' | 'contentType' | 'relationshipClass' | 'media' | 'freshness' | 'authorLocality' | 'trendTerm' | 'cluster';
                     key?: string;
                 };
@@ -10306,7 +10333,7 @@ export interface operations {
             content: {
                 'application/json': {
                     range?: {
-                        days: 7 | 14 | 30 | 90;
+                        days: number | 7 | 14 | 30 | 90;
                     } | {
                         from: string;
                         to: string;
@@ -10336,6 +10363,7 @@ export interface operations {
                                 low: number;
                                 none: number;
                             };
+                            /** @enum {string} */
                             verdict: 'under' | 'over' | 'balanced';
                             suggestedCap: {
                                 high: number;
@@ -10369,14 +10397,12 @@ export interface operations {
                             avgServedPerPageNormal: number;
                             note: string;
                         }[];
-                        /** Rates use candidate records, not normal-TL exposures, as their denominator. */
                         hiddenCost: {
                             axis: string;
                             hidden: number;
                             normalEngagementOfHidden: number;
                             normalEngagementOfShown: number;
                         }[];
-                        /** Latest captured day in range; effective levels, not summed daily users. */
                         tuningDrift: {
                             [key: string]: {
                                 [key: string]: number;
@@ -10439,7 +10465,7 @@ export interface operations {
             content: {
                 'application/json': {
                     range?: {
-                        days: 7 | 14 | 30 | 90;
+                        days: number | 7 | 14 | 30 | 90;
                     } | {
                         from: string;
                         to: string;
@@ -10460,6 +10486,7 @@ export interface operations {
                             to: string;
                         };
                         coverage: {
+                            /** @enum {string} */
                             status: 'complete' | 'partial' | 'unavailable';
                             startedAt: string | null;
                             retainedFrom: string;
@@ -10469,7 +10496,10 @@ export interface operations {
                             unavailable: string[];
                         };
                         suppressed: string[];
-                        /** @description Shares and lift use all observed cells; the visible value is retained for compatibility. */
+                        /**
+                         * @description Shares and lift use all observed cells; the visible value is retained for compatibility.
+                         * @enum {string}
+                         */
                         denominator: 'visible';
                         usage: {
                             hanamiUsers: {
@@ -10593,18 +10623,16 @@ export interface operations {
         requestBody: {
             content: {
                 'application/json': {
-                    /** Ranges contain at most 30 days. */
                     range?: {
-                        days: 7 | 14 | 30 | 90;
+                        days: number | 7 | 14 | 30 | 90;
                     } | {
                         from: string;
                         to: string;
                     };
+                    /** @enum {string} */
                     axis: 'exploration';
                     thresholds: {
-                        /** At most eight values in 1–5. Omission uses the configured threshold. */
                         interest?: number[];
-                        /** At most eight values in 0–1. Omission uses the configured threshold. */
                         ephemeral?: number[];
                     };
                 };
@@ -25604,7 +25632,7 @@ export interface operations {
             content: {
                 'application/json': {
                     range?: {
-                        days: 7 | 14 | 30 | 90;
+                        days: number | 7 | 14 | 30 | 90;
                     } | {
                         from: string;
                         to: string;
@@ -25625,11 +25653,15 @@ export interface operations {
                             to: string;
                         };
                         coverage: {
+                            /** @enum {string} */
                             status: 'complete' | 'partial' | 'unavailable';
                             unavailable: string[];
                         };
                         suppressed: string[];
-                        /** @description Shares and lift use all observed cells; the visible value is retained for compatibility. */
+                        /**
+                         * @description Shares and lift use all observed cells; the visible value is retained for compatibility.
+                         * @enum {string}
+                         */
                         denominator: 'visible';
                         usage: {
                             hanamiUsers: {
@@ -32431,6 +32463,168 @@ export interface operations {
             };
         };
     };
+    'notes___hanami-trend-history': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Format: date-time */
+                    until?: string;
+                    /** @default 2 */
+                    blocks?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        blocks: {
+                            /** Format: date-time */
+                            from: string;
+                            /** Format: date-time */
+                            to: string;
+                            items: {
+                                topicId: string | null;
+                                term: string;
+                                relatedTerms: string[];
+                                /** Format: date-time */
+                                startedAt: string | null;
+                                daily: boolean;
+                                peakAuthors: number;
+                                /** Format: date-time */
+                                firstSeenAt: string;
+                                /** Format: date-time */
+                                lastSeenAt: string;
+                                representativeNote: components['schemas']['Note'] | null;
+                            }[];
+                        }[];
+                        nextUntil: string | null;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'notes___hanami-trend-topic-notes': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Format: date-time */
+                    from: string;
+                    /** Format: date-time */
+                    to: string;
+                    topicId?: string;
+                    term?: string;
+                } & (unknown | unknown);
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        notes: components['schemas']['Note'][];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
     'notes___hanami-trends': {
         requestBody: {
             content: {
@@ -32457,6 +32651,10 @@ export interface operations {
                             /** Format: date-time */
                             snapshotGeneratedAt: string;
                             term: string;
+                            topicId: string | null;
+                            relatedTerms: string[];
+                            /** Format: date-time */
+                            startedAt: string | null;
                             score: number;
                             distinctAuthors: number;
                             representativeNote: components['schemas']['Note'] | null;

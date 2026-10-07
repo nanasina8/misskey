@@ -162,6 +162,8 @@ export type HanamiNoteJudgeJobData = {
 	promptVersion: number;
 };
 
+export type HanamiTrendTopicJudgeJobData = import('@/core/hanami/HanamiForYouBatchService.js').HanamiTrendTopicJudgeJobData;
+
 export type HanamiUserFeedGenerationJobData = {
 	batchId: string;
 };
@@ -192,6 +194,7 @@ export type HanamiGenerationJobMap = {
 	hanamiCommonGenerationTick: HanamiCommonGenerationTickJobData;
 	hanamiCommonGeneration: HanamiCommonGenerationJobData;
 	hanamiNoteJudge: HanamiNoteJudgeJobData;
+	hanamiTrendTopicJudge: HanamiTrendTopicJudgeJobData;
 	hanamiUserFeedGeneration: HanamiUserFeedGenerationJobData;
 	hanamiGenerationReconcile: HanamiGenerationReconcileJobData;
 	hanamiRecommendationEventCacheRepair: HanamiRecommendationEventCacheRepairJobData;

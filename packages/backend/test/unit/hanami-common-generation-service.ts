@@ -869,16 +869,24 @@ describe('HanamiCommonGenerationService', () => {
 		} satisfies HanamiCommonSourceBundle;
 		expect(() => internals.validateSourceBundle(tooManyTerms)).toThrow('term limit of 30 exceeded');
 
+		const twentyRepresentatives = {
+			...bundle,
+			trendSnapshot: {
+				terms: [{ ...bundle.trendSnapshot.terms[0]!, representativeNoteIds: Array.from({ length: 20 }, (_, index) => `snapshot-note-${index}`) }],
+			},
+		} satisfies HanamiCommonSourceBundle;
+		expect(() => internals.validateSourceBundle(twentyRepresentatives)).not.toThrow();
+
 		const tooManyRepresentatives = {
 			...bundle,
 			trendSnapshot: {
 				terms: [{
 					...bundle.trendSnapshot.terms[0]!,
-					representativeNoteIds: Array.from({ length: 6 }, (_, index) => `snapshot-note-${index}`),
+					representativeNoteIds: Array.from({ length: 21 }, (_, index) => `snapshot-note-${index}`),
 				}],
 			},
 		} satisfies HanamiCommonSourceBundle;
-		expect(() => internals.validateSourceBundle(tooManyRepresentatives)).toThrow('representative Note limit of 5 exceeded');
+		expect(() => internals.validateSourceBundle(tooManyRepresentatives)).toThrow('representative Note limit of 20 exceeded');
 	});
 
 	test('rejects snapshot representatives that are missing or fail common eligibility', async () => {

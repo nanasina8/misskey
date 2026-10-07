@@ -21,12 +21,14 @@ import type {
 	HanamiCommonGenerationTickJobData,
 	HanamiGenerationReconcileJobData,
 	HanamiNoteJudgeJobData,
+	HanamiTrendTopicJudgeJobData,
 } from '../types.js';
 import { QueueLoggerService } from '../QueueLoggerService.js';
 
 type HanamiCommonGenerationTickJob = Bull.Job<HanamiCommonGenerationTickJobData, unknown, 'hanamiCommonGenerationTick'>;
 type HanamiCommonGenerationJob = Bull.Job<HanamiCommonGenerationJobData, unknown, 'hanamiCommonGeneration'>;
 type HanamiGenerationReconcileJob = Bull.Job<HanamiGenerationReconcileJobData, unknown, 'hanamiGenerationReconcile'>;
+type HanamiTrendTopicJudgeJob = Bull.Job<HanamiTrendTopicJudgeJobData, unknown, 'hanamiTrendTopicJudge'>;
 type HanamiNoteJudgeJob = Bull.Job<HanamiNoteJudgeJobData, unknown, 'hanamiNoteJudge'>;
 
 const NOTE_JUDGE_LOCK_CONTENTION_DELAY_MS = 60_000;
@@ -99,6 +101,12 @@ export class HanamiCommonGenerationProcessorService {
 
 			const result = await this.lifecycle.runCommonGeneration(job.data.generationId);
 			if (result.kind === 'published' && this.hanamiForYouBatchService != null) {
+				try {
+					const topicJob = await this.hanamiForYouBatchService.prepareTrendTopicJudgeJob?.();
+					if (topicJob != null) await this.queueService.enqueueHanamiTrendTopicJudge(topicJob);
+				} catch (error) {
+					this.logger.warn('hanami trend topic judge dispatch failed', { error: String(error) });
+				}
 				const judgeJobs = await this.hanamiForYouBatchService.prepareNoteJudgeJobs(result.generationId);
 				for (const judgeJob of judgeJobs) await this.queueService.enqueueHanamiNoteJudge(judgeJob.noteIds, judgeJob.promptVersion);
 			}
@@ -133,6 +141,19 @@ export class HanamiCommonGenerationProcessorService {
 		} catch (error) {
 			throw normalizeBullRejection(error);
 		}
+	}
+
+	@bindThis
+	public async processTrendTopicJudge(job: HanamiTrendTopicJudgeJob): Promise<void> {
+		if (!hasExactKeys(job.data, ['topics', 'dailyIds', 'pairs']) || !Array.isArray(job.data.topics) || job.data.topics.length > 10 || !Array.isArray(job.data.dailyIds) || !Array.isArray(job.data.pairs) || job.data.pairs.length > 45) malformedPayload(job.name);
+		const ids = new Set<string>();
+		for (const topic of job.data.topics) {
+			if (!hasExactKeys(topic, ['topicId', 'text']) || typeof topic.topicId !== 'string' || topic.topicId.length === 0 || typeof topic.text !== 'string' || ids.has(topic.topicId)) malformedPayload(job.name);
+			ids.add(topic.topicId);
+		}
+		if (job.data.dailyIds.some(id => typeof id !== 'string' || !ids.has(id)) || job.data.pairs.some(pair => !hasExactKeys(pair, ['a', 'b']) || typeof pair.a !== 'string' || typeof pair.b !== 'string' || pair.a === pair.b || !ids.has(pair.a) || !ids.has(pair.b))) malformedPayload(job.name);
+		await this.hanamiForYouBatchService?.runTrendTopicJudgeJob(job.data, this.logger);
+		await job.updateProgress(100);
 	}
 
 	@bindThis

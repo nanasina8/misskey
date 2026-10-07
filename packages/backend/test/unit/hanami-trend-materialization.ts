@@ -5,277 +5,376 @@
 
 import { afterEach, describe, expect, jest, test } from '@jest/globals';
 import Logger from '@/logger.js';
-import { TASTE_EMBED_MODEL } from '@/core/hanami/HanamiTasteClusterBatchService.js';
-import { HanamiTrendService } from '@/core/hanami/HanamiTrendService.js';
+import { HanamiTrendService, trendDailyKey, trendSameKey, trendSameSetKey } from '@/core/hanami/HanamiTrendService.js';
 
-const NOW = Date.parse('2026-08-20T12:00:00.000Z');
+import { HanamiCommonComputationService, type HanamiTrendSnapshotTerm } from '@/core/hanami/HanamiCommonComputationService.js';
+import { HanamiCommonGenerationService } from '@/core/hanami/HanamiCommonGenerationService.js';
+import type { HanamiCommonComputationPort, HanamiCommonSourceBundle } from '@/core/hanami/HanamiCommonGenerationContracts.js';
 
-type TermCandidate = {
-	term: string;
-	score: number;
-	distinctAuthors: number;
-	proper: boolean;
-};
+const NOW = Date.parse('2026-10-06T12:00:00Z');
+type Note = { id: string; userId: string; text: string; replyId: string | null; renoteId: string | null; at: number; terms: string[] };
 
-function redisForTermNotes(rawByTerm: ReadonlyMap<string, string[]>) {
-	const zrangeTerms: string[] = [];
+function fixture(notes: Note[], options: { python?: boolean; candidates?: string[] } = {}) {
+	const strings = new Map<string, string>();
+	const sets = new Map<string, Set<string>>();
+	const terms = options.candidates ?? [...new Set(notes.flatMap(note => note.terms))];
 	const pipeline = jest.fn(() => {
-		const requests: { term: string; options: (string | number)[] }[] = [];
+		const requests: (() => unknown)[] = [];
 		const pipe = {
-			zrange: jest.fn((key: string, ...options: (string | number)[]) => {
-				const term = key.slice('hanami:trend:notes:'.length);
-				requests.push({ term, options });
-				if (!options.includes('BYSCORE')) zrangeTerms.push(term);
-				return pipe;
-			}),
-			exec: jest.fn(async () => requests.map(({ term, options }) => {
-				const raw = rawByTerm.get(term) ?? [];
-				if (!options.includes('BYSCORE')) return [null, raw] as const;
-				const ids: string[] = [];
-				for (let i = 0; i < raw.length; i += 2) {
-					if (Number(raw[i + 1]) <= Number(options[0]) && Number(raw[i + 1]) >= Number(options[1])) ids.push(raw[i]);
-				}
-				return [null, ids.slice(0, Number(options[6]))] as const;
-			})),
+			zrange: jest.fn((key: string, ..._args: unknown[]) => { requests.push(() => notes.filter(note => note.terms.includes(key.slice('hanami:trend:notes:'.length))).sort((a, b) => b.at - a.at).flatMap(note => [note.id, String(note.at)])); return pipe; }),
+			smembers: jest.fn((key: string) => { requests.push(() => [...(sets.get(key) ?? [])]); return pipe; }),
+			exec: async () => requests.map(run => [null, run()]),
 		};
 		return pipe;
 	});
-	return {
-		redis: {
-			pipeline,
-			get: jest.fn(async () => null),
-			set: jest.fn(async () => 'OK'),
-		},
-		pipeline,
-		zrangeTerms,
+	const redis = {
+		pipeline, get: jest.fn(async (key: string) => strings.get(key) ?? null),
+		mget: jest.fn(async (...keys: string[]) => keys.map(key => strings.get(key) ?? null)),
+		set: jest.fn(async (key: string, value: string, ..._args: unknown[]) => { strings.set(key, value); return 'OK'; }),
+		eval: jest.fn(async (_lua: string, _count: number, key: string, computedAt: number, payload: string, _ttl: number) => {
+			const previous = strings.get(key);
+			if (previous != null && JSON.parse(previous).computedAt >= computedAt) return 0;
+			strings.set(key, payload); return 1;
+		}),
 	};
+	const db = { query: jest.fn(async (sql: string, values: unknown[]) => sql.includes('FROM note') ? notes.filter(note => (values[0] as string[]).includes(note.id)) : []) };
+	let serial = 0;
+	const ids = { gen: () => `topic-${++serial}`, parse: (id: string) => ({ date: new Date(notes.find(note => note.id === id)!.at) }) };
+	const service = new HanamiTrendService(redis as never, {} as never, {} as never, db as never, ids as never);
+	Object.defineProperty(service, 'getTrendingTermCandidatesWithCache', { value: jest.fn(async () => terms.map((term, i) => ({ term, score: 10 - i, distinctAuthors: 3, proper: false }))) });
+	if (!options.python) Object.defineProperty(service, 'buildTopics', { value: jest.fn(async () => terms.map(term => {
+		const members = notes.filter(note => note.terms.includes(term));
+		return { terms: [term], noteIds: members.map(note => note.id), authors6h: new Set(members.map(note => note.userId)).size, authors2h: new Set(members.filter(note => note.at >= NOW - 2 * 3600000).map(note => note.userId)).size, center: null };
+	})) });
+	return { service, redis, strings, sets, db, pipeline };
 }
 
-function stubTermCandidates(service: HanamiTrendService, candidates: readonly TermCandidate[]) {
-	const fn = jest.fn(async (_featuredScores?: ReadonlyMap<string, number>) => candidates);
-	Object.defineProperty(service, 'getTrendingTermCandidatesWithCache', {
-		value: fn,
-		configurable: true,
-		writable: true,
+function notesFor(term: string, count = 3): Note[] {
+	return Array.from({ length: count }, (_, i) => ({ id: `${term}-${i}`, userId: `${term}-user-${i}`, text: 'https://example.com/' + term, replyId: null, renoteId: null, at: NOW - i * 1000, terms: [term] }));
+}
+
+afterEach(() => { jest.restoreAllMocks(); delete process.env.HANAMI_TREND_TOPICS_SCRIPT; });
+
+test('U-24: common generation validates and inserts all twenty representatives at positions 0 through 19', async () => {
+	jest.spyOn(Date, 'now').mockReturnValue(NOW);
+	const timestamp = new Date(NOW).toISOString();
+	const representativeIds = Array.from({ length: 20 }, (_, i) => `note-${i}`);
+	const source: HanamiCommonSourceBundle = {
+		version: 1, capturedAt: timestamp,
+		sourceAsOf: { version: 1, capturedAt: timestamp, featuredAt: timestamp, trendAt: timestamp, axisConfigAt: timestamp },
+		enabledAxes: ['trending'],
+		candidates: { globalPopular: [], exploration: [], trending: [{ noteId: 'note-0', authorId: 'author-0', baseScore: 1, metadata: { term: 'topic' } }] },
+		trendSnapshot: { terms: [{ term: 'topic', score: 1, distinctAuthors: 20, representativeNoteIds: representativeIds }] },
+	};
+	const computation: HanamiCommonComputationPort = {
+		algorithmVersion: 'unit-v1', buildSourceBundle: async () => source,
+		materializeFeed: () => ({ items: [{ noteId: 'note-0', authorId: 'author-0', source: 'trending', sources: ['trending'] }], segmentLengths: [1] }),
+	};
+	let phaseIndex = 0;
+	let leaseOwner: unknown;
+	const inserted: unknown[][] = [];
+	const createQueryRunner = jest.fn(() => {
+		const phase = phaseIndex++;
+		const runner = {
+			isTransactionActive: false,
+			connect: async () => undefined,
+			startTransaction: async () => { runner.isTransactionActive = true; },
+			commitTransaction: async () => { runner.isTransactionActive = false; },
+			rollbackTransaction: async () => { runner.isTransactionActive = false; },
+			release: async () => undefined,
+			query: async (sql: string, values: unknown[] = []): Promise<unknown[]> => {
+				if (sql.includes('pg_catalog.clock_timestamp() +')) return [{ deadline_at: new Date(NOW + 60000).toISOString() }];
+				if (sql.includes("set_config('statement_timeout'")) return [{}];
+				if (sql.includes('FROM "hanami_common_feed_state" s') && sql.includes('FOR UPDATE')) return [{
+					epoch_id: null, latest_sequence: '0', earliest_retained_sequence: '0', latest_ready_generation_id: null,
+					generating_generation_id: 'generation', generation_lease_owner: phase === 0 ? null : leaseOwner,
+					generation_lease_expires_at: phase === 0 ? null : new Date(NOW + 120000),
+					generation_fence: phase === 0 ? '0' : '1', lease_is_live: phase !== 0,
+				}];
+				if (sql.includes('FROM "hanami_common_generation" g') && sql.includes('FOR UPDATE')) return [{ status: phase === 0 ? 'pending' : 'generating', ordinal: '1', started_at: timestamp, generation_fence: phase === 0 ? '0' : '1' }];
+				if (sql.includes('SET "generationFence" = "generationFence" +')) {
+					leaseOwner = values[2];
+					return [{ generation_fence: '1', epoch_id: null }];
+				}
+				if (sql.includes('SET "status" = \'generating\'')) return [{ started_at: timestamp, generation_fence: '1' }];
+				if (sql.includes('SET "sourceAsOf"')) return [{ generation_fence: '1' }];
+				if (sql.includes('SET "generationLeaseExpiresAt"') && sql.includes('clock_timestamp() < $6::timestamptz')) return [{ generation_fence: '1' }];
+				if (sql.includes('FROM "hanami_trend_snapshot" t') && sql.includes('FOR UPDATE')) return [{ status: 'pending' }];
+				if (sql.includes('AS shape_is_valid')) return [{ shape_is_valid: true, lost_ordinal: false }];
+				if (sql.includes('AS counts_match')) return [{ counts_match: true }];
+				if (sql.includes('INSERT INTO "hanami_trend_snapshot_representative_note"')) inserted.push(values);
+				if (sql.includes('SET "status" = \'ready\', "itemCount"')) return [{ ordinal: '1' }];
+				if (sql.includes('SET "status" = \'ready\', "checksum"')) return [{ generation_fence: '1' }];
+				if (sql.includes('SET "status" = \'failed\'')) return [{ generation_fence: '1', ordinal: '1' }];
+				if (sql.includes('SET "generatingGenerationId" = NULL')) return [{ generation_fence: '1' }];
+				if (sql.includes('SET "epochId" = COALESCE')) return [{ latest_sequence: '1', earliest_retained_sequence: '1' }];
+				return [];
+			},
+		};
+		return runner;
 	});
-	return fn;
-}
-
-afterEach(() => {
-	jest.restoreAllMocks();
+	let serial = 0;
+	const service = new HanamiCommonGenerationService(
+		{ createQueryRunner, query: async () => [] } as never,
+		{ hanamiCommonGenerationIntervalMs: 600000, hanamiGenerationWorkerTimeoutMs: 60000, hanamiGenerationLeaseMs: 75000 } as never,
+		{ gen: () => `generated-${++serial}` } as never,
+		{ ensureMonthAvailable: async () => undefined } as never,
+		{ filterCommonEligibleNotes: async (ids: string[]) => new Map(ids.map(id => [id, `author-${id.slice('note-'.length)}`])) } as never,
+		computation,
+	);
+	await expect(service.runCommonGeneration('generation')).resolves.toMatchObject({ kind: 'published', itemCount: 1 });
+	const eligible = jest.spyOn(computation, 'buildSourceBundle');
+	expect(inserted).toEqual([['2026-10-01', 'generation', Array(20).fill('0'), Array.from({ length: 20 }, (_, i) => i), representativeIds]]);
+	eligible.mockResolvedValue({ ...source, trendSnapshot: { terms: [{ ...source.trendSnapshot.terms[0], representativeNoteIds: [...representativeIds, 'note-20'] }] } });
+	phaseIndex = 0;
+	await expect(service.runCommonGeneration('generation')).rejects.toThrow('representative Note limit of 20 exceeded');
+	expect(inserted).toHaveLength(1);
 });
 
-describe('HanamiTrendService coherent materialization', () => {
-	test('popular head notes remain eligible with 200-note headroom', async () => {
-		const now = Date.now();
-		const scores = new Map([['popular-top', 1000], ['fresh', 1], ['old', 1], ['unreacted', 0]]);
-		const { redis } = redisForTermNotes(new Map([['topic', ['fresh', String(now), 'old', String(now - 86400000), 'unreacted', String(now), 'popular-top', String(now - 3600000)]]]));
-		const service = new HanamiTrendService(redis as never, {} as never, {} as never, { query: async () => [] } as never);
-		stubTermCandidates(service, [{ term: 'topic', score: 1, distinctAuthors: 3, proper: false }]);
-		const bundle = await service.computeTrendBundle(scores);
-		expect(bundle.terms[0].representativeNoteIds).toEqual(['popular-top', 'fresh', 'old']);
-		expect(bundle.noteCandidates[0]).toEqual({ noteId: 'popular-top', term: 'topic' });
-		const pipe = redis.pipeline.mock.results[0].value as ReturnType<typeof redis.pipeline>;
-		expect(pipe.zrange).toHaveBeenCalledWith('hanami:trend:notes:topic', 0, 199, 'REV', 'WITHSCORES');
-	});
-
-	test('one invocation exposes ranked headroom for top-30 snapshots and the top-30 common pool', async () => {
+describe('topic materialization (U-4, U-5, U-6, U-7)', () => {
+	test('broken Python path falls back to one topic per term and keeps zero engagement', async () => {
 		jest.spyOn(Date, 'now').mockReturnValue(NOW);
-		const termCandidates: TermCandidate[] = Array.from({ length: 35 }, (_, index) => ({
-			term: `term-${index}`,
-			score: 1000 - index,
-			distinctAuthors: 40 - index,
-			proper: false,
-		}));
-		const scores = new Map<string, number>();
-		for (let index = 0; index < 100; index++) scores.set(`popular-${index}`, 1000 - index);
-		const rawByTerm = new Map<string, string[]>();
-		for (let termIndex = 0; termIndex < 30; termIndex++) {
-			const ids = termIndex < 8
-				? ['shared-note', ...Array.from({ length: 29 }, (_, index) => `term-${termIndex}-note-${index}`)]
-				: Array.from({ length: 6 }, (_, index) => `term-${termIndex}-note-${index}`);
-			const raw: string[] = [];
-			for (let rank = 0; rank < ids.length; rank++) {
-				raw.push(ids[rank], String(NOW - rank));
-				scores.set(ids[rank], 1);
-			}
-			rawByTerm.set(`term-${termIndex}`, raw);
-		}
-		const { redis, pipeline, zrangeTerms } = redisForTermNotes(rawByTerm);
-		const featuredService = { getGlobalNotesScoresWithCache: jest.fn(async () => new Map<string, number>()) };
-		const service = new HanamiTrendService(redis as never, featuredService as never, {} as never, { query: async () => [] } as never);
-		const aggregate = stubTermCandidates(service, termCandidates);
-
-		const result = await service.computeTrendBundle(scores);
-
-		expect(aggregate).toHaveBeenCalledTimes(1);
-		expect(aggregate).toHaveBeenCalledWith(scores);
-		expect(featuredService.getGlobalNotesScoresWithCache).not.toHaveBeenCalled();
-		expect(pipeline).toHaveBeenCalledTimes(2);
-		expect(zrangeTerms).toHaveLength(30);
-		expect(result.computedAt).toBe('2026-08-20T12:00:00.000Z');
-		expect(result.terms).toHaveLength(30);
-		expect(result.terms.slice(0, 8).every(term => term.representativeNoteIds.length === 30)).toBe(true);
-		expect(result.terms.slice(8).every(term => term.representativeNoteIds.length === 6)).toBe(true);
-		expect(result.terms[0].representativeNoteIds.slice(0, 6)).toEqual([
-			'shared-note',
-			'term-0-note-0',
-			'term-0-note-1',
-			'term-0-note-2',
-			'term-0-note-3',
-			'term-0-note-4',
-		]);
-		expect(result.noteCandidates).toHaveLength(365);
-		expect(new Set(result.noteCandidates.map(candidate => candidate.noteId)).size).toBe(365);
-		expect(result.noteCandidates.filter(candidate => candidate.noteId === 'shared-note')).toHaveLength(1);
-		expect(result.noteCandidates.every(candidate => Number(candidate.term.slice('term-'.length)) < 30)).toBe(true);
+		jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+		process.env.HANAMI_TREND_TOPICS_SCRIPT = '/missing/hanami-topic-script.py';
+		const setup = fixture([...notesFor('a'), ...notesFor('b')], { python: true });
+		const bundle = await setup.service.computeTrendBundle(new Map());
+		expect(bundle.terms.map(t => t.term)).toEqual(['a', 'b']);
+		expect(bundle.terms.every(t => t.representativeNoteIds.length === 3)).toBe(true);
+		expect(bundle.noteCandidates.map(n => n.noteId)).toEqual(['a-0', 'b-0', 'a-1', 'b-1', 'a-2', 'b-2']);
+		expect(Logger.prototype.warn).toHaveBeenCalled();
 	});
-
-	test('legacy term and Note methods retain limits and delegate Note generation to the coherent bundle', async () => {
-		const { redis } = redisForTermNotes(new Map());
-		const service = new HanamiTrendService(redis as never, { getGlobalNotesScoresWithCache: jest.fn() } as never, {} as never, { query: async () => [] } as never);
-		stubTermCandidates(service, Array.from({ length: 12 }, (_, index) => ({
-			term: `legacy-${index}`,
-			score: 12 - index,
-			distinctAuthors: index + 3,
-			proper: index % 2 === 0,
-		})));
-		const noteCandidates = Array.from({ length: 205 }, (_, index) => ({
-			noteId: `legacy-note-${index}`,
-			term: `legacy-${index % 8}`,
-		}));
-		const compute = jest.fn(async () => ({
-			computedAt: '2026-08-20T00:00:00.000Z',
-			terms: [],
-			noteCandidates,
-		}));
-		Object.defineProperty(service, 'computeTrendBundle', {
-			value: compute,
-			configurable: true,
-			writable: true,
-		});
-
-		expect(await service.getTrendingTerms(8)).toHaveLength(8);
-		const legacyNotes = await service.getTrendingNoteIds(500);
-		expect(legacyNotes).toHaveLength(200);
-		expect(legacyNotes[0]).toEqual({ noteId: 'legacy-note-0', term: 'legacy-0' });
-		expect(compute).toHaveBeenCalledTimes(1);
-		expect(redis.set).toHaveBeenCalledWith(
-			'hanami:trend:noteIds',
-			JSON.stringify(noteCandidates.slice(0, 200)),
-			'EX',
-			30,
-		);
+	test('inherits IDs by greatest Jaccard once, preserves start, then uses the heading fallback', async () => {
+		const setup = fixture([]);
+		const assign = setup.service['assignTopicIds'].bind(setup.service);
+		const raw = (terms: string[], noteIds: string[]) => ({ terms, noteIds, authors6h: 3, authors2h: 3, center: null });
+		const previous = [{ ...raw(['old'], ['1', '2', '3', '4']), topicId: 'old-id', startedAt: '2026-10-05T00:00:00Z', daily: false }];
+		const result = assign([raw(['low'], ['1', '2', '5', '6']), raw(['high'], ['1', '2', '3'])], previous, NOW);
+		expect(result[1]).toMatchObject({ topicId: 'old-id', startedAt: previous[0].startedAt });
+		expect(result[0].topicId).not.toBe('old-id');
+		expect(new Set(result.map(t => t.topicId)).size).toBe(2);
+		expect(assign([raw(['old'], ['different'])], previous, NOW)[0].topicId).toBe('old-id');
+		expect(assign([raw(['changed'], ['1'])], previous, NOW)[0].topicId).toBe('old-id');
+	});
+	test('excludes replies, ranks decayed popularity times freshness, caps twenty representatives and feed candidates, hides reply-only topics', async () => {
+		jest.spyOn(Date, 'now').mockReturnValue(NOW);
+		const notes = [...notesFor('a', 25), ...notesFor('reply')];
+		notes[0].replyId = 'parent';
+		for (const note of notes.filter(n => n.terms[0] === 'reply')) note.replyId = 'parent';
+		const setup = fixture(notes);
+		const bundle = await setup.service.computeTrendBundle(new Map([['a-3', 0.98]]));
+		expect(bundle.terms).toHaveLength(1);
+		expect(bundle.terms[0].representativeNoteIds).toEqual(['a-3', 'a-1', 'a-2', ...Array.from({ length: 17 }, (_, i) => `a-${i + 4}`)]);
+		expect(bundle.noteCandidates).toHaveLength(20);
+		expect(bundle.noteCandidates.map(n => n.noteId)).not.toContain('a-0');
+		expect((setup.pipeline.mock.results[0].value as ReturnType<typeof setup.pipeline>).zrange).toHaveBeenCalledWith('hanami:trend:notes:a', NOW, NOW - 6 * 3600000, 'BYSCORE', 'REV', 'LIMIT', 0, 200, 'WITHSCORES');
+	});
+	test('cached same verdict merges author unions and cached daily verdict reduces ranking by 0.3', async () => {
+		jest.spyOn(Date, 'now').mockReturnValue(NOW);
+		const notes = [...notesFor('a', 6), ...notesFor('b'), ...notesFor('c')];
+		notes[6].userId = notes[0].userId;
+		const setup = fixture(notes);
+		setup.sets.set(trendSameSetKey('topic-1'), new Set(['topic-2']));
+		setup.sets.set(trendSameSetKey('topic-2'), new Set(['topic-1']));
+		setup.strings.set(trendSameKey('topic-1', 'topic-2'), '1');
+		setup.strings.set(trendDailyKey('topic-1'), '1');
+		const bundle = await setup.service.computeTrendBundle(new Map());
+		expect(bundle.terms.map(t => t.term)).toEqual(['c', 'a']);
+		expect(bundle.terms[1]).toMatchObject({ relatedTerms: ['b'], distinctAuthors: 8, topicId: 'topic-1', daily: true });
+		const previous = JSON.parse(setup.strings.get('hanami:trend:topics:prev')!);
+		expect(previous.topics.map((topic: { terms: string[] }) => topic.terms[0])).toEqual(['b', 'c', 'a']);
+		expect(previous.topics).toHaveLength(3);
+	});
+	test('next computation retains its topic ID and startedAt', async () => {
+		jest.spyOn(Date, 'now').mockReturnValue(NOW);
+		const setup = fixture(notesFor('a'));
+		const first = await setup.service.computeTrendBundle(new Map());
+		jest.spyOn(Date, 'now').mockReturnValue(NOW + 600000);
+		const next = await setup.service.computeTrendBundle(new Map());
+		expect(next.terms[0].topicId).toBe(first.terms[0].topicId);
+		expect(next.terms[0].startedAt).toBe(first.terms[0].startedAt);
+	});
+	test('U-12: preserves A/B/C IDs before merging and merges again on the next generation', async () => {
+		const clock = jest.spyOn(Date, 'now').mockReturnValue(NOW);
+		const setup = fixture([...notesFor('a', 6), ...notesFor('b'), ...notesFor('c')]);
+		setup.sets.set(trendSameSetKey('topic-1'), new Set(['topic-2']));
+		setup.sets.set(trendSameSetKey('topic-2'), new Set(['topic-1', 'topic-3']));
+		setup.sets.set(trendSameSetKey('topic-3'), new Set(['topic-2']));
+		setup.strings.set(trendSameKey('topic-1', 'topic-2'), '1');
+		setup.strings.set(trendSameKey('topic-2', 'topic-3'), '1');
+		const first = await setup.service.computeTrendBundle(new Map());
+		const before = JSON.parse(setup.strings.get('hanami:trend:topics:prev')!);
+		expect(before.computedAt).toBe(NOW);
+		expect(before.topics.map((topic: { topicId: string }) => topic.topicId)).toEqual(['topic-1', 'topic-2', 'topic-3']);
+		expect(before.topics.every((topic: object) => !('center' in topic))).toBe(true);
+		expect(before.topics.map((topic: { noteIds: string[] }) => topic.noteIds.length)).toEqual([6, 3, 3]);
+		expect(first.terms).toHaveLength(1);
+		expect(first.terms[0]).toMatchObject({ topicId: 'topic-1', distinctAuthors: 12, relatedTerms: ['b', 'c'] });
+		clock.mockReturnValue(NOW + 600000);
+		const next = await setup.service.computeTrendBundle(new Map());
+		expect(next.terms).toHaveLength(1);
+		expect(next.terms[0]).toMatchObject({ topicId: 'topic-1', distinctAuthors: 12, relatedTerms: ['b', 'c'] });
+		expect(JSON.parse(setup.strings.get('hanami:trend:topics:prev')!).topics.map((topic: { topicId: string }) => topic.topicId)).toEqual(before.topics.map((topic: { topicId: string }) => topic.topicId));
+	});
+	test('U-13: an older computation finishing later cannot replace a newer prev; equal timestamps are rejected', async () => {
+		const clock = jest.spyOn(Date, 'now').mockReturnValue(NOW);
+		const setup = fixture(notesFor('a'));
+		const builder = setup.service['buildTopics'] as jest.Mock<typeof setup.service['buildTopics']>;
+		const original = builder.getMockImplementation()!;
+		let release!: () => void;
+		let entered!: () => void;
+		const started = new Promise<void>(resolve => { entered = resolve; });
+		const pending = new Promise<void>(resolve => { release = resolve; });
+		builder.mockImplementationOnce(async (...args) => { entered(); await pending; return original(...args); });
+		const older = setup.service.computeTrendBundle(new Map());
+		await started;
+		clock.mockReturnValue(NOW + 600000);
+		await setup.service.computeTrendBundle(new Map());
+		const newer = setup.strings.get('hanami:trend:topics:prev');
+		release(); await older;
+		expect(setup.strings.get('hanami:trend:topics:prev')).toBe(newer);
+		const writes = setup.redis.eval.mock.calls.filter(([, , key]) => key === 'hanami:trend:topics:prev');
+		expect(writes[1][3]).toBe(NOW);
+		expect(setup.redis.eval.mock.calls[0][0]).toContain('decoded.computedAt >= tonumber(ARGV[1])');
+		await setup.service.computeTrendBundle(new Map());
+		expect(setup.strings.get('hanami:trend:topics:prev')).toBe(newer);
+	});
+	test('U-17: reads only the common generation cache, including a miss, with a thirty-minute TTL', async () => {
+		jest.spyOn(Date, 'now').mockReturnValue(NOW);
+		const setup = fixture(notesFor('a'));
+		const compute = jest.spyOn(setup.service, 'computeTrendBundle');
+		expect(await setup.service.getTrendingNoteIds(10)).toEqual([]);
+		expect(compute).not.toHaveBeenCalled();
+		const bundle = await setup.service.computeTrendBundle(new Map());
+		expect(setup.redis.eval).toHaveBeenCalledWith(expect.any(String), 1, 'hanami:trend:noteIds', NOW, JSON.stringify({ computedAt: NOW, candidates: bundle.noteCandidates }), 1800);
+		compute.mockClear();
+		expect(await setup.service.getTrendingNoteIds(2)).toEqual(bundle.noteCandidates.slice(0, 2));
+		expect(compute).not.toHaveBeenCalled();
+	});
+	test('U-18: reads one same set per topic in a pipeline and one daily MGET without pair GETs', async () => {
+		jest.spyOn(Date, 'now').mockReturnValue(NOW);
+		const setup = fixture(Array.from({ length: 150 }, (_, i) => notesFor(`term-${i}`)).flat());
+		await setup.service.computeTrendBundle(new Map());
+		expect(setup.redis.get.mock.calls.map(([key]) => key)).toEqual(['hanami:trend:topics:prev']);
+		expect(setup.redis.mget).toHaveBeenCalledTimes(1);
+		expect(setup.redis.mget.mock.calls[0]).toHaveLength(150);
+		const setsPipe = setup.pipeline.mock.results[1].value as ReturnType<typeof setup.pipeline>;
+		expect(setsPipe.smembers).toHaveBeenCalledTimes(150);
+		expect(setup.pipeline).toHaveBeenCalledTimes(2);
+	});
+	test('U-21: A=B then A=C then A!=B separates B despite a stale same-set index', async () => {
+		const clock = jest.spyOn(Date, 'now').mockReturnValue(NOW);
+		const setup = fixture([...notesFor('a', 6), ...notesFor('b'), ...notesFor('c')]);
+		setup.sets.set(trendSameSetKey('topic-1'), new Set(['topic-2']));
+		setup.sets.set(trendSameSetKey('topic-2'), new Set(['topic-1']));
+		setup.strings.set(trendSameKey('topic-1', 'topic-2'), '1');
+		const first = await setup.service.computeTrendBundle(new Map());
+		expect(first.terms.map(topic => topic.term)).toEqual(['a', 'c']);
+		expect(first.terms[0]).toMatchObject({ relatedTerms: ['b'], distinctAuthors: 9 });
+		clock.mockReturnValue(NOW + 600000);
+		setup.sets.get(trendSameSetKey('topic-1'))!.add('topic-3');
+		setup.sets.set(trendSameSetKey('topic-3'), new Set(['topic-1']));
+		setup.strings.set(trendSameKey('topic-1', 'topic-3'), '1');
+		expect((await setup.service.computeTrendBundle(new Map())).terms).toHaveLength(1);
+		clock.mockReturnValue(NOW + 1200000);
+		setup.strings.set(trendSameKey('topic-1', 'topic-2'), '0');
+		setup.redis.mget.mockClear();
+		const last = await setup.service.computeTrendBundle(new Map());
+		expect(last.terms.map(topic => topic.term)).toEqual(['a', 'b']);
+		expect(last.terms[0]).toMatchObject({ topicId: 'topic-1', relatedTerms: ['c'], distinctAuthors: 9 });
+		expect(last.terms[1]).toMatchObject({ topicId: 'topic-2', relatedTerms: [], distinctAuthors: 3 });
+		expect(setup.redis.mget).toHaveBeenCalledTimes(2);
+		expect(new Set(setup.redis.mget.mock.calls[1])).toEqual(new Set([trendSameKey('topic-1', 'topic-2'), trendSameKey('topic-1', 'topic-3')]));
+	});
+	test.each([null, '0'])('R7: ignores stale indexes when the pair verdict is %s', async verdict => {
+		jest.spyOn(Date, 'now').mockReturnValue(NOW);
+		const setup = fixture([...notesFor('a'), ...notesFor('b')]);
+		setup.sets.set(trendSameSetKey('topic-1'), new Set(['topic-2', 'outside-current-topics', 'topic-1']));
+		setup.sets.set(trendSameSetKey('topic-2'), new Set(['topic-1']));
+		if (verdict != null) setup.strings.set(trendSameKey('topic-1', 'topic-2'), verdict);
+		expect((await setup.service.computeTrendBundle(new Map())).terms.map(topic => topic.term)).toEqual(['a', 'b']);
+		expect(setup.redis.mget.mock.calls[1]).toEqual([trendSameKey('topic-1', 'topic-2')]);
+	});
+	test('U-22: same-set permutations preserve the original maximum-author ID, heading and term order', async () => {
+		jest.spyOn(Date, 'now').mockReturnValue(NOW);
+		const setup = fixture([...notesFor('a'), ...notesFor('b'), ...notesFor('c', 4), ...notesFor('d', 4)]);
+		setup.strings.set(trendDailyKey('topic-3'), '1');
+		setup.strings.set(trendDailyKey('topic-4'), '1');
+		for (const id of ['topic-2', 'topic-3', 'topic-4']) {
+			setup.strings.set(trendSameKey('topic-1', id), '1');
+			setup.sets.set(trendSameSetKey(id), new Set(['topic-1']));
+		}
+		const results = [];
+		for (const order of [['topic-2', 'topic-3', 'topic-4'], ['topic-4', 'topic-2', 'topic-3'], ['topic-3', 'topic-4', 'topic-2']]) {
+			setup.sets.set(trendSameSetKey('topic-1'), new Set(order));
+			results.push(await setup.service.computeTrendBundle(new Map()));
+		}
+		for (const result of results) {
+			expect(result.terms).toHaveLength(1);
+			expect(result.terms[0]).toMatchObject({ topicId: 'topic-3', term: 'c', relatedTerms: ['a', 'b', 'd'], distinctAuthors: 14, daily: true });
+			expect(result).toEqual(results[0]);
+		}
+		const original = JSON.parse(setup.strings.get('hanami:trend:topics:prev')!);
+		expect(original.topics.map((topic: { terms: string[] }) => topic.terms[0])).toEqual(['a', 'b', 'c', 'd']);
+		expect(original.topics.map((topic: { authors6h: number }) => topic.authors6h)).toEqual([3, 3, 4, 4]);
+	});
+	test('U-23: older and equal computations cannot replace newer candidates', async () => {
+		const clock = jest.spyOn(Date, 'now').mockReturnValue(NOW);
+		const setup = fixture(notesFor('a'));
+		const builder = setup.service['buildTopics'] as jest.Mock<typeof setup.service['buildTopics']>;
+		const original = builder.getMockImplementation()!;
+		let release!: () => void;
+		let entered!: () => void;
+		const started = new Promise<void>(resolve => { entered = resolve; });
+		const pending = new Promise<void>(resolve => { release = resolve; });
+		builder.mockImplementationOnce(async (...args) => { entered(); await pending; return original(...args); });
+		const older = setup.service.computeTrendBundle(new Map([['a-1', 10]]));
+		await started;
+		clock.mockReturnValue(NOW + 600000);
+		const latest = await setup.service.computeTrendBundle(new Map([['a-2', 10]]));
+		const saved = setup.strings.get('hanami:trend:noteIds');
+		expect(JSON.parse(saved!)).toEqual({ computedAt: NOW + 600000, candidates: latest.noteCandidates });
+		expect(latest.noteCandidates[0].noteId).toBe('a-2');
+		release();
+		expect((await older).noteCandidates[0].noteId).toBe('a-1');
+		expect(setup.strings.get('hanami:trend:noteIds')).toBe(saved);
+		const equal = await setup.service.computeTrendBundle(new Map([['a-0', 10]]));
+		expect(equal.noteCandidates[0].noteId).toBe('a-0');
+		expect(setup.strings.get('hanami:trend:noteIds')).toBe(saved);
+		expect(await setup.service.getTrendingNoteIds(3)).toEqual(latest.noteCandidates);
+		const writes = setup.redis.eval.mock.calls.filter(([, , key]) => key === 'hanami:trend:noteIds');
+		expect(writes.map(([, , , at, , ttl]) => [at, ttl])).toEqual([[NOW + 600000, 1800], [NOW, 1800], [NOW + 600000, 1800]]);
+		expect(writes[0][0]).toContain('decoded.computedAt >= tonumber(ARGV[1])');
+	});
+	test.each([false, true])('R9: reads legacy-array=%s candidates without recomputing and preserves limits', async legacy => {
+		const setup = fixture([]);
+		const candidates = Array.from({ length: 250 }, (_, i) => ({ noteId: String(i), term: 'a' }));
+		setup.strings.set('hanami:trend:noteIds', JSON.stringify(legacy ? candidates : { computedAt: NOW, candidates }));
+		const compute = jest.spyOn(setup.service, 'computeTrendBundle');
+		expect(await setup.service.getTrendingNoteIds(2)).toEqual(candidates.slice(0, 2));
+		expect(await setup.service.getTrendingNoteIds(300)).toEqual(candidates.slice(0, 200));
+		expect(await setup.service.getTrendingNoteIds(0)).toEqual([]);
+		expect(compute).not.toHaveBeenCalled();
+		expect(setup.redis.eval).not.toHaveBeenCalled();
 	});
 });
 
-function clusteredFixture(vectors: readonly (readonly number[])[], options: { mean?: number[] | null; singleEmbedding?: number; fail?: 'embedding' | 'mean'; invalid?: boolean } = {}) {
-	const mean = options.mean === undefined ? [10, 20] : options.mean;
-	const shift = mean ?? [0, 0];
-	const raw = new Map<string, string[]>();
-	const scores = new Map<string, number>();
-	const rows: { noteId: string; embedding: number[] }[] = [];
-	const terms: TermCandidate[] = [];
-	vectors.forEach((vector, index) => {
-		const term = `topic-${index}`;
-		terms.push({ term, score: 10 - index, distinctAuthors: 3 + index, proper: false });
-		raw.set(term, [`${term}-0`, String(NOW), `${term}-1`, String(NOW - 1000)]);
-		for (let note = 0; note < 2; note++) {
-			scores.set(`${term}-${note}`, 10 * (index + 1) - note);
-			if (options.singleEmbedding === index && note === 1) continue;
-			rows.push({ noteId: `${term}-${note}`, embedding: vector.map((value, dim) => shift[dim] + value * (note + 1)) });
+describe('common topic source fields (U-6, U-8)', () => {
+	test('preserves all four fields, deduplicates representatives by topic, and drops a fully hidden topic', async () => {
+		const topics = ['a', 'b', 'hidden'].map(term => ({ term, score: 2, distinctAuthors: 3, topicId: term, relatedTerms: ['関連'], startedAt: new Date(NOW).toISOString(), daily: term === 'b', representativeNoteIds: term === 'hidden' ? ['hidden'] : ['shared', term] }));
+		const computation = new HanamiCommonComputationService({ query: async () => [] } as never, { hanamiRecommendationAxisConfig: { globalPopular: { available: false }, exploration: { available: false } } } as never,
+			{ getGlobalNotesScoresWithCache: async () => new Map() } as never, {} as never,
+			{ computeTrendBundle: async () => ({ computedAt: new Date(NOW).toISOString(), terms: topics, noteCandidates: [] }) } as never,
+			{ filterCommonEligibleNotes: async () => new Map([['shared', 'u'], ['a', 'u'], ['b', 'u']]) } as never);
+		const source = await computation.buildSourceBundle({ generationId: 'g', generationFence: '1', generatedAt: new Date(NOW).toISOString(), sourceAsOf: new Date(NOW), signal: new AbortController().signal });
+		const entries = source.trendSnapshot.terms as HanamiTrendSnapshotTerm[];
+		expect(entries).toHaveLength(2);
+		expect(entries[1]).toMatchObject({ topicId: 'b', relatedTerms: ['関連'], startedAt: new Date(NOW).toISOString(), daily: true, representativeNoteIds: ['b'] });
+		const generation = new HanamiCommonGenerationService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never);
+		expect(() => generation['validateSourceBundle'](source)).not.toThrow();
+		for (const invalid of [{ topicId: 'x'.repeat(33) }, { relatedTerms: Array(6).fill('語') }, { startedAt: 'invalid' }, { daily: 'yes' }]) {
+			const bad = structuredClone(source);
+			Object.assign(bad.trendSnapshot.terms[0], invalid);
+			expect(() => generation['validateSourceBundle'](bad)).toThrow();
 		}
-	});
-	if (options.invalid) rows[0].embedding = [NaN, 0];
-	const { redis, pipeline } = redisForTermNotes(raw);
-	const query = jest.fn(async (sql: string, _params: unknown[]) => {
-		const embedding = sql.includes('hanami_note_embedding');
-		if (options.fail === (embedding ? 'embedding' : 'mean')) throw new Error('database unavailable');
-		return embedding ? rows : mean == null ? [] : [{ meanVec: mean }];
-	});
-	const service = new HanamiTrendService(redis as never, {} as never, {} as never, { query } as never);
-	stubTermCandidates(service, terms);
-	return { service, scores, query, pipeline, raw, rows, terms };
-}
-
-describe('trend topic clusters (addendum 2)', () => {
-	test.each([0.5, 0.4])('cosine %s controls merging and uses the head term in snapshot and feed', async cosine => {
-		jest.spyOn(Date, 'now').mockReturnValue(NOW);
-		const info = jest.spyOn(Logger.prototype, 'info').mockImplementation(() => undefined);
-		const fixture = clusteredFixture([[1, 0], [cosine, Math.sqrt(1 - cosine * cosine)]]);
-		const bundle = await fixture.service.computeTrendBundle(fixture.scores);
-		expect(bundle.terms.map(term => term.term)).toEqual(cosine === 0.5 ? ['topic-0'] : ['topic-0', 'topic-1']);
-		expect([...new Set(bundle.noteCandidates.map(note => note.term))]).toEqual(bundle.terms.map(term => term.term));
-		expect(bundle.terms[0]).toMatchObject({ score: 10, distinctAuthors: 3 });
-		expect(fixture.query).toHaveBeenCalledTimes(2);
-		expect(fixture.query).toHaveBeenCalledWith(expect.stringContaining('"noteId" = ANY($2)'), [TASTE_EMBED_MODEL, ['topic-0-0', 'topic-0-1', 'topic-1-0', 'topic-1-1']]);
-		const pipe = fixture.pipeline.mock.results[0].value as ReturnType<typeof fixture.pipeline>;
-		expect(pipe.zrange).toHaveBeenCalledWith('hanami:trend:notes:topic-0', NOW, NOW - 6 * 3600000, 'BYSCORE', 'REV', 'LIMIT', 0, 30);
-		if (cosine === 0.5) expect(info).toHaveBeenCalledWith('hanami trend cluster: topic-0 <- topic-1');
-		else expect(info).not.toHaveBeenCalled();
-		// The legacy term endpoint does not cluster.
-		expect(await fixture.service.getTrendingTerms(30)).toHaveLength(2);
-	});
-
-	test('merges member note pools by engagement times freshness and round-robins clusters', async () => {
-		jest.spyOn(Date, 'now').mockReturnValue(NOW);
-		const fixture = clusteredFixture([[1, 0], [0.5, Math.sqrt(0.75)], [-1, 0]]);
-		fixture.raw.get('topic-1')?.push('topic-0-0', String(NOW));
-		fixture.raw.get('topic-1')?.push('old-popular', String(NOW - 24 * 3600000));
-		fixture.scores.set('old-popular', 30); // 30 * 1/4 < head note's 10.
-		const bundle = await fixture.service.computeTrendBundle(fixture.scores);
-		expect(bundle.terms[0].representativeNoteIds).toEqual(['topic-1-0', 'topic-1-1', 'topic-0-0', 'topic-0-1', 'old-popular']);
-		expect(bundle.noteCandidates.map(note => [note.noteId, note.term])).toEqual([
-			['topic-1-0', 'topic-0'], ['topic-2-0', 'topic-2'],
-			['topic-1-1', 'topic-0'], ['topic-2-1', 'topic-2'],
-			['topic-0-0', 'topic-0'], ['topic-0-1', 'topic-0'], ['old-popular', 'topic-0'],
-		]);
-	});
-
-	test('one usable embedding or a zero vector leaves a term isolated', async () => {
-		jest.spyOn(Date, 'now').mockReturnValue(NOW);
-		const fixture = clusteredFixture([[1, 0], [1, 0], [0, 0]], { singleEmbedding: 1 });
-		const bundle = await fixture.service.computeTrendBundle(fixture.scores);
-		expect(bundle.terms.map(term => term.term)).toEqual(['topic-0', 'topic-1', 'topic-2']);
-	});
-
-	test('falls back to the fetched embedding mean when taste state is absent', async () => {
-		jest.spyOn(Date, 'now').mockReturnValue(NOW);
-		const fixture = clusteredFixture([[1, 0], [0.5, Math.sqrt(0.75)], [-1.5, -Math.sqrt(0.75)]], { mean: null });
-		const bundle = await fixture.service.computeTrendBundle(fixture.scores);
-		expect(bundle.terms.map(term => term.term)).toEqual(['topic-0', 'topic-2']);
-	});
-
-	test('compares only cluster heads and picks the closest eligible head', async () => {
-		jest.spyOn(Date, 'now').mockReturnValue(NOW);
-		const chained = clusteredFixture([[1, 0], [0.5, Math.sqrt(0.75)], [-0.5, Math.sqrt(0.75)]]);
-		expect((await chained.service.computeTrendBundle(chained.scores)).terms.map(term => term.term)).toEqual(['topic-0', 'topic-2']);
-		const closest = clusteredFixture([[1, 0], [0, 1], [0.5, Math.sqrt(0.75)]]);
-		const bundle = await closest.service.computeTrendBundle(closest.scores);
-		expect(bundle.terms[0].representativeNoteIds).not.toContain('topic-2-0');
-		expect(bundle.terms[1].representativeNoteIds).toContain('topic-2-0');
-	});
-
-	test.each(['embedding', 'mean', 'invalid'] as const)('continues with singleton clusters on %s failure', async failure => {
-		jest.spyOn(Date, 'now').mockReturnValue(NOW);
-		const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-		const fixture = clusteredFixture([[1, 0], [1, 0]], failure === 'invalid' ? { invalid: true } : { fail: failure });
-		const bundle = await fixture.service.computeTrendBundle(fixture.scores);
-		expect(bundle.terms.map(term => term.term)).toEqual(['topic-0', 'topic-1']);
-		expect(bundle.noteCandidates).toHaveLength(4);
-		expect(warn).toHaveBeenCalledTimes(1);
-	});
-
-	test('limits clustering input to 60 terms before reserving proper noun heads', async () => {
-		jest.spyOn(Date, 'now').mockReturnValue(NOW);
-		const fixture = clusteredFixture(Array.from({ length: 61 }, () => [1, 0]));
-		fixture.rows.length = 0;
-		fixture.terms.forEach((term, i) => { term.proper = i >= 48; });
-		const bundle = await fixture.service.computeTrendBundle(fixture.scores);
-		const pipe = fixture.pipeline.mock.results[0].value as ReturnType<typeof fixture.pipeline>;
-		expect(pipe.zrange).toHaveBeenCalledTimes(60);
-		expect(bundle.terms).toHaveLength(30);
-		expect(bundle.terms.filter(term => Number(term.term.slice(6)) >= 48)).toHaveLength(12);
-		expect(bundle.terms.some(term => term.term === 'topic-60')).toBe(false);
 	});
 });

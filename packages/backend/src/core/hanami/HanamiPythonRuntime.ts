@@ -65,6 +65,14 @@ const NOTE_JUDGE_RUNTIME_PROBE_TTL_MS = 10 * 60 * 1000;
 const NOTE_JUDGE_RUNTIME_PROBE_TIMEOUT_MS = 60 * 1000;
 let noteJudgeRuntimeCache: { status: HanamiNoteJudgeRuntimeStatus; expiresAt: number } | null = null;
 
+export function resolveHanamiTrendTopicsScript(env: NodeJS.ProcessEnv = process.env): string {
+	return env.HANAMI_TREND_TOPICS_SCRIPT ?? Path.join(resolveHanamiRepoRoot(), 'packages/backend/src/core/hanami/HanamiTrendTopics.py');
+}
+
+export function resolveHanamiTrendTopicJudgeScript(env: NodeJS.ProcessEnv = process.env): string {
+	return env.HANAMI_TREND_TOPIC_JUDGE_SCRIPT ?? Path.join(resolveHanamiRepoRoot(), 'packages/backend/src/core/hanami/HanamiTrendTopicJudge.py');
+}
+
 export function resolveHanamiNoteJudgeScript(env: NodeJS.ProcessEnv = process.env): string {
 	return env.HANAMI_NOTE_JUDGE_SCRIPT ?? Path.join(resolveHanamiRepoRoot(), 'packages/backend/src/core/hanami/HanamiNoteJudgeCpu.py');
 }

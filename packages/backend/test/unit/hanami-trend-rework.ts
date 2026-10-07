@@ -46,7 +46,7 @@ describe('trend token repair (2A)', () => {
 	});
 });
 
-function memoryRedis() {
+export function memoryRedis() {
 	const sets = new Map<string, Set<string>>();
 	const sorted = new Map<string, Map<string, number>>();
 	const strings = new Map<string, string>();
@@ -57,10 +57,15 @@ function memoryRedis() {
 		const pending: (() => unknown)[] = [];
 		const pipe: Record<string, unknown> = {};
 		const handlers: Record<string, (...args: any[]) => unknown> = {
-			sadd: (key: string, member: string) => {
-				const set = sets.get(key) ?? new Set<string>();
-				const added = set.has(member) ? 0 : 1;
-				set.add(member); sets.set(key, set); return added;
+			del: (key: string) => { sets.delete(key); strings.delete(key); return 1; },
+			sadd: (key: string, ...members: string[]) => {
+				let result = 0;
+				for (const member of members) {
+					const set = sets.get(key) ?? new Set<string>();
+					const added = set.has(member) ? 0 : 1;
+					set.add(member); sets.set(key, set); result += added;
+				}
+				return result;
 			},
 			scard: (key: string) => sets.get(key)?.size ?? 0,
 			zcount: (key: string, min: number) => [...(sorted.get(key)?.values() ?? [])].filter(score => score >= min).length,
@@ -80,7 +85,7 @@ function memoryRedis() {
 			},
 			set: (key: string, value: string, mode?: string) => { if (mode !== 'NX' || !strings.has(key)) strings.set(key, value); return 'OK'; },
 			zmscore: (key: string, ...members: string[]) => members.map(member => sorted.get(key)?.get(member)?.toString() ?? null),
-			zrange: (key: string) => [...(sorted.get(key) ?? [])].flatMap(([member, score]) => [member, String(score)]),
+			zrange: (key: string, start: number, stop: number) => [...(sorted.get(key) ?? [])].sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0])).slice(start, stop + 1).flatMap(([member, score]) => [member, String(score)]),
 			sunion: (...keys: string[]) => [...new Set(keys.flatMap(key => [...(sets.get(key) ?? [])]))],
 			zrangebyscore: (key: string, min: number) => [...(sorted.get(key) ?? [])].filter(([, score]) => score >= min).map(([member]) => member),
 		};
@@ -93,6 +98,7 @@ function memoryRedis() {
 
 	return {
 		sets, sorted, strings, expiries, commands, pipeline, multi: pipeline,
+		smembers: async (key: string) => [...(sets.get(key) ?? [])],
 		get: async (key: string) => strings.get(key) ?? null,
 		set: async (key: string, value: string) => { strings.set(key, value); return 'OK'; },
 		smismember: async (key: string, ...members: string[]) => members.map(member => sets.get(key)?.has(member) ? 1 : 0),
@@ -119,39 +125,20 @@ describe('template suppression (2D)', () => {
 });
 
 describe('same-time baselines (2B)', () => {
-	test.each([false, true])('day baseline suppresses ordinary nouns, proper=%s retains avg70', async (proper) => {
+	test.each([false, true])('seven hourly days use the median for proper=%s', async proper => {
 		const redis = memoryRedis();
-		const service = new HanamiTrendService(redis as never, { getGlobalNotesScoresWithCache: async () => new Map([['note', 1]]) } as never, {} as never, { query: async () => [] } as never);
 		const cw = Math.floor((Date.now() - Date.parse('2023-01-01T00:00:00Z')) / 900000);
-		for (let i = 0; i < 8; i++) redis.sorted.set(`hanami:trend:rank:${cw - i}`, new Map([['学校', 4]]));
-		for (const lag of [96, 192]) for (let w = cw - lag - 11; w <= cw - lag + 4; w++) redis.sorted.set(`hanami:trend:rank:${w}`, new Map([['学校', 4]]));
+		redis.strings.set('hanami:trend:hrank:since', String(Date.now() - 8 * 86400000));
+		for (let d = 1; d <= 7; d++) for (let h = Math.floor((cw - d * 96 - 11) / 4); h <= Math.floor((cw - d * 96 + 4) / 4); h++) redis.sorted.set(`hanami:trend:hrank:${h}`, new Map([['学校', 4 * (d === 1 ? 20 : 1)]]));
+		redis.sorted.set(`hanami:trend:rank:${cw}`, new Map([['学校', 40]]));
 		redis.sorted.set('hanami:trend:authorsz:学校', new Map(['a', 'b', 'c'].map(id => [id, Date.now()])));
 		redis.sets.set(`hanami:trend:as:${cw}:学校`, new Set(['a', 'b', 'c']));
-		redis.sorted.set('hanami:trend:notes:学校', new Map([['note', Date.now()]]));
 		if (proper) redis.sets.set('hanami:trend:proper', new Set(['学校']));
-		await service.getTrendingTerms(30);
+		const service = new HanamiTrendService(redis as never, { getGlobalNotesScoresWithCache: async () => new Map() } as never, {} as never, {} as never);
+		expect(await service.getTrendingTerms(30)).toHaveLength(1);
 		const log = JSON.parse(redis.call.mock.calls[0][9] as string)[0];
-		expect(log.baseKind).toBe(proper ? 'avg70' : 'day');
-		expect(log.base).toBeCloseTo(proper ? 128 / 280 : 4);
-		if (proper) expect(log.spike).toBeGreaterThan(7);
-		else expect(log.spike).toBeLessThanOrEqual(1);
-	});
-
-	test.each([false, true])('weekly baseline is gated by readiness=%s', async (ready) => {
-		const redis = memoryRedis();
-		const now = Date.now();
-		const cw = Math.floor((now - Date.parse('2023-01-01T00:00:00Z')) / 900000);
-		redis.strings.set('hanami:trend:hrank:since', String(now - (ready ? 171 : 169) * 3600000));
-		redis.sorted.set(`hanami:trend:rank:${cw}`, new Map([['飲み会', 32]]));
-		for (let h = Math.floor((cw - 683) / 4); h <= Math.floor((cw - 668) / 4); h++) redis.sorted.set(`hanami:trend:hrank:${h}`, new Map([['飲み会', 16]]));
-		redis.sorted.set('hanami:trend:authorsz:飲み会', new Map(['a', 'b', 'c'].map(id => [id, now])));
-		redis.sets.set(`hanami:trend:as:${cw}:飲み会`, new Set(['a', 'b', 'c']));
-		redis.sorted.set('hanami:trend:notes:飲み会', new Map([['note', now]]));
-		const service = new HanamiTrendService(redis as never, { getGlobalNotesScoresWithCache: async () => new Map([['note', 1]]) } as never, {} as never, { query: async () => [] } as never);
-		await service.getTrendingTerms(30);
-		const log = JSON.parse(redis.call.mock.calls[0][9] as string)[0];
-		expect(log.baseKind).toBe(ready ? 'dayWeek' : 'day');
-		expect(log.spike).toBeCloseTo(ready ? 0.98 : 40);
+		expect(log).toMatchObject({ baseKind: 'median7', baseDays: 7, base: 1 });
+		expect(log.spike).toBeGreaterThan(2);
 	});
 
 	test('hourly writes share quarter-hour author deduplication and expire after eight days', async () => {
@@ -287,7 +274,7 @@ describe('spike ranking and rolling authors (addendum 2)', () => {
 		redis.sets.set('hanami:trend:proper', new Set(terms));
 		// Proper-noun baseline: 322 / 280 + 0.1 = 1.25; spike = recent / 10.
 		redis.sorted.set(`hanami:trend:rank:${cw}`, new Map(terms.map((term, i) => [term, [19, 25, 30, 30, 30, 20][i]])));
-		redis.sorted.set(`hanami:trend:rank:${cw - 20}`, new Map(terms.map(term => [term, 322])));
+		redis.sorted.set(`hanami:trend:rank:${cw - 30}`, new Map(terms.map(term => [term, 322])));
 		const scores = new Map<string, number>();
 		for (const term of terms) {
 			redis.sorted.set(`hanami:trend:authorsz:${term}`, new Map(['u1', 'u2', 'u3'].map(id => [id, now])));
@@ -315,5 +302,121 @@ describe('spike ranking and rolling authors (addendum 2)', () => {
 		expect((await service.getTrendingTerms(30))[0]?.distinctAuthors).toBe(4);
 		expect(redis.commands.some(([, key]) => String(key).startsWith('hanami:trend:authors:'))).toBe(false);
 		expect(redis.expiries.get('hanami:trend:authorsz:地震')).toBe(74 * 3600);
+	});
+});
+
+describe('median coverage and active-term hysteresis (U-1, U-2)', () => {
+	test.each([0, 3, 4])('uses %i available days and averages the middle two when even', async days => {
+		const redis = memoryRedis();
+		const cw = Math.floor((Date.now() - Date.parse('2023-01-01T00:00:00Z')) / 900000);
+		const epoch = Date.parse('2023-01-01T00:00:00Z');
+		if (days > 0) redis.strings.set('hanami:trend:hrank:since', String(epoch + Math.floor((cw - days * 96 - 11) / 4) * 3600000));
+		for (let d = 1; d <= days; d++) for (let h = Math.floor((cw - d * 96 - 11) / 4); h <= Math.floor((cw - d * 96 + 4) / 4); h++) redis.sorted.set(`hanami:trend:hrank:${h}`, new Map([['語', 4 * d]]));
+		redis.sorted.set(`hanami:trend:rank:${cw}`, new Map([['語', 80]]));
+		redis.sorted.set(`hanami:trend:rank:${cw - 30}`, new Map([['語', 280]]));
+		redis.sorted.set('hanami:trend:authorsz:語', new Map(['a', 'b', 'c'].map(id => [id, Date.now()])));
+		redis.sets.set(`hanami:trend:as:${cw}:語`, new Set(['a', 'b', 'c']));
+		const service = new HanamiTrendService(redis as never, { getGlobalNotesScoresWithCache: async () => new Map() } as never, {} as never, {} as never);
+		await service.getTrendingTerms(30);
+		const log = JSON.parse(redis.call.mock.calls[0][9] as string)[0];
+		expect(log).toMatchObject({ baseDays: days, baseKind: days ? 'median7' : 'avg72', base: days === 0 ? 1 : days === 3 ? 2 : 2.5 });
+	});
+	test.each([false, true])('six-hour stay requires adoption in the preceding computation: %s', async adopted => {
+		const redis = memoryRedis();
+		const cw = Math.floor((Date.now() - Date.parse('2023-01-01T00:00:00Z')) / 900000);
+		redis.strings.set('hanami:trend:hrank:since', String(Date.now() - 8 * 86400000));
+		for (let d = 1; d <= 7; d++) for (let h = Math.floor((cw - d * 96 - 27) / 4); h <= Math.floor((cw - d * 96 + 4) / 4); h++) redis.sorted.set(`hanami:trend:hrank:${h}`, new Map([['語', 4]]));
+		redis.sorted.set(`hanami:trend:rank:${cw}`, new Map([['語', 8]]));
+		redis.sorted.set(`hanami:trend:rank:${cw - 10}`, new Map([['語', 32]]));
+		redis.sorted.set('hanami:trend:authorsz:語', new Map(['a', 'b', 'c'].map(id => [id, Date.now()])));
+		redis.sets.set(`hanami:trend:as:${cw - 10}:語`, new Set(['a', 'b', 'c']));
+		if (adopted) redis.sets.set('hanami:trend:active', new Set(['語']));
+		const service = new HanamiTrendService(redis as never, { getGlobalNotesScoresWithCache: async () => new Map() } as never, {} as never, {} as never);
+		expect(await service.getTrendingTerms(30)).toHaveLength(adopted ? 1 : 0);
+		const log = JSON.parse(redis.call.mock.calls[0][9] as string)[0];
+		expect(log.stay).toBe(adopted);
+		expect(log.spike6h).toBeGreaterThanOrEqual(1.3);
+		const before = redis.commands.length;
+		await service.getTrendingTerms(30);
+		expect(redis.commands).toHaveLength(before);
+		expect([...redis.sets.get('hanami:trend:active') ?? []]).toEqual(adopted ? ['語'] : []);
+		if (adopted) expect(redis.expiries.get('hanami:trend:active')).toBe(3600);
+	});
+});
+
+describe('reviewed term command boundaries (U-14, U-15, U-16)', () => {
+	const epoch = Date.parse('2023-01-01T00:00:00Z');
+	test('U-14: replenishes active counts outside each top 201, without counting visible windows twice', async () => {
+		const redis = memoryRedis();
+		const cw = Math.floor((Date.now() - epoch) / 900000);
+		redis.sets.set('hanami:trend:active', new Set(['active']));
+		redis.sorted.set(`hanami:trend:rank:${cw}`, new Map([['active', 1]]));
+		for (let i = 8; i < 24; i++) redis.sorted.set(`hanami:trend:rank:${cw - i}`, new Map([...Array.from({ length: 201 }, (_, j) => [`filler-${j}`, 100] as [string, number]), ['active', 1]]));
+		redis.sorted.set('hanami:trend:authorsz:active', new Map(['a', 'b', 'c'].map(id => [id, Date.now()])));
+		redis.sets.set(`hanami:trend:as:${cw - 8}:active`, new Set(['a', 'b', 'c']));
+		const service = new HanamiTrendService(redis as never, { getGlobalNotesScoresWithCache: async () => new Map() } as never, {} as never, {} as never);
+		expect((await service.getTrendingTerms(30)).map(term => term.term)).toEqual(['active']);
+		const log = JSON.parse(redis.call.mock.calls[0][9] as string)[0];
+		expect(log).toMatchObject({ term: 'active', stay: true, recentCount: 1 });
+		expect(log.spike6h).toBeCloseTo(17 / 24 / 0.1);
+		const commands = redis.commands.filter(([name, key]) => name === 'zmscore' && String(key).startsWith('hanami:trend:rank:'));
+		expect(commands).toHaveLength(23);
+		expect(commands).not.toContainEqual(['zmscore', `hanami:trend:rank:${cw}`, 'active']);
+		expect(commands).toContainEqual(['zmscore', `hanami:trend:rank:${cw - 8}`, 'active']);
+	});
+	test.each(['09:00', '09:10'])('U-15: compares the actual hourly start against since=%s', async start => {
+		jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-25T12:00:00Z'));
+		const redis = memoryRedis();
+		const cw = Math.floor((Date.now() - epoch) / 900000);
+		redis.strings.set('hanami:trend:hrank:since', String(Date.parse(`2026-09-24T${start}:00Z`)));
+		redis.sorted.set(`hanami:trend:rank:${cw}`, new Map([['語', 40]]));
+		redis.sorted.set('hanami:trend:authorsz:語', new Map(['a', 'b', 'c'].map(id => [id, Date.now()])));
+		redis.sets.set(`hanami:trend:as:${cw}:語`, new Set(['a', 'b', 'c']));
+		const service = new HanamiTrendService(redis as never, { getGlobalNotesScoresWithCache: async () => new Map() } as never, {} as never, {} as never);
+		await service.getTrendingTerms(30);
+		const log = JSON.parse(redis.call.mock.calls[0][9] as string)[0];
+		expect(log.baseDays).toBe(start === '09:00' ? 1 : 0);
+		const firstHour = Math.floor((cw - 96 - 11) / 4);
+		expect(redis.commands.some(([name, key]) => name === 'zmscore' && key === `hanami:trend:hrank:${firstHour}`)).toBe(start === '09:00');
+	});
+	test('U-16: skips low-count new terms and unions 24 windows only for failed active entrants', async () => {
+		const redis = memoryRedis();
+		const cw = Math.floor((Date.now() - epoch) / 900000);
+		redis.strings.set('hanami:trend:hrank:since', String(Date.now() - 8 * 86400000));
+		redis.sets.set('hanami:trend:active', new Set(['active', 'entrant']));
+		redis.sorted.set(`hanami:trend:rank:${cw}`, new Map([['low-one', 1], ['low-two', 2], ['entrant', 40], ['active', 1]]));
+		for (const term of ['low-one', 'low-two', 'entrant', 'active']) {
+			redis.sorted.set(`hanami:trend:authorsz:${term}`, new Map(['a', 'b', 'c'].map(id => [id, Date.now()])));
+			redis.sets.set(`hanami:trend:as:${cw}:${term}`, new Set(['a', 'b', 'c']));
+		}
+		const service = new HanamiTrendService(redis as never, { getGlobalNotesScoresWithCache: async () => new Map() } as never, {} as never, {} as never);
+		await service.getTrendingTerms(30);
+		const unions = redis.commands.filter(([name]) => name === 'sunion');
+		expect(unions).toHaveLength(3);
+		expect(unions.filter(command => command.length === 25)).toEqual([['sunion', ...Array.from({ length: 24 }, (_, i) => `hanami:trend:as:${cw - i}:active`)]]);
+		expect(unions.some(command => command.slice(1).some(key => String(key).endsWith(':low-one') || String(key).endsWith(':low-two')))).toBe(false);
+		const hourly = redis.commands.filter(([name, key]) => name === 'zmscore' && String(key).startsWith('hanami:trend:hrank:'));
+		expect(hourly).toHaveLength(98);
+		expect(hourly.every(command => command.length === 4 && command.includes('active') && command.includes('entrant'))).toBe(true);
+	});
+	test('F1: logs the highest fifty scores, then engagement and lexical ties', async () => {
+		const redis = memoryRedis();
+		const cw = Math.floor((Date.now() - epoch) / 900000);
+		const terms = Array.from({ length: 60 }, (_, i) => `term-${String(i).padStart(2, '0')}`);
+		redis.sorted.set(`hanami:trend:rank:${cw}`, new Map(terms.map((term, i) => [term, 10 + i])));
+		for (const term of terms) {
+			redis.sorted.set(`hanami:trend:authorsz:${term}`, new Map(['a', 'b', 'c'].map(id => [id, Date.now()])));
+			redis.sets.set(`hanami:trend:as:${cw}:${term}`, new Set(['a', 'b', 'c']));
+		}
+		// The strongest total spans earlier windows; it is not first in the current-window results.
+		redis.sorted.set(`hanami:trend:rank:${cw - 1}`, new Map([['term-00', 1000]]));
+		for (const term of ['term-01', 'term-02', 'term-03']) redis.sorted.set(`hanami:trend:rank:${cw - 1}`, new Map([...(redis.sorted.get(`hanami:trend:rank:${cw - 1}`) ?? []), [term, 100 - (10 + Number(term.slice(-2)))]]));
+		redis.sorted.set('hanami:trend:notes:term-03', new Map([['popular', Date.now()]]));
+		const service = new HanamiTrendService(redis as never, { getGlobalNotesScoresWithCache: async () => new Map([['popular', 1]]) } as never, {} as never, {} as never);
+		await service.getTrendingTerms(30);
+		const log = JSON.parse(redis.call.mock.calls[0][9] as string) as { term: string; score: number }[];
+		expect(log).toHaveLength(50);
+		expect(log.slice(0, 4).map(term => term.term)).toEqual(['term-00', 'term-03', 'term-01', 'term-02']);
+		expect(log.every((term, i) => i === 0 || log[i - 1].score >= term.score)).toBe(true);
 	});
 });

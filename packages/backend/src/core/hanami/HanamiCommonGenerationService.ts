@@ -28,6 +28,7 @@ import {
 	type HanamiPersistedCommonCandidate,
 	type HanamiReadyCommonHead,
 } from './HanamiCommonGenerationContracts.js';
+import type { HanamiTrendSnapshotTerm } from './HanamiCommonComputationService.js';
 import { HanamiTimelinePartitionService } from './HanamiTimelinePartitionService.js';
 import { HanamiForYouSafetyService } from './HanamiForYouSafetyService.js';
 import type { DataSource, QueryRunner } from 'typeorm';
@@ -38,7 +39,7 @@ const MAX_COMMON_ITEMS = 210;
 const MAX_SEGMENTS = 7;
 const MAX_SEGMENT_ITEMS = 30;
 const MAX_TREND_TERMS = 30;
-const MAX_TREND_REPRESENTATIVES = 5;
+const MAX_TREND_REPRESENTATIVES = 20;
 const CANDIDATE_LIMITS: Readonly<Record<HanamiCommonAxis, number>> = {
 	globalPopular: 500,
 	trending: 200,
@@ -652,7 +653,11 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 			throw new Error(`Hanami common trend snapshot term limit of ${MAX_TREND_TERMS} exceeded`);
 		}
 		const terms = new Set<string>();
-		for (const trend of source.trendSnapshot.terms) {
+		for (const trend of source.trendSnapshot.terms as readonly HanamiTrendSnapshotTerm[]) {
+			if (trend.topicId != null && (typeof trend.topicId !== 'string' || trend.topicId.length === 0 || trend.topicId.length > 32)) throw new Error('Invalid trend topicId');
+			if (trend.relatedTerms !== undefined && (!Array.isArray(trend.relatedTerms) || trend.relatedTerms.length > 5 || trend.relatedTerms.some(term => typeof term !== 'string' || term.length === 0 || term.length > 256))) throw new Error('Invalid trend relatedTerms');
+			if (trend.startedAt != null && (typeof trend.startedAt !== 'string' || !Number.isFinite(Date.parse(trend.startedAt)))) throw new Error('Invalid trend startedAt');
+			if (trend.daily !== undefined && typeof trend.daily !== 'boolean') throw new Error('Invalid trend daily');
 			this.assertNonEmptyString(trend.term, 'trend term');
 			if (trend.term.length > 256) throw new Error('Hanami common trend term exceeds 256 characters');
 			if (terms.has(trend.term)) throw new Error(`Hanami common trend snapshot contains duplicate term ${trend.term}`);
@@ -984,18 +989,21 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 				claim.startedAt,
 			]);
 
-			const trendTerms = source.trendSnapshot.terms;
+			const trendTerms = source.trendSnapshot.terms as readonly HanamiTrendSnapshotTerm[];
 			if (trendTerms.length > 0) {
 				await publicationQuery(`
 					INSERT INTO "hanami_trend_snapshot_entry" (
-						"generatedMonth", "id", "snapshotId", "rank", "term", "score", "distinctAuthors"
+						"generatedMonth", "id", "snapshotId", "rank", "term", "score", "distinctAuthors", "topicId", "relatedTerms", "startedAt", "daily"
 					)
 					SELECT $1::date, input.entry_id, t."id", (input.ordinality::bigint - '1'::bigint),
-						input.term, input.score, input.distinct_authors
+						input.term, input.score, input.distinct_authors,
+						topic.value->>'topicId', ARRAY(SELECT jsonb_array_elements_text(topic.value->'relatedTerms')),
+						(topic.value->>'startedAt')::timestamptz, (topic.value->>'daily')::boolean
 					FROM "hanami_trend_snapshot" t,
 						unnest($3::varchar[], $4::text[], $5::double precision[], $6::integer[])
-							WITH ORDINALITY AS input(entry_id, term, score, distinct_authors, ordinality)
-					WHERE t."commonGenerationId" = $2 AND t."status" = 'pending'
+							WITH ORDINALITY AS input(entry_id, term, score, distinct_authors, ordinality),
+						jsonb_array_elements($7::jsonb) WITH ORDINALITY AS topic(value, ordinality)
+					WHERE t."commonGenerationId" = $2 AND t."status" = 'pending' AND topic.ordinality = input.ordinality
 				`, [
 					this.dateLiteral(generatedMonth),
 					claim.generationId,
@@ -1003,6 +1011,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 					trendTerms.map((term) => term.term),
 					trendTerms.map((term) => term.score),
 					trendTerms.map((term) => term.distinctAuthors),
+					JSON.stringify(trendTerms.map(term => ({ topicId: term.topicId ?? null, relatedTerms: term.relatedTerms ?? [], startedAt: term.startedAt ?? null, daily: term.daily ?? false }))),
 				]);
 
 				const representatives = trendTerms.flatMap((term, rank) => term.representativeNoteIds

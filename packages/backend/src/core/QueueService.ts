@@ -25,6 +25,7 @@ import type {
 	HanamiCommonGenerationJobData,
 	HanamiCommonGenerationTickJobData,
 	HanamiNoteJudgeJobData,
+	HanamiTrendTopicJudgeJobData,
 	HanamiGenerationReconcileJobData,
 	HanamiRecommendationEventCacheRepairJobData,
 	HanamiRecommendationEventCacheReplayContinuationJobData,
@@ -351,6 +352,15 @@ export class QueueService implements OnModuleInit {
 		return this.getHanamiGenerationQueue().add('hanamiNoteJudge', { noteIds: normalizedNoteIds, promptVersion } satisfies HanamiNoteJudgeJobData, {
 			...HANAMI_NOTE_JUDGE_JOB_OPTIONS,
 			jobId: `hanamiNoteJudge-${promptVersion}-${digest}`,
+		});
+	}
+
+	@bindThis
+	public enqueueHanamiTrendTopicJudge(data: HanamiTrendTopicJudgeJobData) {
+		const digest = createHash('sha256').update(JSON.stringify(data)).digest('hex');
+		return this.getHanamiGenerationQueue().add('hanamiTrendTopicJudge', data, {
+			...HANAMI_NOTE_JUDGE_JOB_OPTIONS,
+			jobId: `hanamiTrendTopicJudge-${digest}`,
 		});
 	}
 

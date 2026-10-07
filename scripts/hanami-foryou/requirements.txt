@@ -4,3 +4,4 @@ scipy
 implicit
 sentence-transformers
 scikit-learn
+networkx

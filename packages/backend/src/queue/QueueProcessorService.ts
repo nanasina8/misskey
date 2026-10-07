@@ -61,6 +61,7 @@ import { ImportNotesProcessorService } from './processors/ImportNotesProcessorSe
 import type {
 	HanamiCommonGenerationJobData,
 	HanamiNoteJudgeJobData,
+	HanamiTrendTopicJudgeJobData,
 	HanamiCommonGenerationTickJobData,
 	HanamiGenerationReconcileJobData,
 	HanamiRecommendationEventCacheRepairJobData,
@@ -262,6 +263,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 					case 'hanamiCommonGenerationTick': return this.hanamiCommonGenerationProcessorService.processTick(job as Bull.Job<HanamiCommonGenerationTickJobData, unknown, 'hanamiCommonGenerationTick'>);
 					case 'hanamiCommonGeneration': return this.hanamiCommonGenerationProcessorService.processGeneration(job as Bull.Job<HanamiCommonGenerationJobData, unknown, 'hanamiCommonGeneration'>);
 					case 'hanamiNoteJudge': return this.hanamiCommonGenerationProcessorService.processNoteJudge(job as Bull.Job<HanamiNoteJudgeJobData, unknown, 'hanamiNoteJudge'>);
+					case 'hanamiTrendTopicJudge': return this.hanamiCommonGenerationProcessorService.processTrendTopicJudge(job as Bull.Job<HanamiTrendTopicJudgeJobData, unknown, 'hanamiTrendTopicJudge'>);
 					case 'hanamiUserFeedGeneration': return this.hanamiUserFeedGenerationProcessorService.process(job as Bull.Job<HanamiUserFeedGenerationJobData, unknown, 'hanamiUserFeedGeneration'>);
 					case 'hanamiGenerationReconcile': return this.hanamiGenerationReconcileProcessorService.process(job as Bull.Job<HanamiGenerationReconcileJobData, unknown, 'hanamiGenerationReconcile'>);
 					case 'hanamiRecommendationEventCacheRepair': return this.hanamiRecommendationEventCacheRepairProcessorService.process(job as Bull.Job<HanamiRecommendationEventCacheRepairJobData, unknown, 'hanamiRecommendationEventCacheRepair'>);

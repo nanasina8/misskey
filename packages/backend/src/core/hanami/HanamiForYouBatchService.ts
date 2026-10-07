@@ -27,7 +27,7 @@ import {
 	HANAMI_EVENT_TTL_SERVED_SEEN_MS,
 	HANAMI_EVENT_TTL_PERSONAL_MS,
 } from './HanamiForYouKeys.js';
-import { HANAMI_PYTHON_THREAD_ENV, prepareHanamiPythonCommand, probeHanamiNoteJudgeRuntime, resolveHanamiNoteJudgeScript, resolveHanamiRepoRoot } from './HanamiPythonRuntime.js';
+import { HANAMI_PYTHON_THREAD_ENV, prepareHanamiPythonCommand, peekHanamiNoteJudgeRuntime, probeHanamiNoteJudgeRuntime, resolveHanamiTrendTopicJudgeScript, resolveHanamiNoteJudgeScript, resolveHanamiRepoRoot } from './HanamiPythonRuntime.js';
 import {
 	HANAMI_NOTE_JUDGE_MAX_BATCH_SIZE,
 	HANAMI_NOTE_JUDGE_MODEL,
@@ -37,6 +37,7 @@ import {
 	validateHanamiNoteJudgeSettings,
 	type HanamiNoteJudgeSettings,
 } from './HanamiNoteJudgeContracts.js';
+import { trendDailyKey, trendSameKey, trendSameSetKey, type HanamiTrendPreviousTopics } from './HanamiTrendService.js';
 import { applyHanamiNoteJudgeRules } from './HanamiNoteJudgeRules.js';
 
 const execFileAsync = promisify(execFile);
@@ -95,6 +96,12 @@ export class HanamiNoteJudgeLockContentionError extends Error {
 }
 
 export type HanamiNoteJudgeJobData = Readonly<{ noteIds: readonly string[]; promptVersion: number }>;
+
+export type HanamiTrendTopicJudgeJobData = {
+	readonly topics: readonly { readonly topicId: string; readonly text: string }[];
+	readonly dailyIds: readonly string[];
+	readonly pairs: readonly { readonly a: string; readonly b: string }[];
+};
 
 type RelationAccumKey = string; // `${me}\t${other}`
 type RelationAccum = { out: number; in: number };
@@ -758,6 +765,92 @@ export class HanamiForYouBatchService {
 		// 常に probe して runtime キャッシュを温める（個人生成の未判定フォールバック判定は peek しか見ない）。
 		if (!(await probeHanamiNoteJudgeRuntime()).available) return Object.freeze([]);
 		return Object.freeze(splitHanamiNoteJudgeBatches(judgeable, this.noteJudgeBatchSize()).map(noteIds => Object.freeze({ noteIds: Object.freeze(noteIds), promptVersion: settings.promptVersion })));
+	}
+
+	/** Only uncached verdicts for the top ten topics, dispatched after common publication. */
+	@bindThis
+	public async prepareTrendTopicJudgeJob(): Promise<HanamiTrendTopicJudgeJobData | null> {
+		const runtime = peekHanamiNoteJudgeRuntime() ?? await probeHanamiNoteJudgeRuntime();
+		if (!runtime.available || runtime.device !== 'cuda') return null;
+		const previous = await this.redisClient.get('hanami:trend:topics:prev');
+		if (previous == null) return null;
+		const parsed = JSON.parse(previous) as HanamiTrendPreviousTopics | HanamiTrendPreviousTopics['topics'];
+		const topics = (Array.isArray(parsed) ? parsed : parsed.topics).slice(0, 10);
+		if (topics.length === 0) return null;
+		const daily = await this.redisClient.mget(...topics.map(topic => trendDailyKey(topic.topicId)));
+		const dailyIds = topics.filter((_, i) => daily[i] == null).map(topic => topic.topicId);
+		const possiblePairs = topics.flatMap((topic, i) => topics.slice(i + 1).map(other => ({ a: topic.topicId, b: other.topicId })));
+		const same = possiblePairs.length === 0 ? [] : await this.redisClient.mget(...possiblePairs.map(pair => trendSameKey(pair.a, pair.b)));
+		const pairs = possiblePairs.filter((_, i) => same[i] == null);
+		if (dailyIds.length === 0 && pairs.length === 0) return null;
+		const ids = [...new Set(topics.flatMap(topic => topic.noteIds))];
+		const rows = await this.db.query<Array<{ id: string; text: string; replyId: string | null }>>('SELECT id, text, "replyId" FROM note WHERE id = ANY($1::varchar[]) AND "replyId" IS NULL AND text IS NOT NULL', [ids]);
+		const scores = await this.featuredService.getGlobalNotesScoresWithCache();
+		const byId = new Map(rows.map(row => [row.id, row]));
+		return { dailyIds, pairs, topics: topics.map(topic => ({
+			topicId: topic.topicId,
+			text: `関連語: ${topic.terms.slice(0, 8).join('・')}\n投稿:\n` + topic.noteIds.map(id => byId.get(id)).filter((row): row is typeof rows[number] => row != null && row.replyId == null)
+				.sort((a, b) => (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0) || b.id.localeCompare(a.id))
+				.slice(0, 10).map(row => `- ${Array.from(row.text).slice(0, 120).join('')}`).join('\n'),
+		})) };
+	}
+
+	/** A busy note/taste judge skips this round; verdicts apply on the next generation. */
+	@bindThis
+	public async runTrendTopicJudgeJob(data: HanamiTrendTopicJudgeJobData, logger: Logger): Promise<void> {
+		const runtime = peekHanamiNoteJudgeRuntime() ?? await probeHanamiNoteJudgeRuntime();
+		if (!runtime.available || runtime.device !== 'cuda') return;
+		const token = await this.acquireNoteJudgeLock();
+		if (token == null) return;
+		let dir: string | null = null;
+		try {
+			const daily = data.dailyIds.length === 0 ? [] : await this.redisClient.mget(...data.dailyIds.map(id => trendDailyKey(id)));
+			const dailyIds = data.dailyIds.filter((_, i) => daily[i] == null);
+			const same = data.pairs.length === 0 ? [] : await this.redisClient.mget(...data.pairs.map(pair => trendSameKey(pair.a, pair.b)));
+			const pairs = data.pairs.filter((_, i) => same[i] == null);
+			if (dailyIds.length === 0 && pairs.length === 0) return;
+			dir = await mkdtemp(Path.join(tmpdir(), 'hanami-trend-topic-judge-'));
+			const inputPath = Path.join(dir, 'input.json');
+			const outputPath = Path.join(dir, 'output.json');
+			await writeFile(inputPath, JSON.stringify({ topics: data.topics, dailyIds, pairs }));
+			const command = prepareHanamiPythonCommand([resolveHanamiTrendTopicJudgeScript(), inputPath, outputPath], { env: this.noteJudgePythonEnv() });
+			let failure: unknown;
+			try {
+				await execFileAsync(command.file, command.args, { env: command.env, timeout: NOTE_JUDGE_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
+			} catch (error) { failure = error; }
+			const result = JSON.parse(await readFile(outputPath, 'utf8')) as {
+				status: string; error?: string;
+				judgements: ({ kind: 'daily'; topicId: string; probability: number } | { kind: 'same'; a: string; b: string; probability: number })[];
+			};
+			for (const judgement of result.judgements) {
+				if (!Number.isFinite(judgement.probability) || judgement.probability < 0 || judgement.probability > 1) throw new Error('Invalid topic judge probability');
+				let key: string;
+				let verdict: boolean;
+				if (judgement.kind === 'daily' && dailyIds.includes(judgement.topicId)) {
+					key = trendDailyKey(judgement.topicId); verdict = judgement.probability >= 0.6;
+				} else if (judgement.kind === 'same' && pairs.some(pair => pair.a === judgement.a && pair.b === judgement.b)) {
+					key = trendSameKey(judgement.a, judgement.b); verdict = judgement.probability >= 0.7;
+				} else throw new Error('Unexpected topic judgement');
+				const pipe = this.redisClient.multi().set(key, verdict ? '1' : '0', 'EX', 6 * 60 * 60);
+				if (judgement.kind === 'same') {
+					if (verdict) {
+						pipe.sadd(trendSameSetKey(judgement.a), judgement.b).expire(trendSameSetKey(judgement.a), 6 * 60 * 60);
+						pipe.sadd(trendSameSetKey(judgement.b), judgement.a).expire(trendSameSetKey(judgement.b), 6 * 60 * 60);
+					} else {
+						pipe.srem(trendSameSetKey(judgement.a), judgement.b);
+						pipe.srem(trendSameSetKey(judgement.b), judgement.a);
+					}
+				}
+				await pipe.exec();
+				logger.info('hanami trend topic judgement', { ...judgement, verdict });
+			}
+			if (failure != null || result.status !== 'ok') logger.warn('hanami trend topic judge: partial/unavailable', { error: String(failure ?? result.error ?? result.status) });
+		} catch (error) {
+			logger.warn('hanami trend topic judge failed', { error: String(error) });
+		} finally {
+			if (dir != null) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+			await this.releaseNoteJudgeLock(token);
+		}
 	}
 
 	/** Executes one durable local-Qwen job; transient runtime failures are rethrown for Bull retry, while interrupted runs salvage judgements already flushed by the Python side. */

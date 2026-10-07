@@ -3,8 +3,13 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { DataSource } from 'typeorm';
 import Logger from '@/logger.js';
@@ -12,7 +17,9 @@ import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import type { MiNote } from '@/models/Note.js';
 import { FeaturedService } from '@/core/FeaturedService.js';
-import { TASTE_EMBED_MODEL } from './HanamiTasteClusterBatchService.js';
+import { IdService } from '@/core/IdService.js';
+import { prepareHanamiPythonCommand, resolveHanamiTrendTopicsScript } from './HanamiPythonRuntime.js';
+import { encodeFp16, TASTE_EMBED_MODEL } from './HanamiTasteClusterBatchService.js';
 import { HanamiTokenizerService } from './tokenize/HanamiTokenizerService.js';
 
 // トレンド窓: おすすめ(FeaturedService)と同じ 15分グリッド × 288枠(72時間)。
@@ -23,15 +30,18 @@ const TREND_TTL_EXTRA_WINDOW_COUNT = 8; // バッファ窓（= 2時間）
 const TREND_TTL_SECONDS = Math.ceil((TREND_WINDOW_MS * (TREND_WINDOW_COUNT + TREND_TTL_EXTRA_WINDOW_COUNT)) / 1000);
 const AUTHORS_WINDOW_MS = 72 * 60 * 60 * 1000;
 const TREND_MIN_SPIKE = 2;
-const TREND_CLUSTER_INPUT_MAX = 60;
-const TREND_CLUSTER_WINDOW_MS = 6 * 60 * 60 * 1000;
-const TREND_CLUSTER_NOTES_PER_TERM = 30;
-const TREND_CLUSTER_COS = 0.45;
+const TREND_TOPIC_TERM_MAX = 150;
+const TREND_STAY_WINDOW_COUNT = 24;
+const TREND_STAY_MIN_SPIKE = 1.3;
+const TREND_ACTIVE_KEY = 'hanami:trend:active';
+const TREND_TOPIC_WINDOW_MS = 6 * 60 * 60 * 1000;
+const TREND_TOPIC_NOTES_PER_TERM = 200;
+const TREND_TOPIC_NOTES_MAX = 4000;
+
 const SOCIAL_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RECENT_AUTHORS_TTL_SECONDS = 26 * 60 * 60;
 const HOURLY_TTL_SECONDS = 8 * 24 * 60 * 60;
 const HOURLY_SINCE_KEY = 'hanami:trend:hrank:since';
-const WEEK_READY_MS = (7 * 24 + 2) * 60 * 60 * 1000;
 const BASELINE_PAD = 4;
 const TEMPLATE_FP_LEN = 40;
 const TEMPLATE_FP_MIN_LEN = 8;
@@ -49,16 +59,12 @@ const TREND_RECENT_MIN_COUNT = 3;
 // 窓ごとの重複排除は15分でリセットされるため、1人が窓を跨いで話し続けるだけで延べ数は増える（独り言/空リプ漏れ）。
 // SUNION で「2時間に本当に何人が言ったか」を数え、ここで弾く。
 const TREND_RECENT_MIN_DISTINCT_AUTHORS = 3;
-// 用語の直近ノート群のエンゲージ合算 floor。誰にも反応されない語（形態素解析の断片等の謎単語）はここで沈む。
-const TREND_MIN_RECENT_ENGAGEMENT = 1;
 // 1ノートから採用する最大 distinct 用語数（珍語爆発の最小対策）。
 const MAX_TERMS_PER_NOTE = 16;
 // 用語ごとに保持する最近ノート数。
 const NOTES_PER_TERM = 200;
 // トレンド用語として成立する最小 distinct author 数（全窓横断・操作耐性の near-free guard）。
 const MIN_DISTINCT_AUTHORS = 3;
-// spike 一次候補の上限（この件数だけエンゲージ/distinct の二次評価を行う）。
-const TREND_CANDIDATE_LIMIT = 200;
 // トレンド結果のうち固有名詞（人名/地名/組織/作品/製品名 等）に確保する最低割合。
 // 普通名詞（値上げ/突破 等）にフィードが埋め尽くされるのを防ぎ、固有名詞の話題を一定数surfaceさせる。
 const TREND_PROPER_NOUN_MIN_SHARE = 0.4;
@@ -68,15 +74,15 @@ const TRENDING_TERMS_EMPTY_CACHE_TTL_SECONDS = 5;
 
 // 注入候補ノートの選定（getTrendingNoteIds）:
 // 「用語を含む最新ノートを機械的に」ではなく、エンゲージ×新しさのハイブリッド順にする。
-const TREND_NOTE_MIN_ENGAGEMENT = 1; // ノート単体の floor（リアクション1相当）。0反応ノートはトレンドに乗らない
 const TREND_NOTE_FRESHNESS_HALF_LIFE_MS = 1000 * 60 * 60 * 12; // 鮮度半減期 12h
-const TREND_NOTES_PER_TERM_FETCH = 200; // 用語ごとに評価する最近ノート数
 const TREND_NOTES_RESULT_MAX = 200;
 const TREND_SNAPSHOT_TERM_MAX = 30;
-const TREND_FEED_TERM_MAX = 30;
+const TREND_FEED_NOTES_PER_TOPIC = 20;
+const TREND_REPRESENTATIVE_NOTE_MAX = 20;
+const TREND_TOPIC_PREV_KEY = 'hanami:trend:topics:prev';
+const execFileAsync = promisify(execFile);
 const TRENDING_NOTES_CACHE_KEY = 'hanami:trend:noteIds';
-const TRENDING_NOTES_CACHE_TTL_SECONDS = 30;
-const TRENDING_NOTES_EMPTY_CACHE_TTL_SECONDS = 5;
+const TRENDING_NOTES_CACHE_TTL_SECONDS = 30 * 60;
 
 // 効果測定スナップショット: 候補用語の判定材料を再計算ごとに1エントリで Redis Stream に残す。
 // 閾値（floor/集中度ガード）の調整は当て勘でなくこのログで行う。
@@ -87,14 +93,36 @@ const TREND_LOG_CANDIDATE_LIMIT = 50;
 const trendEpoch = new Date('2023-01-01T00:00:00Z').getTime();
 
 export type TrendingTerm = { term: string; score: number; distinctAuthors: number };
-type TrendBase = { base: number; baseKind: 'avg70' | 'day' | 'dayWeek' };
+type TrendBase = { base: number; baseKind: 'avg72' | 'median7'; baseDays: number };
 type TrendingTermCandidate = TrendingTerm & { proper: boolean };
-type TrendCluster = { head: TrendingTermCandidate; members: TrendingTermCandidate[] };
-type RankedTrendNote = { noteId: string; score: number; rank: number };
+export type HanamiTrendTopicFields = {
+	readonly topicId?: string | null;
+	readonly relatedTerms?: readonly string[];
+	readonly startedAt?: string | null;
+	readonly daily?: boolean;
+};
+type TopicNote = { id: string; userId: string; replyId: string | null; renoteId: string | null; text: string | null; createdAt: number; terms: string[]; embeddingIndex: number | null };
+type RawTopic = { terms: string[]; noteIds: string[]; authors6h: number; authors2h: number; center: number[] | null };
+type Topic = RawTopic & { topicId: string; startedAt: string; daily: boolean };
+export type HanamiTrendPreviousTopics = { computedAt: number; topics: Omit<Topic, 'center'>[] };
+type TrendNoteCandidate = { noteId: string; term: string };
+type TrendNoteCache = { computedAt: number; candidates: TrendNoteCandidate[] };
+const SAVE_COMPUTED_CACHE = `
+local previous = redis.call('GET', KEYS[1])
+if previous then
+  local decoded = cjson.decode(previous)
+  if decoded.computedAt and decoded.computedAt >= tonumber(ARGV[1]) then return 0 end
+end
+redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
+return 1
+`;
+export function trendDailyKey(id: string): string { return `hanami:trend:llm:daily:${id}`; }
+export function trendSameKey(a: string, b: string): string { return `hanami:trend:llm:same:${[a, b].sort().join(':')}`; }
+export function trendSameSetKey(id: string): string { return `hanami:trend:llm:sameset:${id}`; }
 
 export type HanamiTrendComputationBundle = {
 	readonly computedAt: string;
-	readonly terms: readonly (TrendingTerm & {
+	readonly terms: readonly (TrendingTerm & HanamiTrendTopicFields & {
 		readonly representativeNoteIds: readonly string[];
 	})[];
 	readonly noteCandidates: readonly {
@@ -108,10 +136,10 @@ export type HanamiTrendComputationBundle = {
  *
  * - 本文のみを HanamiTokenizerService で解析（URL/タグ/絵文字/メディアは見ない）
  * - distinct author 数を窓ごとに数える（同一人物の連投で釣り上がらない）
- * - 一次スコアは spike率（普段比の増加率）。recent=直近 R 窓のレート ÷ baseline=同時刻（固有名詞は残り窓）のレート。
+ * - 一次スコアは spike率（普段比の増加率）。recent=直近 R 窓のレート ÷ baseline=過去7日の同時刻の中央値。
  *   定番語/毎日同じ自動投稿は baseline が高く spike しない＝上位から消える
- * - 二次評価で (a) 直近スパンの実 distinct author（独り言/空リプの窓跨ぎを1人と数える）と
- *   (b) 用語の直近ノート群のエンゲージ合算 を floor にし、普段比を最終スコアにする
+ * - 直近スパンの実 distinct author（独り言/空リプの窓跨ぎを1人と数える）を下限にする
+ * - 前回の語は6時間の普段比で保持し、返信・URL・埋め込みから投稿単位の話題を作る
  * - 用語ごとの全窓横断 distinct author が MIN_DISTINCT_AUTHORS 未満なら採用しない（1アカウント捏造を弾く）
  *
  * インデックスは専用ワーカー想定の fire-and-forget で呼ぶ（リクエスト経路を遅らせない）。
@@ -129,6 +157,9 @@ export class HanamiTrendService {
 
 		@Inject(DI.db)
 		private db: DataSource,
+
+		@Optional()
+		private idService?: IdService,
 	) {
 	}
 
@@ -242,7 +273,7 @@ export class HanamiTrendService {
 	/**
 	 * 急上昇用語の候補。
 	 * 一次: spike率（窓別 distinct-author 延べ数ベース）でふるい落とし。
-	 * 二次: 直近スパンの実 distinct author / エンゲージ合算で floor をかけ、普段比で順位を決める。
+	 * 二次: 直近スパンの実 distinct author で下限をかけ、普段比で順位を決める。
 	 */
 	@bindThis
 	private async getTrendingTermCandidatesWithCache(featuredScores?: ReadonlyMap<string, number>): Promise<TrendingTermCandidate[]> {
@@ -252,133 +283,121 @@ export class HanamiTrendService {
 		}
 
 		const cw = this.currentWindow();
-
-		// 全 TREND_WINDOW_COUNT 窓の窓別 distinct-author カウントを取得し、
-		// 直近 R 窓(recent=今) と 残り窓(baseline=普段) に分けて spike率を出す。
+		const now = Date.now();
+		const active = new Set(await this.redisClient.smembers(TREND_ACTIVE_KEY));
 		const pipe = this.redisClient.pipeline();
 		for (let i = 0; i < TREND_WINDOW_COUNT; i++) pipe.zrange(this.rankKey(cw - i), 0, 200, 'REV', 'WITHSCORES');
 		const res = await pipe.exec();
-
-		// term ごとに recent合計 / baseline合計 を貯める（i=0 が現窓、i が大きいほど過去）。
-		const recentSum = new Map<string, number>();
-		const baselineSum = new Map<string, number>();
+		const sums = [new Map<string, number>(), new Map<string, number>(), new Map<string, number>()];
 		for (let i = 0; i < TREND_WINDOW_COUNT; i++) {
 			const raw = (res?.[i]?.[1] ?? []) as string[];
-			if (raw.length === 0) continue;
-			const target = i < TREND_RECENT_WINDOW_COUNT ? recentSum : baselineSum;
 			for (let j = 0; j < raw.length; j += 2) {
-				target.set(raw[j], (target.get(raw[j]) ?? 0) + parseFloat(raw[j + 1]));
+				const term = raw[j];
+				const value = Number(raw[j + 1]);
+				if (i < TREND_RECENT_WINDOW_COUNT) sums[0].set(term, (sums[0].get(term) ?? 0) + value);
+				else sums[2].set(term, (sums[2].get(term) ?? 0) + value);
+				if (i < TREND_STAY_WINDOW_COUNT) sums[1].set(term, (sums[1].get(term) ?? 0) + value);
 			}
 		}
-		if (recentSum.size === 0) {
-			// 直近に動きが無ければ「急上昇」は存在しない。
-			await this.redisClient.set(TRENDING_TERMS_CACHE_KEY, '[]', 'EX', TRENDING_TERMS_EMPTY_CACHE_TTL_SECONDS);
-			return [];
+		const missingPipe = this.redisClient.pipeline();
+		const missingWindows: { window: number; terms: string[] }[] = [];
+		for (let i = 0; i < TREND_STAY_WINDOW_COUNT; i++) {
+			const raw = (res?.[i]?.[1] ?? []) as string[];
+			const present = new Set(raw.filter((_, index) => index % 2 === 0));
+			const missing = [...active].filter(term => !present.has(term));
+			if (missing.length === 0) continue;
+			missingPipe.zmscore(this.rankKey(cw - i), ...missing);
+			missingWindows.push({ window: i, terms: missing });
 		}
-
-		const spikeTerms = [...recentSum].filter(([, recent]) => recent >= TREND_RECENT_MIN_COUNT).map(([term]) => term);
-		if (spikeTerms.length === 0) {
-			await this.redisClient.set(TRENDING_TERMS_CACHE_KEY, '[]', 'EX', TRENDING_TERMS_EMPTY_CACHE_TTL_SECONDS);
-			return [];
-		}
-		const now = Date.now();
-		const [properFlags, hourlySince] = await Promise.all([
-			this.redisClient.smismember(this.properKey(), ...spikeTerms),
-			this.redisClient.get(HOURLY_SINCE_KEY),
-		]);
-		const weekReady = hourlySince != null && Number.isFinite(Number(hourlySince)) && now - Number(hourlySince) >= WEEK_READY_MS;
-		const spanSize = TREND_RECENT_WINDOW_COUNT + 2 * BASELINE_PAD;
-		const basePipe = this.redisClient.pipeline();
-		for (const lag of [96, 192]) {
-			for (let w = cw - lag - TREND_RECENT_WINDOW_COUNT + 1 - BASELINE_PAD; w <= cw - lag + BASELINE_PAD; w++) {
-				basePipe.zmscore(this.rankKey(w), ...spikeTerms);
-			}
-		}
-		const weekStart = Math.floor((cw - 672 - TREND_RECENT_WINDOW_COUNT + 1 - BASELINE_PAD) / 4);
-		const weekEnd = Math.floor((cw - 672 + BASELINE_PAD) / 4);
-		for (let h = weekStart; h <= weekEnd; h++) basePipe.zmscore(this.hourlyRankKey(h), ...spikeTerms);
-		const baseRes = await basePipe.exec();
-		const baselineWindows = TREND_WINDOW_COUNT - TREND_RECENT_WINDOW_COUNT;
-		const bases = new Map<string, TrendBase>();
-		const properTerms = new Set(spikeTerms.filter((_, i) => Number(properFlags[i]) === 1));
-		const spikes: [string, number][] = spikeTerms.map((term, index) => {
-			let daySum = 0;
-			let weekSum = 0;
-			for (let i = 0; i < 2 * spanSize + weekEnd - weekStart + 1; i++) {
-				const values = baseRes?.[i]?.[1] as (string | null)[] | undefined;
-				const value = Number(values?.[index] ?? 0);
-				if (i < 2 * spanSize) daySum += value;
-				else weekSum += value;
-			}
-			const dayBase = daySum / (2 * spanSize);
-			const weekRate = weekSum / (4 * (weekEnd - weekStart + 1));
-			const proper = properTerms.has(term);
-			const base = proper ? (baselineSum.get(term) ?? 0) / baselineWindows : weekReady ? Math.max(dayBase, weekRate) : dayBase;
-			bases.set(term, { base, baseKind: proper ? 'avg70' : weekReady ? 'dayWeek' : 'day' });
-			return [term, (recentSum.get(term)! / TREND_RECENT_WINDOW_COUNT) / (base + SPIKE_EPS)];
+		const missingResults = await missingPipe.exec();
+		missingWindows.forEach(({ window, terms }, index) => {
+			const counts = (missingResults?.[index]?.[1] ?? []) as (string | null)[];
+			terms.forEach((term, j) => {
+				const count = Number(counts[j] ?? 0);
+				if (window < TREND_RECENT_WINDOW_COUNT) sums[0].set(term, (sums[0].get(term) ?? 0) + count);
+				else sums[2].set(term, (sums[2].get(term) ?? 0) + count);
+				sums[1].set(term, (sums[1].get(term) ?? 0) + count);
+			});
 		});
-
-		// 二次評価: spike 上位ごとに 全窓distinct / 直近スパンdistinct（SUNION） / 直近ノートID を一括取得。
-		const candidates = spikes.sort((a, b) => b[1] - a[1]).slice(0, TREND_CANDIDATE_LIMIT);
-		const recentNotesSince = now - TREND_RECENT_SPAN_MS;
+		const spikeTerms = [...new Set([...sums[0].entries()].filter(([, count]) => count >= TREND_RECENT_MIN_COUNT).map(([term]) => term).concat([...active]))];
+		const hourlySince = await this.redisClient.get(HOURLY_SINCE_KEY);
+		const since = hourlySince == null ? Infinity : Number(hourlySince);
+		const basePipe = this.redisClient.pipeline();
+		let baseOffset = 0;
+		const spans = [TREND_RECENT_WINDOW_COUNT, TREND_STAY_WINDOW_COUNT].map(count => {
+			const days: { offset: number; hours: number }[] = [];
+			for (let d = 1; d <= 7; d++) {
+				const startWindow = cw - d * 96 - count + 1 - BASELINE_PAD;
+				const start = Math.floor(startWindow / 4);
+				if (!Number.isFinite(since) || trendEpoch + start * 4 * TREND_WINDOW_MS < since) continue;
+				const end = Math.floor((cw - d * 96 + BASELINE_PAD) / 4);
+				days.push({ offset: baseOffset, hours: end - start + 1 });
+				for (let h = start; h <= end; h++) {
+					if (spikeTerms.length > 0) basePipe.zmscore(this.hourlyRankKey(h), ...spikeTerms);
+					baseOffset++;
+				}
+			}
+			return days;
+		});
+		const baseRes = await basePipe.exec();
+		const baseline = (index: number, span: number): TrendBase => {
+			const days = spans[span];
+			const term = spikeTerms[index];
+			if (days.length === 0) return { base: ((sums[2].get(term) ?? 0) + (sums[0].get(term) ?? 0) - (sums[span].get(term) ?? 0)) / (TREND_WINDOW_COUNT - (span === 0 ? TREND_RECENT_WINDOW_COUNT : TREND_STAY_WINDOW_COUNT)), baseKind: 'avg72', baseDays: 0 };
+			const rates = days.map(day => {
+				let total = 0;
+				for (let i = 0; i < day.hours; i++) total += Number((baseRes?.[day.offset + i]?.[1] as (string | null)[] | undefined)?.[index] ?? 0);
+				return total / (4 * day.hours);
+			}).sort((a, b) => a - b);
+			const middle = Math.floor(rates.length / 2);
+			return { base: rates.length % 2 ? rates[middle] : (rates[middle - 1] + rates[middle]) / 2, baseKind: 'median7', baseDays: days.length };
+		};
 		const evalPipe = this.redisClient.pipeline();
-		for (const [term] of candidates) {
+		for (const term of spikeTerms) {
 			evalPipe.zcount(this.authorsKey(term), now - AUTHORS_WINDOW_MS, '+inf');
 			evalPipe.sunion(...Array.from({ length: TREND_RECENT_WINDOW_COUNT }, (_, i) => this.authorSetKey(cw - i, term)));
-			evalPipe.zrangebyscore(this.notesKey(term), recentNotesSince, '+inf');
+			evalPipe.zrangebyscore(this.notesKey(term), now - TREND_RECENT_SPAN_MS, '+inf');
 		}
-		const [evalRes, globalScores] = await Promise.all([
+		const [evalRes, globalScores, properFlags] = await Promise.all([
 			evalPipe.exec(),
 			featuredScores ?? this.featuredService.getGlobalNotesScoresWithCache(),
+			spikeTerms.length > 0 ? this.redisClient.smismember(this.properKey(), ...spikeTerms) : [],
 		]);
-
-		type EvaluatedTerm = TrendingTerm & TrendBase & {
-			spike: number;
-			recentCount: number;
-			recentDistinctAuthors: number;
-			recentEngagement: number;
-			rejected: string | null;
-		};
-		const evaluated: EvaluatedTerm[] = [];
-		for (let i = 0; i < candidates.length; i++) {
-			const [term, spike] = candidates[i];
+		const evaluated = spikeTerms.map((term, i) => {
+			const base = baseline(i, 0);
+			const base6h = baseline(i, 1);
+			const recentCount = sums[0].get(term) ?? 0;
+			const spike = (recentCount / TREND_RECENT_WINDOW_COUNT) / (base.base + SPIKE_EPS);
+			const spike6h = ((sums[1].get(term) ?? 0) / TREND_STAY_WINDOW_COUNT) / (base6h.base + SPIKE_EPS);
 			const distinctAuthors = Number(evalRes?.[i * 3]?.[1] ?? 0);
-			const recentAuthors = (evalRes?.[(i * 3) + 1]?.[1] ?? []) as string[];
-			const recentNoteIds = (evalRes?.[(i * 3) + 2]?.[1] ?? []) as string[];
-			let recentEngagement = 0;
-			for (const noteId of recentNoteIds) recentEngagement += globalScores.get(noteId) ?? 0;
-
-			let rejected: string | null = null;
-			if (spike < TREND_MIN_SPIKE) rejected = 'lowSpike';
-			else if (distinctAuthors < MIN_DISTINCT_AUTHORS) rejected = 'fewTotalAuthors'; // 全窓で distinct author が少ない（1アカウント捏造）
-			else if (recentAuthors.length < TREND_RECENT_MIN_DISTINCT_AUTHORS) rejected = 'fewRecentAuthors'; // 窓を跨ぐ独り言/空リプ
-			else if (recentEngagement < TREND_MIN_RECENT_ENGAGEMENT) rejected = 'noEngagement'; // 誰にも反応されない謎単語
-
-			evaluated.push({
-				term,
-				// 普段比を優先し、反応数は同率の語の順序にだけ使う。
-				score: spike,
-				distinctAuthors,
-				spike,
-				...bases.get(term)!,
-				recentCount: recentSum.get(term) ?? 0,
-				recentDistinctAuthors: recentAuthors.length,
-				recentEngagement,
-				rejected,
-			});
-		}
-
-		this.logTrendSnapshot(now, evaluated).catch(err => {
-			// eslint-disable-next-line no-console
-			console.error('hanami trend: snapshot log failed', err);
+			const recentAuthors = (evalRes?.[i * 3 + 1]?.[1] ?? []) as string[];
+			const noteIds = (evalRes?.[i * 3 + 2]?.[1] ?? []) as string[];
+			const enters = spike >= TREND_MIN_SPIKE && recentCount >= TREND_RECENT_MIN_COUNT && recentAuthors.length >= TREND_RECENT_MIN_DISTINCT_AUTHORS && distinctAuthors >= MIN_DISTINCT_AUTHORS;
+			return {
+				term, ...base, spike, spike6h, stay: false, enters, distinctAuthors,
+				score: Math.max(spike, spike6h), recentCount, recentDistinctAuthors: recentAuthors.length,
+				recentEngagement: noteIds.reduce((sum, id) => sum + (globalScores.get(id) ?? 0), 0),
+				rejected: enters ? null : distinctAuthors < MIN_DISTINCT_AUTHORS ? 'fewTotalAuthors' : spike < TREND_MIN_SPIKE ? 'lowSpike' : 'fewRecentAuthors',
+				proper: Number(properFlags[i]) === 1,
+			};
 		});
-
-		const out: TrendingTerm[] = evaluated
-			.filter(e => e.rejected == null)
-			.sort((a, b) => b.spike - a.spike || b.recentEngagement - a.recentEngagement || (a.term < b.term ? -1 : a.term > b.term ? 1 : 0))
-			.map(e => ({ term: e.term, score: e.score, distinctAuthors: e.distinctAuthors }));
-
-		const terms = out.map(o => ({ ...o, proper: properTerms.has(o.term) }));
+		const staying = evaluated.filter(term => !term.enters && active.has(term.term));
+		const stayPipe = this.redisClient.pipeline();
+		for (const term of staying) stayPipe.sunion(...Array.from({ length: TREND_STAY_WINDOW_COUNT }, (_, i) => this.authorSetKey(cw - i, term.term)));
+		const stayResults = await stayPipe.exec();
+		staying.forEach((term, i) => {
+			const authors = (stayResults?.[i]?.[1] ?? []) as string[];
+			term.stay = term.spike6h >= TREND_STAY_MIN_SPIKE && authors.length >= MIN_DISTINCT_AUTHORS && term.distinctAuthors >= MIN_DISTINCT_AUTHORS;
+			if (term.stay) term.rejected = null;
+		});
+		evaluated.sort((a, b) => b.score - a.score || b.recentEngagement - a.recentEngagement || (a.term < b.term ? -1 : a.term > b.term ? 1 : 0));
+		await this.logTrendSnapshot(now, evaluated).catch(error => this.logger.warn('hanami trend: snapshot log failed', { error: String(error) }));
+		const terms = evaluated.filter(e => e.rejected == null)
+			.slice(0, TREND_TOPIC_TERM_MAX)
+			.map(e => ({ term: e.term, score: e.score, distinctAuthors: e.distinctAuthors, proper: e.proper }));
+		const activePipe = this.redisClient.multi().del(TREND_ACTIVE_KEY);
+		if (terms.length > 0) activePipe.sadd(TREND_ACTIVE_KEY, ...terms.map(term => term.term)).expire(TREND_ACTIVE_KEY, 3600);
+		await activePipe.exec();
 
 		await this.redisClient.set(
 			TRENDING_TERMS_CACHE_KEY,
@@ -394,12 +413,15 @@ export class HanamiTrendService {
 	 * avgWindowsPerAuthor が高い語は少人数が窓を跨いで話し続けている（集中度ガード導入判断の材料）。
 	 */
 	@bindThis
-	private async logTrendSnapshot(at: number, evaluated: (TrendBase & { term: string; spike: number; score: number; recentCount: number; recentDistinctAuthors: number; recentEngagement: number; distinctAuthors: number; rejected: string | null })[]): Promise<void> {
+	private async logTrendSnapshot(at: number, evaluated: (TrendBase & { term: string; spike: number; spike6h: number; stay: boolean; score: number; recentCount: number; recentDistinctAuthors: number; recentEngagement: number; distinctAuthors: number; rejected: string | null })[]): Promise<void> {
 		if (evaluated.length === 0) return;
 		const top = evaluated.slice(0, TREND_LOG_CANDIDATE_LIMIT).map(e => ({
 			term: e.term,
 			base: e.base,
 			baseKind: e.baseKind,
+			baseDays: e.baseDays,
+			stay: e.stay,
+			spike6h: e.spike6h,
 			spike: Math.round(e.spike * 100) / 100,
 			score: Math.round(e.score * 100) / 100,
 			recentCount: e.recentCount,
@@ -447,7 +469,7 @@ export class HanamiTrendService {
 	}
 
 	/**
-	 * 急上昇用語。普段比で並べ、distinct author / エンゲージ floor で足切り済み。
+	 * 急上昇用語。普段比で並べ、distinct author の下限を満たすもの。
 	 */
 	@bindThis
 	public async getTrendingTerms(limit: number): Promise<TrendingTerm[]> {
@@ -455,156 +477,193 @@ export class HanamiTrendService {
 		return this.selectTrendingTerms(out, limit);
 	}
 
-	private async rankNotesForTerms(terms: readonly TrendingTerm[], globalScores: ReadonlyMap<string, number>, now: number): Promise<Map<string, RankedTrendNote[]>> {
-		if (terms.length === 0) return new Map();
-
+	private async collectTopicInput(candidates: readonly TrendingTermCandidate[], now: number): Promise<{ notes: TopicNote[]; parents: TopicNote[] }> {
 		const pipe = this.redisClient.pipeline();
-		for (const term of terms) pipe.zrange(this.notesKey(term.term), 0, TREND_NOTES_PER_TERM_FETCH - 1, 'REV', 'WITHSCORES');
-		const res = await pipe.exec();
-
-		const out = new Map<string, RankedTrendNote[]>();
-		for (let i = 0; i < terms.length; i++) {
-			const raw = (res?.[i]?.[1] ?? []) as string[];
-			const items: RankedTrendNote[] = [];
+		for (const term of candidates) pipe.zrange(this.notesKey(term.term), now, now - TREND_TOPIC_WINDOW_MS, 'BYSCORE', 'REV', 'LIMIT', 0, TREND_TOPIC_NOTES_PER_TERM, 'WITHSCORES');
+		const results = await pipe.exec();
+		if (results == null || results.some(([error]) => error != null)) throw new Error('Failed to read trend topic notes');
+		const indexed = new Map<string, { at: number; terms: string[] }>();
+		results.forEach(([, result], i) => {
+			const raw = result as string[];
 			for (let j = 0; j < raw.length; j += 2) {
-				const noteId = raw[j];
-				const postedAt = Number(raw[j + 1]);
-				const engagement = globalScores.get(noteId) ?? 0;
-				if (noteId.length === 0 || !Number.isFinite(postedAt) || !Number.isFinite(engagement)) continue;
-				if (engagement < TREND_NOTE_MIN_ENGAGEMENT) continue;
-				const freshness = Math.pow(0.5, Math.max(0, now - postedAt) / TREND_NOTE_FRESHNESS_HALF_LIFE_MS);
-				items.push({ noteId, score: engagement * freshness, rank: j / 2 });
+				const item = indexed.get(raw[j]) ?? { at: Number(raw[j + 1]), terms: [] };
+				item.terms.push(candidates[i].term);
+				indexed.set(raw[j], item);
 			}
-			items.sort((a, b) => b.score - a.score || a.rank - b.rank);
-			out.set(terms[i].term, items);
-		}
-		return out;
+		});
+		const ids = [...indexed].sort((a, b) => b[1].at - a[1].at).slice(0, TREND_TOPIC_NOTES_MAX).map(([id]) => id);
+		if (ids.length === 0) return { notes: [], parents: [] };
+		type Row = Pick<TopicNote, 'id' | 'userId' | 'replyId' | 'renoteId' | 'text'>;
+		const rows = await this.db.query<Row[]>('SELECT id, "userId", "replyId", "renoteId", text FROM note WHERE id = ANY($1::varchar[])', [ids]);
+		const byId = new Map(rows.map(row => [row.id, row]));
+		const notes = ids.flatMap(id => {
+			const row = byId.get(id);
+			return row == null ? [] : [{ ...row, createdAt: this.idService?.parse(id).date.getTime() ?? indexed.get(id)!.at, terms: indexed.get(id)!.terms, embeddingIndex: null }];
+		});
+		const parentIds = [...new Set(notes.flatMap(note => [note.replyId, note.text ? note.renoteId : null]).filter((id): id is string => id != null))];
+		const parents = parentIds.length === 0 ? [] : await this.db.query<Row[]>('SELECT id, "userId", "replyId", "renoteId", text FROM note WHERE id = ANY($1::varchar[])', [parentIds]);
+		return { notes, parents: parents.map(row => ({ ...row, createdAt: 0, terms: [], embeddingIndex: null })) };
 	}
 
-	private async clusterTrendingTerms(candidates: readonly TrendingTermCandidate[], now: number): Promise<TrendCluster[]> {
-		const input = candidates.slice(0, TREND_CLUSTER_INPUT_MAX);
-		const singletons = () => input.map(head => ({ head, members: [head] }));
-		if (input.length < 2) return singletons();
+	private async buildTopics(candidates: readonly TrendingTermCandidate[], notes: TopicNote[], parents: TopicNote[], now: number): Promise<RawTopic[]> {
+		if (notes.length === 0) return [];
+		let dir: string | null = null;
 		try {
-			const pipe = this.redisClient.pipeline();
-			for (const term of input) {
-				pipe.zrange(this.notesKey(term.term), now, now - TREND_CLUSTER_WINDOW_MS, 'BYSCORE', 'REV', 'LIMIT', 0, TREND_CLUSTER_NOTES_PER_TERM);
-			}
-			const results = await pipe.exec();
-			if (results == null || results.some(([error]) => error != null)) throw new Error('Failed to read trend cluster notes');
-			const notesByTerm = results.map(([, ids]) => [...new Set(ids as string[])]);
-			const noteIds = [...new Set(notesByTerm.flat())];
-			if (noteIds.length === 0) return singletons();
 			const [rows, state] = await Promise.all([
-				this.db.query<Array<{ noteId: string; embedding: number[] }>>(
-					'SELECT "noteId", embedding FROM "hanami_note_embedding" WHERE model = $1 AND "noteId" = ANY($2)',
-					[TASTE_EMBED_MODEL, noteIds],
-				),
-				this.db.query<Array<{ meanVec: number[] }>>(
-					'SELECT "meanVec" FROM "hanami_foryou_taste_state" WHERE model = $1',
-					[TASTE_EMBED_MODEL],
-				),
+				this.db.query<Array<{ noteId: string; embedding: number[] }>>('SELECT "noteId", embedding FROM "hanami_note_embedding" WHERE model = $1 AND "noteId" = ANY($2)', [TASTE_EMBED_MODEL, notes.map(note => note.id)]),
+				this.db.query<Array<{ meanVec: number[] }>>('SELECT "meanVec" FROM "hanami_foryou_taste_state" WHERE model = $1', [TASTE_EMBED_MODEL]),
 			]);
-			if (rows.length === 0) return singletons();
-			const dimensions = rows[0].embedding.length;
-			const validVector = (vector: number[]) => Array.isArray(vector) && vector.length === dimensions && vector.every(Number.isFinite);
-			if (dimensions === 0 || rows.some(row => !validVector(row.embedding))) throw new Error('Invalid trend embedding');
-			const mean = state[0]?.meanVec ?? Array.from({ length: dimensions }, (_, i) => rows.reduce((sum, row) => sum + row.embedding[i], 0) / rows.length);
-			if (!validVector(mean)) throw new Error('Invalid trend embedding mean');
-			const normalize = (vector: number[]): number[] | null => {
-				const norm = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
-				if (!Number.isFinite(norm)) throw new Error('Invalid trend vector norm');
-				return norm > 0 ? vector.map(value => value / norm) : null;
-			};
-			const normalizedNotes = new Map(rows.map(row => [row.noteId, normalize(row.embedding.map((value, i) => value - mean[i]))]));
-			const vectors = new Map<string, number[]>();
-			for (let index = 0; index < input.length; index++) {
-				const notes = notesByTerm[index].map(id => normalizedNotes.get(id)).filter((vector): vector is number[] => vector != null);
-				if (notes.length < 2) continue;
-				const vector = normalize(Array.from({ length: dimensions }, (_, i) => notes.reduce((sum, note) => sum + note[i], 0) / notes.length));
-				if (vector != null) vectors.set(input[index].term, vector);
-			}
-			const clusters: TrendCluster[] = [];
-			for (const term of input) {
-				const vector = vectors.get(term.term);
-				let closest: TrendCluster | undefined;
-				let bestCos = -Infinity;
-				if (vector != null) {
-					for (const cluster of clusters) {
-						const head = vectors.get(cluster.head.term);
-						if (head == null) continue;
-						const cos = vector.reduce((sum, value, i) => sum + value * head[i], 0);
-						if (cos >= TREND_CLUSTER_COS && cos > bestCos) { closest = cluster; bestCos = cos; }
-					}
-				}
-				if (closest == null) clusters.push({ head: term, members: [term] });
-				else closest.members.push(term);
-			}
-			for (const cluster of clusters) {
-				if (cluster.members.length > 1) this.logger.info(`hanami trend cluster: ${cluster.head.term} <- ${cluster.members.slice(1).map(term => term.term).join(',')}`);
-			}
-			return clusters;
+			const dim = rows[0]?.embedding.length ?? 0;
+			if ((rows.length > 0 && dim === 0) || rows.some(row => row.embedding.length !== dim || !row.embedding.every(Number.isFinite))) throw new Error('Invalid trend embedding');
+			const meanVec = state[0]?.meanVec ?? null;
+			if (dim > 0 && meanVec != null && (meanVec.length !== dim || !meanVec.every(Number.isFinite))) throw new Error('Invalid trend embedding mean');
+			const indices = new Map(rows.map((row, i) => [row.noteId, i]));
+			for (const note of notes) note.embeddingIndex = indices.get(note.id) ?? null;
+			dir = await mkdtemp(join(tmpdir(), 'hanami-trend-topics-'));
+			await writeFile(join(dir, 'input.json'), JSON.stringify({
+				now, dim, meanVec, notes, parents, terms: candidates,
+				constants: { k: 5, cos: 0.5, resolution: 0.3, share: 0.35, minTermAuthors: 2, minTopicAuthors: 3 },
+			}));
+			await writeFile(join(dir, 'embeddings.bin'), Buffer.concat(rows.map(row => encodeFp16(row.embedding))));
+			const command = prepareHanamiPythonCommand([resolveHanamiTrendTopicsScript(), join(dir, 'input.json'), join(dir, 'embeddings.bin'), join(dir, 'output.json')]);
+			await execFileAsync(command.file, command.args, { env: command.env, timeout: 15000, maxBuffer: 1024 * 1024 });
+			const output = JSON.parse(await readFile(join(dir, 'output.json'), 'utf8')) as { topics: RawTopic[] };
+			const validIds = new Set(notes.map(note => note.id));
+			const validTerms = new Set(candidates.map(term => term.term));
+			if (!Array.isArray(output.topics) || output.topics.some(topic => !Array.isArray(topic.terms) || topic.terms.length === 0 || topic.terms.some(term => !validTerms.has(term)) || !Array.isArray(topic.noteIds) || topic.noteIds.some(id => !validIds.has(id)))) throw new Error('Invalid trend topics output');
+			return output.topics;
 		} catch (error) {
-			this.logger.warn('hanami trend cluster: failed; continuing without clustering', { error: String(error) });
-			return singletons();
+			this.logger.warn('hanami trend topics: failed; continuing with one topic per term', { error: String(error) });
+			return candidates.map(candidate => {
+				const members = notes.filter(note => note.terms.includes(candidate.term));
+				return { terms: [candidate.term], noteIds: members.map(note => note.id), authors6h: new Set(members.map(note => note.userId)).size, authors2h: new Set(members.filter(note => note.createdAt >= now - TREND_RECENT_SPAN_MS).map(note => note.userId)).size, center: null };
+			}).filter(topic => topic.authors6h >= MIN_DISTINCT_AUTHORS);
+		} finally {
+			if (dir != null) await rm(dir, { recursive: true, force: true });
 		}
 	}
 
-	/**
-	 * 永続snapshotと共通trending候補を、同じ用語集計・Featured観測から一度に作る。
-	 */
+	private assignTopicIds(raw: readonly RawTopic[], previous: readonly Omit<Topic, 'center'>[], now: number): Topic[] {
+		const matches = raw.map((topic, index) => previous.map((prev, prevIndex) => {
+			const ids = new Set(prev.noteIds);
+			const intersection = topic.noteIds.filter(id => ids.has(id)).length;
+			return { index, prevIndex, jaccard: intersection / Math.max(1, new Set([...topic.noteIds, ...prev.noteIds]).size) };
+		}).sort((a, b) => b.jaccard - a.jaccard)[0]).filter((match): match is { index: number; prevIndex: number; jaccard: number } => match != null && match.jaccard >= 0.2)
+			.sort((a, b) => b.jaccard - a.jaccard);
+		const proposed = new Set(matches.map(match => match.index));
+		const inherited = new Map<number, Omit<Topic, 'center'>>();
+		const used = new Set<string>();
+		for (const match of matches) {
+			const prev = previous[match.prevIndex];
+			if (inherited.has(match.index) || used.has(prev.topicId)) continue;
+			inherited.set(match.index, prev); used.add(prev.topicId);
+		}
+		return raw.map((topic, index) => {
+			let prev = inherited.get(index);
+			if (prev == null && !proposed.has(index)) prev = previous.find(p => p.terms[0] === topic.terms[0] && !used.has(p.topicId));
+			if (prev != null) used.add(prev.topicId);
+			if (prev == null && this.idService == null) throw new Error('IdService is required to allocate trend topic IDs');
+			return { ...topic, topicId: prev?.topicId ?? this.idService!.gen(), startedAt: prev?.startedAt ?? new Date(now).toISOString(), daily: false };
+		});
+	}
+
+	private async applyTopicJudgements(topics: Topic[], notes: readonly TopicNote[], now: number): Promise<Topic[]> {
+		const pipe = this.redisClient.pipeline();
+		for (const topic of topics) pipe.smembers(trendSameSetKey(topic.topicId));
+		const same = await pipe.exec();
+		const indices = new Map(topics.map((topic, index) => [topic.topicId, index]));
+		const pairs = new Map<string, readonly [number, number]>();
+		for (let i = 0; i < topics.length; i++) {
+			for (const partner of (same?.[i]?.[1] ?? []) as string[]) {
+				const j = indices.get(partner);
+				if (j == null || i === j) continue;
+				pairs.set(trendSameKey(topics[i].topicId, partner), [i, j]);
+			}
+		}
+		// Sets are only an index: expired or negative pair verdicts do not form edges.
+		const verdicts = pairs.size === 0 ? [] : await this.redisClient.mget(...pairs.keys());
+		const parents = topics.map((_, index) => index);
+		const root = (index: number): number => {
+			while (parents[index] !== index) {
+				parents[index] = parents[parents[index]];
+				index = parents[index];
+			}
+			return index;
+		};
+		[...pairs.values()].forEach(([a, b], index) => {
+			if (verdicts[index] === '1') parents[root(b)] = root(a);
+		});
+		const components = new Map<number, Topic[]>();
+		topics.forEach((topic, index) => {
+			const key = root(index);
+			const members = components.get(key) ?? [];
+			members.push(topic); components.set(key, members);
+		});
+		return [...components.values()].map(component => {
+			// Components retain the pre-merge ranking, which also breaks author-count ties.
+			const keep = component.reduce((leader, topic) => topic.authors6h > leader.authors6h ? topic : leader);
+			const ordered = [keep, ...component.filter(topic => topic !== keep)];
+			const noteIds = [...new Set(ordered.flatMap(topic => topic.noteIds))];
+			const ids = new Set(noteIds);
+			const members = notes.filter(note => ids.has(note.id));
+			return {
+				...keep, noteIds, terms: [...new Set(ordered.flatMap(topic => topic.terms))],
+				authors6h: new Set(members.map(note => note.userId)).size,
+				authors2h: new Set(members.filter(note => note.createdAt >= now - TREND_RECENT_SPAN_MS).map(note => note.userId)).size,
+			};
+		});
+	}
+
+	/** Compute topic snapshots and the common candidate pool from one observation. */
 	@bindThis
 	public async computeTrendBundle(featuredScores?: ReadonlyMap<string, number>): Promise<HanamiTrendComputationBundle> {
+		const now = Date.now();
 		const globalScores = featuredScores ?? await this.featuredService.getGlobalNotesScoresWithCache();
 		const candidates = await this.getTrendingTermCandidatesWithCache(globalScores);
-		const now = Date.now();
-		const clusters = await this.clusterTrendingTerms(candidates, now);
-		const heads = clusters.map(cluster => cluster.head);
-		const snapshotTerms = this.selectTrendingTerms(heads, TREND_SNAPSHOT_TERM_MAX);
-		const feedTerms = this.selectTrendingTerms(heads, TREND_FEED_TERM_MAX);
-		const selectedHeads = new Set([...snapshotTerms, ...feedTerms].map(term => term.term));
-		const selectedClusters = clusters.filter(cluster => selectedHeads.has(cluster.head.term));
-		const rankedMembers = await this.rankNotesForTerms(selectedClusters.flatMap(cluster => cluster.members), globalScores, now);
-		const rankedByTerm = new Map<string, string[]>();
-		for (const cluster of selectedClusters) {
-			const ranked = cluster.members.flatMap(term => rankedMembers.get(term.term) ?? []).sort((a, b) => b.score - a.score || a.rank - b.rank);
-			rankedByTerm.set(cluster.head.term, [...new Set(ranked.map(note => note.noteId))]);
-		}
-
-		const terms = snapshotTerms.map(term => ({
-			...term,
-			representativeNoteIds: rankedByTerm.get(term.term) ?? [],
+		const { notes, parents } = await this.collectTopicInput(candidates, now);
+		const raw = await this.buildTopics(candidates, notes, parents, now);
+		const previousJson = await this.redisClient.get(TREND_TOPIC_PREV_KEY);
+		const previous = previousJson == null ? [] : (JSON.parse(previousJson) as HanamiTrendPreviousTopics | Topic[]);
+		const unmerged = this.assignTopicIds(raw, Array.isArray(previous) ? previous : previous.topics, now);
+		const daily = unmerged.length === 0 ? [] : await this.redisClient.mget(...unmerged.map(topic => trendDailyKey(topic.topicId)));
+		unmerged.forEach((topic, i) => { topic.daily = daily[i] === '1'; });
+		const scores = new Map(candidates.map(term => [term.term, term.score]));
+		const score = (topic: Topic) => Math.max(...topic.terms.map(term => scores.get(term) ?? 0));
+		const compare = (a: Topic, b: Topic) => b.authors2h * (b.daily ? 0.3 : 1) - a.authors2h * (a.daily ? 0.3 : 1) || b.authors6h - a.authors6h || score(b) - score(a);
+		unmerged.sort(compare);
+		const prev: HanamiTrendPreviousTopics = { computedAt: now, topics: unmerged.map(({ center: _center, ...topic }) => topic) };
+		await this.redisClient.eval(SAVE_COMPUTED_CACHE, 1, TREND_TOPIC_PREV_KEY, now, JSON.stringify(prev), 3600);
+		const topics = await this.applyTopicJudgements(unmerged, notes, now);
+		const ranked = new Map(topics.map(topic => [topic.topicId, notes.filter(note => topic.noteIds.includes(note.id) && note.replyId == null)
+			.sort((a, b) => {
+				const rank = (note: TopicNote) => (globalScores.get(note.id) ?? 0) * Math.pow(0.5, Math.max(0, now - note.createdAt) / TREND_NOTE_FRESHNESS_HALF_LIFE_MS);
+				return rank(b) - rank(a) || b.createdAt - a.createdAt;
+			}).map(note => note.id)]));
+		const visible = topics.filter(topic => (ranked.get(topic.topicId)?.length ?? 0) > 0)
+			.sort(compare);
+		const selected = visible.slice(0, TREND_SNAPSHOT_TERM_MAX);
+		const terms = selected.map(topic => ({
+			term: topic.terms[0], relatedTerms: topic.terms.slice(1, 6), score: score(topic), distinctAuthors: topic.authors6h,
+			topicId: topic.topicId, startedAt: topic.startedAt, daily: topic.daily,
+			representativeNoteIds: ranked.get(topic.topicId)!.slice(0, TREND_REPRESENTATIVE_NOTE_MAX),
 		}));
-
 		const noteCandidates: { noteId: string; term: string }[] = [];
 		const seen = new Set<string>();
-		let index = 0;
-		let progressed = true;
-		while (progressed) {
-			progressed = false;
-			for (const term of feedTerms) {
-				const noteId = rankedByTerm.get(term.term)?.[index];
-				if (noteId == null) continue;
-				progressed = true;
-				if (seen.has(noteId)) continue;
-				seen.add(noteId);
-				noteCandidates.push({ noteId, term: term.term });
-			}
-			index++;
+		for (let i = 0; i < TREND_FEED_NOTES_PER_TOPIC; i++) for (const topic of selected) {
+			const noteId = ranked.get(topic.topicId)?.[i];
+			if (noteId == null || seen.has(noteId)) continue;
+			seen.add(noteId); noteCandidates.push({ noteId, term: topic.terms[0] });
 		}
-
-		return {
-			computedAt: new Date(now).toISOString(),
-			terms,
-			noteCandidates,
-		};
+		const noteCache: TrendNoteCache = { computedAt: now, candidates: noteCandidates };
+		await this.redisClient.eval(SAVE_COMPUTED_CACHE, 1, TRENDING_NOTES_CACHE_KEY, now, JSON.stringify(noteCache), TRENDING_NOTES_CACHE_TTL_SECONDS);
+		this.logger.info('hanami trend topics', { topics: selected.map(topic => ({ topicId: topic.topicId, terms: topic.terms, center: topic.center, authors2h: topic.authors2h, authors6h: topic.authors6h, daily: topic.daily })) });
+		return { computedAt: new Date(now).toISOString(), terms, noteCandidates };
 	}
 
 	/**
 	 * 急上昇用語に紐づく注入候補ノートID。用語間でラウンドロビンして多様性を出す。
 	 * ノートは「時刻順」ではなく エンゲージ×鮮度 のハイブリッド順。
-	 * - floor: エンゲージ < TREND_NOTE_MIN_ENGAGEMENT のノートは出さない（単語を含むだけの不人気投稿を機械的に乗せない）
-	 * 選定はユーザー非依存なので短TTLでキャッシュする（毎リクエストのスコアマップ取得を避ける）。
+	 * 共通生成が保存した候補を読み、リクエスト経路では再計算しない。
 	 * 返り値は {noteId, term} 配列（term は理由表示に使える）。
 	 */
 	@bindThis
@@ -612,18 +671,10 @@ export class HanamiTrendService {
 		const legacyLimit = Math.max(0, Math.min(limit, TREND_NOTES_RESULT_MAX));
 		const cached = await this.redisClient.get(TRENDING_NOTES_CACHE_KEY);
 		if (cached != null) {
-			return (JSON.parse(cached) as { noteId: string; term: string }[]).slice(0, legacyLimit);
+			const parsed = JSON.parse(cached) as TrendNoteCache | TrendNoteCandidate[];
+			return (Array.isArray(parsed) ? parsed : parsed.candidates).slice(0, legacyLimit);
 		}
 
-		const bundle = await this.computeTrendBundle();
-		const out = bundle.noteCandidates.slice(0, TREND_NOTES_RESULT_MAX).map(candidate => ({ ...candidate }));
-
-		await this.redisClient.set(
-			TRENDING_NOTES_CACHE_KEY,
-			JSON.stringify(out),
-			'EX',
-			out.length > 0 ? TRENDING_NOTES_CACHE_TTL_SECONDS : TRENDING_NOTES_EMPTY_CACHE_TTL_SECONDS);
-
-		return out.slice(0, legacyLimit);
+		return [];
 	}
 }

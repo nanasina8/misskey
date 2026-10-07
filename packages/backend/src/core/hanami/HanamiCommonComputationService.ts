@@ -20,11 +20,11 @@ import {
 	type HanamiCommonFeedMaterialization,
 	type HanamiCommonSourceBuildInput,
 	type HanamiCommonSourceBundle,
-	type HanamiTrendSnapshotTerm,
+	type HanamiTrendSnapshotTerm as LegacyTrendSnapshotTerm,
 } from '@/core/hanami/HanamiCommonGenerationContracts.js';
 import { materializeHanamiCommonFeed } from '@/core/hanami/HanamiCommonFeedMaterializer.js';
 import { HanamiForYouSafetyService } from '@/core/hanami/HanamiForYouSafetyService.js';
-import { HanamiTrendService } from '@/core/hanami/HanamiTrendService.js';
+import { HanamiTrendService, type HanamiTrendTopicFields } from '@/core/hanami/HanamiTrendService.js';
 import { pureRenoteSql } from '@/misc/is-renote.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -37,7 +37,7 @@ const EXPLORATION_POPULAR_POOL = 600;
 const EXPLORATION_RECENT_POOL = 600;
 const EXPLORATION_POOL = EXPLORATION_POPULAR_POOL + EXPLORATION_RECENT_POOL;
 const TREND_SNAPSHOT_TERM_MAX = 30;
-const TREND_REPRESENTATIVE_NOTE_MAX = 5;
+const TREND_REPRESENTATIVE_NOTE_MAX = 20;
 
 export const HANAMI_COMMON_ALGORITHM_VERSION = 'hanami-common-v1';
 
@@ -47,12 +47,9 @@ type RawCandidate = {
 	readonly baseScore: number;
 	readonly metadata?: Readonly<Record<string, unknown>>;
 };
-type RawTrendTerm = {
-	readonly term: string;
-	readonly score: number;
-	readonly distinctAuthors: number;
-	readonly representativeNoteIds: readonly string[];
-};
+export type HanamiTrendSnapshotTerm = LegacyTrendSnapshotTerm & HanamiTrendTopicFields;
+
+type RawTrendTerm = HanamiTrendSnapshotTerm;
 type ExplorationSource = readonly RawCandidate[];
 
 const emptyMetadata: Readonly<Record<string, unknown>> = Object.freeze({});
@@ -298,8 +295,10 @@ export class HanamiCommonComputationService implements HanamiCommonComputationPo
 				.filter(noteId => noteId.length > 0 && safeAuthors.has(noteId))
 				.filter(noteId => !leadingRepresentativeIds.has(noteId))
 				.slice(0, TREND_REPRESENTATIVE_NOTE_MAX);
-			if (representativeNoteIds.length > 0) leadingRepresentativeIds.add(representativeNoteIds[0]);
+			if (representativeNoteIds.length === 0) continue;
+			leadingRepresentativeIds.add(representativeNoteIds[0]);
 			trendTerms.push(Object.freeze({
+				...(term.topicId !== undefined ? { topicId: term.topicId, relatedTerms: Object.freeze([...(term.relatedTerms ?? [])]), startedAt: term.startedAt ?? null, daily: term.daily ?? false } : {}),
 				term: term.term,
 				score: term.score,
 				distinctAuthors: term.distinctAuthors,

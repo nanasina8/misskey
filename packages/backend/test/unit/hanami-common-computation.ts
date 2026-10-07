@@ -76,7 +76,7 @@ describe('HanamiCommonComputationService', () => {
 			term: `term-${termIndex}`,
 			score: 100 - termIndex,
 			distinctAuthors: 40 - termIndex,
-			representativeNoteIds: Array.from({ length: 6 }, (_, noteIndex) => `representative-${termIndex}-${noteIndex}`),
+			representativeNoteIds: Array.from({ length: 21 }, (_, noteIndex) => `representative-${termIndex}-${noteIndex}`),
 		}));
 		const noteCandidates = [
 			{ noteId: 'trend-0', term: 'term-0' },
@@ -104,7 +104,7 @@ describe('HanamiCommonComputationService', () => {
 		expect(result.candidates.trending).toHaveLength(200);
 		expect(result.candidates.exploration).toHaveLength(510);
 		expect(result.trendSnapshot.terms).toHaveLength(30);
-		expect(result.trendSnapshot.terms.every(term => term.representativeNoteIds.length === 5)).toBe(true);
+		expect(result.trendSnapshot.terms.every(term => term.representativeNoteIds.length === 20)).toBe(true);
 		expect(setup.service.algorithmVersion).toBe(HANAMI_COMMON_ALGORITHM_VERSION);
 		expect(result.capturedAt).toBe(GENERATED_AT);
 		expect(result.sourceAsOf).toEqual({
