@@ -551,6 +551,10 @@ import type {
 	NotesHanamiTimelineResponse,
 	NotesHanamiTimelineSeenRequest,
 	NotesHanamiTimelineSeenResponse,
+	NotesHanamiTopicRequest,
+	NotesHanamiTopicResponse,
+	NotesHanamiTopicNotesRequest,
+	NotesHanamiTopicNotesResponse,
 	NotesHanamiTrendHistoryRequest,
 	NotesHanamiTrendHistoryResponse,
 	NotesHanamiTrendTopicNotesRequest,
@@ -1069,6 +1073,8 @@ export type Endpoints = {
 	'notes/global-timeline': { req: NotesGlobalTimelineRequest; res: NotesGlobalTimelineResponse };
 	'notes/hanami-timeline': { req: NotesHanamiTimelineRequest; res: NotesHanamiTimelineResponse };
 	'notes/hanami-timeline-seen': { req: NotesHanamiTimelineSeenRequest; res: NotesHanamiTimelineSeenResponse };
+	'notes/hanami-topic': { req: NotesHanamiTopicRequest; res: NotesHanamiTopicResponse };
+	'notes/hanami-topic-notes': { req: NotesHanamiTopicNotesRequest; res: NotesHanamiTopicNotesResponse };
 	'notes/hanami-trend-history': { req: NotesHanamiTrendHistoryRequest; res: NotesHanamiTrendHistoryResponse };
 	'notes/hanami-trend-topic-notes': { req: NotesHanamiTrendTopicNotesRequest; res: NotesHanamiTrendTopicNotesResponse };
 	'notes/hanami-trends': { req: NotesHanamiTrendsRequest; res: NotesHanamiTrendsResponse };

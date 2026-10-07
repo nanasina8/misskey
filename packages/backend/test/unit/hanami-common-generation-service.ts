@@ -889,6 +889,21 @@ describe('HanamiCommonGenerationService', () => {
 		expect(() => internals.validateSourceBundle(tooManyRepresentatives)).toThrow('representative Note limit of 20 exceeded');
 	});
 
+	test('V-1: validates recent author counts and the deduplicated 500-member boundary', () => {
+		const internals = makeService() as unknown as ServiceInternals;
+		const bundle = makeBundle();
+		const term = { ...bundle.trendSnapshot.terms[0]!, topicId: 'topic', recentAuthors: 7, topicNoteIds: Array.from({ length: 500 }, (_, i) => 'member-' + i) };
+		const source = (changes: object) => ({ ...bundle, trendSnapshot: { terms: [{ ...term, ...changes }] } });
+		expect(() => internals.validateSourceBundle(source({}))).not.toThrow();
+		for (const changes of [
+			{ topicNoteIds: [...term.topicNoteIds, 'member-500'] }, { topicNoteIds: ['same', 'same'] },
+			{ topicNoteIds: [''] }, { topicNoteIds: ['x'.repeat(33)] }, { topicId: null }, { topicNoteIds: 'invalid' },
+		]) expect(() => internals.validateSourceBundle(source(changes))).toThrow('Invalid trend topicNoteIds');
+		for (const recentAuthors of [-1, 1.5, Number.NaN, 2147483648]) {
+			expect(() => internals.validateSourceBundle(source({ recentAuthors }))).toThrow('Invalid trend recentAuthors');
+		}
+	});
+
 	test('rejects snapshot representatives that are missing or fail common eligibility', async () => {
 		const internals = makeService({}, [], async () => new Map()) as unknown as ServiceInternals;
 		const bundle = makeBundle();

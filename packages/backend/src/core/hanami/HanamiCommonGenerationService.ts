@@ -658,6 +658,11 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 			if (trend.relatedTerms !== undefined && (!Array.isArray(trend.relatedTerms) || trend.relatedTerms.length > 5 || trend.relatedTerms.some(term => typeof term !== 'string' || term.length === 0 || term.length > 256))) throw new Error('Invalid trend relatedTerms');
 			if (trend.startedAt != null && (typeof trend.startedAt !== 'string' || !Number.isFinite(Date.parse(trend.startedAt)))) throw new Error('Invalid trend startedAt');
 			if (trend.daily !== undefined && typeof trend.daily !== 'boolean') throw new Error('Invalid trend daily');
+			if (trend.recentAuthors !== undefined && (!Number.isSafeInteger(trend.recentAuthors) || trend.recentAuthors < 0 || trend.recentAuthors > 2_147_483_647)) throw new Error('Invalid trend recentAuthors');
+			if (trend.topicNoteIds !== undefined && (!Array.isArray(trend.topicNoteIds) || trend.topicNoteIds.length > 500
+				|| trend.topicNoteIds.some(id => typeof id !== 'string' || id.length === 0 || id.length > 32)
+				|| new Set(trend.topicNoteIds).size !== trend.topicNoteIds.length
+				|| (trend.topicNoteIds.length > 0 && trend.topicId == null))) throw new Error('Invalid trend topicNoteIds');
 			this.assertNonEmptyString(trend.term, 'trend term');
 			if (trend.term.length > 256) throw new Error('Hanami common trend term exceeds 256 characters');
 			if (terms.has(trend.term)) throw new Error(`Hanami common trend snapshot contains duplicate term ${trend.term}`);
@@ -993,12 +998,12 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 			if (trendTerms.length > 0) {
 				await publicationQuery(`
 					INSERT INTO "hanami_trend_snapshot_entry" (
-						"generatedMonth", "id", "snapshotId", "rank", "term", "score", "distinctAuthors", "topicId", "relatedTerms", "startedAt", "daily"
+						"generatedMonth", "id", "snapshotId", "rank", "term", "score", "distinctAuthors", "topicId", "relatedTerms", "startedAt", "daily", "recentAuthors"
 					)
 					SELECT $1::date, input.entry_id, t."id", (input.ordinality::bigint - '1'::bigint),
 						input.term, input.score, input.distinct_authors,
 						topic.value->>'topicId', ARRAY(SELECT jsonb_array_elements_text(topic.value->'relatedTerms')),
-						(topic.value->>'startedAt')::timestamptz, (topic.value->>'daily')::boolean
+						(topic.value->>'startedAt')::timestamptz, (topic.value->>'daily')::boolean, (topic.value->>'recentAuthors')::integer
 					FROM "hanami_trend_snapshot" t,
 						unnest($3::varchar[], $4::text[], $5::double precision[], $6::integer[])
 							WITH ORDINALITY AS input(entry_id, term, score, distinct_authors, ordinality),
@@ -1011,7 +1016,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 					trendTerms.map((term) => term.term),
 					trendTerms.map((term) => term.score),
 					trendTerms.map((term) => term.distinctAuthors),
-					JSON.stringify(trendTerms.map(term => ({ topicId: term.topicId ?? null, relatedTerms: term.relatedTerms ?? [], startedAt: term.startedAt ?? null, daily: term.daily ?? false }))),
+					JSON.stringify(trendTerms.map(term => ({ topicId: term.topicId ?? null, relatedTerms: term.relatedTerms ?? [], startedAt: term.startedAt ?? null, daily: term.daily ?? false, recentAuthors: term.recentAuthors ?? 0 }))),
 				]);
 
 				const representatives = trendTerms.flatMap((term, rank) => term.representativeNoteIds
@@ -1032,6 +1037,20 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 						representatives.map((row) => row.position),
 						representatives.map((row) => row.noteId),
 					]);
+				}
+
+				const members = trendTerms.flatMap(term => term.topicId == null ? [] : (term.topicNoteIds ?? []).map(noteId => ({
+					topicId: term.topicId, noteId, noteCreatedAt: this.idService.parse(noteId).date.toISOString(),
+				})));
+				if (members.length > 0) {
+					// Membership includes expanded replies; the join excludes missing/deleted notes.
+					await publicationQuery(`
+						INSERT INTO "hanami_trend_topic_note" ("topicId", "noteId", "addedAt", "noteCreatedAt")
+						SELECT input.topic_id, note."id", $4::timestamptz, input.created_at
+						FROM unnest($1::varchar[], $2::varchar[], $3::timestamptz[]) AS input(topic_id, note_id, created_at)
+						JOIN "note" note ON note."id" = input.note_id
+						ON CONFLICT ("topicId", "noteId") DO NOTHING
+					`, [members.map(member => member.topicId), members.map(member => member.noteId), members.map(member => member.noteCreatedAt), claim.startedAt]);
 				}
 			}
 

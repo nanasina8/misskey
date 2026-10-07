@@ -269,7 +269,11 @@ export class HanamiCommonComputationService implements HanamiCommonComputationPo
 		});
 
 		const trendingRaw = this.uniqueTrendingCandidates(trend.noteCandidates);
-		const snapshotTerms = this.validSnapshotTerms(trend.terms);
+		// Capture every selected topic's membership before filtering display representatives.
+		const snapshotTerms = this.validSnapshotTerms(trend.terms).map(term => ({
+			...term,
+			...(term.topicNoteIds !== undefined ? { topicNoteIds: Object.freeze([...new Set(term.topicNoteIds)].slice(0, 500)) } : {}),
+		}));
 		const candidateIds = [...new Set([
 			...(enabled.has('globalPopular') ? globalPopularRaw.map(candidate => candidate.noteId) : []),
 			...(enabled.has('trending') ? trendingRaw.map(candidate => candidate.noteId) : []),
@@ -295,10 +299,11 @@ export class HanamiCommonComputationService implements HanamiCommonComputationPo
 				.filter(noteId => noteId.length > 0 && safeAuthors.has(noteId))
 				.filter(noteId => !leadingRepresentativeIds.has(noteId))
 				.slice(0, TREND_REPRESENTATIVE_NOTE_MAX);
-			if (representativeNoteIds.length === 0) continue;
-			leadingRepresentativeIds.add(representativeNoteIds[0]);
+			if (representativeNoteIds.length > 0) leadingRepresentativeIds.add(representativeNoteIds[0]);
 			trendTerms.push(Object.freeze({
 				...(term.topicId !== undefined ? { topicId: term.topicId, relatedTerms: Object.freeze([...(term.relatedTerms ?? [])]), startedAt: term.startedAt ?? null, daily: term.daily ?? false } : {}),
+				...(term.recentAuthors !== undefined ? { recentAuthors: term.recentAuthors } : {}),
+				...(term.topicNoteIds !== undefined ? { topicNoteIds: term.topicNoteIds } : {}),
 				term: term.term,
 				score: term.score,
 				distinctAuthors: term.distinctAuthors,

@@ -3995,6 +3995,28 @@ declare module '../api.js' {
      *
      * **Credential required**: *No*
      */
+    request<E extends 'notes/hanami-topic', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * No description provided.
+     *
+     * **Credential required**: *No*
+     */
+    request<E extends 'notes/hanami-topic-notes', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * No description provided.
+     *
+     * **Credential required**: *No*
+     */
     request<E extends 'notes/hanami-trend-history', P extends Endpoints[E]['req']>(
       endpoint: E,
       params: P,

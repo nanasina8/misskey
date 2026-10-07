@@ -2,7 +2,7 @@
 """Pure topic builder: INPUT_JSON EMBEDDINGS_FP16 OUTPUT_JSON.
 
 notes: [{id, userId, createdAt (epoch milliseconds), replyId, renoteId,
-text, terms, embeddingIndex (nullable)}], parents: [{id, replyId, renoteId,
+text, terms, source (seed/link/embedding), embeddingIndex (nullable)}], parents: [{id, replyId, renoteId,
 text}], terms: [{term, score}], dim, meanVec (nullable), now, constants.
 Embeddings are little-endian float16 vectors in embeddingIndex order.
 No database, Redis or network access.
@@ -26,6 +26,9 @@ SEED = 1
 RECENT_MS = 2 * 60 * 60 * 1000
 URL_RE = re.compile(r'https?://[^\s<>()\]]+')
 IMAGE_RE = re.compile(r'\.(png|jpe?g|gif|webp)$', re.I)
+CLEAN_RE = re.compile(r'https?://\S+|@[\w.-]+(@[\w.-]+)?|:[a-zA-Z0-9_+-]+:|\$\[[^\]]*\]|#[^\s#]+|\s')
+# Bound working memory while preserving exact cosine thresholds and nearest neighbors.
+MATRIX_BATCH = 256
 
 
 def urls(text):
@@ -56,13 +59,44 @@ def build_topics(inp, raw):
     share = float(constants.get('share', SHARE))
     min_term = int(constants.get('minTermAuthors', MIN_TERM_AUTHORS))
     min_topic = int(constants.get('minTopicAuthors', MIN_TOPIC_AUTHORS))
-    notes = inp['notes']
+    input_notes = inp['notes']
+    seeds = [note for note in input_notes if note.get('source', 'seed') == 'seed']
+    seed_ids = {note['id'] for note in seeds}
+    have_all = [note for note in input_notes if note.get('embeddingIndex') is not None]
+    matrix = np.empty((0, raw.shape[1]), dtype=np.float32)
+    positions = {}
+    if have_all:
+        matrix = raw[[note['embeddingIndex'] for note in have_all]]
+        mean = inp.get('meanVec')
+        matrix -= np.asarray(mean, dtype=np.float32) if mean is not None else matrix.mean(axis=0)
+        matrix /= np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-9)
+        positions = {note['id']: i for i, note in enumerate(have_all)}
+    retained = set(seed_ids)
+    retained.update(note['id'] for note in input_notes if note.get('source') == 'link')
+    candidates = sorted((note for note in input_notes if note.get('source') == 'embedding'
+                         and note['id'] in positions
+                         and len(CLEAN_RE.sub('', note.get('text') or '')) >= int(constants.get('expandMinLength', 15))),
+                        key=lambda note: note['createdAt'], reverse=True)[:int(constants.get('expandMax', 8000))]
+    seed_positions = [positions[note['id']] for note in seeds if note['id'] in positions]
+    min_seeds = int(constants.get('expandMinSeeds', 2))
+    if len(seed_positions) >= min_seeds:
+        seed_matrix = matrix[seed_positions]
+        for start in range(0, len(candidates), MATRIX_BATCH):
+            batch = candidates[start:start + MATRIX_BATCH]
+            similarities = matrix[[positions[note['id']] for note in batch]] @ seed_matrix.T
+            hits = np.count_nonzero(similarities >= float(constants.get('expandCos', 0.6)), axis=1)
+            retained.update(note['id'] for note, count in zip(batch, hits) if count >= min_seeds)
+    notes = [note for note in input_notes if note['id'] in retained]
+    if not notes:
+        return []
     by_id = {note['id']: note for note in notes}
     parents = {note['id']: note for note in inp.get('parents', [])}
     graph = nx.Graph()
     graph.add_nodes_from(by_id)
     for note in notes:
         for parent in links(note):
+            if parent in by_id:
+                graph.add_edge(note['id'], parent, weight=1.0)
             graph.add_edge(note['id'], 'p:' + parent, weight=1.0)
             for grandparent in links(parents.get(parent, {})):
                 graph.add_edge('p:' + parent, 'p:' + grandparent, weight=1.0)
@@ -72,22 +106,19 @@ def build_topics(inp, raw):
     have = [note for note in notes if note.get('embeddingIndex') is not None]
     vectors = {}
     if have:
-        matrix = raw[[note['embeddingIndex'] for note in have]]
-        mean = inp.get('meanVec')
-        matrix = matrix - (np.asarray(mean, dtype=np.float32) if mean is not None else matrix.mean(axis=0))
-        matrix /= np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-9)
+        matrix = matrix[[positions[note['id']] for note in have]]
         vectors = {note['id']: matrix[i] for i, note in enumerate(have)}
         if len(have) > 1:
-            similarities = matrix @ matrix.T
-            np.fill_diagonal(similarities, -np.inf)
             neighbors = min(k, len(have) - 1)
-            nearest = np.argpartition(-similarities, neighbors - 1, axis=1)[:, :neighbors]
-            for a, others in enumerate(nearest):
-                for b in others:
-                    if similarities[a, b] >= cos:
-                        graph.add_edge(have[a]['id'], have[b]['id'], weight=float(similarities[a, b]))
-    if not notes:
-        return []
+            for start in range(0, len(have), MATRIX_BATCH):
+                similarities = matrix[start:start + MATRIX_BATCH] @ matrix.T
+                for local in range(len(similarities)):
+                    similarities[local, start + local] = -np.inf
+                nearest = np.argpartition(-similarities, neighbors - 1, axis=1)[:, :neighbors]
+                for local, others in enumerate(nearest):
+                    for b in others:
+                        if similarities[local, b] >= cos:
+                            graph.add_edge(have[start + local]['id'], have[b]['id'], weight=float(similarities[local, b]))
     # Louvain divides by total edge weight; isolated notes each form a community.
     communities = (nx.community.louvain_communities(graph, weight='weight', resolution=resolution, seed=SEED)
                    if graph.number_of_edges() else [{node} for node in graph])
@@ -97,7 +128,7 @@ def build_topics(inp, raw):
         term = info['term']
         authors = set()
         by_community = defaultdict(set)
-        for note in notes:
+        for note in seeds:
             if term in note['terms']:
                 authors.add(note['userId'])
                 by_community[community_of[note['id']]].add(note['userId'])

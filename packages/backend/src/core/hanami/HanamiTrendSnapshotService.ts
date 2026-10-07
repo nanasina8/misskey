@@ -52,7 +52,26 @@ type TrendRow = {
 	daily: boolean;
 	score: number;
 	distinct_authors: number;
+	recent_authors: number;
 	representative_note_ids: string[];
+};
+
+export type HanamiTopicSeries = { at: string; authors: number }[];
+export type HanamiTopicKind = 'new' | 'rising' | 'steady';
+
+export function hanamiTopicKind(startedAt: string | null, at: string, recentAuthors: number, series: HanamiTopicSeries): HanamiTopicKind {
+	const now = Date.parse(at);
+	const age = startedAt == null ? Infinity : now - Date.parse(startedAt);
+	if (age >= 0 && age <= 3600000) return 'new';
+	const hourAgo = now - 3600000;
+	const nearest = series.reduce<HanamiTopicSeries[number] | null>((best, point) => best == null
+		|| Math.abs(Date.parse(point.at) - hourAgo) < Math.abs(Date.parse(best.at) - hourAgo) ? point : best, null);
+	return nearest != null && recentAuthors >= nearest.authors * 2 && recentAuthors - nearest.authors >= 5 ? 'rising' : 'steady';
+}
+
+export type HanamiTopicResponse = {
+	topicId: string; term: string; relatedTerms: string[]; startedAt: string | null; lastSeenAt: string;
+	peakAuthors: number; series: HanamiTopicSeries; kind: HanamiTopicKind; active: boolean;
 };
 
 export type HanamiTrendSnapshotResult = {
@@ -69,6 +88,9 @@ export type HanamiTrendSnapshotResult = {
 			score: number;
 			distinctAuthors: number;
 			representativeNote: Packed<'Note'> | null;
+			series: HanamiTopicSeries;
+			participants: Packed<'UserLite'>[];
+			kind: HanamiTopicKind;
 		}>;
 		nextCursor: string | null;
 		hasMore: boolean;
@@ -111,7 +133,7 @@ export class HanamiTrendSnapshotService {
 			}
 		}
 
-		const limit = input.history ? Math.min(30, Math.max(1, input.limit)) : 10;
+		const limit = Math.min(30, Math.max(1, input.limit));
 		const values: unknown[] = [limit + 1];
 		let boundarySql = '';
 		let snapshotSql = '';
@@ -129,6 +151,7 @@ export class HanamiTrendSnapshotService {
 				snapshot."generatedAt" AS snapshot_generated_at, snapshot."ordinal"::text AS snapshot_ordinal,
 				entry."rank"::text AS rank, entry."term" AS term, entry."score" AS score,
 				entry."distinctAuthors" AS distinct_authors,
+				entry."recentAuthors" AS recent_authors,
 				entry."topicId" AS topic_id, entry."relatedTerms" AS related_terms,
 				entry."startedAt" AS started_at, entry."daily" AS daily,
 				ARRAY(
@@ -140,7 +163,11 @@ export class HanamiTrendSnapshotService {
 			FROM "hanami_trend_snapshot_entry" entry
 			JOIN "hanami_trend_snapshot" snapshot ON snapshot."id" = entry."snapshotId" AND snapshot."status" = 'ready'
 			JOIN "hanami_common_generation" generation ON generation."id" = snapshot."commonGenerationId" AND generation."status" = 'ready'
-			WHERE TRUE ${snapshotSql} ${boundarySql}
+			WHERE (entry."topicId" IS NULL OR EXISTS (
+				SELECT 1 FROM "hanami_trend_snapshot_representative_note" representative
+				WHERE representative."snapshotId" = entry."snapshotId" AND representative."rank" = entry."rank"
+					AND representative."generatedMonth" = entry."generatedMonth"
+			)) ${snapshotSql} ${boundarySql}
 			ORDER BY snapshot."ordinal" DESC, entry."rank" ASC
 			LIMIT $1
 		`, values) as TrendRow[];
@@ -149,13 +176,14 @@ export class HanamiTrendSnapshotService {
 		const representativeIds = [...new Set(pageRows.flatMap(row => row.representative_note_ids))];
 		const packed = await this.safetyService.filterAndPackPublic(representativeIds, input.me);
 		const packedById = new Map(packed.map(note => [note.id, note]));
+		const series = await this.getSeries(pageRows.map(row => ({ topicId: row.topic_id, at: this.toIsoString(row.snapshot_generated_at) })));
 		const last = pageRows.at(-1);
 		const nextCursor = hasMore && last != null ? this.encodeCursor({ ordinal: last.snapshot_ordinal, rank: last.rank }) : null;
 
 		return {
 			kind: 'ok',
 			response: {
-				items: pageRows.map(row => ({
+				items: pageRows.map((row, index) => ({
 					trendEntryId: row.trend_entry_id,
 					snapshotId: row.snapshot_id,
 					snapshotGeneratedAt: this.toIsoString(row.snapshot_generated_at),
@@ -166,11 +194,109 @@ export class HanamiTrendSnapshotService {
 					score: Number(row.score),
 					distinctAuthors: Number(row.distinct_authors),
 					representativeNote: row.representative_note_ids.map(id => packedById.get(id)).find(note => note != null) ?? null,
+					series: series[index],
+					participants: [...new Map(row.representative_note_ids.flatMap(id => {
+						const note = packedById.get(id);
+						return note == null ? [] : [[note.user.id, note.user] as const];
+					})).values()].slice(0, 3),
+					kind: hanamiTopicKind(row.started_at == null ? null : this.toIsoString(row.started_at), this.toIsoString(row.snapshot_generated_at), Number(row.recent_authors), series[index]),
 				})),
 				nextCursor,
 				hasMore: nextCursor != null,
 			},
 		};
+	}
+
+	/** Chronological series anchored to each entry, including only published snapshots. */
+	private async getSeries(topics: { topicId: string | null; at: string }[]): Promise<HanamiTopicSeries[]> {
+		const result = topics.map(() => [] as HanamiTopicSeries);
+		if (!topics.some(topic => topic.topicId != null)) return result;
+		const times = topics.filter(topic => topic.topicId != null).map(topic => Date.parse(topic.at));
+		const from = new Date(Math.min(...times) - 6 * 60 * 60 * 1000);
+		const to = new Date(Math.max(...times));
+		const months = [new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), 1)).toISOString().slice(0, 10),
+			new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth() + 1, 1)).toISOString().slice(0, 10)];
+		const rows = await this.db.query<Array<{ selected_index: number; at: Date | string; authors: number }>>(`
+			WITH points AS (
+				SELECT selected.selected_index, snapshot."generatedAt" AS at, entry."recentAuthors" AS authors,
+					ROW_NUMBER() OVER (PARTITION BY selected.selected_index ORDER BY snapshot."generatedAt" DESC, snapshot."ordinal" DESC) AS position
+				FROM jsonb_to_recordset($1::jsonb) AS selected(selected_index integer, topic_id varchar(32), at timestamptz)
+				JOIN "hanami_trend_snapshot_entry" entry ON entry."topicId" = selected.topic_id
+				JOIN "hanami_trend_snapshot" snapshot ON snapshot."id" = entry."snapshotId" AND snapshot."status" = 'ready'
+				JOIN "hanami_common_generation" generation ON generation."id" = snapshot."commonGenerationId" AND generation."status" = 'ready'
+				WHERE snapshot."generatedAt" >= selected.at - INTERVAL '6 hours' AND snapshot."generatedAt" <= selected.at
+					AND entry."generatedMonth" >= $2::date AND entry."generatedMonth" < $3::date
+			)
+			SELECT selected_index, at, authors FROM points WHERE position <= 36 ORDER BY selected_index, at, position DESC
+		`, [JSON.stringify(topics.map((topic, index) => ({ selected_index: index, topic_id: topic.topicId, at: topic.at }))), ...months]);
+		for (const row of rows) result[row.selected_index].push({ at: this.toIsoString(row.at), authors: Number(row.authors) });
+		return result;
+	}
+
+	@bindThis
+	public async getTopic(topicId: string): Promise<HanamiTopicResponse | null> {
+		const rows = await this.db.query<Array<{
+			term: string; related_terms: string[]; started_at: Date | string | null; at: Date | string; recent_authors: number; peak_authors: number; active: boolean;
+		}>>(`
+			WITH retained_months AS (
+				SELECT date_trunc('month', MIN(snapshot."generatedAt") AT TIME ZONE 'UTC')::date AS from_month,
+					(date_trunc('month', MAX(snapshot."generatedAt") AT TIME ZONE 'UTC') + INTERVAL '1 month')::date AS to_month
+				FROM "hanami_trend_snapshot" snapshot
+				JOIN "hanami_common_generation" generation ON generation."id" = snapshot."commonGenerationId" AND generation."status" = 'ready'
+				WHERE snapshot."status" = 'ready'
+			), latest_ready AS (
+				SELECT snapshot."id" AS id,
+					date_trunc('month', snapshot."generatedAt" AT TIME ZONE 'UTC')::date AS generated_month
+				FROM "hanami_trend_snapshot" snapshot
+				JOIN "hanami_common_generation" generation ON generation."id" = snapshot."commonGenerationId" AND generation."status" = 'ready'
+				WHERE snapshot."status" = 'ready' ORDER BY snapshot."ordinal" DESC LIMIT 1
+			), observations AS (
+				SELECT entry.*, snapshot."generatedAt" AS at, snapshot."ordinal" AS ordinal,
+					MAX(entry."distinctAuthors") OVER () AS peak_authors
+				FROM "hanami_trend_snapshot_entry" entry
+				JOIN "hanami_trend_snapshot" snapshot ON snapshot."id" = entry."snapshotId" AND snapshot."status" = 'ready'
+				JOIN "hanami_common_generation" generation ON generation."id" = snapshot."commonGenerationId" AND generation."status" = 'ready'
+				WHERE entry."topicId" = $1
+					AND entry."generatedMonth" >= (SELECT from_month FROM retained_months)
+					AND entry."generatedMonth" < (SELECT to_month FROM retained_months)
+			)
+			SELECT "term" AS term, "relatedTerms" AS related_terms, "startedAt" AS started_at, at,
+				"recentAuthors" AS recent_authors, peak_authors,
+				EXISTS (SELECT 1 FROM "hanami_trend_snapshot_entry" current_entry
+					WHERE current_entry."topicId" = $1 AND current_entry."snapshotId" = (SELECT id FROM latest_ready)
+						AND current_entry."generatedMonth" = (SELECT generated_month FROM latest_ready)) AS active
+			FROM observations ORDER BY at DESC, ordinal DESC, "rank" ASC LIMIT 1
+		`, [topicId]);
+		const row = rows[0];
+		if (row == null) return null;
+		const at = this.toIsoString(row.at);
+		const startedAt = row.started_at == null ? null : this.toIsoString(row.started_at);
+		const [series] = await this.getSeries([{ topicId, at }]);
+		return { topicId, term: row.term, relatedTerms: row.related_terms, startedAt, lastSeenAt: at,
+			peakAuthors: Number(row.peak_authors), series, kind: hanamiTopicKind(startedAt, at, Number(row.recent_authors), series), active: row.active };
+	}
+
+	@bindThis
+	public async getMemberNotes(input: { topicId: string; sort: 'popular' | 'recent'; limit: number; offset: number; me: MiLocalUser | null }): Promise<Packed<'Note'>[]> {
+		const noteJoin = input.sort === 'popular' ? `CROSS JOIN LATERAL (
+			SELECT n."reactions", n."renoteCount", n."repliesCount"
+			FROM "note" n WHERE n."id" = member."noteId"
+		) note` : '';
+		const order = input.sort === 'popular' ? `(
+			COALESCE((SELECT SUM(reaction.value::double precision) FROM jsonb_each_text(note."reactions"::jsonb) reaction), 0)
+			+ note."renoteCount" + note."repliesCount"
+		) * POWER(0.5::double precision, EXTRACT(EPOCH FROM (statement_timestamp() - member."noteCreatedAt")) / 43200.0) DESC,` : '';
+		const rows = await this.db.query<Array<{ note_id: string }>>(`
+			SELECT member."noteId" AS note_id FROM "hanami_trend_topic_note" member
+			${noteJoin}
+			WHERE member."topicId" = $1
+			ORDER BY ${order} member."noteCreatedAt" DESC, member."noteId" DESC LIMIT $2 OFFSET $3
+		`, [input.topicId, input.limit, input.offset]);
+		const ids = rows.map(row => row.note_id);
+		if (ids.length === 0) return [];
+		const packed = await this.safetyService.filterAndPackPublic(ids, input.me);
+		const byId = new Map(packed.map(note => [note.id, note]));
+		return ids.flatMap(id => byId.has(id) ? [byId.get(id)!] : []);
 	}
 
 	/** Six-hour JST blocks, with one row per continuing topic in each block. */
@@ -203,6 +329,11 @@ export class HanamiTrendSnapshotService {
 				JOIN "hanami_common_generation" generation ON generation."id" = snapshot."commonGenerationId" AND generation."status" = 'ready'
 				WHERE snapshot."generatedAt" >= $1 AND snapshot."generatedAt" < $2
 					AND entry."generatedMonth" >= $3::date AND entry."generatedMonth" < $4::date
+					AND (entry."topicId" IS NULL OR EXISTS (
+						SELECT 1 FROM "hanami_trend_snapshot_representative_note" representative
+						WHERE representative."snapshotId" = entry."snapshotId" AND representative."rank" = entry."rank"
+							AND representative."generatedMonth" = entry."generatedMonth"
+					))
 			), topics AS (
 				SELECT *, MIN(generated_at) OVER topic AS first_seen_at, MAX(generated_at) OVER topic AS last_seen_at,
 					MAX(authors) OVER topic AS peak_authors,

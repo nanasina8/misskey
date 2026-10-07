@@ -103,6 +103,54 @@ describe('pure Python trend topics (U-3)', () => {
 		const notes = [note('a'), note('b'), note('c')].map(n => ({ ...n, createdAt: now - 3 * 3600000, text: 'https://example.com/event' }));
 		expect(run({ notes, now, dim: 0, terms: [{ term: '地震', score: 3 }] })[0].authors2h).toBe(0);
 	});
+	pythonTest('V-18: a shared hashtag never forms a hub edge between unrelated posts', () => {
+		const notes = Array.from({ length: 6 }, (_, i) => ({ ...note(String(i), [i < 3 ? '話題A' : '話題B', '#fedibird']), text: '#fedibird https://example.com/' + (i < 3 ? 'a' : 'b') }));
+		const topics = run({ notes, now, dim: 0, terms: [{ term: '話題A', score: 3 }, { term: '話題B', score: 2 }, { term: '#fedibird', score: 1 }] });
+		expect(topics).toHaveLength(2);
+		expect(topics.map(topic => topic.noteIds.length)).toEqual([3, 3]);
+		expect(run({ notes: notes.slice(0, 3).map(note => ({ ...note, text: '#fedibird' })), now, dim: 0, terms: [{ term: '#fedibird', score: 1 }] })).toEqual([]);
+	});
+	pythonTest('V-19: seed replies and text quotes remain without embeddings or fifteen characters', () => {
+		const notes = [
+			{ ...note('a'), text: 'https://example.com/event' }, { ...note('b'), text: 'https://example.com/event' },
+			{ ...note('reply', []), source: 'link', replyId: 'a', text: '' },
+			{ ...note('quote', []), source: 'link', renoteId: 'b', text: '引用' },
+		];
+		const topics = run({ notes, now, dim: 0, terms: [{ term: '地震', score: 3 }] });
+		expect(topics[0]).toMatchObject({ noteIds: ['a', 'b', 'reply', 'quote'], authors6h: 4, authors2h: 4 });
+	});
+	pythonTest('V-19: semantic expansion needs cosine >= 0.6 to at least two seeds and cleaned length >= 15', () => {
+		const notes = [
+			{ ...note('a'), text: 'https://example.com/event', embeddingIndex: 0 },
+			{ ...note('b'), text: 'https://example.com/event', embeddingIndex: 1 },
+			{ ...note('c'), embeddingIndex: 2 },
+			...['edge', 'below', 'one-hit', 'short', 'decorated'].map((id, i) => ({ ...note(id, []), source: 'embedding', embeddingIndex: i + 3,
+				text: id === 'short' ? 'abcdefghijklmn' : id === 'decorated' ? 'abcdefghijklmn https://example.com @name@host :emoji: $[spin abc] #hashtag' : 'abcdefghijklmno' })),
+		];
+		const vectors = [[1, 0], [1, 0], [0, 1], [0.75, 1], [0.74, 1], [0, 1], [1, 0], [1, 0]];
+		const topics = run({ notes, now, dim: 2, meanVec: [0, 0], terms: [{ term: '地震', score: 3 }], constants: { expandCos: 0.6, expandMinSeeds: 2, expandMinLength: 15, expandMax: 8000 } }, vectors);
+		expect(topics.flatMap(topic => topic.noteIds)).toEqual(['a', 'b', 'c', 'edge']);
+	});
+	pythonTest('V-19: added authors cannot change the seed-only 35% term assignment or introduce their own words', () => {
+		const notes = Array.from({ length: 9 }, (_, i) => ({ ...note(String(i), [i < 3 ? '地震' : '別' + Math.floor(i / 3), '一般']), embeddingIndex: i }));
+		const expanded = Array.from({ length: 2 }, (_, i) => ({ ...note('extra' + i, ['一般', '偽の語']), source: 'embedding', text: 'abcdefghijklmno', embeddingIndex: i + 9 }));
+		const vectors = [...notes.map((_, i) => i < 3 ? [1, 0, 0] : i < 6 ? [0, 1, 0] : [0, 0, 1]), [1, 0, 0], [1, 0, 0]];
+		const topics = run({ notes: [...notes, ...expanded], now, dim: 3, meanVec: [0, 0, 0], terms: ['地震', '別1', '別2', '一般', '偽の語'].map(term => ({ term, score: 3 })) }, vectors);
+		expect(topics).toHaveLength(3);
+		expect(topics.flatMap(topic => topic.terms)).not.toContain('一般');
+		expect(topics.flatMap(topic => topic.terms)).not.toContain('偽の語');
+		expect(topics.find(topic => topic.terms.includes('地震'))).toMatchObject({ authors6h: 5, authors2h: 5, noteIds: ['0', '1', '2', 'extra0', 'extra1'] });
+	});
+	pythonTest('V-19: the configurable candidate cap keeps the newest eligible posts', () => {
+		const notes = [note('a'), note('b'),
+			{ ...note('old', []), source: 'embedding', text: 'abcdefghijklmno', createdAt: now - 2000 },
+			{ ...note('new', []), source: 'embedding', text: 'abcdefghijklmno', createdAt: now - 1000 }].map((note, i) => ({ ...note, embeddingIndex: i }));
+		const topics = run({ notes, now, dim: 2, meanVec: [0, 0], terms: [{ term: '地震', score: 3 }], constants: { expandMax: 1 } }, notes.map(() => [1, 0]));
+		expect(topics[0].noteIds).toEqual(['a', 'b', 'new']);
+	});
+	test('V-20: DAILY_PROMPT includes hashtag-answer games and diagnoses', () => {
+		expect(readFileSync(new URL('../../src/core/hanami/HanamiTrendTopicJudge.py', import.meta.url), 'utf8')).toContain('ハッシュタグで回答を集める遊びや診断');
+	});
 });
 
 // History and schema tests use a read-only DB double, never the local database.
@@ -125,9 +173,9 @@ describe('topic persistence and public history (U-8, U-9)', () => {
 		expect(statements[4]).toContain('DROP INDEX');
 		for (const field of ['topicId', 'relatedTerms', 'startedAt', 'daily']) expect(statements[5]).toContain(`DROP COLUMN "${field}"`);
 	});
-	test('keeps existing trend parameters and fields, exposing only three additional fields', () => {
+	test('keeps existing trend parameters and fields while extending topic presentation', () => {
 		expect(Object.keys(trendParams.properties)).toEqual(['limit', 'history', 'cursor']);
-		expect(Object.keys(trendMeta.res.properties.items.items.properties).sort()).toEqual(['trendEntryId', 'snapshotId', 'snapshotGeneratedAt', 'term', 'score', 'distinctAuthors', 'representativeNote', 'topicId', 'relatedTerms', 'startedAt'].sort());
+		expect(Object.keys(trendMeta.res.properties.items.items.properties).sort()).toEqual(['trendEntryId', 'snapshotId', 'snapshotGeneratedAt', 'term', 'score', 'distinctAuthors', 'representativeNote', 'topicId', 'relatedTerms', 'startedAt', 'series', 'participants', 'kind'].sort());
 		expect(historyMeta).toMatchObject({ requireCredential: false, allowGet: true });
 		expect(historyParams.properties.blocks).toMatchObject({ minimum: 1, maximum: 4, default: 2 });
 	});
@@ -175,7 +223,9 @@ describe('topic persistence and public history (U-8, U-9)', () => {
 				expect(sql).toContain('FROM ranked WHERE block_rank <= 15');
 				expect(sql).toContain('ORDER BY daily ASC, peak_authors DESC, last_seen_at DESC');
 				expect(sql).toContain('entry."generatedMonth" >= $3::date AND entry."generatedMonth" < $4::date');
-				expect(sql).not.toContain('hanami_trend_snapshot_representative_note');
+				expect(sql).toContain('SELECT 1 FROM "hanami_trend_snapshot_representative_note"');
+				expect(sql).toContain('representative."generatedMonth" = entry."generatedMonth"');
+				expect(sql).not.toContain('representative."noteId"');
 				return rows;
 			});
 			const pack = jest.fn(async (_ids: string[]) => []);
@@ -398,11 +448,11 @@ describe('saved topic posts (U-24, U-25, U-27)', () => {
 	test('U-27: the existing trend response still exposes the first visible representative only', async () => {
 		const ids = Array.from({ length: 20 }, (_, i) => `saved-${i}`);
 		const row = { trend_entry_id: 'e', snapshot_id: 's', snapshot_generated_at: new Date(now), snapshot_ordinal: '1', rank: '0', term: 'topic', topic_id: 'topic', related_terms: [], started_at: null, score: 2, distinct_authors: 20, representative_note_ids: ids };
-		const pack = jest.fn(async () => [{ id: 'saved-19' }, { id: 'saved-1' }]);
-		const service = new HanamiTrendSnapshotService({ query: async () => [row] } as never, {} as never, { filterAndPackPublic: pack } as never);
+		const pack = jest.fn(async () => [{ id: 'saved-19', user: { id: 'u19' } }, { id: 'saved-1', user: { id: 'u1' } }]);
+		const service = new HanamiTrendSnapshotService({ query: async (sql: string) => sql.includes('WITH points') ? [] : [row] } as never, {} as never, { filterAndPackPublic: pack } as never);
 		const response = await new TrendsEndpoint(service).exec({}, null, null);
 		expect(response.items).toHaveLength(1);
-		expect(response.items[0].representativeNote).toEqual({ id: 'saved-1' });
+		expect(response.items[0].representativeNote).toEqual({ id: 'saved-1', user: { id: 'u1' } });
 		expect(response.items[0]).not.toHaveProperty('notes');
 	});
 	test('U-27: the history endpoint initializes and returns only the first visible saved representative', async () => {
@@ -518,5 +568,43 @@ describe('supported trend API date range (U-32)', () => {
 		await endpoint.exec({ until: from }, null, null);
 		await endpoint.exec({ until: to }, null, null);
 		expect(getHistory.mock.calls).toEqual([[{ until: normalizedFrom, blocks: 2, me: null }], [{ until: normalizedTo, blocks: 2, me: null }]]);
+	});
+});
+
+describe('V-19: topic expansion collection', () => {
+	test('queries seed links and newest length-filtered E5 candidates in six hours, deduplicating link/embedding overlap', async () => {
+		const seed = { ...note('seed'), tags: ['seed'] };
+		const reply = { ...note('reply', []), replyId: 'seed' };
+		const quote = { ...note('quote', []), renoteId: 'seed', text: '引用の本文' };
+		const near = { ...note('near', []), text: 'abcdefghijklmno' };
+		const pipe = { zrange: jest.fn(), exec: async () => [[null, ['seed', String(now)]]] };
+		const query = jest.fn(async (sql: string, _values: unknown[]) => {
+			if (sql.includes('FROM note n')) return [seed];
+			if (sql.includes('n."replyId" = ANY')) return [reply, quote];
+			if (sql.includes('char_length')) return [quote, near];
+			return [seed];
+		});
+		const service = new HanamiTrendService({ pipeline: () => pipe } as never, {} as never, {} as never, { query } as never,
+			{ gen: (time: number) => String(time), parse: () => ({ date: new Date(now) }) } as never);
+		const result = await service['collectTopicInput']([{ term: '地震', score: 3, distinctAuthors: 3, proper: false }], now);
+		expect(result.notes.map(note => [note.id, note.source, note.terms])).toEqual([
+			['seed', 'seed', ['地震']], ['reply', 'link', []], ['quote', 'link', []], ['near', 'embedding', []],
+		]);
+		expect(result.notes.find(note => note.id === 'quote')?.embeddingCandidate).toBe(true);
+		const [linkSql, linkArgs] = query.mock.calls[1];
+		const [embeddingSql, embeddingArgs] = query.mock.calls[2];
+		for (const sql of [linkSql, embeddingSql]) {
+			expect(sql).toContain("n.visibility IN ('public', 'home')");
+			expect(sql).toContain('n."channelId" IS NULL AND NOT author."isBot"');
+			expect(sql).toContain('n.id >= $1 AND n.id <= $2');
+			expect(sql).toContain('NOT (n.id = ANY($3::varchar[]))');
+		}
+		expect(linkArgs).toEqual([String(now - 21600000), String(now), ['seed']]);
+		expect(linkSql).toContain('n.text IS NOT NULL AND n.text <>');
+		expect(embeddingSql).toContain('embedding.model = $4');
+		expect(embeddingSql).toContain("char_length(regexp_replace(COALESCE(n.text, ''), $5, '', 'g')) >= $6");
+		expect(embeddingSql).toContain('ORDER BY n.id DESC LIMIT $7');
+		expect(embeddingArgs.slice(3, 4)).toEqual(['intfloat/multilingual-e5-base']);
+		expect(embeddingArgs.slice(5)).toEqual([15, 8000]);
 	});
 });

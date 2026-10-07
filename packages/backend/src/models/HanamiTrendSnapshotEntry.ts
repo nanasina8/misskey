@@ -43,4 +43,7 @@ export class MiHanamiTrendSnapshotEntry {
 
 	@Column('integer', { default: 0 })
 	public distinctAuthors: number;
+
+	@Column('integer', { default: 0 })
+	public recentAuthors: number;
 }

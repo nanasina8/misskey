@@ -124,6 +124,33 @@ describe('template suppression (2D)', () => {
 	});
 });
 
+describe('V-18: hashtag trend terms', () => {
+	test('indexes tags even without tokenizer terms, including every time/author/note key and the proper flag', async () => {
+		const redis = memoryRedis();
+		const service = new HanamiTrendService(redis as never, {} as never, { tokenizeWithKind: async () => [] } as never, {} as never);
+		const at = Date.now();
+		await service.indexNote({ id: 'tag-note', userId: 'author', text: '#災害', tags: ['災害'] } as MiNote, at);
+		expect(redis.sets.get('hanami:trend:proper')?.has('#災害')).toBe(true);
+		for (const prefix of ['hanami:trend:rank:', 'hanami:trend:hrank:']) {
+			expect([...redis.sorted].find(([key]) => key.startsWith(prefix))?.[1].get('#災害')).toBe(1);
+		}
+		for (const key of ['hanami:trend:authorsz:#災害', 'hanami:trend:ra:#災害']) expect(redis.sorted.get(key)?.get('author')).toBe(at);
+		expect(redis.sorted.get('hanami:trend:notes:#災害')?.get('tag-note')).toBe(at);
+		expect([...redis.sets].some(([key, authors]) => key.startsWith('hanami:trend:as:') && key.endsWith(':#災害') && authors.has('author'))).toBe(true);
+	});
+	test('deduplicates tags, prioritizes them, and shares the sixteen-term limit with tokenizer terms', async () => {
+		const redis = memoryRedis();
+		const service = new HanamiTrendService(redis as never, {} as never, { tokenizeWithKind: async () => Array.from({ length: 20 }, (_, i) => ({ term: 'word' + i, proper: false })) } as never, {} as never);
+		await service.indexNote({ id: 'many', userId: 'author', text: '短文', tags: ['first', 'first', ...Array.from({ length: 13 }, (_, i) => 'tag' + i)] } as MiNote);
+		const ranked = [...redis.sorted].find(([key]) => key.startsWith('hanami:trend:rank:'))![1];
+		expect(ranked.size).toBe(16);
+		expect(ranked.get('#first')).toBe(1);
+		expect(ranked.has('#tag12')).toBe(true);
+		expect(ranked.has('word1')).toBe(true);
+		expect(ranked.has('word2')).toBe(false);
+	});
+});
+
 describe('same-time baselines (2B)', () => {
 	test.each([false, true])('seven hourly days use the median for proper=%s', async proper => {
 		const redis = memoryRedis();

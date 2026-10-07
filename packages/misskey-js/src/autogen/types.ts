@@ -3273,6 +3273,24 @@ export type paths = {
          */
         post: operations['notes___hanami-timeline-seen'];
     };
+    '/notes/hanami-topic': {
+        /**
+         * notes/hanami-topic
+         * @description No description provided.
+         *
+         *     **Credential required**: *No*
+         */
+        post: operations['notes___hanami-topic'];
+    };
+    '/notes/hanami-topic-notes': {
+        /**
+         * notes/hanami-topic-notes
+         * @description No description provided.
+         *
+         *     **Credential required**: *No*
+         */
+        post: operations['notes___hanami-topic-notes'];
+    };
     '/notes/hanami-trend-history': {
         /**
          * notes/hanami-trend-history
@@ -32463,6 +32481,162 @@ export interface operations {
             };
         };
     };
+    'notes___hanami-topic': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    topicId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        topicId: string;
+                        term: string;
+                        relatedTerms: string[];
+                        /** Format: date-time */
+                        startedAt: string | null;
+                        /** Format: date-time */
+                        lastSeenAt: string;
+                        peakAuthors: number;
+                        series: {
+                            /** Format: date-time */
+                            at: string;
+                            authors: number;
+                        }[];
+                        /** @enum {string} */
+                        kind: 'new' | 'rising' | 'steady';
+                        active: boolean;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'notes___hanami-topic-notes': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    topicId: string;
+                    /**
+                     * @default popular
+                     * @enum {string}
+                     */
+                    sort?: 'popular' | 'recent';
+                    /** @default 20 */
+                    limit?: number;
+                    /** @default 0 */
+                    offset?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Note'][];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
     'notes___hanami-trend-history': {
         requestBody: {
             content: {
@@ -32655,6 +32829,14 @@ export interface operations {
                             relatedTerms: string[];
                             /** Format: date-time */
                             startedAt: string | null;
+                            series: {
+                                /** Format: date-time */
+                                at: string;
+                                authors: number;
+                            }[];
+                            participants: components['schemas']['UserLite'][];
+                            /** @enum {string} */
+                            kind: 'new' | 'rising' | 'steady';
                             score: number;
                             distinctAuthors: number;
                             representativeNote: components['schemas']['Note'] | null;

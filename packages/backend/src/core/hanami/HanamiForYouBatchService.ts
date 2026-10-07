@@ -229,6 +229,12 @@ export class HanamiForYouBatchService {
 		} catch (err) {
 			logger.error('hanami note judge: cleanup failed', { e: err });
 		}
+		try {
+			await this.cleanupTopicNotes();
+			logger.succ('hanami topic notes: cleanup done');
+		} catch (err) {
+			logger.error('hanami topic notes: cleanup failed', { e: err });
+		}
 	}
 
 	// ───────────────────────── 相互RNペア（リング減衰） ─────────────────────────
@@ -687,6 +693,12 @@ export class HanamiForYouBatchService {
 			return Number(counts.affectedRows ?? counts.rowCount ?? 0);
 		}
 		return 0;
+	}
+
+	@bindThis
+	public async cleanupTopicNotes(): Promise<void> {
+		const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+		await this.db.query(`DELETE FROM "hanami_trend_topic_note" WHERE "addedAt" < $1::timestamptz`, [cutoff]);
 	}
 
 	private noteJudgePythonEnv(): NodeJS.ProcessEnv {

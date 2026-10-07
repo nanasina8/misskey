@@ -465,6 +465,8 @@ export * as 'v2/admin/emoji/list' from './endpoints/v2/admin/emoji/list.js';
 export * as 'i/import-notes' from './endpoints/i/import-notes.js';
 export * as 'notes/hanami-timeline' from './endpoints/notes/hanami-timeline.js';
 export * as 'notes/hanami-timeline-seen' from './endpoints/notes/hanami-timeline-seen.js';
+export * as 'notes/hanami-topic' from './endpoints/notes/hanami-topic.js';
+export * as 'notes/hanami-topic-notes' from './endpoints/notes/hanami-topic-notes.js';
 export * as 'notes/hanami-trends' from './endpoints/notes/hanami-trends.js';
 export * as 'notes/hanami-trend-history' from './endpoints/notes/hanami-trend-history.js';
 export * as 'notes/hanami-trend-topic-notes' from './endpoints/notes/hanami-trend-topic-notes.js';

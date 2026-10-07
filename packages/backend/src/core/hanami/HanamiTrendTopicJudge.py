@@ -8,7 +8,7 @@ sys.dont_write_bytecode = True
 from HanamiNoteJudgeCpu import MODEL, output, probe, resolve_runtime
 
 SAME_PROMPT = 'SNS の2つの投稿のまとまりが、同じ出来事・同じ話題について話しているかを判定してください。「はい」か「いいえ」だけを出力してください。\n\n[A]\n{A}\n\n[B]\n{B}'
-DAILY_PROMPT = 'SNS の投稿のまとまりです。これが「今この時に多くの人が同じ出来事・ニュース・番組・作品・企画について話している話題」なら「話題」、「毎日いつでも見かける日常のつぶやき・あいさつ・定型の投稿（帰宅、おはよう、質問箱の募集、参加表明など）」なら「日常」と答えてください。「話題」か「日常」だけを出力してください。\n{X}'
+DAILY_PROMPT = 'SNS の投稿のまとまりです。これが「今この時に多くの人が同じ出来事・ニュース・番組・作品・企画について話している話題」なら「話題」、「毎日いつでも見かける日常のつぶやき・あいさつ・定型の投稿（帰宅、おはよう、質問箱の募集、参加表明、ハッシュタグで回答を集める遊びや診断など）」なら「日常」と答えてください。「話題」か「日常」だけを出力してください。\n{X}'
 
 
 def answer_probability(torch, tokenizer, model, prompt, choices, index):

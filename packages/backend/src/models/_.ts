@@ -102,6 +102,7 @@ import { MiHanamiForYouInteractionDaily } from '@/models/HanamiForYouInteraction
 import { MiHanamiTrendSnapshot } from '@/models/HanamiTrendSnapshot.js';
 import { MiHanamiTrendSnapshotEntry } from '@/models/HanamiTrendSnapshotEntry.js';
 import { MiHanamiTrendSnapshotRepresentativeNote } from '@/models/HanamiTrendSnapshotRepresentativeNote.js';
+import { MiHanamiTrendTopicNote } from '@/models/HanamiTrendTopicNote.js';
 import { MiHanamiUserFeedBatch } from '@/models/HanamiUserFeedBatch.js';
 import { MiHanamiMetricsDaily } from '@/models/HanamiMetricsDaily.js';
 import { MiHanamiUserFeedEntry } from '@/models/HanamiUserFeedEntry.js';
@@ -217,6 +218,7 @@ export {
 	MiHanamiTrendSnapshot,
 	MiHanamiTrendSnapshotEntry,
 	MiHanamiTrendSnapshotRepresentativeNote,
+	MiHanamiTrendTopicNote,
 	MiHanamiUserFeedEpoch,
 	MiHanamiUserFeedState,
 	MiHanamiUserFeedBatch,
@@ -338,3 +340,5 @@ export type HanamiUserRecommendationEntriesRepository = Repository<MiHanamiUserR
 export type HanamiUserRecommendationRefreshesRepository = Repository<MiHanamiUserRecommendationRefresh> & MiRepository<MiHanamiUserRecommendationRefresh>;
 export type HanamiRecommendationEventsRepository = Repository<MiHanamiRecommendationEvent> & MiRepository<MiHanamiRecommendationEvent>;
 export type HanamiForYouInteractionDailyRepository = Repository<MiHanamiForYouInteractionDaily> & MiRepository<MiHanamiForYouInteractionDaily>;
+
+export type HanamiTrendTopicNotesRepository = Repository<MiHanamiTrendTopicNote> & MiRepository<MiHanamiTrendTopicNote>;

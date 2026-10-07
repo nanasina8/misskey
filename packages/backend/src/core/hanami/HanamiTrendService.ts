@@ -37,6 +37,12 @@ const TREND_ACTIVE_KEY = 'hanami:trend:active';
 const TREND_TOPIC_WINDOW_MS = 6 * 60 * 60 * 1000;
 const TREND_TOPIC_NOTES_PER_TERM = 200;
 const TREND_TOPIC_NOTES_MAX = 4000;
+const TREND_EXPAND_COS = 0.6;
+const TREND_EXPAND_MIN_SEEDS = 2;
+const TREND_EXPAND_MIN_LENGTH = 15;
+const TREND_EXPAND_MAX = 8000;
+const TREND_EXPAND_CLEAN_PATTERN = String.raw`https?://\S+|@[\w.-]+(@[\w.-]+)?|:[a-zA-Z0-9_+-]+:|\$\[[^\]]*\]|#[^\s#]+|\s`;
+const TAG_GAMES = new Set(['shindanmaker', 'fediqb', 'クイズメーカー', 'mewk', 'marshmallow', 'peing', 'odaibako']);
 
 const SOCIAL_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RECENT_AUTHORS_TTL_SECONDS = 26 * 60 * 60;
@@ -100,10 +106,12 @@ export type HanamiTrendTopicFields = {
 	readonly relatedTerms?: readonly string[];
 	readonly startedAt?: string | null;
 	readonly daily?: boolean;
+	readonly recentAuthors?: number;
+	readonly topicNoteIds?: readonly string[];
 };
-type TopicNote = { id: string; userId: string; replyId: string | null; renoteId: string | null; text: string | null; createdAt: number; terms: string[]; embeddingIndex: number | null };
+type TopicNote = { id: string; userId: string; replyId: string | null; renoteId: string | null; text: string | null; tags?: string[]; createdAt: number; terms: string[]; embeddingIndex: number | null; source?: 'seed' | 'link' | 'embedding'; embeddingCandidate?: boolean };
 type RawTopic = { terms: string[]; noteIds: string[]; authors6h: number; authors2h: number; center: number[] | null };
-type Topic = RawTopic & { topicId: string; startedAt: string; daily: boolean };
+type Topic = RawTopic & { topicId: string; startedAt: string; daily: boolean; dailyJudged?: boolean; tagGame?: boolean };
 export type HanamiTrendPreviousTopics = { computedAt: number; topics: Omit<Topic, 'center'>[] };
 type TrendNoteCandidate = { noteId: string; term: string };
 type TrendNoteCache = { computedAt: number; candidates: TrendNoteCandidate[] };
@@ -120,6 +128,14 @@ export function trendDailyKey(id: string): string { return `hanami:trend:llm:dai
 export function trendSameKey(a: string, b: string): string { return `hanami:trend:llm:same:${[a, b].sort().join(':')}`; }
 export function trendSameSetKey(id: string): string { return `hanami:trend:llm:sameset:${id}`; }
 
+export function trendTopicTagGame(members: readonly { tags?: readonly string[] }[]): boolean {
+	const counts = new Map<string, number>();
+	for (const note of members) for (const tag of new Set(note.tags ?? [])) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+	const max = [...counts.values()].reduce((max, count) => Math.max(max, count), 0);
+	return members.length > 0 && max / members.length >= 0.6 && [...counts].some(([tag, count]) => count === max
+		&& (TAG_GAMES.has(tag) || (tag.match(/\p{Script=Hiragana}/gu)?.length ?? 0) >= 3));
+}
+
 export type HanamiTrendComputationBundle = {
 	readonly computedAt: string;
 	readonly terms: readonly (TrendingTerm & HanamiTrendTopicFields & {
@@ -134,7 +150,7 @@ export type HanamiTrendComputationBundle = {
 /**
  * 急上昇トレンド（[[hanami-tl-osusume-redesign]] step7/8）。
  *
- * - 本文のみを HanamiTokenizerService で解析（URL/タグ/絵文字/メディアは見ない）
+ * - 本文を HanamiTokenizerService で解析し、正規化済みハッシュタグも語として数える
  * - distinct author 数を窓ごとに数える（同一人物の連投で釣り上がらない）
  * - 一次スコアは spike率（普段比の増加率）。recent=直近 R 窓のレート ÷ baseline=過去7日の同時刻の中央値。
  *   定番語/毎日同じ自動投稿は baseline が高く spike しない＝上位から消える
@@ -200,17 +216,18 @@ export class HanamiTrendService {
 		}
 
 		const tokens = await this.hanamiTokenizerService.tokenizeWithKind(note.text);
-		if (tokens.length === 0) return;
+		const tagged = (note.tags ?? []).map(tag => ({ term: `#${tag}`, proper: true }));
 
 		// 1ノート内では distinct 用語のみ（連呼で釣り上げない）。固有名詞フラグを保持。
 		const seen = new Set<string>();
 		const terms: { term: string; proper: boolean }[] = [];
-		for (const tk of tokens) {
+		for (const tk of [...tagged, ...tokens]) {
 			if (seen.has(tk.term)) continue;
 			seen.add(tk.term);
 			terms.push(tk);
 			if (terms.length >= MAX_TERMS_PER_NOTE) break;
 		}
+		if (terms.length === 0) return;
 		// at: 通常は現在時刻。開発用の再生（hanami-seed-recent）では複製ノートの時刻で過去窓へ積む
 		const w = Math.floor((at - trendEpoch) / TREND_WINDOW_MS);
 		const now = at;
@@ -493,13 +510,34 @@ export class HanamiTrendService {
 		});
 		const ids = [...indexed].sort((a, b) => b[1].at - a[1].at).slice(0, TREND_TOPIC_NOTES_MAX).map(([id]) => id);
 		if (ids.length === 0) return { notes: [], parents: [] };
-		type Row = Pick<TopicNote, 'id' | 'userId' | 'replyId' | 'renoteId' | 'text'>;
-		const rows = await this.db.query<Row[]>('SELECT id, "userId", "replyId", "renoteId", text FROM note WHERE id = ANY($1::varchar[])', [ids]);
+		type Row = Pick<TopicNote, 'id' | 'userId' | 'replyId' | 'renoteId' | 'text' | 'tags'>;
+		const rows = await this.db.query<Row[]>(`SELECT n.id, n."userId", n."replyId", n."renoteId", n.text, n.tags FROM note n
+			JOIN "user" author ON author.id = n."userId"
+			WHERE n.id = ANY($1::varchar[]) AND n.visibility IN ('public', 'home') AND n."channelId" IS NULL AND NOT author."isBot"`, [ids]);
 		const byId = new Map(rows.map(row => [row.id, row]));
-		const notes = ids.flatMap(id => {
+		const notes: TopicNote[] = ids.flatMap(id => {
 			const row = byId.get(id);
-			return row == null ? [] : [{ ...row, createdAt: this.idService?.parse(id).date.getTime() ?? indexed.get(id)!.at, terms: indexed.get(id)!.terms, embeddingIndex: null }];
+			return row == null ? [] : [{ ...row, createdAt: this.idService?.parse(id).date.getTime() ?? indexed.get(id)!.at, terms: indexed.get(id)!.terms, embeddingIndex: null, source: 'seed' as const }];
 		});
+		if (notes.length > 0 && this.idService != null) {
+			const bounds = [this.idService.gen(now - TREND_TOPIC_WINDOW_MS), this.idService.gen(now), notes.map(note => note.id)];
+			const eligible = `n.id >= $1 AND n.id <= $2 AND n.visibility IN ('public', 'home')
+				AND n."channelId" IS NULL AND NOT author."isBot" AND NOT (n.id = ANY($3::varchar[]))`;
+			const [linked, embedded] = await Promise.all([
+				this.db.query<Row[]>(`SELECT n.id, n."userId", n."replyId", n."renoteId", n.text, n.tags FROM "note" n
+					JOIN "user" author ON author.id = n."userId" WHERE ${eligible}
+					AND (n."replyId" = ANY($3::varchar[]) OR (n."renoteId" = ANY($3::varchar[]) AND n.text IS NOT NULL AND n.text <> ''))`, bounds),
+				this.db.query<Row[]>(`SELECT n.id, n."userId", n."replyId", n."renoteId", n.text, n.tags FROM "note" n
+					JOIN "user" author ON author.id = n."userId" WHERE ${eligible}
+					AND EXISTS (SELECT 1 FROM "hanami_note_embedding" embedding WHERE embedding."noteId" = n.id AND embedding.model = $4)
+					AND char_length(regexp_replace(COALESCE(n.text, ''), $5, '', 'g')) >= $6
+					ORDER BY n.id DESC LIMIT $7`, [...bounds, TASTE_EMBED_MODEL, TREND_EXPAND_CLEAN_PATTERN, TREND_EXPAND_MIN_LENGTH, TREND_EXPAND_MAX]),
+			]);
+			const extra = new Map<string, TopicNote>();
+			for (const row of linked) extra.set(row.id, { ...row, createdAt: this.idService.parse(row.id).date.getTime(), terms: [], embeddingIndex: null, source: 'link' });
+			for (const row of embedded) extra.set(row.id, { ...extra.get(row.id), ...row, createdAt: this.idService.parse(row.id).date.getTime(), terms: [], embeddingIndex: null, source: extra.has(row.id) ? 'link' : 'embedding', embeddingCandidate: true });
+			notes.push(...extra.values());
+		}
 		const parentIds = [...new Set(notes.flatMap(note => [note.replyId, note.text ? note.renoteId : null]).filter((id): id is string => id != null))];
 		const parents = parentIds.length === 0 ? [] : await this.db.query<Row[]>('SELECT id, "userId", "replyId", "renoteId", text FROM note WHERE id = ANY($1::varchar[])', [parentIds]);
 		return { notes, parents: parents.map(row => ({ ...row, createdAt: 0, terms: [], embeddingIndex: null })) };
@@ -510,7 +548,7 @@ export class HanamiTrendService {
 		let dir: string | null = null;
 		try {
 			const [rows, state] = await Promise.all([
-				this.db.query<Array<{ noteId: string; embedding: number[] }>>('SELECT "noteId", embedding FROM "hanami_note_embedding" WHERE model = $1 AND "noteId" = ANY($2)', [TASTE_EMBED_MODEL, notes.map(note => note.id)]),
+				this.db.query<Array<{ noteId: string; embedding: number[] }>>('SELECT "noteId", embedding FROM "hanami_note_embedding" WHERE model = $1 AND "noteId" = ANY($2)', [TASTE_EMBED_MODEL, notes.filter(note => note.source !== 'link' || note.embeddingCandidate).map(note => note.id)]),
 				this.db.query<Array<{ meanVec: number[] }>>('SELECT "meanVec" FROM "hanami_foryou_taste_state" WHERE model = $1', [TASTE_EMBED_MODEL]),
 			]);
 			const dim = rows[0]?.embedding.length ?? 0;
@@ -522,7 +560,8 @@ export class HanamiTrendService {
 			dir = await mkdtemp(join(tmpdir(), 'hanami-trend-topics-'));
 			await writeFile(join(dir, 'input.json'), JSON.stringify({
 				now, dim, meanVec, notes, parents, terms: candidates,
-				constants: { k: 5, cos: 0.5, resolution: 0.3, share: 0.35, minTermAuthors: 2, minTopicAuthors: 3 },
+				constants: { k: 5, cos: 0.5, resolution: 0.3, share: 0.35, minTermAuthors: 2, minTopicAuthors: 3,
+					expandCos: TREND_EXPAND_COS, expandMinSeeds: TREND_EXPAND_MIN_SEEDS, expandMinLength: TREND_EXPAND_MIN_LENGTH, expandMax: TREND_EXPAND_MAX },
 			}));
 			await writeFile(join(dir, 'embeddings.bin'), Buffer.concat(rows.map(row => encodeFp16(row.embedding))));
 			const command = prepareHanamiPythonCommand([resolveHanamiTrendTopicsScript(), join(dir, 'input.json'), join(dir, 'embeddings.bin'), join(dir, 'output.json')]);
@@ -626,7 +665,12 @@ export class HanamiTrendService {
 		const previous = previousJson == null ? [] : (JSON.parse(previousJson) as HanamiTrendPreviousTopics | Topic[]);
 		const unmerged = this.assignTopicIds(raw, Array.isArray(previous) ? previous : previous.topics, now);
 		const daily = unmerged.length === 0 ? [] : await this.redisClient.mget(...unmerged.map(topic => trendDailyKey(topic.topicId)));
-		unmerged.forEach((topic, i) => { topic.daily = daily[i] === '1'; });
+		const byId = new Map(notes.map(note => [note.id, note]));
+		const rankReason = (topic: Topic) => {
+			topic.tagGame = trendTopicTagGame(topic.noteIds.flatMap(id => byId.has(id) ? [byId.get(id)!] : []));
+			topic.daily = topic.dailyJudged === true || topic.tagGame;
+		};
+		unmerged.forEach((topic, i) => { topic.dailyJudged = daily[i] === '1'; rankReason(topic); });
 		const scores = new Map(candidates.map(term => [term.term, term.score]));
 		const score = (topic: Topic) => Math.max(...topic.terms.map(term => scores.get(term) ?? 0));
 		const compare = (a: Topic, b: Topic) => b.authors2h * (b.daily ? 0.3 : 1) - a.authors2h * (a.daily ? 0.3 : 1) || b.authors6h - a.authors6h || score(b) - score(a);
@@ -634,29 +678,34 @@ export class HanamiTrendService {
 		const prev: HanamiTrendPreviousTopics = { computedAt: now, topics: unmerged.map(({ center: _center, ...topic }) => topic) };
 		await this.redisClient.eval(SAVE_COMPUTED_CACHE, 1, TREND_TOPIC_PREV_KEY, now, JSON.stringify(prev), 3600);
 		const topics = await this.applyTopicJudgements(unmerged, notes, now);
-		const ranked = new Map(topics.map(topic => [topic.topicId, notes.filter(note => topic.noteIds.includes(note.id) && note.replyId == null)
+		topics.forEach(rankReason);
+		const ranked = new Map(topics.map(topic => [topic.topicId, notes.filter(note => topic.noteIds.includes(note.id))
 			.sort((a, b) => {
 				const rank = (note: TopicNote) => (globalScores.get(note.id) ?? 0) * Math.pow(0.5, Math.max(0, now - note.createdAt) / TREND_NOTE_FRESHNESS_HALF_LIFE_MS);
 				return rank(b) - rank(a) || b.createdAt - a.createdAt;
 			}).map(note => note.id)]));
+		const originals = new Map(topics.map(topic => [topic.topicId, ranked.get(topic.topicId)!.filter(id => byId.get(id)!.replyId == null)]));
 		const visible = topics.filter(topic => (ranked.get(topic.topicId)?.length ?? 0) > 0)
 			.sort(compare);
 		const selected = visible.slice(0, TREND_SNAPSHOT_TERM_MAX);
 		const terms = selected.map(topic => ({
 			term: topic.terms[0], relatedTerms: topic.terms.slice(1, 6), score: score(topic), distinctAuthors: topic.authors6h,
 			topicId: topic.topicId, startedAt: topic.startedAt, daily: topic.daily,
-			representativeNoteIds: ranked.get(topic.topicId)!.slice(0, TREND_REPRESENTATIVE_NOTE_MAX),
+			recentAuthors: topic.authors2h,
+			topicNoteIds: ranked.get(topic.topicId)!.slice(0, 500),
+			representativeNoteIds: originals.get(topic.topicId)!.slice(0, TREND_REPRESENTATIVE_NOTE_MAX),
 		}));
 		const noteCandidates: { noteId: string; term: string }[] = [];
 		const seen = new Set<string>();
 		for (let i = 0; i < TREND_FEED_NOTES_PER_TOPIC; i++) for (const topic of selected) {
-			const noteId = ranked.get(topic.topicId)?.[i];
+			const noteId = originals.get(topic.topicId)?.[i];
 			if (noteId == null || seen.has(noteId)) continue;
 			seen.add(noteId); noteCandidates.push({ noteId, term: topic.terms[0] });
 		}
 		const noteCache: TrendNoteCache = { computedAt: now, candidates: noteCandidates };
 		await this.redisClient.eval(SAVE_COMPUTED_CACHE, 1, TRENDING_NOTES_CACHE_KEY, now, JSON.stringify(noteCache), TRENDING_NOTES_CACHE_TTL_SECONDS);
-		this.logger.info('hanami trend topics', { topics: selected.map(topic => ({ topicId: topic.topicId, terms: topic.terms, center: topic.center, authors2h: topic.authors2h, authors6h: topic.authors6h, daily: topic.daily })) });
+		this.logger.info('hanami trend topics', { topics: selected.map(topic => ({ topicId: topic.topicId, terms: topic.terms, center: topic.center, authors2h: topic.authors2h, authors6h: topic.authors6h, daily: topic.daily,
+			reasons: [...(topic.dailyJudged ? ['daily'] : []), ...(topic.tagGame ? ['tagGame'] : [])] })) });
 		return { computedAt: new Date(now).toISOString(), terms, noteCandidates };
 	}
 
