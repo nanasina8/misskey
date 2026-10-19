@@ -20,8 +20,12 @@ import {
 
 export const HANAMI_REASON_EVENT_LOOKBACK_MS = 30 * 60 * 1000;
 export const HANAMI_REASON_EVENT_PER_TYPE_LIMIT = 200;
-// Seven generation pools total 1,900 candidates (200+500+200+200+250+250+300).
-export const HANAMI_GENERATION_CANDIDATE_LIMIT = 1900;
+// Persisted generation binds one common snapshot plus personal pools:
+// common 1,900 (globalPopular 500 + trending 200 + exploration 1,200)
+// + personal 1,000 (fof 200 + neighborTrending 250 + reactionSimilar 300 + catchup 250).
+// The legacy serving path only summed 1,900, so raising exploration to 1,200 without
+// this bound made every refresh fail with candidateLimit.
+export const HANAMI_GENERATION_CANDIDATE_LIMIT = 2900;
 export const HANAMI_DURABLE_SERVED_LOOKBACK_MS = 30 * 60 * 1000;
 export const HANAMI_DURABLE_SEEN_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 
