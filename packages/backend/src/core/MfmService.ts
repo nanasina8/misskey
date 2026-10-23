@@ -10,7 +10,7 @@ import { type Document, type HTMLParagraphElement, Window, XMLSerializer } from 
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { intersperse } from '@/misc/prelude/array.js';
-import { normalizeForSearch } from '@/misc/normalize-for-search.js';
+import { normalizeTag } from '@/misc/normalize-tag.js';
 import type { IMentionedRemoteUsers } from '@/models/Note.js';
 import { bindThis } from '@/decorators.js';
 import type { DefaultTreeAdapterMap } from 'parse5';
@@ -38,7 +38,7 @@ export class MfmService {
 		// some AP servers like Pixelfed use br tags as well as newlines
 		html = html.replace(/<br\s?\/?>\r?\n/gi, '\n');
 
-		const normalizedHashtagNames = hashtagNames == null ? undefined : new Set<string>(hashtagNames.map(x => normalizeForSearch(x)));
+		const normalizedHashtagNames = hashtagNames == null ? undefined : new Set<string>(hashtagNames.map(x => normalizeTag(x)));
 
 		const dom = parse5.parseFragment(html);
 
@@ -93,7 +93,7 @@ export class MfmService {
 					const href = node.attrs.find(x => x.name === 'href');
 
 					// ハッシュタグ
-					if (normalizedHashtagNames && href && normalizedHashtagNames.has(normalizeForSearch(txt))) {
+					if (normalizedHashtagNames && href != null && normalizedHashtagNames.has(normalizeTag(txt))) {
 						text += txt;
 						// メンション
 					} else if (txt.startsWith('@') && !(rel && rel.value.startsWith('me '))) {
