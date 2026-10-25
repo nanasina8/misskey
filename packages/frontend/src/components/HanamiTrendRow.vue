@@ -4,11 +4,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div :class="$style.row">
+<div :class="[$style.row, { [$style.current]: variant === 'current' }]">
 	<div :class="$style.head">
-		<MkA :class="$style.term" :to="`/search?q=${encodeURIComponent(item.term)}`" :title="heading">{{ heading }}</MkA>
-		<span v-if="showAuthors" :class="$style.authors">{{ i18n.tsx._hana._trends.authors({ n: item.distinctAuthors }) }}</span>
-		<span :class="$style.rank">{{ rank }}</span>
+		<span v-if="variant === 'current'" :class="$style.rank">{{ rank }}</span>
+		<MkA v-if="item.topicId" :class="$style.term" :to="`/hanami/trends?topic=${encodeURIComponent(item.topicId)}`" :title="heading">{{ heading }}</MkA>
+		<span v-else :class="$style.term" :title="heading">{{ heading }}</span>
+		<span v-if="showAuthors" :class="$style.authors" :aria-label="i18n.tsx._hana._trends.authors({ n: item.distinctAuthors })">{{ variant === 'current' ? item.distinctAuthors : i18n.tsx._hana._trends.authors({ n: item.distinctAuthors }) }}</span>
+		<HanamiTopicSparkline v-if="variant === 'current'" :series="item.series ?? []"/>
+		<span v-if="variant === 'past'" :class="$style.rank">{{ rank }}</span>
 	</div>
 	<MkA v-if="item.representativeNote" :class="$style.note" :to="`/notes/${item.representativeNote.id}`">
 		<MkAvatar :class="$style.avatar" :user="item.representativeNote.user"/>
@@ -17,22 +20,35 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<MkTime :class="$style.time" :time="item.representativeNote.createdAt"/>
 	</MkA>
 	<div v-else :class="$style.noNote">{{ i18n.ts._hana._trends.noRepresentativeNote }}</div>
+	<div v-if="variant === 'current'" :class="$style.details">
+		<div v-if="item.participants?.length" :class="$style.participants">
+			<MkAvatar v-for="user in item.participants.slice(0, 3)" :key="user.id" :class="$style.participant" :user="user"/>
+		</div>
+		<HanamiTopicBadge :kind="item.kind ?? 'steady'"/>
+		<span v-if="item.startedAt" :class="$style.since">{{ i18n.tsx._hana._trends.since({ time: timeFormat.format(new Date(item.startedAt)) }) }}</span>
+	</div>
 </div>
 </template>
 
 <script lang="ts" setup>
 import { computed } from 'vue';
+import { versatileLang } from '@@/js/intl-const.js';
 import type * as Misskey from 'misskey-js';
+import HanamiTopicSparkline from '@/components/HanamiTopicSparkline.vue';
+import HanamiTopicBadge from '@/components/HanamiTopicBadge.vue';
 import { i18n } from '@/i18n.js';
 
 const props = withDefaults(defineProps<{
-	item: Pick<Misskey.entities.NotesHanamiTrendsResponse['items'][number], 'term' | 'relatedTerms' | 'distinctAuthors' | 'representativeNote'>;
+	item: Pick<Misskey.entities.NotesHanamiTrendsResponse['items'][number], 'term' | 'relatedTerms' | 'distinctAuthors' | 'representativeNote'> & Partial<Pick<Misskey.entities.NotesHanamiTrendsResponse['items'][number], 'topicId' | 'startedAt' | 'series' | 'participants' | 'kind'>>;
 	rank: number;
 	showAuthors?: boolean;
-}>(), { showAuthors: true });
+	variant?: 'current' | 'past';
+}>(), { showAuthors: true, variant: 'current' });
+
+const timeFormat = new Intl.DateTimeFormat(versatileLang, { hour: '2-digit', minute: '2-digit', hour12: false });
 
 const heading = computed(() => {
-	const related = props.item.relatedTerms?.slice(0, 3) ?? [];
+	const related = props.item.relatedTerms?.slice(0, props.variant === 'current' ? 2 : 3) ?? [];
 	return props.item.term + (related.length > 0 ? `（${related.join('・')}）` : '');
 });
 
@@ -77,6 +93,12 @@ const summary = computed(() => {
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+
+.current {
+	.head { align-items: center; }
+	.term { flex: 1; min-width: 0; }
+	.authors { flex: 0 0 auto; }
 }
 
 .rank {
@@ -140,4 +162,9 @@ const summary = computed(() => {
 	font-size: 0.85em;
 	opacity: 0.6;
 }
+
+.details { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 0.7em; color: var(--MI_THEME-fgTransparent); }
+.participants { display: flex; padding-left: 4px; }
+.participant { width: 18px; height: 18px; margin-left: -4px; border: 2px solid var(--MI_THEME-panel); }
+.since { margin-left: auto; white-space: nowrap; }
 </style>

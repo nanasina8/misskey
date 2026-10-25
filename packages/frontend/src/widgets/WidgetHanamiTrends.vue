@@ -7,7 +7,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 <MkContainer :showHeader="widgetProps.showHeader">
 	<template #icon><i class="ti ti-trending-up"></i></template>
 	<template #header>{{ i18n.ts._widgets.hanamiTrends }}</template>
-	<template #func="{ buttonStyleClass }"><button class="_button" :class="buttonStyleClass" :disabled="fetching" :aria-label="i18n.ts.reload" @click="fetchTrends"><i class="ti ti-refresh"></i></button></template>
+	<template #func="{ buttonStyleClass }">
+		<div :class="$style.actions">
+			<MkA :class="$style.link" to="/hanami/trends">{{ i18n.ts._hana._trends.seeAll }} →</MkA>
+			<button class="_button" :class="buttonStyleClass" :disabled="fetching" :aria-label="i18n.ts.reload" @click="fetchTrends"><i class="ti ti-refresh"></i></button>
+		</div>
+	</template>
 	<MkLoading v-if="fetching"/>
 	<div v-else-if="failed" :class="$style.status" role="alert">{{ i18n.ts.somethingHappened }}</div>
 	<div v-else-if="items.length === 0" :class="$style.status">{{ i18n.ts._hana._trends.empty }}</div>
@@ -15,9 +20,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<HanamiTrendRow v-for="(item, index) in items" :key="item.trendEntryId" :item="item" :rank="index + 1"/>
 	</div>
 	<div :class="$style.footer">
-		<span v-if="items[0]" :class="$style.snapshot" :title="dateString(items[0].snapshotGeneratedAt)">{{ i18n.tsx._hana._trends.snapshot({ time: timeFormat.format(new Date(items[0].snapshotGeneratedAt)) }) }}</span>
+		<span v-if="items[0]" :class="$style.snapshot" :title="dateString(items[0].snapshotGeneratedAt)">{{ timeFormat.format(new Date(items[0].snapshotGeneratedAt)) }}</span>
 		<span v-else></span>
-		<MkA :class="$style.link" to="/hanami/trends/history">{{ i18n.ts._hana._trends.history }} →</MkA>
 	</div>
 </MkContainer>
 </template>
@@ -68,6 +72,13 @@ defineExpose<WidgetComponentExpose>({ name, configure, id: props.widget ? props.
 </script>
 
 <style lang="scss" module>
+.actions {
+	display: flex;
+	align-items: center;
+	height: 100%;
+	font-size: 0.8em;
+}
+
 .status {
 	padding: 16px;
 	font-size: 0.85em;

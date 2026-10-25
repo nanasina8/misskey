@@ -31,7 +31,15 @@ export const ROUTE_DEF = [{
 	loginRequired: false,
 }, {
 	path: '/hanami/trends/history',
-	component: page(() => import('@/pages/hanami-trends-history.vue')),
+	redirect: () => '/hanami/trends',
+}, {
+	path: '/hanami/trends',
+	component: page(() => import('@/pages/hanami-trends.vue')),
+	query: { topic: 'initialTopic' },
+	loginRequired: false,
+}, {
+	path: '/hanami/topics/:topicId',
+	redirect: props => `/hanami/trends?${new URLSearchParams({ topic: String(props.get('topicId')) }).toString()}`,
 	loginRequired: false,
 }, {
 	path: '/timeline',

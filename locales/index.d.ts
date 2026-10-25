@@ -9982,7 +9982,7 @@ export interface Locale extends ILocale {
     };
     "_widgets": {
         /**
-         * ことばのトレンド
+         * いま話題
          */
         "hanamiTrends": string;
         /**
@@ -10022,7 +10022,7 @@ export interface Locale extends ILocale {
          */
         "calendar": string;
         /**
-         * トレンド
+         * ハッシュタグのトレンド
          */
         "trends": string;
         /**
@@ -13566,7 +13566,63 @@ export interface Locale extends ILocale {
         };
         "_trends": {
             /**
-             * この話題の投稿を見る
+             * いま話題
+             */
+            "title": string;
+            /**
+             * いま
+             */
+            "tabNow": string;
+            /**
+             * アーカイブ
+             */
+            "tabPast": string;
+            /**
+             * もっと見る
+             */
+            "seeAll": string;
+            /**
+             * NEW
+             */
+            "kindNew": string;
+            /**
+             * 急上昇
+             */
+            "kindRising": string;
+            /**
+             * 継続中
+             */
+            "kindSteady": string;
+            /**
+             * {time}〜
+             */
+            "since": ParameterizedString<"time">;
+            /**
+             * {time}から話題に
+             */
+            "ongoingSince": ParameterizedString<"time">;
+            /**
+             * {from}〜{to}
+             */
+            "range": ParameterizedString<"from" | "to">;
+            /**
+             * ピーク {n}人
+             */
+            "peakAuthorsLong": ParameterizedString<"n">;
+            /**
+             * 人気
+             */
+            "sortPopular": string;
+            /**
+             * 新着
+             */
+            "sortRecent": string;
+            /**
+             * この話題は表示期間が終わりました
+             */
+            "topicNotFound": string;
+            /**
+             * 投稿を見る
              */
             "showTopicNotes": string;
             /**
@@ -13574,11 +13630,11 @@ export interface Locale extends ILocale {
              */
             "hideTopicNotes": string;
             /**
-             * 表示できる投稿がありません
+             * 投稿はまだありません
              */
             "noTopicNotes": string;
             /**
-             * 読み込めませんでした
+             * 読み込みに失敗しました
              */
             "topicNotesFailed": string;
             /**
@@ -13598,39 +13654,39 @@ export interface Locale extends ILocale {
              */
             "blockEvening": string;
             /**
-             * {date} {name}（{from}〜{to}）
+             * {date}の{name}
              */
-            "blockHeading": ParameterizedString<"date" | "name" | "from" | "to">;
+            "blockHeading": ParameterizedString<"date" | "name">;
             /**
              * {from}〜{to}
              */
             "period": ParameterizedString<"from" | "to">;
             /**
-             * 前の区切りから
+             * 前から継続
              */
             "continuedFromBefore": string;
             /**
-             * 最大{n}人
+             * ピーク {n}人
              */
             "peakAuthors": ParameterizedString<"n">;
             /**
-             * 話している人 {n}人
+             * {n}人
              */
             "authors": ParameterizedString<"n">;
             /**
-             * 代表ノートなし
+             * 投稿はまだありません
              */
             "noRepresentativeNote": string;
             /**
-             * {time} のスナップショット · 上位10語
+             * {time} 更新
              */
             "snapshot": ParameterizedString<"time">;
             /**
-             * 過去のトレンド
+             * 話題のアーカイブ
              */
             "history": string;
             /**
-             * まだトレンドがありません
+             * いまはまだ話題がありません
              */
             "empty": string;
             /**
@@ -13638,7 +13694,7 @@ export interface Locale extends ILocale {
              */
             "group": ParameterizedString<"time" | "n">;
             /**
-             * さらに前へ
+             * もっと前を見る
              */
             "older": string;
         };
