@@ -66,16 +66,7 @@ export class GlobalTimelineChannel extends Channel {
 		if (!filtered) return;
 		const reactionMutedNote = filtered;
 
-		if (this.user) {
-			if (isRenotePacked(reactionMutedNote) && !isQuotePacked(reactionMutedNote)) {
-				if (reactionMutedNote.renote && Object.keys(reactionMutedNote.renote.reactions).length > 0) {
-					const myRenoteReaction = await this.noteEntityService.populateMyReaction(reactionMutedNote.renote, this.user.id);
-					reactionMutedNote.renote.myReaction = myRenoteReaction;
-				}
-			}
-		}
-
-		this.send('note', reactionMutedNote);
+		this.send('note', await this.noteEntityService.withMyRenoteReaction(reactionMutedNote, this.user?.id ?? null));
 	}
 
 	@bindThis

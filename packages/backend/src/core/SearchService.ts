@@ -50,7 +50,7 @@ export type SearchPagination = {
 
 function compileValue(value: V): string {
 	if (typeof value === 'string') {
-		return `'${value.replace(/['\\]/g, '\\$&')}'`;
+		return `'${value.replaceAll('\\', '\\\\').replaceAll('\'', '\\\'')}'`;
 	} else if (typeof value === 'number') {
 		return value.toString();
 	} else if (typeof value === 'boolean') {
