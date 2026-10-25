@@ -17,9 +17,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 		v-for="[reaction, count] in _reactions"
 		:key="reaction"
 		:reaction="reaction"
+		:sourceReactions="sourcesFor(reaction)"
 		:reactionEmojis="props.reactionEmojis"
 		:count="count"
-		:isInitial="initialReactions.has(reaction)"
+		:isInitial="sourcesFor(reaction).some(source => initialReactions.has(source))"
 		:noteId="props.noteId"
 		:myReaction="props.myReaction"
 		@reactionToggled="onMockToggleReaction"
@@ -39,7 +40,7 @@ import { $i } from '@/i.js';
 import { prefer } from '@/preferences.js';
 import { customEmojisMap } from '@/custom-emojis.js';
 import { DI } from '@/di.js';
-import { isMuted } from '@/utility/emoji-mute.js';
+import { includesReaction, useHanaReactionGroups } from '@/utility/HanaReactionGroups.js';
 
 const props = withDefaults(defineProps<{
 	noteId: Misskey.entities.Note['id'];
@@ -61,15 +62,12 @@ const initialReactions = new Set(Object.keys(props.reactions));
 
 const _reactions = ref<[string, number][]>([]);
 const hasMoreReactions = ref(false);
-
-if (props.myReaction != null && !(props.myReaction in props.reactions)) {
-	_reactions.value.push([props.myReaction, props.reactions[props.myReaction]]);
-}
+const { reactions, myReaction, sourcesFor } = useHanaReactionGroups(() => props.reactions, () => props.myReaction);
 
 function onMockToggleReaction(emoji: string, count: number) {
 	if (!mock) return;
 
-	const i = _reactions.value.findIndex((item) => item[0] === emoji);
+	const i = _reactions.value.findIndex((item) => includesReaction(sourcesFor(item[0]), emoji));
 	if (i < 0) return;
 
 	emit('mockUpdateMyReaction', emoji, (count - _reactions.value[i][1]));
@@ -83,13 +81,7 @@ function canReact(reaction: string) {
 		: isSupportedEmoji(reaction);
 }
 
-watch([() => props.reactions, () => props.maxNumber], ([newSource, maxNumber]) => {
-	const processed: Record<string, number> = {};
-	for (const [r, c] of Object.entries(newSource)) {
-		const key = isMuted(r) ? '❤️' : r;
-		processed[key] = (processed[key] ?? 0) + c;
-	}
-	newSource = processed;
+watch([reactions, () => props.maxNumber, myReaction], ([newSource, maxNumber, myReaction]) => {
 	let newReactions: [string, number][] = [];
 	hasMoreReactions.value = Object.keys(newSource).length > maxNumber;
 
@@ -103,7 +95,6 @@ watch([() => props.reactions, () => props.maxNumber], ([newSource, maxNumber]) =
 
 	const sorted = Object.entries(newSource);
 	if (prefer.s.showAvailableReactionsFirstInNote) {
-		// ソートの比較関数内で評価すると同じ絵文字に対して何度も実行されるため、事前に1回だけ評価しておく
 		const canReactCache = new Map<string, boolean>();
 		for (const [emoji] of sorted) {
 			canReactCache.set(emoji, canReact(emoji));
@@ -121,13 +112,13 @@ watch([() => props.reactions, () => props.maxNumber], ([newSource, maxNumber]) =
 	const newReactionsNames = new Set(newReactions.map(([x]) => x));
 	newReactions = [
 		...newReactions,
-		...sorted.filter(([y], i) => i < maxNumber && !newReactionsNames.has(y)),
+		...sorted.filter(([y]) => !newReactionsNames.has(y)),
 	];
 
 	newReactions = newReactions.slice(0, props.maxNumber);
 
-	if (props.myReaction && !newReactions.some(([x]) => x === props.myReaction)) {
-		newReactions.push([props.myReaction, newSource[props.myReaction]]);
+	if (myReaction && !newReactions.some(([x]) => x === myReaction)) {
+		newReactions.push([myReaction, newSource[myReaction]]);
 	}
 
 	_reactions.value = newReactions;
