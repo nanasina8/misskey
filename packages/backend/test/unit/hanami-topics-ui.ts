@@ -4,7 +4,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { afterEach, describe, expect, jest, test } from '@jest/globals';
+import { afterEach, describe, expect, vi as jest, test } from 'vitest';
 import { HanamiTrendSnapshotService, hanamiTopicKind } from '@/core/hanami/HanamiTrendSnapshotService.js';
 import { HanamiForYouBatchService } from '@/core/hanami/HanamiForYouBatchService.js';
 import TopicEndpoint, { meta as topicMeta } from '@/server/api/endpoints/notes/hanami-topic.js';

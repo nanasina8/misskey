@@ -6,7 +6,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as Path from 'node:path';
-import { afterAll, beforeAll, describe, expect, jest, test } from '@jest/globals';
+import { afterAll, beforeAll, describe, expect, vi as jest, test } from 'vitest';
 import JudgeAggregateEndpoint from '@/server/api/endpoints/admin/hanami/judge-aggregate.js';
 import JudgeSettingsEndpoint from '@/server/api/endpoints/admin/hanami/judge-settings.js';
 import JudgeStatusEndpoint from '@/server/api/endpoints/admin/hanami/judge-status.js';

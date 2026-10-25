@@ -5,7 +5,7 @@
 import { strict as assert } from 'node:assert';
 import { readFile } from 'node:fs/promises';
 import { deflateSync } from 'node:zlib';
-import { describe, expect, jest, test } from '@jest/globals';
+import { describe, expect, vi as jest, test } from 'vitest';
 import sharp from 'sharp';
 import { EmojiImageFingerprintService } from '@/core/EmojiImageFingerprintService.js';
 

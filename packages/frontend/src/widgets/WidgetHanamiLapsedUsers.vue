@@ -40,7 +40,7 @@ import type { WidgetComponentEmits, WidgetComponentExpose, WidgetComponentProps 
 import type { FormWithDefault, GetFormResultType } from '@/utility/form.js';
 import MkContainer from '@/components/MkContainer.vue';
 import { misskeyApi } from '@/utility/misskey-api.js';
-import { userPage } from '@/filters/user.js';
+import { userPage } from '@@/js/user.js';
 import { i18n } from '@/i18n.js';
 
 const name = 'hanamiLapsedUsers';

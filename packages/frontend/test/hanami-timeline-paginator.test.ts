@@ -44,7 +44,7 @@ function paginator(withFiles = false): HanamiTimelinePaginator {
 	return new HanamiTimelinePaginator(computed(() => ({ withFiles })));
 }
 
-describe.sequential('HanamiTimelinePaginator', () => {
+describe('HanamiTimelinePaginator', () => {
 	beforeEach(() => {
 		misskeyApiMock.mockReset();
 		misskeyApiMock.mockResolvedValue(response());

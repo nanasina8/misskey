@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, vi as jest, test } from 'vitest';
 import { HANAMI_METRICS_DIMENSIONS, METRICS_SUMMARY_USERS_SQL, metricsRangeUsersSql, jstDay, resolveRange, rangeDays, metricRatio, rangeParameters } from '@/core/hanami/HanamiMetricsContracts.js';
 import { createDefaultHanamiNoteJudgeSettings } from '@/core/hanami/HanamiNoteJudgeContracts.js';
 import type { HanamiNoteJudgeRuntimeStatus } from '@/core/hanami/HanamiPythonRuntime.js';
@@ -12,7 +12,7 @@ import type { DataSource } from 'typeorm';
 
 const peekRuntime = jest.fn<() => HanamiNoteJudgeRuntimeStatus | null>();
 const probeRuntime = jest.fn(() => { throw new Error('Metrics must never probe Python'); });
-jest.unstable_mockModule('../../src/core/hanami/HanamiPythonRuntime.js', () => ({
+jest.doMock('../../src/core/hanami/HanamiPythonRuntime.js', () => ({
 	peekHanamiNoteJudgeRuntime: peekRuntime,
 	probeHanamiNoteJudgeRuntime: probeRuntime,
 }));

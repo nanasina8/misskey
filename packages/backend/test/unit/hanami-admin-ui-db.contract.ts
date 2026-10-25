@@ -4,7 +4,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { Client } from 'pg';
-import { describe, expect, test } from '@jest/globals';
+import { describe, expect, test } from 'vitest';
 import JudgeAggregateEndpoint from '@/server/api/endpoints/admin/hanami/judge-aggregate.js';
 import { createDefaultHanamiNoteJudgeSettings } from '@/core/hanami/HanamiNoteJudgeContracts.js';
 import { HanamiMetricsRuleExcluded1790467200000 } from '../../migration/1790467200000-hanamiMetricsRuleExcluded.js';

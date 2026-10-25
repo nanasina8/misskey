@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
+import { describe, expect, vi as jest, test } from 'vitest';
 import { HanamiForYouSafetyService } from '@/core/hanami/HanamiForYouSafetyService.js';
 import type { HanamiPersonalFeedCandidate } from '@/core/hanami/HanamiUserFeedContracts.js';
 

@@ -91,6 +91,7 @@ export class Paginator<
 	private endpoint: Endpoint;
 	private limit: number;
 	private params: E['req'] | (() => E['req']);
+	private request: (params: E['req']) => Promise<E['res']>;
 	public computedParams: ComputedRef<E['req'] | null | undefined> | null;
 	public initialId: MisskeyEntity['id'] | null = null;
 	public initialDate: number | null = null;
@@ -119,6 +120,7 @@ export class Paginator<
 		limit?: number;
 		params?: E['req'] | (() => E['req']);
 		computedParams?: ComputedRef<E['req'] | null | undefined>;
+		request?: (params: E['req']) => Promise<E['res']>;
 
 		/**
 		 * 検索APIのような、ページング不可なエンドポイントを利用する場合
@@ -148,6 +150,7 @@ export class Paginator<
 		cursorAnchor?: (item: T) => boolean;
 	}) {
 		this.endpoint = endpoint;
+		this.request = props.request ?? (params => misskeyApi(this.endpoint, params));
 		this.useShallowRef = (props.useShallowRef ?? false) as SRef;
 		if (this.useShallowRef) {
 			this.items = shallowRef<T[]>([]);
@@ -225,7 +228,7 @@ export class Paginator<
 			} : {}),
 		};
 
-		const apiRes = (await misskeyApi(this.endpoint, data).catch(err => {
+		const apiRes = (await this.request(data).catch(_ => {
 			this.error.value = true;
 			this.fetching.value = false;
 			return null;
@@ -285,7 +288,7 @@ export class Paginator<
 			}),
 		};
 
-		const apiRes = (await misskeyApi<T[]>(this.endpoint, data).catch(err => {
+		const apiRes = (await this.request(data).catch(_ => {
 			return null;
 		})) as T[] | null;
 
@@ -338,7 +341,7 @@ export class Paginator<
 			}),
 		};
 
-		const apiRes = (await misskeyApi<T[]>(this.endpoint, data).catch(err => {
+		const apiRes = (await this.request(data).catch(_ => {
 			return null;
 		})) as T[] | null;
 

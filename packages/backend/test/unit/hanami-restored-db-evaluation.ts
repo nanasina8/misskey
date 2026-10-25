@@ -1,4 +1,9 @@
-import { describe, expect, test } from '@jest/globals';
+/*
+ * SPDX-FileCopyrightText: syuilo and misskey-project
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+import { describe, expect, test } from 'vitest';
 import { READ_ONLY_TRANSACTION_SQL, assertPrivacySafe, evaluateModelRuns, evaluateRows, filterScopedRows, isReadOnlySql, maximumInWindows, normalizeExactText, runReadOnlyTransaction, selectDeploymentCohort, stableSelectUsers } from '../../../../scripts/hanami-foryou/restored-evaluation-lib.mjs';
 
 describe('restored DB evaluator', () => {

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
+import { describe, expect, vi as jest, test } from 'vitest';
 import _Ajv from 'ajv';
 import type { Schema } from '@/misc/json-schema.js';
 import { HanamiMetricsQueryService } from '@/core/hanami/HanamiMetricsQueryService.js';
@@ -15,11 +15,11 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 
 // Only infrastructure dependencies are mocked: Endpoint's AJV validation and
 // ApiCallService's actual credential/admin/scope guards run unchanged.
-jest.unstable_mockModule('../../src/core/RoleService.js', () => ({ RoleService: class {} }));
-jest.unstable_mockModule('../../src/core/UserService.js', () => ({ UserService: class {} }));
-jest.unstable_mockModule('../../src/server/api/RateLimiterService.js', () => ({ RateLimiterService: class {} }));
-jest.unstable_mockModule('../../src/server/api/ApiLoggerService.js', () => ({ ApiLoggerService: class {} }));
-jest.unstable_mockModule('../../src/server/api/AuthenticateService.js', () => ({ AuthenticateService: class {}, AuthenticationError: class extends Error {} }));
+jest.doMock('../../src/core/RoleService.js', () => ({ RoleService: class {} }));
+jest.doMock('../../src/core/UserService.js', () => ({ UserService: class {} }));
+jest.doMock('../../src/server/api/RateLimiterService.js', () => ({ RateLimiterService: class {} }));
+jest.doMock('../../src/server/api/ApiLoggerService.js', () => ({ ApiLoggerService: class {} }));
+jest.doMock('../../src/server/api/AuthenticateService.js', () => ({ AuthenticateService: class {}, AuthenticationError: class extends Error {} }));
 
 const { ApiCallService } = await import('../../src/server/api/ApiCallService.js');
 
@@ -297,6 +297,7 @@ describe('HM-IMPLEMENT actual API credential/admin/scope guards', () => {
 				{} as never, { getUserRoles: async () => scenario.roles } as never,
 				{ updateLastActiveDate: async () => undefined } as never,
 				{ logger: { error: jest.fn(), warn: jest.fn() } } as never,
+				{ startSpan: (_name: string, callback: () => unknown) => callback(), captureMessage: jest.fn() } as never,
 			);
 			const reply = new TestReply();
 			try {

@@ -15,7 +15,7 @@ import { onMounted, onBeforeUnmount, useTemplateRef, watch } from 'vue';
 import { Chart, CategoryScale, LinearScale, LineController, LineElement, PointElement, Tooltip } from 'chart.js';
 import type { Metric } from '@/scripts/hanami-metrics.js';
 import { chartVLine } from '@/utility/chart-vline.js';
-import { globalEvents } from '@/events.js';
+import { themeManager } from '@/theme.js';
 import { i18n } from '@/i18n.js';
 import { finiteMetric, seriesValues } from '@/scripts/hanami-metrics.js';
 
@@ -48,8 +48,8 @@ function draw() {
 }
 
 watch(() => [props.days, props.values, props.label, props.percent], draw, { deep: true });
-onMounted(() => { draw(); globalEvents.on('themeChanged', draw); });
-onBeforeUnmount(() => { globalEvents.off('themeChanged', draw); chart?.destroy(); });
+onMounted(() => { draw(); themeManager.on('themeChanged', draw); });
+onBeforeUnmount(() => { themeManager.off('themeChanged', draw); chart?.destroy(); });
 </script>
 
 <style module lang="scss">

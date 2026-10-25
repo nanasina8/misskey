@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, test } from '@jest/globals';
+import { describe, expect, test } from 'vitest';
 import { classifyHanamiMetricsFailure } from '@/core/hanami/HanamiMetricsFailure.js';
 
 describe('Hanami personal generation failure classification', () => {

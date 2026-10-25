@@ -4,7 +4,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { describe, expect, jest, test } from '@jest/globals';
+import { describe, expect, vi as jest, test } from 'vitest';
 import { Test } from '@nestjs/testing';
 import { QueueService } from '@/core/QueueService.js';
 import type { Config } from '@/config.js';
@@ -205,6 +205,7 @@ describe('QueueService emoji image fingerprint jobs', () => {
 			getMetrics: jest.fn(async (..._args: unknown[]) => ({ meta: {}, data: [], count: 0 })),
 			clean: jest.fn(async (..._args: unknown[]) => []),
 			qualifiedName: 'bull:emojiImageFingerprint',
+			getBackend() { return this; },
 			client: Promise.resolve({
 				info: jest.fn(async (..._args: unknown[]) => 'redis_version:7.0.0\r\nredis_mode:standalone\r\nrun_id:run\r\nprocess_id:1\r\ntcp_port:6379\r\nos:Linux\r\nuptime_in_seconds:1\r\ntotal_system_memory:1\r\nused_memory:1\r\nmem_fragmentation_ratio:1\r\nused_memory_peak:1\r\nconnected_clients:1\r\nblocked_clients:0\r\n'),
 			}),

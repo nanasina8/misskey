@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterEach, describe, expect, jest, test } from '@jest/globals';
+import { afterEach, describe, expect, vi as jest, test } from 'vitest';
 import { HanamiTasteClusterBatchService } from '@/core/hanami/HanamiTasteClusterBatchService.js';
 import { HanamiForYouService } from '@/core/hanami/HanamiForYouService.js';
 import { HANAMI_FORYOU_ACTIVE_KEY_PREFIX, HANAMI_RECENT_ACT_KEY_PREFIX, HANAMI_TASTE_MATCH_KEY_PREFIX, HANAMI_TASTE_MATCH_META_KEY_PREFIX, HANAMI_TASTE_MATCH_RAW_KEY_PREFIX, HANAMI_TASTE_MATCH_RAW_META_KEY_PREFIX, HANAMI_TASTE_MATCH_STATE_KEY_PREFIX } from '@/core/hanami/HanamiForYouKeys.js';

@@ -6,7 +6,7 @@
 import { EventEmitter } from 'node:events';
 import type { Duplex } from 'node:stream';
 import type * as http from 'node:http';
-import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, vi as jest, test } from 'vitest';
 import * as WebSocket from 'ws';
 import type { MiAccessToken } from '@/models/AccessToken.js';
 import type { MiLocalUser } from '@/models/User.js';
@@ -64,15 +64,16 @@ const user = {
 
 describe('StreamingApiServerService activity updates', () => {
 	let service: StreamingApiServerService;
+	let createStream: import('vitest').Mock;
 	let server: EventEmitter;
 	let connection: TestConnection;
-	let updateLastActiveDate: jest.MockedFunction<(target: MiLocalUser) => Promise<void>>;
-	let authenticate: jest.MockedFunction<(token: string | null | undefined) => Promise<[MiLocalUser | null, MiAccessToken | null]>>;
-	let loggerError: jest.Mock;
-	let init: jest.SpiedFunction<MainStreamConnection['init']>;
-	let listen: jest.SpiedFunction<MainStreamConnection['listen']>;
-	let dispose: jest.SpiedFunction<MainStreamConnection['dispose']>;
-	let handleUpgrade: jest.SpiedFunction<WebSocket.WebSocketServer['handleUpgrade']>;
+	let updateLastActiveDate: import('vitest').MockedFunction<(target: MiLocalUser) => Promise<void>>;
+	let authenticate: import('vitest').MockedFunction<(token: string | null | undefined) => Promise<[MiLocalUser | null, MiAccessToken | null]>>;
+	let loggerError: import('vitest').Mock;
+	let init: import('vitest').MockInstance<MainStreamConnection['init']>;
+	let listen: import('vitest').MockInstance<MainStreamConnection['listen']>;
+	let dispose: import('vitest').MockInstance<MainStreamConnection['dispose']>;
+	let handleUpgrade: import('vitest').MockInstance<WebSocket.WebSocketServer['handleUpgrade']>;
 
 	const request = {
 		url: '/streaming?i=token',
@@ -92,7 +93,7 @@ describe('StreamingApiServerService activity updates', () => {
 	};
 
 	beforeEach(() => {
-		jest.useFakeTimers({ doNotFake: ['nextTick'] });
+		jest.useFakeTimers({ toNotFake: ['nextTick'] });
 		jest.setSystemTime(new Date('2026-08-20T12:00:00.000Z'));
 		server = new EventEmitter();
 		connection = new TestConnection();
@@ -105,18 +106,16 @@ describe('StreamingApiServerService activity updates', () => {
 		handleUpgrade = jest.spyOn(WebSocket.WebSocketServer.prototype, 'handleUpgrade').mockImplementation((upgradeRequest, _socket, _head, callback) => {
 			callback(connection as unknown as WebSocket.WebSocket, upgradeRequest);
 		});
+		createStream = jest.fn(async () => Object.create(MainStreamConnection.prototype));
 		service = new StreamingApiServerService(
 			new EventEmitter() as never,
-			{} as never,
-			{} as never,
+			{
+				registerRequestByContextId: jest.fn(),
+				create: createStream,
+			} as never,
 			{ authenticate } as never,
-			{} as never,
-			{} as never,
 			{ updateLastActiveDate } as never,
 			{ logger: { error: loggerError } } as never,
-			{} as never,
-			{} as never,
-			{ ugcVisibilityForVisitor: 'all' } as never,
 		);
 		service.attach(server as unknown as http.Server);
 	});
@@ -125,6 +124,17 @@ describe('StreamingApiServerService activity updates', () => {
 		connection.close();
 		await service.detach();
 		jest.useRealTimers();
+	});
+
+	test('rejects the upgrade and closes the socket when stream construction fails', async () => {
+		const error = new Error('DI failed');
+		createStream.mockRejectedValue(error);
+		const socket = await invokeUpgrade();
+		expect(socket.write).toHaveBeenCalledWith('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+		expect(socket.destroy).toHaveBeenCalledTimes(1);
+		expect(init).not.toHaveBeenCalled();
+		expect(handleUpgrade).not.toHaveBeenCalled();
+		expect(loggerError).toHaveBeenCalledWith('Failed to initialize websocket stream', { userId: user.id, e: error });
 	});
 
 	test('rejects the upgrade with 500 and destroys the socket when initial activity fails', async () => {

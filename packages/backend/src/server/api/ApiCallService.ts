@@ -7,7 +7,6 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as stream from 'node:stream/promises';
 import { Inject, Injectable } from '@nestjs/common';
-import * as Sentry from '@sentry/node';
 import { DI } from '@/di-symbols.js';
 import { getIpHash } from '@/misc/get-ip-hash.js';
 import type { MiLocalUser, MiUser } from '@/models/User.js';
@@ -18,6 +17,7 @@ import { createTemp } from '@/misc/create-temp.js';
 import { bindThis } from '@/decorators.js';
 import { RoleService } from '@/core/RoleService.js';
 import { UserService } from '@/core/UserService.js';
+import { TelemetryService } from '@/core/telemetry/TelemetryService.js';
 import type { Config } from '@/config.js';
 import { ApiError } from './error.js';
 import { RateLimiterService } from './RateLimiterService.js';
@@ -98,6 +98,7 @@ export class ApiCallService implements OnApplicationShutdown {
 		private roleService: RoleService,
 		private userService: UserService,
 		private apiLoggerService: ApiLoggerService,
+		private telemetryService: TelemetryService,
 	) {
 		this.logger = this.apiLoggerService.logger;
 		this.userIpHistories = new Map<MiUser['id'], Set<string>>();
@@ -156,35 +157,31 @@ export class ApiCallService implements OnApplicationShutdown {
 			throw err;
 		} else {
 			const errId = randomUUID();
-			this.logger.error(`Internal error occurred in ${ep.name}: ${err.message}`, {
-				ep: ep.name,
-				ps: data,
-				e: {
-					message: err.message,
-					code: err.name,
-					stack: err.stack,
-					id: errId,
+			this.logger.write({
+				level: 'error',
+				eventName: 'api.endpoint.failed',
+				message: `Internal error occurred in ${ep.name}: ${err.message}`,
+				attributes: {
+					'api.endpoint': ep.name,
+					'error.id': errId,
+					'api.params': data,
 				},
+				error: err,
 			});
 
-			if (this.config.sentryForBackend) {
-				Sentry.captureMessage(`Internal error occurred in ${ep.name}: ${err.message}`, {
-					level: 'error',
-					user: {
-						id: userId,
+			this.telemetryService.captureMessage(`Internal error occurred in ${ep.name}: ${err.message}`, {
+				level: 'error',
+				userId,
+				extra: {
+					ep: ep.name,
+					e: {
+						message: err.message,
+						code: err.name,
+						stack: err.stack,
+						id: errId,
 					},
-					extra: {
-						ep: ep.name,
-						ps: data,
-						e: {
-							message: err.message,
-							code: err.name,
-							stack: err.stack,
-							id: errId,
-						},
-					},
-				});
-			}
+				},
+			});
 
 			throw new ApiError(null, {
 				e: {
@@ -201,7 +198,7 @@ export class ApiCallService implements OnApplicationShutdown {
 		endpoint: IEndpoint & { exec: any },
 		request: FastifyRequest<{ Body: Record<string, unknown> | undefined, Querystring: Record<string, unknown> }>,
 		reply: FastifyReply,
-	): void {
+	): Promise<void> {
 		const body = request.method === 'GET'
 			? request.query
 			: request.body;
@@ -212,10 +209,12 @@ export class ApiCallService implements OnApplicationShutdown {
 			: body?.['i'];
 		if (token != null && typeof token !== 'string') {
 			reply.code(400);
-			return;
+			reply.send();
+			return Promise.resolve();
 		}
-		this.authenticateService.authenticate(token).then(([user, app]) => {
-			this.call(endpoint, user, app, body, null, request).then((res) => {
+
+		return this.telemetryService.startSpan('API: ' + endpoint.name, () => this.authenticateService.authenticate(token).then(([user, app]) => {
+			const call = this.call(endpoint, user, app, body, null, request).then((res) => {
 				if (request.method === 'GET' && endpoint.meta.cacheSec && !token && !user) {
 					reply.header('Cache-Control', `public, max-age=${endpoint.meta.cacheSec}`);
 				}
@@ -227,9 +226,11 @@ export class ApiCallService implements OnApplicationShutdown {
 			if (user) {
 				this.logIp(request, user);
 			}
+
+			return call;
 		}).catch(err => {
 			this.#sendAuthenticationError(reply, err);
-		});
+		}));
 	}
 
 	@bindThis
@@ -246,8 +247,8 @@ export class ApiCallService implements OnApplicationShutdown {
 			reply.send();
 			return;
 		}
-
 		const [path, cleanup] = await createTemp();
+
 		try {
 			const multipartError = await writeMultipartFileToTemp(multipartData.file, path);
 
@@ -283,28 +284,24 @@ export class ApiCallService implements OnApplicationShutdown {
 				return;
 			}
 
-			let user: MiLocalUser | null;
-			let app: MiAccessToken | null;
-			try {
-				[user, app] = await this.authenticateService.authenticate(token);
-			} catch (err) {
-				this.#sendAuthenticationError(reply, err);
-				return;
-			}
-
-			try {
-				const result = await this.call(endpoint, user, app, fields, {
+			return await this.telemetryService.startSpan('API: ' + endpoint.name, () => this.authenticateService.authenticate(token).then(([user, app]) => {
+				const call = this.call(endpoint, user, app, fields, {
 					name: multipartData.filename,
-					path,
-				}, request);
-				this.send(reply, result);
-			} catch (err) {
-				this.#sendApiError(reply, err);
-			}
+					path: path,
+				}, request).then((res) => {
+					this.send(reply, res);
+				}).catch((err: ApiError) => {
+					this.#sendApiError(reply, err);
+				});
 
-			if (user) {
-				this.logIp(request, user);
-			}
+				if (user) {
+					this.logIp(request, user);
+				}
+
+				return call;
+			}).catch(err => {
+				this.#sendAuthenticationError(reply, err);
+			}));
 		} finally {
 			try {
 				cleanup();
@@ -391,11 +388,14 @@ export class ApiCallService implements OnApplicationShutdown {
 		}
 
 		if (ep.meta.limit) {
-			// koa will automatically load the `X-Forwarded-For` header if `proxy: true` is configured in the app.
-			let limitActor: string;
+			let limitActor: string | null = null;
 			if (user) {
 				limitActor = user.id;
-			} else {
+			} else if (this.config.enableIpRateLimit) {
+				if (process.env.NODE_ENV === 'production' && (request.ip === '::1' || request.ip === '127.0.0.1')) {
+					this.logger.warn('Recieved API request from localhost IP address for rate limiting in production environment. This is likely due to an improper trustProxy setting in the config file.');
+				}
+
 				limitActor = getIpHash(request.ip);
 			}
 
@@ -408,7 +408,7 @@ export class ApiCallService implements OnApplicationShutdown {
 			// TODO: 毎リクエスト計算するのもあれだしキャッシュしたい
 			const factor = user ? (await this.roleService.getUserPolicies(user.id)).rateLimitFactor : 1;
 
-			if (factor > 0) {
+			if (limitActor != null && factor > 0) {
 				// Rate limit
 				const rateLimit = await this.rateLimiterService.limit(limit as IEndpointMeta['limit'] & { key: NonNullable<string> }, limitActor, factor);
 				if (rateLimit != null) {
@@ -515,7 +515,7 @@ export class ApiCallService implements OnApplicationShutdown {
 				if (['boolean', 'number', 'integer'].includes(param.type ?? '') && typeof data[k] === 'string') {
 					try {
 						data[k] = JSON.parse(data[k]);
-					} catch (e) {
+					} catch (_) {
 						throw new ApiError({
 							message: 'Invalid param.',
 							code: 'INVALID_PARAM',
@@ -529,16 +529,10 @@ export class ApiCallService implements OnApplicationShutdown {
 			}
 		}
 
-		// API invoking
-		if (this.config.sentryForBackend) {
-			return await Sentry.startSpan({
-				name: 'API: ' + ep.name,
-			}, () => ep.exec(data, user, token, file, request.ip, request.headers)
-				.catch((err: Error) => this.#onExecError(ep, data, err, user?.id)));
-		} else {
-			return await ep.exec(data, user, token, file, request.ip, request.headers)
-				.catch((err: Error) => this.#onExecError(ep, data, err, user?.id));
-		}
+		// The API span starts in handleRequest/handleMultipartRequest so it also covers
+		// authentication, rate limiting, and parameter validation.
+		return await ep.exec(data, user, token, file, request.ip, request.headers)
+			.catch((err: Error) => this.#onExecError(ep, data, err, user?.id));
 	}
 
 	@bindThis

@@ -78,7 +78,8 @@ import { store } from '@/store.js';
 import MkNote from '@/components/MkNote.vue';
 import MkOffscreenKeeper from '@/components/MkOffscreenKeeper.vue';
 import { i18n } from '@/i18n.js';
-import { useGlobalEvent } from '@/events.js';
+import { DI } from '@/di.js';
+import { globalEvents, useGlobalEvent } from '@/events.js';
 import { isSeparatorNeeded, getSeparatorInfo } from '@/utility/timeline-date-separate.js';
 import { Paginator } from '@/utility/paginator.js';
 import { HanamiTimelinePaginator } from '@/utility/hanami-timeline-paginator.js';
@@ -107,7 +108,7 @@ const props = withDefaults(defineProps<{
 
 provide('inTimeline', true);
 provide('tl_withSensitive', computed(() => props.withSensitive));
-provide('inChannel', computed(() => props.src === 'channel'));
+provide(DI.inChannel, computed(() => props.src === 'channel' ? props.channel ?? null : null));
 
 const showDateSeparators = computed(() => props.src !== 'hanami' || prefer.r.showHanamiTimelineDateSeparators.value);
 
@@ -315,6 +316,12 @@ useGlobalEvent('noteDeleted', (noteId) => {
 	}
 });
 
+useGlobalEvent('noteRemovedFromAntenna', (antennaId, noteId) => {
+	if (props.src === 'antenna' && props.antenna === antennaId) {
+		paginator?.removeItem(noteId);
+	}
+});
+
 function releaseQueue() {
 	if (paginator == null) return;
 	paginator.releaseQueue();
@@ -397,13 +404,12 @@ function connectChannel() {
 		connections.main = stream.useChannel('main');
 		connections.main.on('mention', prepend);
 	} else if (props.src === 'directs') {
-		const onNote = note => {
+		connections.main = stream.useChannel('main');
+		connections.main.on('mention', note => {
 			if (note.visibility === 'specified') {
 				prepend(note);
 			}
-		};
-		connections.main = stream.useChannel('main');
-		connections.main.on('mention', onNote);
+		});
 	} else if (props.src === 'list') {
 		if (props.list == null) return;
 		connections.userList = stream.useChannel('userList', {

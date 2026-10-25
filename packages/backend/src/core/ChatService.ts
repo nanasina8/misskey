@@ -646,7 +646,10 @@ export class ChatService {
 
 	@bindThis
 	public async findRoomById(roomId: MiChatRoom['id']) {
-		return this.chatRoomsRepository.findOne({ where: { id: roomId }, relations: ['owner'] });
+		return this.chatRoomsRepository.findOne({
+			where: { id: roomId },
+			relations: { owner: true },
+		});
 	}
 
 	@bindThis
@@ -678,7 +681,16 @@ export class ChatService {
 			throw new Error('room is full');
 		}
 
-		// TODO: cehck block
+		const [blocked, blocking] = await Promise.all([
+			this.userBlockingService.checkBlocked(inviteeId, inviterId),
+			this.userBlockingService.checkBlocked(inviterId, inviteeId),
+		]);
+		if (blocked) {
+			throw new Error('blocked');
+		}
+		if (blocking) {
+			throw new Error('blocking');
+		}
 
 		const invitation = {
 			id: this.idService.gen(),

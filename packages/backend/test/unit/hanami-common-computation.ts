@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterEach, describe, expect, jest, test } from '@jest/globals';
+import { afterEach, describe, expect, vi as jest, test } from 'vitest';
 import { HanamiCommonComputationService, HANAMI_COMMON_ALGORITHM_VERSION } from '@/core/hanami/HanamiCommonComputationService.js';
 import { HanamiForYouSafetyService } from '@/core/hanami/HanamiForYouSafetyService.js';
 import type { HanamiTrendComputationBundle } from '@/core/hanami/HanamiTrendService.js';

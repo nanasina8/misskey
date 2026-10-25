@@ -24,7 +24,7 @@ vi.mock('chart.js', async importOriginal => ({
 		destroy = chartMock.destroy;
 	},
 }));
-vi.mock('@/events.js', () => ({ globalEvents: { on: chartMock.on, off: chartMock.off } }));
+vi.mock('@/theme.js', () => ({ themeManager: { on: chartMock.on, off: chartMock.off } }));
 
 const apiMock = vi.hoisted(() => vi.fn());
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: apiMock }));

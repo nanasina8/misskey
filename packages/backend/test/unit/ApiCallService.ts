@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { rmSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, vi as jest, test } from 'vitest';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { MiAccessToken } from '@/models/AccessToken.js';
 import type { MiLocalUser } from '@/models/User.js';
@@ -20,7 +20,7 @@ const multipartPath = join('/tmp/opencode', `api-call-service-${process.pid}.tmp
 let cleanup = jest.fn(() => rmSync(multipartPath, { force: true }));
 const createTemp = jest.fn<() => Promise<[string, () => void]>>(async () => [multipartPath, cleanup]);
 
-jest.unstable_mockModule('../../src/misc/create-temp.js', () => ({
+jest.doMock('../../src/misc/create-temp.js', () => ({
 	createTemp,
 	createTempDir: jest.fn(),
 }));
@@ -108,10 +108,10 @@ const internalErrorBody = {
 
 describe('ApiCallService activity updates', () => {
 	let service: ApiCallServiceType;
-	let authenticate: jest.MockedFunction<(token: string | null | undefined) => Promise<[MiLocalUser | null, MiAccessToken | null]>>;
-	let updateLastActiveDate: jest.MockedFunction<(target: MiLocalUser) => Promise<void>>;
-	let loggerError: jest.Mock;
-	let loggerWarn: jest.Mock;
+	let authenticate: import('vitest').MockedFunction<(token: string | null | undefined) => Promise<[MiLocalUser | null, MiAccessToken | null]>>;
+	let updateLastActiveDate: import('vitest').MockedFunction<(target: MiLocalUser) => Promise<void>>;
+	let loggerError: import('vitest').Mock;
+	let loggerWarn: import('vitest').Mock;
 
 	const createEndpoint = (meta: IEndpointMeta = {}) => ({
 		name: 'test/endpoint',
@@ -123,7 +123,7 @@ describe('ApiCallService activity updates', () => {
 			},
 		},
 		exec: jest.fn(async () => ({ ok: true })),
-	}) as unknown as IEndpoint & { exec: jest.Mock };
+	}) as unknown as IEndpoint & { exec: import('vitest').Mock };
 
 	const createRequest = (body: Record<string, unknown> = {}) => ({
 		method: 'POST',
@@ -170,6 +170,7 @@ describe('ApiCallService activity updates', () => {
 			} as never,
 			{ updateLastActiveDate } as never,
 			{ logger: { error: loggerError, warn: loggerWarn, debug: jest.fn() } } as never,
+			{ startSpan: (_name: string, callback: () => unknown) => callback(), captureMessage: jest.fn() } as never,
 		);
 	});
 
@@ -496,7 +497,7 @@ describe('ApiCallService activity updates', () => {
 			meta: {},
 			params: strictParamDef,
 			exec: new (class extends Endpoint<IEndpointMeta, typeof strictParamDef> {})({} as IEndpointMeta, strictParamDef, handler as never).exec,
-		} as unknown as IEndpoint & { exec: jest.Mock };
+		} as unknown as IEndpoint & { exec: import('vitest').Mock };
 		authenticate.mockResolvedValue([null, null]);
 		const reply = new TestReply();
 

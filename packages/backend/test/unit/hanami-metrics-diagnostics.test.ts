@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, vi as jest, test } from 'vitest';
 import type { HanamiForYouSafetyService } from '@/core/hanami/HanamiForYouSafetyService.js';
 import type { HanamiDiscoveryCandidate } from '@/core/hanami/HanamiDiscoverySelection.js';
 import type { HanamiNoteJudgeRuntimeStatus } from '@/core/hanami/HanamiPythonRuntime.js';
@@ -11,9 +11,9 @@ import { createDefaultHanamiNoteJudgeSettings } from '@/core/hanami/HanamiNoteJu
 import type { DataSource, EntityManager } from 'typeorm';
 
 const peek = jest.fn<() => HanamiNoteJudgeRuntimeStatus | null>();
-jest.unstable_mockModule('../../src/core/hanami/HanamiPythonRuntime.js', () => ({ peekHanamiNoteJudgeRuntime: peek }));
+jest.doMock('../../src/core/hanami/HanamiPythonRuntime.js', () => ({ peekHanamiNoteJudgeRuntime: peek }));
 // No safety dependency graph, DB, cache, Python process or packing is started in these tests.
-jest.unstable_mockModule('../../src/core/hanami/HanamiForYouSafetyService.js', () => ({ HanamiForYouSafetyService: class {} }));
+jest.doMock('../../src/core/hanami/HanamiForYouSafetyService.js', () => ({ HanamiForYouSafetyService: class {} }));
 const {
 	HanamiMetricsDiagnosticsService, diagnoseHanamiDiscovery, diagnosticAxisLevel,
 	HANAMI_DIAGNOSTIC_INVENTORY_SQL, HANAMI_DIAGNOSTIC_VIEWERS_SQL, HANAMI_DIAGNOSTIC_VIEWER_FACTS_SQL,

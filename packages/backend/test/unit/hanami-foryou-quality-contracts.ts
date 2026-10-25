@@ -2,6 +2,8 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+import { describe, it, expect } from 'vitest';
+
 
 import { HANAMI_QUALITY_SHADOW_MODEL_VERSION, HANAMI_QUALITY_SHADOW_RULE_VERSION, createHanamiQualityReasonMetadata, createHanamiQualityShadow } from '@/core/hanami/HanamiForYouQualityContracts.js';
 

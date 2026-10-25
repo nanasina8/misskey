@@ -16,7 +16,6 @@ import ActiveUsersChart from '@/core/chart/charts/active-users.js';
 import HanamiTimelineChart from '@/core/chart/charts/hanami-timeline.js';
 import { DI } from '@/di-symbols.js';
 import { RoleService } from '@/core/RoleService.js';
-import { removeMutedUsersReactions } from '@/misc/reactions-mute.js';
 import { ApiError } from '../../error.js';
 
 export const meta = {
@@ -129,10 +128,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				}
 			});
 
-			const packedNotes = await this.noteEntityService.packMany(notes, me, { withReactionAndUserPairCache: true });
-			await Promise.all(
-				packedNotes.map(note => removeMutedUsersReactions(note, userIdsWhoMeMuting)),
-			);
+			const packedNotes = await this.noteEntityService.packMany(notes, me);
 			await this.hanamiTimelineChart.hit('global', me?.id ?? null);
 			return packedNotes;
 		});

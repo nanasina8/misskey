@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
+import { describe, expect, vi as jest, test } from 'vitest';
 import _Ajv from 'ajv';
 import type { Schema } from '@/misc/json-schema.js';
 import type { HanamiMetricsInsightsService as InsightsService } from '@/core/hanami/HanamiMetricsInsightsService.js';
@@ -13,18 +13,18 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 
 // Keep real Endpoint/AJV and ApiCallService authorization. Never open storage,
 // launch Python, or load the infrastructure dependency graph in this boundary test.
-jest.unstable_mockModule('../../src/core/RoleService.js', () => ({ RoleService: class {} }));
-jest.unstable_mockModule('../../src/core/UserService.js', () => ({ UserService: class {} }));
-jest.unstable_mockModule('../../src/server/api/RateLimiterService.js', () => ({ RateLimiterService: class {} }));
-jest.unstable_mockModule('../../src/server/api/ApiLoggerService.js', () => ({ ApiLoggerService: class {} }));
-jest.unstable_mockModule('../../src/server/api/AuthenticateService.js', () => ({ AuthenticateService: class {}, AuthenticationError: class extends Error {} }));
-jest.unstable_mockModule('../../src/core/hanami/HanamiMetricsDiagnosticsService.js', () => ({
+jest.doMock('../../src/core/RoleService.js', () => ({ RoleService: class {} }));
+jest.doMock('../../src/core/UserService.js', () => ({ UserService: class {} }));
+jest.doMock('../../src/server/api/RateLimiterService.js', () => ({ RateLimiterService: class {} }));
+jest.doMock('../../src/server/api/ApiLoggerService.js', () => ({ ApiLoggerService: class {} }));
+jest.doMock('../../src/server/api/AuthenticateService.js', () => ({ AuthenticateService: class {}, AuthenticationError: class extends Error {} }));
+jest.doMock('../../src/core/hanami/HanamiMetricsDiagnosticsService.js', () => ({
 	HanamiMetricsDiagnosticsService: class {},
 	HANAMI_DIAGNOSTIC_REASONS: ['unjudged', 'ephemeral', 'lowInterest', 'ff', 'hideMedia', 'servedSeen', 'otherSafety', 'diversity', 'passed'],
 }));
 const runtime = { available: true, device: 'cpu', deviceName: 'cpu (forced)', reason: null, probedAt: '2026-09-20T00:00:00.000Z' };
 const probe = jest.fn(async (_options: { force?: boolean }) => runtime);
-jest.unstable_mockModule('../../src/core/hanami/HanamiPythonRuntime.js', () => ({ probeHanamiNoteJudgeRuntime: probe, peekHanamiNoteJudgeRuntime: () => null }));
+jest.doMock('../../src/core/hanami/HanamiPythonRuntime.js', () => ({ probeHanamiNoteJudgeRuntime: probe, peekHanamiNoteJudgeRuntime: () => null }));
 
 const opportunities = await import('../../src/server/api/endpoints/admin/hanami/metrics/opportunities.js');
 const whatIf = await import('../../src/server/api/endpoints/admin/hanami/metrics/what-if.js');
@@ -341,6 +341,7 @@ describe('HM-IMPLEMENT P3 real API authorization guards', () => {
 				{} as never, { getUserRoles: async () => scenario.roles } as never,
 				{ updateLastActiveDate: async () => undefined } as never,
 				{ logger: { error: jest.fn(), warn: jest.fn() } } as never,
+				{ startSpan: (_name: string, callback: () => unknown) => callback(), captureMessage: jest.fn() } as never,
 			);
 			const reply = new TestReply();
 			try {

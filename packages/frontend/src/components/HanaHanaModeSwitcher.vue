@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: syuilo and misskey-project
+SPDX-License-Identifier: AGPL-3.0-only
+-->
+
 <template>
 <div class="_gaps">
 	<div class="_gaps_s">
@@ -43,7 +48,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { updateCurrentAccountPartial } from '@/accounts.js';
+import { updateCurrentAccount } from '@/accounts.js';
 import { ensureSignin } from '@/i.js';
 import { i18n } from '@/i18n.js';
 import { claimAchievement } from '@/utility/achievements.js';
@@ -92,7 +97,7 @@ async function setMode() {
 		os.apiWithDialog('i/update', {
 			isInHanaMode,
 		});
-		updateCurrentAccountPartial({ isInHanaMode });
+		updateCurrentAccount({ isInHanaMode });
 	}
 	emit('set');
 	onceSet.value = true;

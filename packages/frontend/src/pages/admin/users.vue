@@ -45,9 +45,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, markRaw, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue';
+import { computed, markRaw, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, useTemplateRef, watch, watchEffect } from 'vue';
 import { throttle } from 'throttle-debounce';
 import { getScrollContainer } from '@@/js/scroll.js';
+import * as Misskey from 'misskey-js';
+import { defaultMemoryStorage } from '@/memory-storage';
 import MkButton from '@/components/MkButton.vue';
 import MkInput from '@/components/MkInput.vue';
 import MkSelect from '@/components/MkSelect.vue';
@@ -168,7 +170,7 @@ async function addUser() {
 	});
 }
 
-function show(user) {
+function show(user: Misskey.entities.UserDetailed) {
 	os.pageWindow(`/admin/user/${user.id}`);
 }
 

@@ -2,8 +2,10 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+import { describe, test, expect } from 'vitest';
 
-import { jest } from '@jest/globals';
+
+import { vi as jest } from 'vitest';
 import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
 import { HanamiUserFeedGenerationService } from '@/core/hanami/HanamiUserFeedGenerationService.js';
 import { HanamiUserFeedRequestService } from '@/core/hanami/HanamiUserFeedRequestService.js';

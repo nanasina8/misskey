@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, vi as jest, test } from 'vitest';
 import { HanamiMetricsTimelineHealthService } from '@/core/hanami/HanamiMetricsTimelineHealthService.js';
 
 type Statement = [string, unknown[]];

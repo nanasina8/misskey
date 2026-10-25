@@ -3,32 +3,35 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Scope } from '@nestjs/common';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { bindThis } from '@/decorators.js';
 import { NoteStreamingHidingService } from '../NoteStreamingHidingService.js';
-import { isRenotePacked, isQuotePacked } from '@/misc/is-renote.js';
 import { DI } from '@/di-symbols.js';
 import type { RolesRepository } from '@/models/_.js';
 import type { GlobalEvents } from '@/core/GlobalEventService.js';
 import type { JsonObject } from '@/misc/json-value.js';
-import Channel, { type MiChannelService } from '../channel.js';
+import Channel, { type ChannelRequest } from '../channel.js';
+import { REQUEST } from '@nestjs/core';
 
-class RoleTimelineChannel extends Channel {
+@Injectable({ scope: Scope.TRANSIENT })
+export class RoleTimelineChannel extends Channel {
 	public readonly chName = 'roleTimeline';
 	public static shouldShare = false;
 	public static requireCredential = false as const;
 	private roleId: string;
 
 	constructor(
+		@Inject(REQUEST)
+		request: ChannelRequest,
+
+		@Inject(DI.rolesRepository)
 		private rolesRepository: RolesRepository,
+
 		private noteEntityService: NoteEntityService,
 		private noteStreamingHidingService: NoteStreamingHidingService,
-
-		id: string,
-		connection: Channel['connection'],
 	) {
-		super(id, connection);
+		super(request);
 		//this.onNote = this.onNote.bind(this);
 	}
 
@@ -68,16 +71,7 @@ class RoleTimelineChannel extends Channel {
 			if (!filtered) return;
 			note = filtered;
 
-			if (this.user) {
-				if (isRenotePacked(note) && !isQuotePacked(note)) {
-					if (note.renote && Object.keys(note.renote.reactions).length > 0) {
-						const myRenoteReaction = await this.noteEntityService.populateMyReaction(note.renote, this.user.id);
-						note.renote.myReaction = myRenoteReaction;
-					}
-				}
-			}
-
-			this.send('note', note);
+			this.send('note', await this.noteEntityService.withMyRenoteReaction(note, this.user?.id ?? null));
 		} else {
 			this.send(data.type, data.body);
 		}
@@ -87,31 +81,5 @@ class RoleTimelineChannel extends Channel {
 	public dispose() {
 		// Unsubscribe events
 		this.subscriber.off(`roleTimelineStream:${this.roleId}`, this.onEvent);
-	}
-}
-
-@Injectable()
-export class RoleTimelineChannelService implements MiChannelService<false> {
-	public readonly shouldShare = RoleTimelineChannel.shouldShare;
-	public readonly requireCredential = RoleTimelineChannel.requireCredential;
-	public readonly kind = RoleTimelineChannel.kind;
-
-	constructor(
-		private noteEntityService: NoteEntityService,
-		@Inject(DI.rolesRepository)
-		private rolesRepository: RolesRepository,
-		private noteStreamingHidingService: NoteStreamingHidingService,
-	) {
-	}
-
-	@bindThis
-	public create(id: string, connection: Channel['connection']): RoleTimelineChannel {
-		return new RoleTimelineChannel(
-			this.rolesRepository,
-			this.noteEntityService,
-			this.noteStreamingHidingService,
-			id,
-			connection,
-		);
 	}
 }

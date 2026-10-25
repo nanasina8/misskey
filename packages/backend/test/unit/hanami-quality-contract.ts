@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { expect, test } from '@jest/globals';
+import { expect, test } from 'vitest';
 import { createHanamiQualityShadowFromJudgement, mapHanamiQualityJudgement } from '@/core/hanami/HanamiForYouQualityContracts.js';
 
 test('maps judgement values with inclusive interest and exclusive ephemeral thresholds', () => {

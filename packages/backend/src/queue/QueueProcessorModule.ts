@@ -15,6 +15,7 @@ import { InboxProcessorService } from './processors/InboxProcessorService.js';
 import { UserWebhookDeliverProcessorService } from './processors/UserWebhookDeliverProcessorService.js';
 import { SystemWebhookDeliverProcessorService } from './processors/SystemWebhookDeliverProcessorService.js';
 import { CheckExpiredMutingsProcessorService } from './processors/CheckExpiredMutingsProcessorService.js';
+import { ArchiveAnnouncementProcessorService } from './processors/ArchiveAnnouncementProcessorService.js';
 import { BakeBufferedReactionsProcessorService } from './processors/BakeBufferedReactionsProcessorService.js';
 import { CleanChartsProcessorService } from './processors/CleanChartsProcessorService.js';
 import { CleanProcessorService } from './processors/CleanProcessorService.js';
@@ -66,6 +67,7 @@ import { EmojiImageFingerprintProcessorService } from './processors/EmojiImageFi
 		ResyncChartsProcessorService,
 		CleanChartsProcessorService,
 		CheckExpiredMutingsProcessorService,
+		ArchiveAnnouncementProcessorService,
 		BakeBufferedReactionsProcessorService,
 		CleanProcessorService,
 		DeleteDriveFilesProcessorService,

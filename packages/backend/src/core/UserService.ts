@@ -48,7 +48,7 @@ export class UserService {
 
 			const current = await em.findOne(MiUser, {
 				where: { id: user.id },
-				select: ['id', 'isHibernated', 'lastActiveDate'],
+				select: { 'id': true, 'isHibernated': true, 'lastActiveDate': true },
 				lock: { mode: 'pessimistic_write' },
 			});
 			if (current == null) return null;

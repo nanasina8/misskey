@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, vi as jest, test } from 'vitest';
 import { HANAMI_FOR_YOU_AXES, hanamiInterleave } from '@/core/hanami/HanamiForYouInterleave.js';
 import { METRICS_COHORT_CTE, METRICS_COLLECTION_GAP_SQL } from '@/core/hanami/HanamiMetricsContracts.js';
 import { createDefaultHanamiNoteJudgeSettings } from '@/core/hanami/HanamiNoteJudgeContracts.js';
@@ -11,7 +11,7 @@ import { presentMetricsBreakdown } from '@/core/hanami/HanamiMetricsQueryService
 import type { HanamiMetricsWhatIfRequest } from '@/core/hanami/HanamiMetricsInsightsContracts.js';
 
 // Read-only storage doubles; no DB, Redis, safety graph, Python, or background services.
-jest.unstable_mockModule('../../src/core/hanami/HanamiForYouSafetyService.js', () => ({ HanamiForYouSafetyService: class {} }));
+jest.doMock('../../src/core/hanami/HanamiForYouSafetyService.js', () => ({ HanamiForYouSafetyService: class {} }));
 const {
 	HanamiMetricsInsightsService, HANAMI_INSIGHTS_CAPS, allocationVerdict, suggestedCaps,
 	INSIGHTS_CONTENT_SQL, INSIGHTS_DEMAND_SQL, INSIGHTS_HIDDEN_SQL, INSIGHTS_WHAT_IF_SQL, INSIGHTS_NOTES_SQL,

@@ -3,10 +3,11 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
+import { describe, expect, vi as jest, test } from 'vitest';
 import type { MiLocalUser } from '@/models/User.js';
 import type { MiNote } from '@/models/Note.js';
 import type { Packed } from '@/misc/json-schema.js';
+import { HanaReactionMuteService } from '@/core/HanaReactionMuteService.js';
 import { HanamiForYouSafetyService } from '@/core/hanami/HanamiForYouSafetyService.js';
 import type { HanamiPersistedPersonalFeedEntry } from '@/core/hanami/HanamiUserFeedContracts.js';
 
@@ -91,9 +92,16 @@ function fixture(notes: readonly MiNote[], options: {
 			...options.profile,
 		})) },
 	};
-	const packMany = jest.fn(async (ordered: MiNote[]) => options.pack == null
-		? ordered.map(item => ({ id: item.id, cw: item.cw }) as Packed<'Note'>)
-		: await options.pack(ordered));
+	const reactionMute = new HanaReactionMuteService({
+		find: async () => notes.flatMap(item => options.muting?.has('muted-reactor') ? [{ noteId: item.id, userId: 'muted-reactor', reaction: ':like:' }] : []),
+	} as never, cacheService as never, { convertLegacyReaction: (reaction: string) => reaction } as never);
+	const packMany = jest.fn(async (ordered: MiNote[], me?: MiLocalUser | null) => {
+		const packed = options.pack == null
+			? ordered.map(item => ({ id: item.id, cw: item.cw, reactions: {} }) as Packed<'Note'>)
+			: await options.pack(ordered);
+		await reactionMute.filterMutedReactions(packed, me?.id ?? null, true);
+		return packed;
+	});
 	const service = new HanamiForYouSafetyService(
 		notesRepository as never,
 		queryService as never,

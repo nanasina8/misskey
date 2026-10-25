@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
+import { describe, expect, vi as jest, test } from 'vitest';
 import type { Config } from '@/config.js';
 import type { MiMeta } from '@/models/Meta.js';
 import type { MiLocalUser } from '@/models/User.js';

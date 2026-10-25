@@ -5,6 +5,10 @@
 
 import * as Misskey from 'misskey-js';
 
+export function canFoldMutedReaction(reaction: string, reactionLocalEmojis: ReactionLocalEmojis): boolean {
+	return parseRemoteCustomEmojiReaction(reaction) == null || getLocalEmojiReactionFor(reaction, reactionLocalEmojis) != null;
+}
+
 export type ReactionLocalEmojis = NonNullable<Misskey.entities.Note['reactionLocalEmojis']>;
 
 /**

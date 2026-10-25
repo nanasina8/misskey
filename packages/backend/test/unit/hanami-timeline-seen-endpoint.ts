@@ -3,12 +3,12 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
+import { describe, expect, vi as jest, test } from 'vitest';
 import type { MiLocalUser } from '@/models/User.js';
 
 class HanamiInvalidFeedEntryError extends Error {}
 
-jest.unstable_mockModule('../../src/core/hanami/HanamiForYouProvenanceService.js', () => ({
+jest.doMock('../../src/core/hanami/HanamiForYouProvenanceService.js', () => ({
 	HanamiForYouProvenanceService: class {},
 	HanamiInvalidFeedEntryError,
 }));

@@ -171,12 +171,6 @@ router.useListener('replace', ({ fullPath }) => {
 			width: 100%;
 			height: 100%;
 		}
-
-		.tabContent {
-			position: relative;
-			width: 100%;
-			height: 100%;
-		}
 	}
 
 	&:not(:first-child) {
@@ -214,6 +208,13 @@ router.useListener('replace', ({ fullPath }) => {
 			background: var(--MI-routerViewBg, var(--MI_THEME-bg));
 		}
 	}
+}
+
+.tabContent {
+	position: relative;
+	width: 100%;
+	height: 100%;
+	background: var(--MI_THEME-bg);
 }
 
 .tabMenu {

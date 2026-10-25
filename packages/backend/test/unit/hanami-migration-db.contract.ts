@@ -5,7 +5,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { Client } from 'pg';
-import { describe, expect, test } from '@jest/globals';
+import { describe, expect, test } from 'vitest';
 import { HanamiPersistedTimelinePhase11787097600000 } from '../../migration/1787097600000-hanamiPersistedTimelinePhase1.js';
 
 type DbRow = Record<string, unknown>;

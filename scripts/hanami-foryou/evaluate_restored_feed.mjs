@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+/*
+ * SPDX-FileCopyrightText: syuilo and misskey-project
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
 import { createRequire } from 'node:module';
 import { OUTPUT_SCHEMA, OUTPUT_VERSION, assertPrivacySafe, evaluateModelRuns, evaluateRows, runReadOnlyTransaction, seedDigest, stableSelectUsers } from './restored-evaluation-lib.mjs';
 

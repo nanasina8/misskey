@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { expect, test } from '@jest/globals';
+import { expect, test } from 'vitest';
 import { hanamiInterleave, type ForYouCandidate, type HanamiAxis } from '@/core/hanami/HanamiForYouInterleave.js';
 import { createHanamiQualityShadow } from '@/core/hanami/HanamiForYouQualityContracts.js';
 import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';

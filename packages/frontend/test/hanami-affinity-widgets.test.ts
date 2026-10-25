@@ -18,7 +18,7 @@ vi.mock('@/preferences.js', () => ({ prefer: { s: { animation: false } } }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: api }));
 vi.mock('@@/js/use-interval.js', () => ({ useInterval: interval }));
 vi.mock('@/i.js', () => ({ $i: { id: 'me', username: 'me', name: 'Me' } }));
-vi.mock('@/filters/user.js', () => ({ userPage: (user: { username: string }) => `/@${user.username}` }));
+vi.mock('@@/js/user.js', () => ({ userPage: (user: { username: string }) => `/@${user.username}` }));
 vi.mock('@/widgets/widget.js', async () => {
 	const { reactive } = await import('vue');
 	return { useWidgetPropsManager: (_name: string, defs: Record<string, { default: unknown }>, props: { widget?: { data: Record<string, unknown> } }) => {
@@ -28,7 +28,7 @@ vi.mock('@/widgets/widget.js', async () => {
 });
 vi.mock('@/components/MkContainer.vue', () => ({ default: { template: '<div><slot name="header"/><slot name="func"/><slot/></div>' } }));
 vi.mock('@/i18n.js', async () => {
-	const { default: locales } = await import('../../../locales/index.js');
+	const { default: locales } = await import('i18n');
 	return ({
 		i18n: {
 			ts: {

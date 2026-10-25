@@ -2,9 +2,11 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+import { describe, test, expect } from 'vitest';
+
 
 import { createHash, randomBytes } from 'node:crypto';
-import { jest } from '@jest/globals';
+import { vi as jest } from 'vitest';
 import { Client } from 'pg';
 import type { Config } from '@/config.js';
 import { HanamiCommonHeadQueries } from '@/core/hanami/HanamiCommonHeadQueries.js';

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
+import { describe, expect, vi as jest, test } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { getMetadataArgsStorage } from 'typeorm';
 import type { Packed } from '@/misc/json-schema.js';
@@ -16,7 +16,7 @@ import { packedRolePoliciesSchema } from '@/models/json-schema/role.js';
 import { packedMeDetailedOnlySchema } from '@/models/json-schema/user.js';
 import { ServerModule } from '@/server/ServerModule.js';
 import { paramDef as updateParamDef } from '@/server/api/endpoints/i/update.js';
-import { ChannelsService } from '@/server/api/stream/ChannelsService.js';
+import Connection from '@/server/api/stream/Connection.js';
 import { getValidator } from '../prelude/get-api-validator.js';
 
 const obsoleteSettings = [
@@ -40,18 +40,12 @@ function providerIdentities(provider: unknown): string[] {
 
 describe('Hanami Phase 5 backend cleanup workstream E', () => {
 	test('hanamiTimeline is not registered as a channel or ServerModule provider', () => {
-		const mainChannel = {};
-		const channelsService = Reflect.construct(
-			ChannelsService,
-			[mainChannel, ...Array.from({ length: 17 }, () => ({}))],
-		) as ChannelsService;
-		const channelDependencies = (Reflect.getMetadata('design:paramtypes', ChannelsService) as Array<{ name?: string }> | undefined) ?? [];
+		const connection = Object.create(Connection.prototype) as Connection;
 		const serverProviders = (Reflect.getMetadata('providers', ServerModule) as Array<{ name?: string }> | undefined) ?? [];
 
-		expect(channelsService.getChannelService('main')).toBe(mainChannel);
-		expect(() => channelsService.getChannelService('hanamiTimeline')).toThrow('no such channel: hanamiTimeline');
-		expect(channelDependencies.map(dependency => dependency.name)).not.toContain('HanamiTimelineChannelService');
-		expect(serverProviders.map(provider => provider.name)).not.toContain('HanamiTimelineChannelService');
+		expect(connection.getChannelConstructor('main').name).toBe('MainChannel');
+		expect(() => connection.getChannelConstructor('hanamiTimeline')).toThrow('no such channel: hanamiTimeline');
+		expect(serverProviders.map(provider => provider.name)).not.toContain('HanamiTimelineChannel');
 	});
 
 	test('the shared notesStream publication remains available to other channels', () => {

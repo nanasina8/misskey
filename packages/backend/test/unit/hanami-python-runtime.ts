@@ -6,7 +6,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as Path from 'node:path';
-import { expect, test } from '@jest/globals';
+import { expect, test } from 'vitest';
 import { HANAMI_PYTHON_THREAD_ENV, prepareHanamiPythonCommand, resolveHanamiPython, resolveHanamiRepoRoot } from '@/core/hanami/HanamiPythonRuntime.js';
 
 test('Hanami Python runtime follows override, executable repo venv, then python3 priority', () => {

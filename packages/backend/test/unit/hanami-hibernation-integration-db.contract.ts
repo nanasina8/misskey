@@ -2,9 +2,11 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+import { describe, test, expect } from 'vitest';
+
 
 import { randomBytes } from 'node:crypto';
-import { jest } from '@jest/globals';
+import { vi as jest } from 'vitest';
 import { Client } from 'pg';
 import { MiFollowing } from '@/models/Following.js';
 import { MiUser } from '@/models/User.js';
@@ -35,7 +37,7 @@ type SeedUserOptions = {
 };
 
 type InternalEventsMock = {
-	publishInternalEvent: jest.MockedFunction<(type: string, body: { id: string }) => void>;
+	publishInternalEvent: import('vitest').MockedFunction<(type: string, body: { id: string }) => void>;
 };
 
 const databaseUrl = process.env.HANAMI_SCHEMA_TEST_DATABASE_URL;

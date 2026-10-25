@@ -3,12 +3,12 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
+import { describe, expect, vi as jest, test } from 'vitest';
 import { aggregateAffinity } from '@/core/hanami/HanamiAffinityContracts.js';
 import type { MiLocalUser } from '@/models/User.js';
 
-jest.unstable_mockModule('../../src/core/entities/UserEntityService.js', () => ({ UserEntityService: class {} }));
-jest.unstable_mockModule('../../src/core/hanami/HanamiAffinityService.js', () => ({ HanamiAffinityService: class {} }));
+jest.doMock('../../src/core/entities/UserEntityService.js', () => ({ UserEntityService: class {} }));
+jest.doMock('../../src/core/hanami/HanamiAffinityService.js', () => ({ HanamiAffinityService: class {} }));
 
 const { default: AffinityEndpoint, meta } = await import('../../src/server/api/endpoints/users/hanami-affinity.js');
 const me = { id: 'me' } as MiLocalUser;

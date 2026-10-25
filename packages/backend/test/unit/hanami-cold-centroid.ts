@@ -5,7 +5,7 @@
 
 import { readFileSync } from 'node:fs';
 import * as Path from 'node:path';
-import { expect, jest, test } from '@jest/globals';
+import { expect, vi as jest, test } from 'vitest';
 import { HanamiForYouBatchService } from '@/core/hanami/HanamiForYouBatchService.js';
 import { resolveHanamiRepoRoot } from '@/core/hanami/HanamiPythonRuntime.js';
 

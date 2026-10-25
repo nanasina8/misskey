@@ -2,8 +2,10 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-import { jest } from '@jest/globals';
+
+import { vi as jest } from 'vitest';
 import { MiFollowing } from '@/models/Following.js';
 import { MiUser } from '@/models/User.js';
 import { HibernationSweepProcessorService } from '@/queue/processors/HibernationSweepProcessorService.js';

@@ -4,10 +4,12 @@
  */
 
 import { Test, TestingModule } from '@nestjs/testing';
+import { describe, expect, beforeAll, afterAll, test } from 'vitest';
 import type { MiUser } from '@/models/User.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { GlobalModule } from '@/GlobalModule.js';
 import { CoreModule } from '@/core/CoreModule.js';
+import { HanamiMetricsTimelineHealthService } from '@/core/hanami/HanamiMetricsTimelineHealthService.js';
 import { secureRndstr } from '@/misc/secure-rndstr.js';
 import { genAidx } from '@/misc/id/aidx.js';
 import {
@@ -50,6 +52,7 @@ import { AccountMoveService } from '@/core/AccountMoveService.js';
 import { ReactionService } from '@/core/ReactionService.js';
 import { NotificationService } from '@/core/NotificationService.js';
 import { ReactionsBufferingService } from '@/core/ReactionsBufferingService.js';
+import { HanaReactionMuteService } from '@/core/HanaReactionMuteService.js';
 import { ChatService } from '@/core/ChatService.js';
 
 process.env.NODE_ENV = 'test';
@@ -172,6 +175,7 @@ describe('UserEntityService', () => {
 				AccountMoveService,
 				ReactionService,
 				ReactionsBufferingService,
+				HanaReactionMuteService,
 				NotificationService,
 				ChatService,
 			];
@@ -182,7 +186,7 @@ describe('UserEntityService', () => {
 					...services,
 					...services.map(x => ({ provide: x.name, useExisting: x })),
 				],
-			}).compile();
+			}).overrideProvider(HanamiMetricsTimelineHealthService).useValue({}).compile();
 			await app.init();
 			app.enableShutdownHooks();
 
@@ -249,6 +253,16 @@ describe('UserEntityService', () => {
 			expect(actual).not.toHaveProperty('hanamiRecommendationStrength');
 			expect(actual).not.toHaveProperty('hanamiRecommendationAutoInjectEnabled');
 			expect(actual).not.toHaveProperty('hanamiRecommendationAutoInjectStrength');
+		});
+
+		test('alsoKnownAs as string does not throw', async () => {
+			const me = await createUser();
+			const who = await createUser();
+
+			const whoWithStringAlsoKnownAs: MiUser = { ...who, alsoKnownAs: 'https://remote.example.com/users/alice' as any };
+
+			const actual = await service.pack(whoWithStringAlsoKnownAs, me, { schema: 'UserDetailedNotMe' }) as any;
+			expect(Array.isArray(actual.alsoKnownAs)).toBe(true);
 		});
 
 		describe('packManyによるpreloadがある時、preloadが無い時とpackの結果が同じになるか見たい', () => {

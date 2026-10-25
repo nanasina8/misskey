@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, test, jest } from '@jest/globals';
+import { describe, expect, test, vi as jest } from 'vitest';
 import { encodeFp16 } from '@/core/hanami/HanamiTasteClusterBatchService.js';
 import { prepareHanamiPythonCommand, resolveHanamiTrendTopicsScript } from '@/core/hanami/HanamiPythonRuntime.js';
 

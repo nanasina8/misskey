@@ -4,7 +4,7 @@
  */
 
 import { createHmac } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, vi as jest, test } from 'vitest';
 import HanamiTimelineChart from '@/core/chart/charts/hanami-timeline.js';
 import { entity, schema, timelineKinds } from '@/core/chart/charts/entities/hanami-timeline.js';
 import ChartEndpoint, { meta as chartMeta } from '@/server/api/endpoints/charts/hanami-timeline.js';
@@ -53,7 +53,7 @@ function repository() {
 							if (!match) throw new Error('Unexpected mock array update');
 							row[column] = [...row[column] as string[], ...Array.from(match[1].matchAll(/'((?:[^']|'')*)'/g), item => item[1].replaceAll("''", "'"))];
 						} else {
-							const match = value().match(/\+ (\d+)$/);
+							const match = value().match(/\+ (\d+)(?:, \d+\))?$/);
 							if (!match) throw new Error('Unexpected mock counter update');
 							row[column] = (row[column] as number) + Number(match[1]);
 						}

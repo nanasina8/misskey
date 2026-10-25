@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterEach, describe, expect, jest, test } from '@jest/globals';
+import { afterEach, describe, expect, vi as jest, test } from 'vitest';
 import { QueryFailedError } from 'typeorm';
 import { ReactionService } from '@/core/ReactionService.js';
 import {
@@ -169,6 +169,7 @@ function queryBuilder() {
 		update: jest.fn(() => qb),
 		set: jest.fn(() => qb),
 		where: jest.fn(() => qb),
+		setParameters: jest.fn(() => qb),
 		execute: jest.fn(async () => ({ affected: 1 })),
 	};
 	return qb;

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterEach, describe, expect, jest, test } from '@jest/globals';
+import { afterEach, describe, expect, vi as jest, test } from 'vitest';
 import Logger from '@/logger.js';
 import { HanamiTrendService, trendDailyKey, trendSameKey, trendSameSetKey, trendTopicTagGame } from '@/core/hanami/HanamiTrendService.js';
 
@@ -253,7 +253,7 @@ describe('topic materialization (U-4, U-5, U-6, U-7)', () => {
 	test('U-13: an older computation finishing later cannot replace a newer prev; equal timestamps are rejected', async () => {
 		const clock = jest.spyOn(Date, 'now').mockReturnValue(NOW);
 		const setup = fixture(notesFor('a'));
-		const builder = setup.service['buildTopics'] as jest.Mock<typeof setup.service['buildTopics']>;
+		const builder = setup.service['buildTopics'] as import('vitest').Mock<typeof setup.service['buildTopics']>;
 		const original = builder.getMockImplementation()!;
 		let release!: () => void;
 		let entered!: () => void;
@@ -355,7 +355,7 @@ describe('topic materialization (U-4, U-5, U-6, U-7)', () => {
 	test('U-23: older and equal computations cannot replace newer candidates', async () => {
 		const clock = jest.spyOn(Date, 'now').mockReturnValue(NOW);
 		const setup = fixture(notesFor('a'));
-		const builder = setup.service['buildTopics'] as jest.Mock<typeof setup.service['buildTopics']>;
+		const builder = setup.service['buildTopics'] as import('vitest').Mock<typeof setup.service['buildTopics']>;
 		const original = builder.getMockImplementation()!;
 		let release!: () => void;
 		let entered!: () => void;

@@ -6,7 +6,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as Path from 'node:path';
-import { afterAll, beforeAll, describe, expect, jest, test } from '@jest/globals';
+import { afterAll, beforeAll, describe, expect, vi as jest, test } from 'vitest';
 import * as Bull from 'bullmq';
 import { HanamiForYouBatchService } from '@/core/hanami/HanamiForYouBatchService.js';
 import { createDefaultHanamiNoteJudgeSettings } from '@/core/hanami/HanamiNoteJudgeContracts.js';

@@ -13,7 +13,6 @@ import { FeaturedService } from '@/core/FeaturedService.js';
 import { isUserRelated } from '@/misc/is-user-related.js';
 import { isInstanceMuted } from '@/misc/is-instance-muted.js';
 import { CacheService } from '@/core/CacheService.js';
-import { removeMutedUsersReactions } from '@/misc/reactions-mute.js';
 import { QueryService } from '@/core/QueryService.js';
 
 // スコア順ページングを安定させるスナップショットの保持時間。ここ一箇所で調整。
@@ -165,10 +164,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				return n ? [n] : [];
 			}).slice(0, ps.limit);
 
-			const packedNotes = await this.noteEntityService.packMany(notes, me, { withReactionAndUserPairCache: true });
-			await Promise.all(
-				packedNotes.map(note => removeMutedUsersReactions(note, userIdsWhoMeMuting)),
-			);
+			const packedNotes = await this.noteEntityService.packMany(notes.slice(0, ps.limit), me);
 			return packedNotes;
 		});
 	}

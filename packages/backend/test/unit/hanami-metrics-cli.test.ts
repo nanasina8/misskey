@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
+import { describe, expect, vi as jest, test } from 'vitest';
 import { HanamiMetricsRollupCommandService, parseHanamiMetricsRollupArgs } from '@/cli/HanamiMetricsRollupCommandService.js';
 
 describe('hanami:metrics-rollup arguments (no application startup)', () => {

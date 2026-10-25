@@ -2,8 +2,10 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+import { describe, it, expect } from 'vitest';
 
-import { jest } from '@jest/globals';
+
+import { vi as jest } from 'vitest';
 import { HanamiForYouBatchService, hanamiRelationDecayForUtcDay } from '@/core/hanami/HanamiForYouBatchService.js';
 
 function serviceWith(db: Record<string, unknown>): HanamiForYouBatchService {

@@ -2,10 +2,12 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+import { describe, test, expect } from 'vitest';
+
 
 import { randomBytes } from 'node:crypto';
 import { Client } from 'pg';
-import { jest } from '@jest/globals';
+import { vi as jest } from 'vitest';
 import type { Config } from '@/config.js';
 import { HanamiCommonGenerationService } from '@/core/hanami/HanamiCommonGenerationService.js';
 import { HanamiTimelinePartitionService } from '@/core/hanami/HanamiTimelinePartitionService.js';

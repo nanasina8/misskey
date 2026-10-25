@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
+import { describe, expect, vi as jest, test } from 'vitest';
 import sharp from 'sharp';
 import { IsNull } from 'typeorm';
 import { AppLockService } from '@/core/AppLockService.js';
@@ -500,14 +500,13 @@ describe('EmojiImageFingerprintSourceService', () => {
 
 describe('AppLockService fingerprint lock', () => {
 	test('derives the lock key from the emoji id with a 30 second default timeout', async () => {
-		const service = Object.create(AppLockService.prototype) as AppLockService;
-		const lock = jest.fn<(...args: any[]) => Promise<() => void>>(async () => () => {});
-		(service as unknown as { lock: unknown }).lock = lock;
+		const redis = { set: jest.fn(async () => 'OK') };
+		const service = new AppLockService(redis as never);
 
 		await service.getEmojiImageFingerprintLock('emoji-1');
-		expect(lock).toHaveBeenCalledWith('emoji-image-fingerprint:emoji-1', 30_000);
+		expect(redis.set).toHaveBeenCalledWith('lock:emoji-image-fingerprint:emoji-1', expect.any(String), 'PX', 30_000, 'NX');
 
 		await service.getEmojiImageFingerprintLock('emoji-1', 1234);
-		expect(lock).toHaveBeenLastCalledWith('emoji-image-fingerprint:emoji-1', 1234);
+		expect(redis.set).toHaveBeenLastCalledWith('lock:emoji-image-fingerprint:emoji-1', expect.any(String), 'PX', 1234, 'NX');
 	});
 });

@@ -95,7 +95,7 @@ export class EmojiImageFingerprintService {
 
 	private parseApng(buffer: Buffer): ParsedApng | null {
 		if (!this.hasApngControlChunk(buffer)) return null;
-		const parser = (apngPackage as unknown as { default: (input: ArrayBuffer) => ParsedApng | Error }).default;
+		const parser = (typeof apngPackage === 'function' ? apngPackage : apngPackage.default) as (input: ArrayBuffer) => ParsedApng | Error;
 		const input = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
 		const parsed = parser(input);
 		if (parsed instanceof Error) throw new EmojiImageFingerprintError('INVALID_IMAGE', parsed.message);

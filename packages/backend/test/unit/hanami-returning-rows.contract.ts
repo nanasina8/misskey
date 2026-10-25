@@ -6,7 +6,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, test } from '@jest/globals';
+import { describe, expect, test } from 'vitest';
 import { hanamiReturningRows } from '@/core/hanami/HanamiReturningRows.js';
 
 const hanamiDir = join(dirname(fileURLToPath(import.meta.url)), '../../src/core/hanami');

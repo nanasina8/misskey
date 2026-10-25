@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
+import { describe, expect, vi as jest, test } from 'vitest';
 import { RoleService } from '@/core/RoleService.js';
 import { MiRole } from '@/models/Role.js';
 import { MiRoleAssignment } from '@/models/RoleAssignment.js';
@@ -62,6 +62,7 @@ describe('RoleService transaction-scoped policies', () => {
 			off: jest.fn(),
 		};
 		const service = new RoleService(
+			{} as never,
 			{} as never,
 			{ policies: { hanamiTlAvailable: false } } as never,
 			{} as never,

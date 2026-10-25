@@ -10,6 +10,7 @@ import type { Config } from '@/config.js';
 import { DI } from '@/di-symbols.js';
 import { DEFAULT_POLICIES } from '@/core/RoleService.js';
 import { SystemAccountService } from '@/core/SystemAccountService.js';
+import { getSensitiveMediaDetectionConfig } from '@/misc/sensitive-media-detection-config.js';
 
 export const meta = {
 	tags: ['meta'],
@@ -242,6 +243,48 @@ export const meta = {
 				type: 'boolean',
 				optional: false, nullable: false,
 			},
+			sensitiveMediaDetectionApiUrl: {
+				type: 'string',
+				optional: false, nullable: true,
+			},
+			sensitiveMediaDetectionApiKey: {
+				type: 'string',
+				optional: false, nullable: true,
+			},
+			sensitiveMediaDetectionUseProxy: {
+				type: 'boolean',
+				optional: false, nullable: true,
+			},
+			sensitiveMediaDetectionTimeout: {
+				type: 'number',
+				optional: false, nullable: true,
+			},
+			sensitiveMediaDetectionMaxImagesPerRequest: {
+				type: 'number',
+				optional: false, nullable: true,
+			},
+			sensitiveMediaDetectionDefaults: {
+				type: 'object',
+				optional: false, nullable: false,
+				properties: {
+					apiUrl: {
+						type: 'string',
+						optional: false, nullable: true,
+					},
+					useProxy: {
+						type: 'boolean',
+						optional: false, nullable: false,
+					},
+					timeout: {
+						type: 'number',
+						optional: false, nullable: false,
+					},
+					maxImagesPerRequest: {
+						type: 'number',
+						optional: false, nullable: false,
+					},
+				},
+			},
 			proxyAccountId: {
 				type: 'string',
 				optional: false, nullable: false,
@@ -446,8 +489,7 @@ export const meta = {
 				optional: false, nullable: true,
 			},
 			clientOptions: {
-				type: 'object',
-				optional: false, nullable: false,
+				ref: 'MetaClientOptions',
 			},
 			description: {
 				type: 'string',
@@ -547,6 +589,14 @@ export const meta = {
 				type: 'string',
 				optional: false, nullable: true,
 			},
+			urlPreviewSensitiveList: {
+				type: 'array',
+				optional: false, nullable: false,
+				items: {
+					type: 'string',
+					optional: false, nullable: false,
+				},
+			},
 			federation: {
 				type: 'string',
 				enum: ['all', 'specified', 'none'],
@@ -637,6 +687,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 	) {
 		super(meta, paramDef, async () => {
 			const instance = await this.metaService.fetch(true);
+			const { apiUrl, useProxy, timeout, maxImagesPerRequest } = getSensitiveMediaDetectionConfig(this.config.sensitiveMediaDetection);
 
 			const proxy = await this.systemAccountService.fetch('proxy');
 
@@ -706,6 +757,12 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				sensitiveMediaDetectionSensitivity: instance.sensitiveMediaDetectionSensitivity,
 				setSensitiveFlagAutomatically: instance.setSensitiveFlagAutomatically,
 				enableSensitiveMediaDetectionForVideos: instance.enableSensitiveMediaDetectionForVideos,
+				sensitiveMediaDetectionApiUrl: instance.sensitiveMediaDetectionApiUrl,
+				sensitiveMediaDetectionApiKey: instance.sensitiveMediaDetectionApiKey,
+				sensitiveMediaDetectionUseProxy: instance.sensitiveMediaDetectionUseProxy,
+				sensitiveMediaDetectionTimeout: instance.sensitiveMediaDetectionTimeout,
+				sensitiveMediaDetectionMaxImagesPerRequest: instance.sensitiveMediaDetectionMaxImagesPerRequest,
+				sensitiveMediaDetectionDefaults: { apiUrl, useProxy, timeout, maxImagesPerRequest },
 				proxyAccountId: proxy.id,
 				email: instance.email,
 				smtpSecure: instance.smtpSecure,
@@ -761,6 +818,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				urlPreviewRequireContentLength: instance.urlPreviewRequireContentLength,
 				urlPreviewUserAgent: instance.urlPreviewUserAgent,
 				urlPreviewSummaryProxyUrl: instance.urlPreviewSummaryProxyUrl,
+				urlPreviewSensitiveList: instance.urlPreviewSensitiveList,
 				federation: instance.federation,
 				federationHosts: instance.federationHosts,
 				deliverSuspendedSoftware: instance.deliverSuspendedSoftware,

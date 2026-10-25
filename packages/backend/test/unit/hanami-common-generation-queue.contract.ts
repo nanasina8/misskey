@@ -2,9 +2,11 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+
 
 import { readFileSync } from 'node:fs';
-import { jest } from '@jest/globals';
+import { vi as jest } from 'vitest';
 import { Test } from '@nestjs/testing';
 import { DI } from '@/di-symbols.js';
 import { CoreModule } from '@/core/CoreModule.js';
@@ -395,15 +397,16 @@ describe('Hanami common generation queue wiring', () => {
 		expect(worker).toContain(".on('failed'");
 		expect(worker).toContain('const error = queueErrorSummary(err);');
 		expect(worker).toContain(".on('error', (err: unknown)");
-		expect(worker).toContain('Sentry.captureMessage(`Queue: HanamiGeneration:');
+		expect(worker).toContain('this.telemetryService.captureMessage(`Queue: HanamiGeneration:');
 		expect(source).toContain('this.hanamiGenerationQueueWorker.run()');
 		expect(source).toContain('this.hanamiGenerationQueueWorker.close()');
 
 		const systemStart = source.indexOf('//#region system');
 		const systemEnd = source.indexOf('//#endregion', systemStart);
 		const systemWorker = source.slice(systemStart, systemEnd);
-		expect(systemWorker).toContain(".on('failed', (job, err: unknown)");
+		// 失敗の記録は上流の runQueueJob に移った（非Errorの値も Error に正規化される）
+		expect(systemWorker).toContain('return runQueueJob(');
 		expect(systemWorker).toContain(".on('error', (err: unknown)");
-		expect(systemWorker.match(/const error = queueErrorSummary\(err\);/g)).toHaveLength(2);
+		expect(systemWorker.match(/const error = queueErrorSummary\(err\);/g)).toHaveLength(1);
 	});
 });

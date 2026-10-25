@@ -67,7 +67,7 @@ export class EmojiImageFingerprintProcessorService {
 				});
 				throw error;
 			}
-		} finally { unlock(); }
+		} finally { await unlock(); }
 	}
 
 	public async processBackfill(job: Bull.Job<EmojiImageFingerprintBackfillJobData>): Promise<void> {

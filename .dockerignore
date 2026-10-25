@@ -12,6 +12,7 @@ packages/*/*/built/
 packages/*/built-test/
 packages/*/js-built/
 packages/*/temp/
+src-js/
 db/
 .devcontainer/compose.yml
 node_modules/

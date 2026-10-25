@@ -47,7 +47,7 @@ import * as os from '@/os.js';
 import { buildConnectionLayout, cloudCamera, connectionAvatarSize, connectionDistanceBand, projectCloudPoint } from '@/utility/hanami-connection-layout.js';
 import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
-import { userPage } from '@/filters/user.js';
+import { userPage } from '@@/js/user.js';
 
 type Item = Misskey.entities.UsersHanamiAffinityResponse['items'][number];
 const props = defineProps<{ items: Item[]; self?: Misskey.entities.UserLite; mock?: boolean; distanceColors?: boolean }>();

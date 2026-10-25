@@ -462,7 +462,12 @@ export class CustomEmojiService implements OnApplicationShutdown {
 		}
 		const _emojis = emojisQuery.length > 0 ? await this.emojisRepository.find({
 			where: emojisQuery,
-			select: ['name', 'host', 'originalUrl', 'publicUrl'],
+			select: {
+				name: true,
+				host: true,
+				originalUrl: true,
+				publicUrl: true,
+			},
 		}) : [];
 		for (const emoji of _emojis) {
 			this.emojisCache.set(`${emoji.name} ${emoji.host}`, emoji);
@@ -540,7 +545,7 @@ export class CustomEmojiService implements OnApplicationShutdown {
 
 		const remoteEmojis = await this.emojisRepository.find({
 			where: remoteWhere,
-			select: ['name', 'host', 'imageFingerprint'],
+			select: { 'name': true, 'host': true, 'imageFingerprint': true },
 		});
 
 		// (name, host) → 参照文字列 と fingerprint → 参照文字列 の対応表
@@ -573,7 +578,7 @@ export class CustomEmojiService implements OnApplicationShutdown {
 				host: IsNull(),
 				imageFingerprint: In(fingerprints),
 			},
-			select: ['id', 'name', 'localOnly', 'isSensitive', 'roleIdsThatCanBeUsedThisEmojiAsReaction', 'imageFingerprint'],
+			select: { 'id': true, 'name': true, 'localOnly': true, 'isSensitive': true, 'roleIdsThatCanBeUsedThisEmojiAsReaction': true, 'imageFingerprint': true },
 		});
 
 		for (const local of localEmojis) {

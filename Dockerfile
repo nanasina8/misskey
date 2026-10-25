@@ -1,4 +1,4 @@
-# syntax = docker/dockerfile:1.4
+# syntax = docker/dockerfile:1.27
 
 ARG NODE_VERSION=24.22.1-bookworm
 
@@ -23,6 +23,7 @@ COPY --link ["packages/frontend-shared/package.json", "./packages/frontend-share
 COPY --link ["packages/frontend/package.json", "./packages/frontend/"]
 COPY --link ["packages/frontend-embed/package.json", "./packages/frontend-embed/"]
 COPY --link ["packages/frontend-builder/package.json", "./packages/frontend-builder/"]
+COPY --link ["packages/i18n/package.json", "./packages/i18n/"]
 COPY --link ["packages/icons-subsetter/package.json", "./packages/icons-subsetter/"]
 COPY --link ["packages/sw/package.json", "./packages/sw/"]
 COPY --link ["packages/misskey-js/package.json", "./packages/misskey-js/"]
@@ -39,7 +40,6 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store,sharing=locked \
 
 COPY --link . ./
 
-RUN test -d fluent-emojis/dist || (echo "fluent-emojis submodule is missing; run: git submodule update --init" >&2; exit 1)
 RUN pnpm build
 
 # build native dependencies for target platform
@@ -59,6 +59,7 @@ WORKDIR /misskey
 COPY --link ["pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json", "./"]
 COPY --link ["patches", "./patches"]
 COPY --link ["packages/backend/package.json", "./packages/backend/"]
+COPY --link ["packages/i18n/package.json", "./packages/i18n/"]
 COPY --link ["packages/misskey-js/package.json", "./packages/misskey-js/"]
 COPY --link ["packages/misskey-reversi/package.json", "./packages/misskey-reversi/"]
 COPY --link ["packages/misskey-bubble-game/package.json", "./packages/misskey-bubble-game/"]
@@ -81,6 +82,7 @@ ARG TORCH_INDEX="cpu"
 
 COPY --link ["scripts/hanami-foryou/requirements.txt", "/tmp/hanami-foryou-requirements.txt"]
 
+ENV PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV HANAMI_FORYOU_PYTHON=/opt/hanami-foryou-venv/bin/python3
 ENV HOME=/misskey
@@ -119,6 +121,7 @@ WORKDIR /misskey
 
 COPY --chown=misskey:misskey --from=target-builder /misskey/node_modules ./node_modules
 COPY --chown=misskey:misskey --from=target-builder /misskey/packages/backend/node_modules ./packages/backend/node_modules
+COPY --chown=misskey:misskey --from=target-builder /misskey/packages/i18n/node_modules ./packages/i18n/node_modules
 COPY --chown=misskey:misskey --from=target-builder /misskey/packages/misskey-js/node_modules ./packages/misskey-js/node_modules
 COPY --chown=misskey:misskey --from=target-builder /misskey/packages/misskey-reversi/node_modules ./packages/misskey-reversi/node_modules
 COPY --chown=misskey:misskey --from=target-builder /misskey/packages/misskey-bubble-game/node_modules ./packages/misskey-bubble-game/node_modules
@@ -127,6 +130,7 @@ COPY --chown=misskey:misskey --from=native-builder /misskey/packages/misskey-js/
 COPY --chown=misskey:misskey --from=native-builder /misskey/packages/misskey-reversi/built ./packages/misskey-reversi/built
 COPY --chown=misskey:misskey --from=native-builder /misskey/packages/misskey-bubble-game/built ./packages/misskey-bubble-game/built
 COPY --chown=misskey:misskey --from=native-builder /misskey/packages/backend/built ./packages/backend/built
+COPY --chown=misskey:misskey --from=native-builder /misskey/packages/i18n/built ./packages/i18n/built
 COPY --chown=misskey:misskey . ./
 
 ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so

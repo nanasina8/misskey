@@ -163,7 +163,7 @@ export class HanamiAffinityService {
 			[ids, recentLower],
 		) as { userId: string; id: string }[];
 		const latestNoteAt = new Map(latestRows.map(row => [row.userId, this.idService.parse(row.id).date]));
-		const profiles = await this.userProfilesRepository.find({ where: { userId: In(ids) }, select: ['userId', 'birthday'] });
+		const profiles = await this.userProfilesRepository.find({ where: { userId: In(ids) }, select: { 'userId': true, 'birthday': true } });
 		const birthdays = new Map(profiles.map(profile => [profile.userId, profile.birthday]));
 
 		return lapsed.map(entry => ({
@@ -216,15 +216,15 @@ export class HanamiAffinityService {
 		]);
 		const users = await this.usersRepository.find({
 			where: { id: In(ids), isSuspended: false, isDeleted: false },
-			select: ['id', 'isBot'],
+			select: { 'id': true, 'isBot': true },
 		});
 		const visible = users.filter(user => !mutings.has(user.id) && !blocking.has(user.id) && !blocked.has(user.id));
 		if (visible.length === 0) return [];
 
 		const visibleIds = visible.map(user => user.id);
 		const [outgoing, incoming] = await Promise.all([
-			this.followingsRepository.find({ where: { followerId: meId, followeeId: In(visibleIds) }, select: ['followeeId'] }),
-			this.followingsRepository.find({ where: { followeeId: meId, followerId: In(visibleIds) }, select: ['followerId'] }),
+			this.followingsRepository.find({ where: { followerId: meId, followeeId: In(visibleIds) }, select: { 'followeeId': true } }),
+			this.followingsRepository.find({ where: { followeeId: meId, followerId: In(visibleIds) }, select: { 'followerId': true } }),
 		]);
 		const followees = new Set(outgoing.map(row => row.followeeId));
 		const followers = new Set(incoming.map(row => row.followerId));

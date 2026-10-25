@@ -9,29 +9,44 @@ on:
       - chart/**
       # for permissions
       - packages/misskey-js/**
+      - .github/actions/setup-pgdog/**
+      - .github/pgdog/**
       - .github/workflows/test-backend.yml
       - .github/misskey/test.yml
   pull_request:
+    branches-ignore:
+      - master
     paths:
       - packages/backend/**
       - chart/**
       # for permissions
       - packages/misskey-js/**
+      - .github/actions/setup-pgdog/**
+      - .github/pgdog/**
       - .github/workflows/test-backend.yml
       - .github/misskey/test.yml
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   unit:
-    name: Unit tests (backend)
+    name: Unit tests (backend, ${{ matrix.database-route }})
     runs-on: ubuntu-latest
     env:
       HANAMI_SCHEMA_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:54312/test-misskey
     strategy:
+      fail-fast: false
       matrix:
+        database-route: [direct, pgdog]
         node-version-file:
           - .node-version
           - .github/min.node-version
+        include:
+          # カバレッジの収集は実行時間が伸びるので、メインのNodeバージョンでのみ行う
+          - node-version-file: .node-version
+            coverage: true
 
     services:
       postgres:
@@ -42,36 +57,36 @@ jobs:
           POSTGRES_DB: test-misskey
           POSTGRES_HOST_AUTH_METHOD: trust
       redis:
-        image: redis:7
+        image: redis:8
         ports:
           - 56312:6379
       meilisearch:
-        image: getmeili/meilisearch:latest
+        image: getmeili/meilisearch:v1.53.1
         ports:
-          - 17700:7700
+          - 57712:7700
         env:
           MEILI_NO_ANALYTICS: 'true'
           MEILI_ENV: 'development'
       hanamisearch:
         image: getmeili/meilisearch:latest
         ports:
-          - 17701:7700
+          - 57713:7700
         env:
           MEILI_NO_ANALYTICS: 'true'
           MEILI_ENV: 'development'
 
     steps:
-    - uses: actions/checkout@v4.3.0
+    - uses: actions/checkout@v7.0.1
       with:
         submodules: true
     - name: Setup pnpm
-      uses: pnpm/action-setup@v4.2.0
+      uses: pnpm/action-setup@v6.0.10
     - name: Install FFmpeg
       run: |
         sudo apt update
         sudo apt install -y ffmpeg
     - name: Use Node.js
-      uses: actions/setup-node@v4.4.0
+      uses: actions/setup-node@v7.0.0
       with:
         node-version-file: ${{ matrix.node-version-file }}
         cache: 'pnpm'
@@ -80,25 +95,37 @@ jobs:
       run: git diff --exit-code pnpm-lock.yaml
     - name: Copy Configure
       run: cp .github/misskey/test.yml .config
+    - uses: ./.github/actions/setup-pgdog
+      if: matrix.database-route == 'pgdog'
     - name: Build
       run: pnpm build
     - name: Test
-      run: pnpm --filter backend test-and-coverage
+      run: pnpm --filter backend ${{ matrix.coverage && 'test-and-coverage' || 'test' }}
     - name: Upload to Codecov
-      uses: codecov/codecov-action@v5
+      if: ${{ matrix.coverage && matrix.database-route == 'direct' }}
+      uses: codecov/codecov-action@v7
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: ./packages/backend/coverage/coverage-final.json
 
+    - name: PgDog logs
+      if: always() && matrix.database-route == 'pgdog'
+      run: docker logs misskey-test-pgdog
+
   e2e:
-    name: E2E tests (backend)
+    name: E2E tests (backend, ${{ matrix.database-route }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
+        database-route: [direct, pgdog]
         node-version-file:
           - .node-version
           - .github/min.node-version
+        include:
+          # カバレッジの収集は実行時間が伸びるので、メインのNodeバージョンでのみ行う
+          - node-version-file: .node-version
+            coverage: true
 
     services:
       postgres:
@@ -109,32 +136,32 @@ jobs:
           POSTGRES_DB: test-misskey
           POSTGRES_HOST_AUTH_METHOD: trust
       redis:
-        image: redis:7
+        image: redis:8
         ports:
           - 56312:6379
       meilisearch:
         image: getmeili/meilisearch:latest
         ports:
-          - 17700:7700
+          - 57712:7700
         env:
           MEILI_NO_ANALYTICS: 'true'
           MEILI_ENV: 'development'
       hanamisearch:
         image: getmeili/meilisearch:latest
         ports:
-          - 17701:7700
+          - 57713:7700
         env:
           MEILI_NO_ANALYTICS: 'true'
           MEILI_ENV: 'development'
 
     steps:
-      - uses: actions/checkout@v4.3.0
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: true
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4.2.0
+        uses: pnpm/action-setup@v6.0.10
       - name: Use Node.js
-        uses: actions/setup-node@v4.4.0
+        uses: actions/setup-node@v7.0.0
         with:
           node-version-file: ${{ matrix.node-version-file }}
           cache: 'pnpm'
@@ -143,21 +170,30 @@ jobs:
         run: git diff --exit-code pnpm-lock.yaml
       - name: Copy Configure
         run: cp .github/misskey/test.yml .config
+      - uses: ./.github/actions/setup-pgdog
+        if: matrix.database-route == 'pgdog'
       - name: Build
         run: pnpm build
       - name: Test
-        run: pnpm --filter backend test-and-coverage:e2e
+        run: pnpm --filter backend ${{ matrix.coverage && 'test-and-coverage:e2e' || 'test:e2e' }}
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v5
+        if: ${{ matrix.coverage && matrix.database-route == 'direct' }}
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./packages/backend/coverage/coverage-final.json
 
+      - name: PgDog logs
+        if: always() && matrix.database-route == 'pgdog'
+        run: docker logs misskey-test-pgdog
+
   migration:
-    name: Migration tests (backend)
+    name: Migration tests (backend, ${{ matrix.database-route }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
+        database-route: [direct, pgdog]
         node-version-file:
           - .node-version
           #- .github/min.node-version
@@ -172,16 +208,16 @@ jobs:
           POSTGRES_HOST_AUTH_METHOD: trust
 
     steps:
-      - uses: actions/checkout@v4.3.0
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: true
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4.2.0
+        uses: pnpm/action-setup@v6.0.10
       - name: Get current date
         id: current-date
         run: echo "today=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
       - name: Use Node.js
-        uses: actions/setup-node@v4.4.0
+        uses: actions/setup-node@v7.0.0
         with:
           node-version-file: ${{ matrix.node-version-file }}
           cache: 'pnpm'
@@ -190,9 +226,20 @@ jobs:
         run: git diff --exit-code pnpm-lock.yaml
       - name: Copy Configure
         run: cp .github/misskey/test.yml .config
+      - uses: ./.github/actions/setup-pgdog
+        if: matrix.database-route == 'pgdog'
       - name: Build
         run: pnpm build
       - name: Run migrations
         run: MISSKEY_CONFIG_YML=test.yml pnpm --filter backend migrate
       - name: Check no migrations are remaining
         run: MISSKEY_CONFIG_YML=test.yml pnpm --filter backend check-migrations
+      - name: Test online migrations (direct fixture)
+        if: matrix.database-route == 'direct'
+        run: pnpm --filter backend test:migrations
+        env:
+          MISSKEY_MIGRATION_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:54312/postgres
+
+      - name: PgDog logs
+        if: always() && matrix.database-route == 'pgdog'
+        run: docker logs misskey-test-pgdog

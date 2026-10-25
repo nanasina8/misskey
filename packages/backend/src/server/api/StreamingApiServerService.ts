@@ -8,19 +8,15 @@ import { Inject, Injectable } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import * as WebSocket from 'ws';
 import { DI } from '@/di-symbols.js';
-import type { UsersRepository, MiAccessToken, MiMeta } from '@/models/_.js';
-import { NotificationService } from '@/core/NotificationService.js';
+import type { MiAccessToken } from '@/models/_.js';
 import { bindThis } from '@/decorators.js';
-import { CacheService } from '@/core/CacheService.js';
-import { MiLocalUser } from '@/models/User.js';
+import type { MiLocalUser } from '@/models/User.js';
 import { UserService } from '@/core/UserService.js';
-import { ChannelFollowingService } from '@/core/ChannelFollowingService.js';
-import { ChannelMutingService } from '@/core/ChannelMutingService.js';
 import { AuthenticateService, AuthenticationError } from './AuthenticateService.js';
 import { ApiLoggerService } from './ApiLoggerService.js';
-import MainStreamConnection from './stream/Connection.js';
-import { ChannelsService } from './stream/ChannelsService.js';
+import MainStreamConnection, { ConnectionRequest } from './stream/Connection.js';
 import type * as http from 'node:http';
+import { ContextIdFactory, ModuleRef } from '@nestjs/core';
 
 type ActiveConnection = {
 	lastActive: number;
@@ -34,24 +30,16 @@ export class StreamingApiServerService {
 	#wss: WebSocket.WebSocketServer;
 	#connections = new Map<WebSocket.WebSocket, ActiveConnection>();
 	#cleanConnectionsIntervalId: NodeJS.Timeout | null = null;
+	#activeUsers = new Map<MiLocalUser['id'], { connections: number; intervalId: NodeJS.Timeout; }>();
 
 	constructor(
 		@Inject(DI.redisForSub)
 		private redisForSub: Redis.Redis,
 
-		@Inject(DI.usersRepository)
-		private usersRepository: UsersRepository,
-
-		private cacheService: CacheService,
+		private moduleRef: ModuleRef,
 		private authenticateService: AuthenticateService,
-		private channelsService: ChannelsService,
-		private notificationService: NotificationService,
 		private usersService: UserService,
 		private apiLoggerService: ApiLoggerService,
-		private channelFollowingService: ChannelFollowingService,
-		private channelMutingService: ChannelMutingService,
-		@Inject(DI.meta)
-		private meta: MiMeta,
 	) {
 	}
 
@@ -59,6 +47,8 @@ export class StreamingApiServerService {
 	public attach(server: http.Server): void {
 		this.#wss = new WebSocket.WebSocketServer({
 			noServer: true,
+			maxPayload: 1024 * 1024, // 1MiB
+			perMessageDeflate: false,
 		});
 
 		server.on('upgrade', async (request, socket, head) => {
@@ -123,21 +113,17 @@ export class StreamingApiServerService {
 
 			if (socket.destroyed || !socket.writable) return;
 
-			// stream.init() はDB/cacheを叩くため、ハンドシェイク後に走らせるとその間クライアントが送る
-			// `connect` フレームを listener 不在で取りこぼす。必ずupgradeより前に完了させる。
-			const stream = new MainStreamConnection(
-				this.channelsService,
-				this.notificationService,
-				this.cacheService,
-				this.channelFollowingService,
-				this.channelMutingService,
-				user, app,
-				this.meta,
-			);
+			let stream: MainStreamConnection | undefined;
 			try {
+				const contextId = ContextIdFactory.create();
+				this.moduleRef.registerRequestByContextId<ConnectionRequest>({
+					user,
+					token: app,
+				}, contextId);
+				stream = await this.moduleRef.create(MainStreamConnection, contextId);
 				await stream.init();
 			} catch (err) {
-				stream.dispose();
+				stream?.dispose();
 				this.apiLoggerService.logger.error('Failed to initialize websocket stream', { userId: user?.id, e: err });
 				this.rejectUpgrade(socket, 'HTTP/1.1 500 Internal Server Error\r\n\r\n');
 				return;
@@ -148,11 +134,12 @@ export class StreamingApiServerService {
 				return;
 			}
 
+			const initializedStream = stream;
 			let callbackInvoked = false;
 			try {
 				this.#wss.handleUpgrade(request, socket, head, (connection) => {
 					callbackInvoked = true;
-					this.#wss.emit('connection', connection, request, { stream, user, app });
+					this.#wss.emit('connection', connection, request, { stream: initializedStream, user, app });
 				});
 			} catch (err) {
 				stream.dispose();
@@ -292,6 +279,35 @@ export class StreamingApiServerService {
 					userUpdateInFlight = false;
 				});
 			}, 1000 * 60 * 5);
+		}
+	}
+
+	@bindThis
+	private onUserConnected(user: MiLocalUser): void {
+		const activeUser = this.#activeUsers.get(user.id);
+		if (activeUser) {
+			activeUser.connections++;
+			return;
+		}
+
+		this.usersService.updateLastActiveDate(user);
+		this.#activeUsers.set(user.id, {
+			connections: 1,
+			intervalId: setInterval(() => {
+				this.usersService.updateLastActiveDate(user);
+			}, 1000 * 60 * 5),
+		});
+	}
+
+	@bindThis
+	private onUserDisconnected(user: MiLocalUser): void {
+		const activeUser = this.#activeUsers.get(user.id);
+		if (!activeUser) return;
+
+		activeUser.connections--;
+		if (activeUser.connections <= 0) {
+			clearInterval(activeUser.intervalId);
+			this.#activeUsers.delete(user.id);
 		}
 	}
 

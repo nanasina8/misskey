@@ -2,10 +2,13 @@ import { DataSource } from 'typeorm';
 import { loadConfig } from './built/config.js';
 import { entities } from './built/postgres.js';
 import { isConcurrentIndexMigrationEnabled } from "./migration/js/migration-config.js";
+import { selectMigrations, validateMigrationIdentities } from './migration/online/selection.mjs';
+import { fileURLToPath } from 'node:url';
 
-// migrationはDB接続情報しか使わない。cursor署名鍵のような実行時専用の秘密を要求すると、
-// 鍵未設定のデプロイでスキーマ適用そのものができなくなる。
 const config = loadConfig({ requireRuntimeSecrets: false });
+const onlineEnabled = isConcurrentIndexMigrationEnabled();
+const migrations = await selectMigrations(fileURLToPath(new URL('./migration', import.meta.url)), onlineEnabled);
+await validateMigrationIdentities(migrations);
 
 export default new DataSource({
 	type: 'postgres',
@@ -16,6 +19,6 @@ export default new DataSource({
 	database: config.db.db,
 	extra: config.db.extra,
 	entities: entities,
-	migrations: ['migration/*.js'],
-	migrationsTransactionMode: isConcurrentIndexMigrationEnabled() ? 'each' : 'all',
+	migrations: migrations.map(migration => migration.file),
+	migrationsTransactionMode: onlineEnabled ? 'each' : 'all',
 });

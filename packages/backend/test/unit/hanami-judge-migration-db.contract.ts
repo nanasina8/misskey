@@ -5,7 +5,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { Client, type QueryResultRow } from 'pg';
-import { describe, expect, test } from '@jest/globals';
+import { describe, expect, test } from 'vitest';
 import { HanamiNoteJudge1789344000000 } from '../../migration/1789344000000-hanamiNoteJudge.js';
 import { HanamiReduceEphemeralPosts1789430400000 } from '../../migration/1789430400000-hanamiReduceEphemeralPosts.js';
 import { HanamiNoteJudgeSettingsHistory1789516800000 } from '../../migration/1789516800000-hanamiNoteJudgeSettingsHistory.js';

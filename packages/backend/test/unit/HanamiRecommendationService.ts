@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
+import { describe, expect, vi as jest, test } from 'vitest';
 import { HanamiRecommendationService } from '@/core/HanamiRecommendationService.js';
 
 // For You-only 化後の HanamiRecommendationService は周辺ユーティリティのみ（score 混合・home 注入は廃止＝§6）。

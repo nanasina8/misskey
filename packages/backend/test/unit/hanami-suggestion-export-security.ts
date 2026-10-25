@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, test } from '@jest/globals';
+import { describe, expect, test } from 'vitest';
 import { createHanamiSuggestionExportId, decodeHanamiSuggestionExportCursor, encodeHanamiSuggestionExportCursor, pseudonymizeHanamiSuggestionExportId } from '@/core/hanami/HanamiSuggestionExportCodec.js';
 
 const keys = [{ id: 'current', secret: 'k'.repeat(48) }];

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterEach, describe, expect, jest, test } from '@jest/globals';
+import { afterEach, describe, expect, vi as jest, test } from 'vitest';
 import { HanamiMetricsRollupService } from '@/core/hanami/HanamiMetricsRollupService.js';
 import { METRICS_COHORT_CTE, METRICS_NORMAL_SQL, metricsCohortSql, metricsGenerationSql, rangeParameters } from '@/core/hanami/HanamiMetricsContracts.js';
 import type { DataSource, EntityManager } from 'typeorm';

@@ -3,11 +3,11 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
+import { describe, expect, vi as jest, test } from 'vitest';
 import type { MiLocalUser } from '@/models/User.js';
 import type { HanamiTimelinePageInput, HanamiTimelinePageResult } from '@/core/hanami/HanamiTimelineContracts.js';
 
-jest.unstable_mockModule('../../src/core/hanami/HanamiTimelinePageService.js', () => ({
+jest.doMock('../../src/core/hanami/HanamiTimelinePageService.js', () => ({
 	HanamiTimelinePageService: class {},
 }));
 

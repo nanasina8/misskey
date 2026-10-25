@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: syuilo and misskey-project
+SPDX-License-Identifier: AGPL-3.0-only
+-->
+
 <template>
 <SearchMarker path="/settings/hanamode" :label="i18n.ts._hana.hanaMode" :keywords="['hana', 'mode']" icon="ti ti-flower-filled">
 	<div class="_gaps">
@@ -99,10 +104,7 @@
 						<div v-if="cluster.examples.length > 0" :class="$style.tasteClusterExamples">
 							<div v-for="example in cluster.examples.slice(0, 2)" :key="example.noteId" :class="$style.tasteClusterExample">「{{ example.snippet }}」</div>
 						</div>
-						<MkRadios :modelValue="cluster.weight" @update:modelValue="v => setTasteClusterWeight(cluster, v)">
-							<option value="normal">{{ tasteI18n.weightNormal }}</option>
-							<option value="reduce">{{ tasteI18n.weightReduce }}</option>
-							<option value="hide">{{ tasteI18n.weightHide }}</option>
+						<MkRadios :modelValue="cluster.weight" :options="[{ value: 'normal', label: tasteI18n.weightNormal }, { value: 'reduce', label: tasteI18n.weightReduce }, { value: 'hide', label: tasteI18n.weightHide }]" @update:modelValue="v => setTasteClusterWeight(cluster, v)">
 						</MkRadios>
 					</div>
 				</div>
@@ -113,10 +115,7 @@
 			<template #label>{{ exploreI18n.mediaFilter }}</template>
 			<template #description>{{ exploreI18n.mediaFilterDescription }}</template>
 
-			<MkRadios v-model="exploreMediaFilter" @update:modelValue="saveExploreMediaFilter">
-				<option value="all">{{ exploreI18n.mediaFilterAll }}</option>
-				<option value="hideSensitive">{{ exploreI18n.mediaFilterHideSensitive }}</option>
-				<option value="hideMedia">{{ exploreI18n.mediaFilterHideMedia }}</option>
+			<MkRadios v-model="exploreMediaFilter" :options="[{ value: 'all', label: exploreI18n.mediaFilterAll }, { value: 'hideSensitive', label: exploreI18n.mediaFilterHideSensitive }, { value: 'hideMedia', label: exploreI18n.mediaFilterHideMedia }]" @update:modelValue="saveExploreMediaFilter">
 			</MkRadios>
 		</FormSection>
 	</div>
@@ -134,7 +133,7 @@ import MkButton from '@/components/MkButton.vue';
 import MkFormFooter from '@/components/MkFormFooter.vue';
 import MkPreferenceContainer from '@/components/MkPreferenceContainer.vue';
 import { ensureSignin } from '@/i.js';
-import { updateCurrentAccountPartial } from '@/accounts.js';
+import { updateCurrentAccount } from '@/accounts.js';
 import { i18n } from '@/i18n.js';
 import * as os from '@/os.js';
 import { instance } from '@/instance.js';
@@ -285,7 +284,7 @@ const recommendationForm = useForm<RecommendationFormState>({
 }, async (state) => {
 	const accountPatch = buildAccountPatch(state);
 	await os.apiWithDialog('i/update', accountPatch as never);
-	updateCurrentAccountPartial(accountPatch as unknown as Parameters<typeof updateCurrentAccountPartial>[0]);
+	updateCurrentAccount(accountPatch as unknown as Parameters<typeof updateCurrentAccount>[0]);
 	suggestReload();
 });
 
@@ -359,13 +358,13 @@ function setTasteClusterWeight(cluster: HanamiTasteCluster, weight: unknown) {
 async function saveExploreMediaFilter() {
 	const patch = { exploreMediaFilter: exploreMediaFilter.value };
 	await os.apiWithDialog('i/update', patch as never);
-	updateCurrentAccountPartial(patch as unknown as Parameters<typeof updateCurrentAccountPartial>[0]);
+	updateCurrentAccount(patch as unknown as Parameters<typeof updateCurrentAccount>[0]);
 }
 
 async function saveHanamiReduceEphemeralPosts(value: boolean) {
 	const patch = { hanamiReduceEphemeralPosts: value };
 	await os.apiWithDialog('i/update', patch as never);
-	updateCurrentAccountPartial(patch as unknown as Parameters<typeof updateCurrentAccountPartial>[0]);
+	updateCurrentAccount(patch as unknown as Parameters<typeof updateCurrentAccount>[0]);
 }
 </script>
 

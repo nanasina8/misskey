@@ -2,8 +2,10 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+import { describe, test, expect } from 'vitest';
 
-import { jest } from '@jest/globals';
+
+import { vi as jest } from 'vitest';
 import { HanamiFeedLifecycleService } from '@/core/hanami/HanamiFeedLifecycleService.js';
 
 const transitionedAt = new Date('2026-08-20T12:34:56.000Z');

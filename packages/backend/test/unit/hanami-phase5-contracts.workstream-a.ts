@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, test } from '@jest/globals';
+import { describe, expect, test } from 'vitest';
 import type { MiLocalUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import type { HanamiCursorPayload } from '@/core/hanami/HanamiFeedCodecTypes.js';

@@ -4,7 +4,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { expect, test } from '@jest/globals';
+import { expect, test } from 'vitest';
 import { selectHanamiDiscoveryCandidates, type HanamiDiscoveryCandidate, type HanamiDiscoverySelectionParameters } from '@/core/hanami/HanamiDiscoverySelection.js';
 
 const parameters: HanamiDiscoverySelectionParameters = {

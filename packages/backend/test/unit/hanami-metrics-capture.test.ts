@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, jest, test } from '@jest/globals';
+import { describe, expect, vi as jest, test } from 'vitest';
 import { createHanamiMetricsCandidateRows, HanamiMetricsCaptureService, type HanamiMetricsCandidateDecision } from '@/core/hanami/HanamiMetricsCaptureService.js';
 import { HanamiPersonalFeedComputationService } from '@/core/hanami/HanamiPersonalFeedComputationService.js';
 import { HANAMI_FOR_YOU_AXES, type HanamiAxis } from '@/core/hanami/HanamiForYouInterleave.js';

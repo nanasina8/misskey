@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterEach, describe, expect, jest, test } from '@jest/globals';
+import { afterEach, describe, expect, vi as jest, test } from 'vitest';
 import { MemoryKVCache } from '@/misc/cache.js';
 import type { ReactionLocalEmojiCandidate } from '@/core/CustomEmojiService.js';
 import { CustomEmojiService } from '@/core/CustomEmojiService.js';
@@ -111,6 +111,18 @@ describe('selectReactionLocalEmoji', () => {
 			reactionAcceptance: null,
 			viewerRoleIds: new Set(),
 		})).toBeNull();
+	});
+
+	test('a local quote of a remote note chooses an emoji that may federate', () => {
+		expect(selectReactionLocalEmoji([
+			candidate({ id: '1', name: 'localonly', localOnly: true }),
+			candidate({ id: '2', name: 'federated' }),
+		], {
+			noteUserHost: null,
+			renoteUserHost: 'remote.example',
+			reactionAcceptance: null,
+			viewerRoleIds: new Set(),
+		})).toBe('federated');
 	});
 
 	test('likeOnly never maps custom reactions; likeOnlyForRemote still permits a local viewer', () => {
@@ -312,7 +324,7 @@ describe('EmojiEntityService.packDetailedAdminMany', () => {
 		]);
 
 		expect(find).toHaveBeenCalledTimes(1);
-		expect(find).toHaveBeenCalledWith(expect.objectContaining({ select: ['imageFingerprint'] }));
+		expect(find).toHaveBeenCalledWith(expect.objectContaining({ select: { imageFingerprint: true } }));
 		expect(find.mock.calls[0][0].where.imageFingerprint.value).toEqual(['pix-v1:matched', 'pix-v1:unmatched']);
 		expect(actual.map(x => x.imageFingerprintState)).toEqual(['matched', 'matched', 'unmatched', 'ready']);
 	});
@@ -430,6 +442,7 @@ describe('NoteEntityService.fetchDiffs', () => {
 		};
 		(service as any).reactionsBufferingService = { mergeReactions: (r: MiNote['reactions']) => r };
 		(service as any).meta = { enableReactionsBuffering: false };
+		(service as any).hanaReactionMuteService = { fetchMutedReactions: async () => new Map(), filterMutedReactions: async () => {} };
 		(service as any).cacheService = { findUserById: async () => ({ requireSigninToViewContents: false }) };
 		(service as any).idService = { parse: () => ({ date: new Date() }) };
 		(service as any).notesRepository = {
@@ -440,7 +453,7 @@ describe('NoteEntityService.fetchDiffs', () => {
 			]),
 		};
 
-		const actual = await service.fetchDiffs(['n1', 'n2', 'private'], { id: 'me' });
+		const actual = await service.fetchDiffs(['n1', 'n2', 'private'], 'me');
 
 		expect(getRoles).toHaveBeenCalledTimes(1);
 		expect(getCandidates).toHaveBeenCalledTimes(1);
@@ -473,6 +486,7 @@ describe('NoteEntityService.packMany', () => {
 		};
 		(service as any).reactionsBufferingService = { getMany: jest.fn(async (..._args: unknown[]) => null), mergeReactions: (r: MiNote['reactions']) => r };
 		(service as any).meta = { enableReactionsBuffering: false };
+		(service as any).hanaReactionMuteService = { fetchMutedReactions: async () => new Map(), filterMutedReactions: async () => {} };
 		(service as any).cacheService = { findUserById: async () => ({ requireSigninToViewContents: false }) };
 		(service as any).idService = { parse: () => ({ date: new Date() }) };
 		(service as any).idService = { gen: () => '0000000000000000', parse: () => ({ date: new Date(0) }) };
@@ -534,6 +548,7 @@ describe('NoteEntityService.packMany', () => {
 			mergeReactions: (r: MiNote['reactions']) => r,
 		};
 		(service as any).meta = { enableReactionsBuffering: false };
+		(service as any).hanaReactionMuteService = { fetchMutedReactions: async () => new Map(), filterMutedReactions: async () => {} };
 		(service as any).cacheService = { findUserById: async () => ({ requireSigninToViewContents: false }) };
 		(service as any).idService = { parse: () => ({ date: new Date() }) };
 		// oldId を常に将来にすることで「新しすぎてリアクション取得を省略」パスに落とす（DBアクセス回避）

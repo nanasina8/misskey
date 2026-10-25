@@ -17,16 +17,17 @@ SPDX-License-Identifier: AGPL-3.0-only
 		v-for="[reaction, count] in _reactions"
 		:key="reaction"
 		:reaction="reaction"
+		:sourceReactions="sourcesFor(reaction)"
 		:reactionEmojis="props.reactionEmojis"
 		:reactionLocalEmojis="props.reactionLocalEmojis"
 		:count="count"
-		:isInitial="initialReactions.has(reaction)"
+		:isInitial="sourcesFor(reaction).some(source => initialReactions.has(source))"
 		:noteId="props.noteId"
 		:note="props.note"
 		:myReaction="props.myReaction"
 		@reactionToggled="onMockToggleReaction"
 	/>
-	<slot v-if="hasMoreReactions" name="more"/>
+	<slot v-if="hasMoreReactions" name="more"></slot>
 </component>
 </template>
 
@@ -35,14 +36,15 @@ import * as Misskey from 'misskey-js';
 import { inject, watch, ref } from 'vue';
 import { TransitionGroup } from 'vue';
 import { isSupportedEmoji } from '@@/js/emojilist.js';
+import { getEmojiNameFromReaction, isLocalCustomEmojiReaction } from '@@/js/emoji-name.js';
 import XReaction from '@/components/MkReactionsViewer.reaction.vue';
 import { $i } from '@/i.js';
 import { prefer } from '@/preferences.js';
 import { customEmojisMap } from '@/custom-emojis.js';
 import { DI } from '@/di.js';
-import { isMuted } from '@/utility/emoji-mute.js';
 import { checkReactionPermissions } from '@/utility/check-reaction-permissions.js';
-import { getLocalEmojiReactionFor, parseRemoteCustomEmojiReaction } from '@/utility/reaction-local-emoji.js';
+import { canFoldMutedReaction, getLocalEmojiReactionFor, parseRemoteCustomEmojiReaction } from '@/utility/reaction-local-emoji.js';
+import { includesReaction, useHanaReactionGroups } from '@/utility/HanaReactionGroups.js';
 
 const props = withDefaults(defineProps<{
 	noteId: Misskey.entities.Note['id'];
@@ -67,15 +69,12 @@ const initialReactions = new Set(Object.keys(props.reactions));
 
 const _reactions = ref<[string, number][]>([]);
 const hasMoreReactions = ref(false);
-
-if (props.myReaction && !Object.keys(_reactions.value).includes(props.myReaction)) {
-	_reactions.value[props.myReaction] = props.reactions[props.myReaction];
-}
+const { reactions, myReaction, sourcesFor } = useHanaReactionGroups(() => props.reactions, () => props.myReaction, reaction => canFoldMutedReaction(reaction, props.reactionLocalEmojis));
 
 function onMockToggleReaction(emoji: string, count: number) {
 	if (!mock) return;
 
-	const i = _reactions.value.findIndex((item) => item[0] === emoji);
+	const i = _reactions.value.findIndex((item) => includesReaction(sourcesFor(item[0]), emoji) || getLocalEmojiReactionFor(item[0], props.reactionLocalEmojis) === emoji);
 	if (i < 0) return;
 
 	emit('mockUpdateMyReaction', emoji, (count - _reactions.value[i][1]));
@@ -89,17 +88,12 @@ function canReact(reaction: string) {
 		return emoji != null && props.note != null && checkReactionPermissions($i, props.note, emoji);
 	}
 	// TODO: CheckPermissions
-	return !reaction.match(/@\w/) && (customEmojisMap.has(reaction) || isSupportedEmoji(reaction));
+	return isLocalCustomEmojiReaction(reaction)
+		? customEmojisMap.has(getEmojiNameFromReaction(reaction))
+		: isSupportedEmoji(reaction);
 }
 
-watch([() => props.reactions, () => props.maxNumber, () => props.reactionLocalEmojis, () => prefer.r.mutingEmojis.value], ([newSource, maxNumber]) => {
-	const processed: Record<string, number> = {};
-	for (const [r, c] of Object.entries(newSource)) {
-		const isUnmatchedRemoteCustomEmoji = parseRemoteCustomEmojiReaction(r) != null && getLocalEmojiReactionFor(r, props.reactionLocalEmojis) == null;
-		const key = isMuted(r) && !isUnmatchedRemoteCustomEmoji ? '❤️' : r;
-		processed[key] = (processed[key] ?? 0) + c;
-	}
-	newSource = processed;
+watch([reactions, () => props.maxNumber, myReaction], ([newSource, maxNumber, myReaction]) => {
 	let newReactions: [string, number][] = [];
 	hasMoreReactions.value = Object.keys(newSource).length > maxNumber;
 
@@ -111,26 +105,32 @@ watch([() => props.reactions, () => props.maxNumber, () => props.reactionLocalEm
 		}
 	}
 
-	const newReactionsNames = newReactions.map(([x]) => x);
+	const sorted = Object.entries(newSource);
+	if (prefer.s.showAvailableReactionsFirstInNote) {
+		const canReactCache = new Map<string, boolean>();
+		for (const [emoji] of sorted) {
+			canReactCache.set(emoji, canReact(emoji));
+		}
+		sorted.sort(([emojiA, countA], [emojiB, countB]) => {
+			const canReactA = canReactCache.get(emojiA)!;
+			const canReactB = canReactCache.get(emojiB)!;
+			if (canReactA !== canReactB) return canReactA ? -1 : 1;
+			return countB - countA;
+		});
+	} else {
+		sorted.sort(([, countA], [, countB]) => countB - countA);
+	}
+
+	const newReactionsNames = new Set(newReactions.map(([x]) => x));
 	newReactions = [
 		...newReactions,
-		...Object.entries(newSource)
-			.sort(([emojiA, countA], [emojiB, countB]) => {
-				if (prefer.s.showAvailableReactionsFirstInNote) {
-					if (!canReact(emojiA) && canReact(emojiB)) return 1;
-					if (canReact(emojiA) && !canReact(emojiB)) return -1;
-					return countB - countA;
-				} else {
-					return countB - countA;
-				}
-			})
-			.filter(([y], i) => i < maxNumber && !newReactionsNames.includes(y)),
+		...sorted.filter(([y]) => !newReactionsNames.has(y)),
 	];
 
 	newReactions = newReactions.slice(0, props.maxNumber);
 
-	if (props.myReaction && !newReactions.map(([x]) => x).includes(props.myReaction)) {
-		newReactions.push([props.myReaction, newSource[props.myReaction]]);
+	if (myReaction && !newReactions.some(([x]) => x === myReaction)) {
+		newReactions.push([myReaction, newSource[myReaction]]);
 	}
 
 	_reactions.value = newReactions;

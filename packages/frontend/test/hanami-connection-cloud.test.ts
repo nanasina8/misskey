@@ -18,7 +18,7 @@ vi.mock('@/utility/hanami-connection-layout.js', async importOriginal => {
 vi.mock('@/preferences.js', () => ({ prefer: { s: { animation: false } } }));
 vi.mock('@/filters/user.js', () => ({ userPage: (user: { username: string }) => `/@${user.username}` }));
 vi.mock('@/i18n.js', async () => {
-	const { default: locales } = await import('../../../locales/index.js');
+	const { default: locales } = await import('i18n');
 	return { i18n: { ts: locales['ja-JP'], tsx: { _hana: { _affinity: { counts: ({ reply, reaction }: { reply: number; reaction: number }) => `返信 ${reply} · リアクション ${reaction}` } } } } };
 });
 const stubs = {
@@ -397,7 +397,7 @@ describe('native connection cloud', () => {
 		expect(c.view.container.querySelector('svg')).toBeNull();
 		expect(c.callbacks.size).toBe(1);
 		const dispose = vi.mocked(os.popup).mock.results.at(-1)?.value.dispose;
-		const events = vi.mocked(os.popup).mock.calls.at(-1)?.[2] as { closed: () => void };
+		const events = vi.mocked(os.popup).mock.calls.at(-1)?.[2] as unknown as { closed: () => void };
 		events.closed();
 		expect(dispose).toHaveBeenCalledOnce();
 	});

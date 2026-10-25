@@ -17,7 +17,6 @@ import { CacheService } from '@/core/CacheService.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { isUserRelated } from '@/misc/is-user-related.js';
 import { isInstanceMuted } from '@/misc/is-instance-muted.js';
-import { removeMutedUsersReactions } from '@/misc/reactions-mute.js';
 import { checkWordMute } from '@/misc/check-word-mute.js';
 import { pureRenoteSql } from '@/misc/is-renote.js';
 import type { HanamiPersonalFeedCandidate, HanamiPersonalFeedComputationInput } from '@/core/hanami/HanamiUserFeedContracts.js';
@@ -290,7 +289,6 @@ export class HanamiForYouSafetyService {
 		const packed = await this.noteEntityService.packMany(ordered, me, { withReactionAndUserPairCache: true });
 		// メディア除外は query 側(applyMediaFilter)でユーザー設定に従い適用済。CW/センシティブは既定表示（クライアントがぼかし/折りたたみ）。
 
-		await Promise.all(packed.map(note => removeMutedUsersReactions(note, userIdsWhoMeMuting)));
 		return packed.slice(0, limit);
 	}
 
@@ -393,7 +391,6 @@ export class HanamiForYouSafetyService {
 			throw new Error('Hanami persisted-entry packing returned an unexpected Note count');
 		}
 
-		await Promise.all(packed.map(note => removeMutedUsersReactions(note, userIdsWhoMeMuting)));
 		return packed.map((note, index) => ({
 			entry: orderedOccurrences[index]!.entry,
 			note,

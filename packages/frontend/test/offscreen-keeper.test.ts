@@ -18,7 +18,7 @@ const observers: {
 const cleanups: (() => void)[] = [];
 
 beforeEach(() => {
-	vi.stubGlobal('IntersectionObserver', vi.fn((callback: IntersectionObserverCallback, options: IntersectionObserverInit) => {
+	vi.stubGlobal('IntersectionObserver', vi.fn(function (callback: IntersectionObserverCallback, options: IntersectionObserverInit) {
 		const observer = { callback, options, observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn() };
 		observers.push(observer);
 		return observer;

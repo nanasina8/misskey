@@ -20,7 +20,7 @@ export class MiNoteReaction {
 	@Column(id())
 	public userId: MiUser['id'];
 
-	@ManyToOne(type => MiUser, {
+	@ManyToOne(() => MiUser, {
 		onDelete: 'CASCADE',
 	})
 	@JoinColumn()
@@ -30,7 +30,7 @@ export class MiNoteReaction {
 	@Column(id())
 	public noteId: MiNote['id'];
 
-	@ManyToOne(type => MiNote, {
+	@ManyToOne(() => MiNote, {
 		onDelete: 'CASCADE',
 	})
 	@JoinColumn()

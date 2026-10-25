@@ -2,6 +2,8 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+import { describe, it, expect } from 'vitest';
+
 
 // 埋め込み前クリーニングの純関数（v0.7 敵対レビューR2-H2/R3 の回帰テスト）。
 // - extractMfmText: ネスト MFM の装飾残骸（`<center ]] ]` 等）を出さない
