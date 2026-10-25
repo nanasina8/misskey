@@ -36,7 +36,7 @@ export default class Connection {
 	private wsConnection: WebSocket.WebSocket;
 	public subscriber: StreamEventEmitter;
 	private channels: Map<string, Channel> = new Map();
-	private subscribingNotes: Partial<Record<string, number>> = {};
+	private subscribingNotes: Map<string, number> = new Map();
 	public userProfile: MiUserProfile | null = null;
 	public following: Record<string, Pick<MiFollowing, 'withReplies'> | undefined> = {};
 	public followingChannels: Set<string> = new Set();
@@ -160,11 +160,11 @@ export default class Connection {
 		if (!isJsonObject(payload)) return;
 		if (!payload.id || typeof payload.id !== 'string') return;
 
-		const current = this.subscribingNotes[payload.id] ?? 0;
-		if (current === 0 && Object.keys(this.subscribingNotes).length >= MAX_SUBSCRIBING_NOTES_PER_CONNECTION) return;
+		const current = this.subscribingNotes.get(payload.id) ?? 0;
+		if (current === 0 && this.subscribingNotes.size >= MAX_SUBSCRIBING_NOTES_PER_CONNECTION) return;
 
 		const updated = current + 1;
-		this.subscribingNotes[payload.id] = updated;
+		this.subscribingNotes.set(payload.id, updated);
 
 		if (updated === 1) {
 			this.subscriber.on(`noteStream:${payload.id}`, this.onNoteStreamMessage);
@@ -179,13 +179,14 @@ export default class Connection {
 		if (!isJsonObject(payload)) return;
 		if (!payload.id || typeof payload.id !== 'string') return;
 
-		const current = this.subscribingNotes[payload.id];
+		const current = this.subscribingNotes.get(payload.id);
 		if (current == null) return;
 		const updated = current - 1;
-		this.subscribingNotes[payload.id] = updated;
 		if (updated <= 0) {
-			delete this.subscribingNotes[payload.id];
+			this.subscribingNotes.delete(payload.id);
 			this.subscriber.off(`noteStream:${payload.id}`, this.onNoteStreamMessage);
+		} else {
+			this.subscribingNotes.set(payload.id, updated);
 		}
 	}
 
@@ -340,8 +341,15 @@ export default class Connection {
 	@bindThis
 	public dispose() {
 		if (this.fetchIntervalId) clearInterval(this.fetchIntervalId);
+
 		for (const c of this.channels.values()) {
 			if (c.dispose) c.dispose();
 		}
+		this.channels.clear();
+
+		for (const id of this.subscribingNotes.keys()) {
+			this.subscriber.off(`noteStream:${id}`, this.onNoteStreamMessage);
+		}
+		this.subscribingNotes.clear();
 	}
 }
