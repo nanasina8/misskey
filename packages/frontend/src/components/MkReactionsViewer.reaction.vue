@@ -256,7 +256,6 @@ if (!mock) {
 			noteId: props.noteId,
 			type: props.reaction,
 			limit: 10,
-			_cacheKey_: props.count,
 		});
 
 		const users = reactions.map(x => x.user);
