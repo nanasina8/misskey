@@ -2549,7 +2549,6 @@ declare module '../api.js' {
 
     /**
      * No description provided.
-     * 
      * **Credential required**: *Yes* / **Permission**: *read:account*
      */
     request<E extends 'federation/update-remote-user', P extends Endpoints[E]['req']>(
