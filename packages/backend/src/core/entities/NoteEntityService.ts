@@ -533,6 +533,7 @@ export class NoteEntityService implements OnModuleInit {
 			withReactionAndUserPairCache: false,
 		}, options);
 
+		const meId = me ? me.id : null;
 		const note = typeof src === 'object' ? src : await this.noteLoader.load(src);
 		const host = note.userHost;
 
@@ -654,6 +655,7 @@ export class NoteEntityService implements OnModuleInit {
 
 		const bufferedReactions = this.meta.enableReactionsBuffering ? await this.reactionsBufferingService.getMany([...getAppearNoteIds(notes)]) : null;
 
+		const meId = me ? me.id : null;
 		const myReactionsMap = new Map<MiNote['id'], string | null>();
 		if (meId) {
 			const idsNeedFetchMyReaction = new Set<MiNote['id']>();
@@ -825,7 +827,6 @@ export class NoteEntityService implements OnModuleInit {
 		}
 
 		const bufferedReactionsMap = this.meta.enableReactionsBuffering ? await this.reactionsBufferingService.getMany(noteIds) : null;
-
 
 		// ビューアロールと候補を一度だけ解決して使い回す（最大100ノート分をまとめて）
 		let viewerRoleIds: Set<MiRole['id']> | null = null;

@@ -549,6 +549,8 @@ export class FileServerService {
 			};
 		}
 
+		// Internal storage keys must be single filenames, even when present in the database.
+		if (!/^[a-zA-Z0-9._-]+$/.test(key) || key === '.' || key === '..') return '404';
 		const path = this.internalStorageService.resolvePath(key);
 
 		if (isThumbnail || isWebpublic) {

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as crypto from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
-import { ZipReader } from 'slacc';
+import { extractZipToDirectory } from '@/misc/zip.js';
 import { DI } from '@/di-symbols.js';
 import type { UsersRepository, DriveFilesRepository, MiDriveFile, MiNote, NotesRepository, MiUser, DriveFoldersRepository, MiDriveFolder } from '@/models/_.js';
 import type Logger from '@/logger.js';
@@ -163,6 +163,7 @@ export class ImportNotesProcessorService {
 
 		const file = await this.driveFilesRepository.findOneBy({
 			id: job.data.fileId,
+			userId: user.id,
 		});
 		if (file == null) {
 			return;
@@ -190,13 +191,17 @@ export class ImportNotesProcessorService {
 				if (e instanceof Error || typeof e === 'string') {
 					this.logger.error(e);
 				}
+				cleanup();
 				throw e;
 			}
 
 			const outputPath = path + '/twitter';
 			try {
 				this.logger.succ(`Unzipping to ${outputPath}`);
-				ZipReader.withDestinationPath(outputPath).viaBuffer(await fsp.readFile(destPath));
+				await extractZipToDirectory(destPath, outputPath, {
+					maxBytes: this.config.import?.maxFileSize ?? this.config.maxFileSize,
+					maxEntries: 10000,
+				});
 				this.logger.succ('processing ' + outputPath + '/data/tweets.js');
 				const unprocessedTweets = this.parseTwitterFile(await fsp.readFile(outputPath + '/data/tweets.js', 'utf-8'));
 
@@ -229,13 +234,17 @@ export class ImportNotesProcessorService {
 				if (e instanceof Error || typeof e === 'string') {
 					this.logger.error(e);
 				}
+				cleanup();
 				throw e;
 			}
 
 			const outputPath = path + '/facebook';
 			try {
 				this.logger.succ(`Unzipping to ${outputPath}`);
-				ZipReader.withDestinationPath(outputPath).viaBuffer(await fsp.readFile(destPath));
+				await extractZipToDirectory(destPath, outputPath, {
+					maxBytes: this.config.import?.maxFileSize ?? this.config.maxFileSize,
+					maxEntries: 10000,
+				});
 				const postsJson = await fsp.readFile(outputPath + '/your_activity_across_facebook/posts/your_posts__check_ins__photos_and_videos_1.json', 'utf-8');
 				const posts = JSON.parse(postsJson);
 				const facebookFolder = await this.driveFoldersRepository.findOneBy({ name: 'Facebook', userId: job.data.user.id, parentId: folder?.id });
@@ -262,13 +271,17 @@ export class ImportNotesProcessorService {
 				if (e instanceof Error || typeof e === 'string') {
 					this.logger.error(e);
 				}
+				cleanup();
 				throw e;
 			}
 
 			const outputPath = path + '/unknown';
 			try {
 				this.logger.succ(`Unzipping to ${outputPath}`);
-				ZipReader.withDestinationPath(outputPath).viaBuffer(await fsp.readFile(destPath));
+				await extractZipToDirectory(destPath, outputPath, {
+					maxBytes: this.config.import?.maxFileSize ?? this.config.maxFileSize,
+					maxEntries: 10000,
+				});
 				const isInstagram = type === 'Instagram' || fs.existsSync(outputPath + '/instagram_live') || fs.existsSync(outputPath + '/instagram_ads_and_businesses');
 				const isOutbox = type === 'Mastodon' || fs.existsSync(outputPath + '/outbox.json');
 				if (isInstagram) {
@@ -320,14 +333,18 @@ export class ImportNotesProcessorService {
 				if (e instanceof Error || typeof e === 'string') {
 					this.logger.error(e);
 				}
+				cleanup();
 				throw e;
 			}
 
-			const notesJson = await fsp.readFile(path, 'utf-8');
-			const notes = JSON.parse(notesJson);
-			const processedNotes = await this.recreateChain(['id'], ['replyId'], notes, false);
-			this.queueService.createImportKeyNotesToDbJob(job.data.user, processedNotes, null);
-			cleanup();
+			try {
+				const notesJson = await fsp.readFile(path, 'utf-8');
+				const notes = JSON.parse(notesJson);
+				const processedNotes = await this.recreateChain(['id'], ['replyId'], notes, false);
+				this.queueService.createImportKeyNotesToDbJob(job.data.user, processedNotes, null);
+			} finally {
+				cleanup();
+			}
 		}
 
 		this.logger.succ('Import jobs created');

@@ -4,6 +4,7 @@
  */
 
 import { promises as fsp } from 'node:fs';
+import * as path from 'node:path';
 import { Reader, ZipReader } from '@zip.js/zip.js';
 import type { FileEntry } from '@zip.js/zip.js';
 
@@ -139,7 +140,42 @@ export class ZipFile {
 	}
 
 	public async close(): Promise<void> {
-		await this.reader.close();
-		await this.handle.close();
+		try {
+			await this.reader.close();
+		} finally {
+			await this.handle.close();
+		}
+	}
+}
+
+/** Extract into a new directory, with a shared budget for the entire archive. */
+export async function extractZipToDirectory(source: string, destination: string, options: { maxBytes: number; maxEntries: number }): Promise<void> {
+	if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes <= 0 || !Number.isSafeInteger(options.maxEntries) || options.maxEntries <= 0) {
+		throw new ZipExtractError('invalid extraction limits');
+	}
+	// Refuse preexisting directories so parent symlinks cannot redirect writes.
+	await fsp.mkdir(destination);
+	try {
+		const zip = await ZipFile.open(source);
+		try {
+			let remaining = options.maxBytes;
+			let count = 0;
+			for await (const entry of zip.entries()) {
+				if (++count > options.maxEntries) throw new ZipExtractError('too many entries');
+				const parts = entry.filename.split('/');
+				if (parts.length > 32 || parts.some(part => !part || part === '.' || part === '..' || /[\\:\x00]/.test(part))) {
+					throw new ZipExtractError('unsafe entry path');
+				}
+				const output = path.join(destination, ...parts);
+				await fsp.mkdir(path.dirname(output), { recursive: true });
+				await zip.extractToFile(entry, output, { maxBytes: remaining });
+				remaining -= (await fsp.stat(output)).size;
+			}
+		} finally {
+			await zip.close();
+		}
+	} catch (error) {
+		await fsp.rm(destination, { recursive: true, force: true });
+		throw error;
 	}
 }

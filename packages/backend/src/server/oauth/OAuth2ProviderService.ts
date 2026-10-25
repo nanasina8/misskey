@@ -377,6 +377,13 @@ export class OAuth2ProviderService {
 
 	@bindThis
 	public async createServer(fastify: FastifyInstance): Promise<void> {
+		fastify.addHook('onRequest', (request, reply, done) => {
+			// クリックジャッキング防止のためiFrameの中に入れられないようにする
+			reply.header('X-Frame-Options', 'DENY');
+			reply.header('Content-Security-Policy', "frame-ancestors 'none'");
+			done();
+		});
+
 		fastify.get('/authorize', async (request, reply) => {
 			const oauth2 = (request.raw as MiddlewareRequest).oauth2;
 			if (!oauth2) {

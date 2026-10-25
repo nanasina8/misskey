@@ -84,12 +84,11 @@ export class SigninWithPasskeyApiService {
 			return error(status ?? 500, failure ?? { id: '4e30e80c-e338-45a0-8c8f-44455efa3b76' });
 		};
 
-		{
-			// Not more than 1 API call per 250ms and not more than 100 attempts per 30min
-			// NOTE: 1 Sign-in require 2 API calls
-			const rateLimit = await this.rateLimiterService.limit({ key: 'signin-with-passkey', duration: 60 * 30 * 1000, max: 200, minInterval: 250 }, getIpHash(request.ip));
-			if (rateLimit != null) {
-				reply.code(429);
+		// Not more than 1 API call per 250ms and not more than 100 attempts per 30min
+		// NOTE: 1 Sign-in require 2 API calls
+		const rateLimit = await this.rateLimiterService.limit({ key: 'signin-with-passkey', duration: 60 * 30 * 1000, max: 200, minInterval: 250 }, getIpHash(request.ip));
+		if (rateLimit != null) {
+			reply.code(429);
 			return {
 				error: {
 					message: 'Too many failed attempts to sign in. Try again later.',
@@ -97,7 +96,6 @@ export class SigninWithPasskeyApiService {
 					id: '22d05606-fbcf-421a-a2db-b32610dcfd1b',
 				},
 			};
-			}
 		}
 
 		// Initiate Passkey Auth challenge with context
