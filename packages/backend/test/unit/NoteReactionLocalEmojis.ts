@@ -385,8 +385,8 @@ describe('NoteEntityService.resolveReactionLocalEmojis', () => {
 
 	test('populates the hint on first call so a subsequent note reuses the cached state', async () => {
 		const service = makeService();
-		const getRoles = jest.fn(async () => [{ id: 'role-1' }]);
-		const getCandidates = jest.fn(async () => new Map<string, ReactionLocalEmojiCandidate[]>([
+		const getRoles = jest.fn(async (..._args: unknown[]) => [{ id: 'role-1' }]);
+		const getCandidates = jest.fn(async (..._args: unknown[]) => new Map<string, ReactionLocalEmojiCandidate[]>([
 			['party@remote.example', [candidate({ id: '9k1', name: 'party_local' })]],
 		]));
 		(service as any).roleService = { getUserRoles: getRoles };
@@ -410,7 +410,7 @@ describe('NoteEntityService.resolveReactionLocalEmojis', () => {
 describe('NoteEntityService.fetchDiffs', () => {
 	test('resolves viewer roles and candidates once and maps each note only to its own local emoji', async () => {
 		const service = Object.create(NoteEntityService.prototype) as NoteEntityService;
-		const getRoles = jest.fn(async () => [{ id: 'role-1' }]);
+		const getRoles = jest.fn(async (..._args: unknown[]) => [{ id: 'role-1' }]);
 		const getCandidates = jest.fn(async (names: string[]) => {
 			const map = new Map<string, ReactionLocalEmojiCandidate[]>();
 			if (names.includes('party@remote.example')) {
@@ -418,7 +418,7 @@ describe('NoteEntityService.fetchDiffs', () => {
 			}
 			return map;
 		});
-		const populateEmojis = jest.fn(async () => ({}));
+		const populateEmojis = jest.fn(async (..._args: unknown[]) => ({}));
 		(service as any).roleService = { getUserRoles: getRoles };
 		(service as any).customEmojiService = {
 			getReactionLocalEmojiCandidates: getCandidates,
@@ -430,14 +430,17 @@ describe('NoteEntityService.fetchDiffs', () => {
 		};
 		(service as any).reactionsBufferingService = { mergeReactions: (r: MiNote['reactions']) => r };
 		(service as any).meta = { enableReactionsBuffering: false };
+		(service as any).cacheService = { findUserById: async () => ({ requireSigninToViewContents: false }) };
+		(service as any).idService = { parse: () => ({ date: new Date() }) };
 		(service as any).notesRepository = {
-			find: jest.fn(async () => [
-				{ id: 'n1', userHost: null, reactions: { ':party@remote.example:': 1 }, reactionAndUserPairCache: [], reactionAcceptance: null },
-				{ id: 'n2', userHost: 'remote.example', reactions: { ':ghost@remote.example:': 1 }, reactionAndUserPairCache: [], reactionAcceptance: null },
+			find: jest.fn(async (..._args: unknown[]) => [
+				{ id: 'n1', userId: 'author', visibility: 'public', userHost: null, reactions: { ':party@remote.example:': 1 }, reactionAndUserPairCache: [], reactionAcceptance: null },
+				{ id: 'n2', userId: 'remote-author', visibility: 'public', userHost: 'remote.example', reactions: { ':ghost@remote.example:': 1 }, reactionAndUserPairCache: [], reactionAcceptance: null },
+				{ id: 'private', userId: 'author', visibility: 'specified', visibleUserIds: [], userHost: null, reactions: { ':secret@remote.example:': 99 } },
 			]),
 		};
 
-		const actual = await service.fetchDiffs(['n1', 'n2'], { id: 'me' });
+		const actual = await service.fetchDiffs(['n1', 'n2', 'private'], { id: 'me' });
 
 		expect(getRoles).toHaveBeenCalledTimes(1);
 		expect(getCandidates).toHaveBeenCalledTimes(1);
@@ -455,30 +458,32 @@ describe('NoteEntityService.packMany', () => {
 	test('coalesces an unmatched remote ref across concurrently loader-resolved replies', async () => {
 		const service = Object.create(NoteEntityService.prototype) as NoteEntityService;
 		let resolveCandidates!: (value: Map<string, ReactionLocalEmojiCandidate[]>) => void;
-		const getCandidates = jest.fn(() => new Promise<Map<string, ReactionLocalEmojiCandidate[]>>(resolve => {
+		const getCandidates = jest.fn((..._args: unknown[]) => new Promise<Map<string, ReactionLocalEmojiCandidate[]>>(resolve => {
 			resolveCandidates = resolve;
 		}));
-		(service as any).roleService = { getUserRoles: jest.fn(async () => [{ id: 'role-1' }]) };
+		(service as any).roleService = { getUserRoles: jest.fn(async (..._args: unknown[]) => [{ id: 'role-1' }]) };
 		(service as any).customEmojiService = {
 			getReactionLocalEmojiCandidates: getCandidates,
-			prefetchEmojis: jest.fn(async () => {}),
-			populateEmojis: jest.fn(async () => ({})),
+			prefetchEmojis: jest.fn(async (..._args: unknown[]) => {}),
+			populateEmojis: jest.fn(async (..._args: unknown[]) => ({})),
 		};
 		(service as any).reactionService = {
 			decodeReaction: (x: string) => ({ reaction: x.slice(1, -1), name: 'ghost', host: 'remote.example' }),
 			convertLegacyReactions: (r: MiNote['reactions']) => r,
 		};
-		(service as any).reactionsBufferingService = { getMany: jest.fn(async () => null), mergeReactions: (r: MiNote['reactions']) => r };
+		(service as any).reactionsBufferingService = { getMany: jest.fn(async (..._args: unknown[]) => null), mergeReactions: (r: MiNote['reactions']) => r };
 		(service as any).meta = { enableReactionsBuffering: false };
+		(service as any).cacheService = { findUserById: async () => ({ requireSigninToViewContents: false }) };
+		(service as any).idService = { parse: () => ({ date: new Date() }) };
 		(service as any).idService = { gen: () => '0000000000000000', parse: () => ({ date: new Date(0) }) };
-		(service as any).driveFileEntityService = { packManyByIdsMap: jest.fn(async () => new Map()), packManyByIds: jest.fn(async () => []) };
+		(service as any).driveFileEntityService = { packManyByIdsMap: jest.fn(async (..._args: unknown[]) => new Map()), packManyByIds: jest.fn(async (..._args: unknown[]) => []) };
 		(service as any).userEntityService = {
 			packMany: jest.fn(async (users: string[]) => users.map(id => ({ id }))),
 			pack: jest.fn(async (user: string) => ({ id: user })),
 		};
-		(service as any).noteReactionsRepository = { findBy: jest.fn(async () => []) };
+		(service as any).noteReactionsRepository = { findBy: jest.fn(async (..._args: unknown[]) => []) };
 		Object.defineProperties(service, {
-			shouldHideNote: { value: jest.fn(async () => false), configurable: true },
+			shouldHideNote: { value: jest.fn(async (..._args: unknown[]) => false), configurable: true },
 			treatVisibility: { value: jest.fn(), configurable: true },
 		});
 
@@ -506,7 +511,7 @@ describe('NoteEntityService.packMany', () => {
 
 	test('looks up an unmatched remote ref once and shares its empty candidate hint with every pack call', async () => {
 		const service = Object.create(NoteEntityService.prototype) as NoteEntityService;
-		const getRoles = jest.fn(async () => [{ id: 'role-1' }]);
+		const getRoles = jest.fn(async (..._args: unknown[]) => [{ id: 'role-1' }]);
 		const getCandidates = jest.fn(async (names: string[]) => {
 			const map = new Map<string, ReactionLocalEmojiCandidate[]>();
 			if (names.includes('party@remote.example')) {
@@ -517,23 +522,25 @@ describe('NoteEntityService.packMany', () => {
 		(service as any).roleService = { getUserRoles: getRoles };
 		(service as any).customEmojiService = {
 			getReactionLocalEmojiCandidates: getCandidates,
-			prefetchEmojis: jest.fn(async () => {}),
-			populateEmojis: jest.fn(async () => ({})),
+			prefetchEmojis: jest.fn(async (..._args: unknown[]) => {}),
+			populateEmojis: jest.fn(async (..._args: unknown[]) => ({})),
 		};
 		(service as any).reactionService = {
 			decodeReaction: (x: string) => ({ reaction: x, name: 'party', host: 'remote.example' }),
 			convertLegacyReactions: (r: MiNote['reactions']) => r,
 		};
 		(service as any).reactionsBufferingService = {
-			getMany: jest.fn(async () => null),
+			getMany: jest.fn(async (..._args: unknown[]) => null),
 			mergeReactions: (r: MiNote['reactions']) => r,
 		};
 		(service as any).meta = { enableReactionsBuffering: false };
+		(service as any).cacheService = { findUserById: async () => ({ requireSigninToViewContents: false }) };
+		(service as any).idService = { parse: () => ({ date: new Date() }) };
 		// oldId を常に将来にすることで「新しすぎてリアクション取得を省略」パスに落とす（DBアクセス回避）
 		(service as any).idService = { gen: () => '0000000000000000' };
-		(service as any).driveFileEntityService = { packManyByIdsMap: jest.fn(async () => new Map()) };
+		(service as any).driveFileEntityService = { packManyByIdsMap: jest.fn(async (..._args: unknown[]) => new Map()) };
 		(service as any).userEntityService = { packMany: jest.fn(async (users: string[]) => users.map(id => ({ id }))) };
-		(service as any).noteReactionsRepository = { findBy: jest.fn(async () => []) };
+		(service as any).noteReactionsRepository = { findBy: jest.fn(async (..._args: unknown[]) => []) };
 
 		const packSpy = jest.fn(async (n: any, _me: { id: string }, opts: any) => ({
 			id: n.id,
@@ -558,5 +565,42 @@ describe('NoteEntityService.packMany', () => {
 		expect(getCandidates).toHaveBeenCalledWith(['ghost@remote.example']);
 		expect(packSpy).toHaveBeenCalledTimes(2);
 		expect(packed.map(note => note.reactionLocalEmojis)).toEqual([{}, {}]);
+	});
+});
+
+describe('NoteEntityService visibility security', () => {
+	function fixture(authorOverrides: Record<string, unknown> = {}) {
+		const service = Object.create(NoteEntityService.prototype) as NoteEntityService;
+		const author = { id: 'author', requireSigninToViewContents: false, makeNotesHiddenBefore: null, makeNotesFollowersOnlyBefore: null, ...authorOverrides };
+		const follows = jest.fn(async () => 0);
+		Object.assign(service, {
+			cacheService: { findUserById: async () => author },
+			idService: { parse: () => ({ date: new Date('2026-01-01T00:00:00Z') }) },
+			followingsRepository: { count: follows },
+			usersRepository: { findOneByOrFail: async () => ({ host: null }) },
+		});
+		const note = { id: 'note', userId: 'author', userHost: null, visibility: 'public', mentions: [] } as unknown as MiNote;
+		return { service, note, follows };
+	}
+
+	test('applies Hana hidden-before even to public notes while allowing their author', async () => {
+		const { service, note } = fixture({ makeNotesHiddenBefore: Date.parse('2026-02-01T00:00:00Z') / 1000 });
+		await expect(service.isVisibleForMe(note, null)).resolves.toBe(false);
+		await expect(service.isVisibleForMe(note, 'other')).resolves.toBe(false);
+		await expect(service.isVisibleForMe(note, 'author')).resolves.toBe(true);
+	});
+
+	test('applies Hana followers-only-before to previously public notes', async () => {
+		const { service, note, follows } = fixture({ makeNotesFollowersOnlyBefore: Date.parse('2026-02-01T00:00:00Z') / 1000 });
+		await expect(service.isVisibleForMe(note, null)).resolves.toBe(false);
+		await expect(service.isVisibleForMe(note, 'other')).resolves.toBe(false);
+		follows.mockResolvedValue(1);
+		await expect(service.isVisibleForMe(note, 'follower')).resolves.toBe(true);
+	});
+
+	test('requires sign-in when the author has restricted guest access', async () => {
+		const { service, note } = fixture({ requireSigninToViewContents: true });
+		await expect(service.isVisibleForMe(note, null)).resolves.toBe(false);
+		await expect(service.isVisibleForMe(note, 'other')).resolves.toBe(true);
 	});
 });

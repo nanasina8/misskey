@@ -299,6 +299,12 @@ export default class Connection {
 		const ch: Channel = channelService.create(id, this);
 		this.channels.set(ch.id, ch);
 		const valid = await ch.init(params ?? {});
+		if (this.wsConnection.readyState !== WebSocket.WebSocket.OPEN) {
+			// init may attach listeners after dispose ran while awaiting it.
+			ch.dispose?.();
+			this.channels.delete(ch.id);
+			return;
+		}
 		if (typeof valid === 'boolean' && !valid) {
 			// 初期化処理の結果、接続拒否されたので切断
 			this.disconnectChannel(id);

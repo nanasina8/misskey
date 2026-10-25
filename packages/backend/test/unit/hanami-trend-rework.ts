@@ -36,8 +36,8 @@ describe('trend token repair (2A)', () => {
 	])('%s repairs only kind tokens, preserving plain tokenize', async (text, terms, expected) => {
 		const service = new HanamiTokenizerService();
 		const tokenizer = {
-			tokenize: jest.fn(async () => terms),
-			tokenizeWithKind: jest.fn(async () => terms.map(term => ({ term, proper: true }))),
+			tokenize: jest.fn(async (..._args: unknown[]) => terms),
+			tokenizeWithKind: jest.fn(async (..._args: unknown[]) => terms.map(term => ({ term, proper: true }))),
 		};
 		Object.assign(service, { active: tokenizer });
 		expect(await service.tokenize(text)).toEqual(terms);
@@ -109,7 +109,7 @@ export function memoryRedis() {
 describe('template suppression (2D)', () => {
 	test('counts the first four authors only and bypasses short fingerprints', async () => {
 		const redis = memoryRedis();
-		const tokenizer = { tokenizeWithKind: jest.fn(async () => [{ term: '質問', proper: false }]) };
+		const tokenizer = { tokenizeWithKind: jest.fn(async (..._args: unknown[]) => [{ term: '質問', proper: false }]) };
 		const service = new HanamiTrendService(redis as never, {} as never, tokenizer as never, { query: async () => [] } as never);
 		const at = Date.parse('2026-09-25T12:00:00Z');
 		for (let i = 1; i <= 6; i++) {
@@ -184,9 +184,9 @@ describe('same-time baselines (2B)', () => {
 function personalSetup(level: HanamiAxisLevel = 'normal') {
 	const service = new HanamiForYouService(...Array.from({ length: 13 }, () => ({})) as ConstructorParameters<typeof HanamiForYouService>);
 	const affinity = jest.fn(async (_user: string, _run: string | null, candidates: ForYouCandidate[]) => candidates);
-	const taste = jest.fn(async (_user: string, candidates: ForYouCandidate[]) => candidates);
+	const taste = jest.fn(async (_user: string, candidates: ForYouCandidate[], ..._args: unknown[]) => candidates);
 	Object.assign(service, { applyAuthorAffinityRerank: affinity, applyTasteClusterOrdering: taste, hanamiTrendService: { countRecentTermAuthors: async () => new Map() } });
-	const input = { userId: 'me', generatedAt: '2026-09-25T12:00:00Z', signal: new AbortController().signal, queryRunner: { query: jest.fn(async () => []) } } as unknown as HanamiPersonalFeedGenerationContext;
+	const input = { userId: 'me', generatedAt: '2026-09-25T12:00:00Z', signal: new AbortController().signal, queryRunner: { query: jest.fn(async (..._args: unknown[]) => []) } } as unknown as HanamiPersonalFeedGenerationContext;
 	const axes = new Map<HanamiAxis, HanamiAxisLevel>([['globalPopular', 'normal'], ['trending', level]]);
 	const common: HanamiPersonalFeedCandidate[] = [
 		{ noteId: 'shared', authorId: 'author', score: 1, axis: 'globalPopular', origin: 'commonCandidate' },
@@ -226,7 +226,7 @@ describe('recent connected authors (3B)', () => {
 	test('unions following and positive relations without self and puts social terms first', async () => {
 		const setup = personalSetup();
 		setup.input.queryRunner.query = jest.fn(async (sql: string) => sql.includes('FROM following') ? [{ id: 'friend' }, { id: 'me' }] : [{ id: 'friend' }, { id: 'relation' }]) as never;
-		const count = jest.fn(async () => new Map([['social', 2]]));
+		const count = jest.fn(async (..._args: unknown[]) => new Map([['social', 2]]));
 		Object.assign(setup.service, { hanamiTrendService: { countRecentTermAuthors: count } });
 		const result = await setup.gather([
 			{ ...setup.common[1], noteId: 'ordinary', term: 'ordinary', score: 10 },

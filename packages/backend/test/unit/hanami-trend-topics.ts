@@ -191,7 +191,7 @@ describe('topic persistence and public history (U-8, U-9)', () => {
 			if (sql.includes('jsonb_to_recordset')) return JSON.parse(values[0] as string).flatMap((row: object) => [{ ...row, note_id: 'hidden' }, { ...row, note_id: 'safe' }]);
 			return rows;
 		});
-		const safety = { filterAndPackPublic: jest.fn(async () => [{ id: 'safe' }]) };
+		const safety = { filterAndPackPublic: jest.fn(async (..._args: unknown[]) => [{ id: 'safe' }]) };
 		const service = new HanamiTrendSnapshotService({ query } as never, {} as never, safety as never);
 		const result = await service.getHistory({ until: '2026-10-05T15:00:00Z', blocks: 2, me: null });
 		expect(result.blocks.map(block => [block.from, block.to])).toEqual([
@@ -273,7 +273,7 @@ async function withRuntime(cuda: boolean, operation: (dir: string) => Promise<vo
 	}
 }
 
-function topicBatch(redis: unknown, query = jest.fn(async () => [] as { id: string; text: string; replyId: string | null }[]), scores = new Map<string, number>()) {
+function topicBatch(redis: unknown, query = jest.fn(async (..._args: unknown[]) => [] as { id: string; text: string; replyId: string | null }[]), scores = new Map<string, number>()) {
 	return new HanamiForYouBatchService({ query } as never, {} as never, redis as never, { gen: () => 'id' } as never, { getGlobalNotesScoresWithCache: async () => scores } as never);
 }
 
@@ -282,9 +282,9 @@ const jobData: HanamiTrendTopicJudgeJobData = { topics: [{ topicId: 'a', text: '
 describe('GPU topic judge jobs (U-7)', () => {
 	test('without GPU creates no job and does not query or acquire a lock', async () => {
 		await withRuntime(false, async () => {
-			const get = jest.fn(async () => null);
-			const set = jest.fn(async () => 'OK');
-			const query = jest.fn(async () => []);
+			const get = jest.fn(async (..._args: unknown[]) => null);
+			const set = jest.fn(async (..._args: unknown[]) => 'OK');
+			const query = jest.fn(async (..._args: unknown[]) => []);
 			const service = topicBatch({ get, set }, query);
 			expect(await service.prepareTrendTopicJudgeJob()).toBeNull();
 			await service.runTrendTopicJudgeJob(jobData, {} as never);
@@ -293,8 +293,8 @@ describe('GPU topic judge jobs (U-7)', () => {
 	});
 	test('uses the existing note judge exclusive lock and skips when unavailable', async () => {
 		await withRuntime(true, async () => {
-			const set = jest.fn(async () => null);
-			const get = jest.fn(async () => null);
+			const set = jest.fn(async (..._args: unknown[]) => null);
+			const get = jest.fn(async (..._args: unknown[]) => null);
 			await topicBatch({ get, set }).runTrendTopicJudgeJob(jobData, {} as never);
 			expect(set).toHaveBeenCalledWith('hanami:llm:exclusive:v1', expect.any(String), 'EX', 35 * 60, 'NX');
 			expect(get).not.toHaveBeenCalled();
@@ -306,7 +306,7 @@ describe('GPU topic judge jobs (U-7)', () => {
 			const rows = topics.flatMap(topic => topic.noteIds.map(id => ({ id, text: 'あ'.repeat(150), replyId: id.endsWith('11') ? 'parent' : null })));
 			const get = async (key: string) => key === 'hanami:trend:topics:prev' ? JSON.stringify({ computedAt: now, topics }) : key === trendDailyKey('0') || key === trendSameKey('0', '1') ? '0' : null;
 			const mget = jest.fn(async (...keys: string[]) => Promise.all(keys.map(get)));
-			const service = topicBatch({ get, mget }, jest.fn(async () => rows), new Map([['0-00', 100]]));
+			const service = topicBatch({ get, mget }, jest.fn(async (..._args: unknown[]) => rows), new Map([['0-00', 100]]));
 			const result = (await service.prepareTrendTopicJudgeJob())!;
 			expect(result.topics).toHaveLength(10);
 			expect(result.dailyIds).toHaveLength(9);
@@ -340,7 +340,7 @@ describe('GPU topic judge jobs (U-7)', () => {
 				};
 				return pipe;
 			};
-			const release = jest.fn(async () => 1);
+			const release = jest.fn(async (..._args: unknown[]) => 1);
 			const logger = { info: jest.fn(), warn: jest.fn() };
 			const data = { ...jobData, topics: [...jobData.topics, { topicId: 'c', text: 'C' }], pairs: [...jobData.pairs, { a: 'a', b: 'c' }] };
 			await topicBatch({ mget: async (...keys: string[]) => keys.map(() => null), set, multi, eval: release }).runTrendTopicJudgeJob(data, logger as never);
@@ -359,8 +359,8 @@ describe('GPU topic judge jobs (U-7)', () => {
 		});
 	});
 	test('dispatches the new job after publication and runs it through the common generation processor', async () => {
-		const queue = { enqueueHanamiTrendTopicJudge: jest.fn(async () => undefined), enqueueHanamiNoteJudge: jest.fn() };
-		const batch = { prepareTrendTopicJudgeJob: async () => jobData, prepareNoteJudgeJobs: async () => [], runTrendTopicJudgeJob: jest.fn(async () => undefined) };
+		const queue = { enqueueHanamiTrendTopicJudge: jest.fn(async (..._args: unknown[]) => undefined), enqueueHanamiNoteJudge: jest.fn() };
+		const batch = { prepareTrendTopicJudgeJob: async () => jobData, prepareNoteJudgeJobs: async () => [], runTrendTopicJudgeJob: jest.fn(async (..._args: unknown[]) => undefined) };
 		const logger = { info: jest.fn(), succ: jest.fn() };
 		const processor = new HanamiCommonGenerationProcessorService({ runCommonGeneration: async () => ({ kind: 'published', generationId: 'g' }) } as never, queue as never, { logger: { createSubLogger: () => logger } } as never, batch as never);
 		const job = { name: 'hanamiCommonGeneration', data: { generationId: 'g' }, log: async () => undefined, updateProgress: async () => undefined };
@@ -370,7 +370,7 @@ describe('GPU topic judge jobs (U-7)', () => {
 		expect(batch.runTrendTopicJudgeJob).toHaveBeenCalledWith(jobData, logger);
 	});
 	test('uses the same durable queue and note judge options', async () => {
-		const queue = { add: jest.fn(async () => undefined) };
+		const queue = { add: jest.fn(async (..._args: unknown[]) => undefined) };
 		const service = Object.create(QueueService.prototype) as QueueService;
 		Object.defineProperty(service, 'getHanamiGenerationQueue', { value: () => queue });
 		await service.enqueueHanamiTrendTopicJudge(jobData);
@@ -401,7 +401,7 @@ describe('saved topic posts (U-24, U-25, U-27)', () => {
 		const expected = [...new Set(rawIds)].slice(0, 20);
 		const query = jest.fn(async (_sql: string, _values: unknown[]) => rawIds.map(note_id => ({ note_id })));
 		const me = { id: 'viewer' };
-		const pack = jest.fn(async (ids: string[]) => ids.filter(id => id !== 'new-first' && id !== 'older-5').reverse().map(id => ({ id })));
+		const pack = jest.fn(async (ids: string[], ..._args: unknown[]) => ids.filter(id => id !== 'new-first' && id !== 'older-5').reverse().map(id => ({ id })));
 		const service = new HanamiTrendSnapshotService({ query } as never, {} as never, { filterAndPackPublic: pack } as never);
 		const endpoint = new TopicNotesEndpoint(service);
 		expect(topicNotesMeta).toMatchObject({ requireCredential: false, allowGet: true });
@@ -420,7 +420,7 @@ describe('saved topic posts (U-24, U-25, U-27)', () => {
 	});
 	test('U-25: legacy term lookup only matches null topic IDs and includes the exclusive end month partition', async () => {
 		const query = jest.fn(async (_sql: string, _values: unknown[]) => []);
-		const pack = jest.fn(async () => []);
+		const pack = jest.fn(async (..._args: unknown[]) => []);
 		const service = new HanamiTrendSnapshotService({ query } as never, {} as never, { filterAndPackPublic: pack } as never);
 		const endpoint = new TopicNotesEndpoint(service);
 		const params = { from: '2026-10-31T18:00:00Z', to: '2026-11-01T00:00:00Z', term: 'legacy' };
@@ -440,7 +440,7 @@ describe('saved topic posts (U-24, U-25, U-27)', () => {
 		{ topicId: 't', to: '2026-11-01T03:00:00.001Z' },
 		{ topicId: 't', from: undefined }, { topicId: 't', to: undefined },
 	])('U-25: invalid request %j returns INVALID_PARAM before querying', async invalid => {
-		const getTopicNotes = jest.fn(async () => ({ notes: [] }));
+		const getTopicNotes = jest.fn(async (..._args: unknown[]) => ({ notes: [] }));
 		const endpoint = new TopicNotesEndpoint({ getTopicNotes } as never);
 		await expect(endpoint.exec({ from, to, ...invalid }, null, null)).rejects.toMatchObject({ code: 'INVALID_PARAM' });
 		expect(getTopicNotes).not.toHaveBeenCalled();
@@ -448,7 +448,7 @@ describe('saved topic posts (U-24, U-25, U-27)', () => {
 	test('U-27: the existing trend response still exposes the first visible representative only', async () => {
 		const ids = Array.from({ length: 20 }, (_, i) => `saved-${i}`);
 		const row = { trend_entry_id: 'e', snapshot_id: 's', snapshot_generated_at: new Date(now), snapshot_ordinal: '1', rank: '0', term: 'topic', topic_id: 'topic', related_terms: [], started_at: null, score: 2, distinct_authors: 20, representative_note_ids: ids };
-		const pack = jest.fn(async () => [{ id: 'saved-19', user: { id: 'u19' } }, { id: 'saved-1', user: { id: 'u1' } }]);
+		const pack = jest.fn(async (..._args: unknown[]) => [{ id: 'saved-19', user: { id: 'u19' } }, { id: 'saved-1', user: { id: 'u1' } }]);
 		const service = new HanamiTrendSnapshotService({ query: async (sql: string) => sql.includes('WITH points') ? [] : [row] } as never, {} as never, { filterAndPackPublic: pack } as never);
 		const response = await new TrendsEndpoint(service).exec({}, null, null);
 		expect(response.items).toHaveLength(1);
@@ -513,8 +513,8 @@ describe('canonical trend date-time boundaries (U-30, U-31)', () => {
 		'2026-10-31T18:00:00+15:60', 'not-a-date', '2026-02-29T18:00:00Z',
 		'0000-01-01T00:00:00Z', '0001-01-01T00:00:00+15:59', '9999-12-31T23:59:59-15:59',
 	])('U-31: rejects unnormalizable or PostgreSQL-incompatible date %s before either API reaches SQL', async invalid => {
-		const getTopicNotes = jest.fn(async () => ({ notes: [] }));
-		const getHistory = jest.fn(async () => ({ blocks: [], nextUntil: null }));
+		const getTopicNotes = jest.fn(async (..._args: unknown[]) => ({ notes: [] }));
+		const getHistory = jest.fn(async (..._args: unknown[]) => ({ blocks: [], nextUntil: null }));
 		const topicEndpoint = new TopicNotesEndpoint({ getTopicNotes } as never);
 		await expect(topicEndpoint.exec({ from: invalid, to: '2026-10-31T19:00:00Z', topicId: 'topic' }, null, null)).rejects.toMatchObject({ code: 'INVALID_PARAM', kind: 'client' });
 		await expect(topicEndpoint.exec({ from: '2026-10-31T18:00:00Z', to: invalid, topicId: 'topic' }, null, null)).rejects.toMatchObject({ code: 'INVALID_PARAM', kind: 'client' });
@@ -524,8 +524,8 @@ describe('canonical trend date-time boundaries (U-30, U-31)', () => {
 	});
 	test.each(['+16:00', '-16:00'])('U-31: both APIs return an explicit HTTP 400 for offset %s', async offset => {
 		const invalid = `2026-10-31T18:00:00${offset}`;
-		const getTopicNotes = jest.fn(async () => ({ notes: [] }));
-		const getHistory = jest.fn(async () => ({ blocks: [], nextUntil: null }));
+		const getTopicNotes = jest.fn(async (..._args: unknown[]) => ({ notes: [] }));
+		const getHistory = jest.fn(async (..._args: unknown[]) => ({ blocks: [], nextUntil: null }));
 		await expect(new TopicNotesEndpoint({ getTopicNotes } as never).exec({ from: invalid, to: '2026-10-31T19:00:00Z', topicId: 'topic' }, null, null)).rejects.toMatchObject({ code: 'INVALID_PARAM', httpStatusCode: 400 });
 		await expect(new HistoryEndpoint({ getHistory } as never).exec({ until: invalid }, null, null)).rejects.toMatchObject({ code: 'INVALID_PARAM', httpStatusCode: 400 });
 		expect(getTopicNotes).not.toHaveBeenCalled();
@@ -546,8 +546,8 @@ describe('supported trend API date range (U-32)', () => {
 		['2099-12-31T23:59:00-00:01', '2100-01-01T00:00:00-00:01', '2099-12-31T23:59:00-00:01'],
 		['2099-12-31T23:59:59.999Z', '2100-01-01T00:00:00.000500Z', '2100-01-01T00:00:00.000500Z'],
 	])('U-32: rejects bounds outside 2000–2100 after normalization before querying (%s, %s)', async (from, to, until) => {
-		const query = jest.fn(async () => []);
-		const pack = jest.fn(async () => []);
+		const query = jest.fn(async (..._args: unknown[]) => []);
+		const pack = jest.fn(async (..._args: unknown[]) => []);
 		const service = new HanamiTrendSnapshotService({ query } as never, {} as never, { filterAndPackPublic: pack } as never);
 		await expect(new TopicNotesEndpoint(service).exec({ from, to, topicId: 'topic' }, null, null)).rejects.toMatchObject({ code: 'INVALID_PARAM', httpStatusCode: 400 });
 		await expect(new HistoryEndpoint(service).exec({ until }, null, null)).rejects.toMatchObject({ code: 'INVALID_PARAM', httpStatusCode: 400 });

@@ -1,4 +1,4 @@
-import IPCIDR from 'ip-cidr';
+import ipaddr from 'ipaddr.js';
 import { Redis } from 'ioredis';
 
 const TESTER_IP_ADDRESS = '172.20.1.1';
@@ -7,8 +7,8 @@ const TESTER_IP_ADDRESS = '172.20.1.1';
  * This should be same as {@link file://./../src/misc/get-ip-hash.ts}.
  */
 function getIpHash(ip: string) {
-	const prefix = IPCIDR.createAddress(ip).mask(64);
-	return `ip-${BigInt('0b' + prefix).toString(36)}`;
+	const prefix = ipaddr.process(ip).toByteArray().slice(0, 8);
+	return 'ip-' + BigInt('0x' + prefix.map(byte => byte.toString(16).padStart(2, '0')).join('')).toString(36);
 }
 
 /**

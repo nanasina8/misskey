@@ -26,7 +26,7 @@ import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { secureRndstr } from '@/misc/secure-rndstr.js';
 import type { TestingModule } from '@nestjs/testing';
-import type { MockFunctionMetadata } from 'jest-mock';
+import type { MockMetadata } from 'jest-mock';
 
 const moduleMocker = new ModuleMocker(global);
 
@@ -84,7 +84,7 @@ describe('AnnouncementService', () => {
 						log: jest.fn(),
 					};
 				} else if (typeof token === 'function') {
-					const mockMetadata = moduleMocker.getMetadata(token) as MockFunctionMetadata<any, any>;
+					const mockMetadata = moduleMocker.getMetadata(token) as MockMetadata<new (...args: any[]) => any>;
 					const Mock = moduleMocker.generateFromMetadata(mockMetadata);
 					return new Mock();
 				}
@@ -110,6 +110,17 @@ describe('AnnouncementService', () => {
 		]);
 
 		await app.close();
+	});
+
+	describe('getAnnouncement', () => {
+		test('only the intended recipient can read a personal announcement', async () => {
+			const recipient = await createUser();
+			const other = await createUser();
+			const announcement = await createAnnouncement({ userId: recipient.id });
+			await expect(announcementService.getAnnouncement(announcement.id, null)).rejects.toThrow();
+			await expect(announcementService.getAnnouncement(announcement.id, other)).rejects.toThrow();
+			await expect(announcementService.getAnnouncement(announcement.id, recipient)).resolves.toMatchObject({ id: announcement.id });
+		});
 	});
 
 	describe('getUnreadAnnouncements', () => {

@@ -2,10 +2,14 @@ name: Publish Docker image
 
 on:
   push:
-    branches-ignore:
-      - dependabot/**
+    branches:
+      - hanami
+      - hanami-base
 
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   REGISTRY_IMAGE: kanarikanaru/hanamisskey

@@ -18,8 +18,8 @@ type PersonalJudgeInternals = {
 	applyJudgeSelection(context: HanamiPersonalFeedGenerationContext, candidates: readonly HanamiPersonalFeedCandidate[], judgeContext: { settings: ReturnType<typeof createDefaultHanamiNoteJudgeSettings>; reduceEphemeralPosts: boolean }): Promise<readonly HanamiPersonalFeedCandidate[]>;
 };
 
-function batchService(query: unknown, redis: unknown = { set: jest.fn(async () => 'OK'), eval: jest.fn(async () => 1) }, idService: Pick<IdService, 'gen'> = { gen: () => 'run-id' }): HanamiForYouBatchService {
-	return new HanamiForYouBatchService({ query } as never, { insert: jest.fn(async () => undefined), update: jest.fn(async () => undefined) } as never, redis as never, idService as never, {} as never);
+function batchService(query: unknown, redis: unknown = { set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: jest.fn(async (..._args: unknown[]) => 1) }, idService: Pick<IdService, 'gen'> = { gen: () => 'run-id' }): HanamiForYouBatchService {
+	return new HanamiForYouBatchService({ query } as never, { insert: jest.fn(async (..._args: unknown[]) => undefined), update: jest.fn(async (..._args: unknown[]) => undefined) } as never, redis as never, idService as never, {} as never);
 }
 
 // これらのテストは偽の Python スクリプトで実行経路を検証する。GPU ゲート（probe）は
@@ -150,8 +150,8 @@ describe('Hanami note judge integration', () => {
 	test('salvages incrementally flushed judgements when the runtime is killed mid-batch', async () => {
 		const settings = createDefaultHanamiNoteJudgeSettings();
 		const modelRuns = {
-			insert: jest.fn(async () => undefined),
-			update: jest.fn(async () => undefined),
+			insert: jest.fn(async (..._args: unknown[]) => undefined),
+			update: jest.fn(async (..._args: unknown[]) => undefined),
 		};
 		const query = jest.fn(async (sql: string) => {
 			if (sql.includes('SELECT "hanamiNoteJudgeSettings"')) return [{ settings }];
@@ -164,7 +164,7 @@ describe('Hanami note judge integration', () => {
 		const service = new HanamiForYouBatchService(
 			{ query } as never,
 			modelRuns as never,
-			{ set: jest.fn(async () => 'OK'), eval: jest.fn(async () => 1) } as never,
+			{ set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: jest.fn(async (..._args: unknown[]) => 1) } as never,
 			{ gen: () => 'run-id' } as never,
 			{} as never,
 		);
@@ -194,8 +194,8 @@ describe('Hanami note judge integration', () => {
 	test('marks an all-error Python response failed without judging its pending notes', async () => {
 		const settings = createDefaultHanamiNoteJudgeSettings();
 		const modelRuns = {
-			insert: jest.fn(async () => undefined),
-			update: jest.fn(async () => undefined),
+			insert: jest.fn(async (..._args: unknown[]) => undefined),
+			update: jest.fn(async (..._args: unknown[]) => undefined),
 		};
 		const query = jest.fn(async (sql: string) => {
 			if (sql.includes('SELECT "hanamiNoteJudgeSettings"')) return [{ settings }];
@@ -205,7 +205,7 @@ describe('Hanami note judge integration', () => {
 		const service = new HanamiForYouBatchService(
 			{ query } as never,
 			modelRuns as never,
-			{ set: jest.fn(async () => 'OK'), eval: jest.fn(async () => 1) } as never,
+			{ set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: jest.fn(async (..._args: unknown[]) => 1) } as never,
 			{ gen: () => 'run-id' } as never,
 			{} as never,
 		);
@@ -257,7 +257,7 @@ describe('Hanami note judge integration', () => {
 	});
 
 	test('cleans only judgements older than fourteen days', async () => {
-		const query = jest.fn(async () => [[], 1]);
+		const query = jest.fn(async (..._args: unknown[]) => [[], 1]);
 		await expect(batchService(query).cleanupNoteJudgements()).resolves.toBe(1);
 		expect(query).toHaveBeenCalledWith(expect.stringContaining('"judgedAt" < clock_timestamp() - INTERVAL \'14 days\''));
 		// The strict less-than predicate preserves rows exactly at the boundary and all newer rows.
@@ -345,8 +345,8 @@ describe('Hanami note judge integration', () => {
 			}
 			return [];
 		});
-		const insert = jest.fn(async () => undefined);
-		const service = new HanamiForYouBatchService({ query } as never, { insert, update: jest.fn() } as never, { set: jest.fn(async () => 'OK'), eval: jest.fn(async () => 1) } as never, { gen: () => sinceId } as never, {} as never);
+		const insert = jest.fn(async (..._args: unknown[]) => undefined);
+		const service = new HanamiForYouBatchService({ query } as never, { insert, update: jest.fn() } as never, { set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: jest.fn(async (..._args: unknown[]) => 1) } as never, { gen: () => sinceId } as never, {} as never);
 
 		await expect(service.cleanupNoteJudgements()).resolves.toBe(1);
 		await expect(service.reconcileNoteJudgeJobs()).resolves.toEqual([]);
@@ -373,8 +373,8 @@ describe('Hanami note judge integration', () => {
 			if (sql.includes('FROM "hanami_common_candidate"')) return [];
 			return [];
 		});
-		const insert = jest.fn(async () => undefined);
-		const service = new HanamiForYouBatchService({ query } as never, { insert, update: jest.fn() } as never, { set: jest.fn(async () => null), eval: jest.fn() } as never, { gen: () => 'run-id' } as never, {} as never);
+		const insert = jest.fn(async (..._args: unknown[]) => undefined);
+		const service = new HanamiForYouBatchService({ query } as never, { insert, update: jest.fn() } as never, { set: jest.fn(async (..._args: unknown[]) => null), eval: jest.fn() } as never, { gen: () => 'run-id' } as never, {} as never);
 		await expect(service.runNoteJudgeJob({ noteIds: ['locked-note'], promptVersion: settings.promptVersion }, { warn: jest.fn() } as never)).rejects.toBeInstanceOf(HanamiNoteJudgeLockContentionError);
 		expect(insert).not.toHaveBeenCalled();
 		await service.reconcileNoteJudgeJobs();
@@ -386,11 +386,11 @@ describe('Hanami note judge integration', () => {
 	test('releases the shared lock when createRun rejects', async () => {
 		const settings = createDefaultHanamiNoteJudgeSettings();
 		const query = jest.fn(async (sql: string) => sql.includes('SELECT "hanamiNoteJudgeSettings"') ? [{ settings }] : []);
-		const evalRedis = jest.fn(async () => 1);
+		const evalRedis = jest.fn(async (..._args: unknown[]) => 1);
 		const service = new HanamiForYouBatchService(
 			{ query } as never,
-			{ insert: jest.fn(async () => { throw new Error('createRun failed'); }), update: jest.fn() } as never,
-			{ set: jest.fn(async () => 'OK'), eval: evalRedis } as never,
+			{ insert: jest.fn(async (..._args: unknown[]) => { throw new Error('createRun failed'); }), update: jest.fn() } as never,
+			{ set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: evalRedis } as never,
 			{ gen: () => 'run-id' } as never,
 			{} as never,
 		);
@@ -400,7 +400,7 @@ describe('Hanami note judge integration', () => {
 	});
 
 	test('filters judged ephemeral popular/trending candidates outside direct follows while retaining unrelated axes', async () => {
-		const queryRunner = { query: jest.fn(async () => [{ settings: createDefaultHanamiNoteJudgeSettings() }]) };
+		const queryRunner = { query: jest.fn(async (..._args: unknown[]) => [{ settings: createDefaultHanamiNoteJudgeSettings() }]) };
 		const service = new HanamiPersonalFeedComputationService({} as never, {} as never, {} as never, {} as never, {} as never);
 		const context = { userId: 'viewer', queryRunner } as unknown as HanamiPersonalFeedGenerationContext;
 		const candidate = (noteId: string, axis: string, relationshipClass: 'directFollow' | 'unknown'): HanamiPersonalFeedCandidate => ({
@@ -426,7 +426,7 @@ describe('Hanami note judge integration', () => {
 	});
 
 	test('viewer OFF retains ephemeral exploration and popular/trending while keeping exploration interest gating', async () => {
-		const queryRunner = { query: jest.fn(async () => [{ settings: createDefaultHanamiNoteJudgeSettings() }]) };
+		const queryRunner = { query: jest.fn(async (..._args: unknown[]) => [{ settings: createDefaultHanamiNoteJudgeSettings() }]) };
 		const service = new HanamiPersonalFeedComputationService({} as never, {} as never, {} as never, {} as never, {} as never);
 		const context = { userId: 'viewer', queryRunner } as unknown as HanamiPersonalFeedGenerationContext;
 		const candidate = (noteId: string, axis: string, interest: number): HanamiPersonalFeedCandidate => ({
@@ -443,7 +443,7 @@ describe('Hanami note judge integration', () => {
 
 	test('keeps rule exclusions and image posts on popular while excluding text-only LLM ephemerals', async () => {
 		const service = new HanamiPersonalFeedComputationService({} as never, {} as never, {} as never, {} as never, {} as never);
-		const context = { userId: 'viewer', queryRunner: { query: jest.fn(async () => [{ settings: createDefaultHanamiNoteJudgeSettings() }]) } } as unknown as HanamiPersonalFeedGenerationContext;
+		const context = { userId: 'viewer', queryRunner: { query: jest.fn(async (..._args: unknown[]) => [{ settings: createDefaultHanamiNoteJudgeSettings() }]) } } as unknown as HanamiPersonalFeedGenerationContext;
 		const candidate = (noteId: string, reason: 'llm' | 'emptyText', hasFiles: boolean): HanamiPersonalFeedCandidate => ({
 			noteId, authorId: `author-${noteId}`, axis: 'globalPopular', origin: 'commonCandidate', score: 1,
 			relationshipClass: 'unknown', hanamiJudge: { ephemeralScore: 1, interest: 4 },
@@ -483,9 +483,9 @@ describe('Hanami note judge GPU gate', () => {
 				if (sql.includes('FROM note n')) return [{ id: 'text-1', text: 'SQLite の運用メモです。', hasFiles: false, isBot: false, isReply: false }];
 				return [];
 			});
-			const insert = jest.fn(async () => undefined);
-			const update = jest.fn(async () => undefined);
-			const service = new HanamiForYouBatchService({ query } as never, { insert, update } as never, { set: jest.fn(async () => 'OK'), eval: jest.fn(async () => 1) } as never, { gen: () => 'run-id' } as never, {} as never);
+			const insert = jest.fn(async (..._args: unknown[]) => undefined);
+			const update = jest.fn(async (..._args: unknown[]) => undefined);
+			const service = new HanamiForYouBatchService({ query } as never, { insert, update } as never, { set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: jest.fn(async (..._args: unknown[]) => 1) } as never, { gen: () => 'run-id' } as never, {} as never);
 
 			await expect(service.prepareNoteJudgeJobs('generation-1')).resolves.toEqual([]);
 			const calls = query.mock.calls as unknown as Array<[string, unknown[] | undefined]>;

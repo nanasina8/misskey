@@ -13,21 +13,21 @@ function createService() {
 		zadd: jest.fn(),
 		zremrangebyscore: jest.fn(),
 		expire: jest.fn(),
-		exec: jest.fn(async () => [[null, 1]]),
+		exec: jest.fn(async (..._args: unknown[]) => [[null, 1]]),
 	};
 	transaction.zadd.mockReturnValue(transaction);
 	transaction.zremrangebyscore.mockReturnValue(transaction);
 	transaction.expire.mockReturnValue(transaction);
 	const redis = {
 		zrangebyscore: jest.fn(async (key: string) => key.includes(':served:') ? ['served-1'] : ['seen-1']),
-		multi: jest.fn(() => transaction),
+		multi: jest.fn((..._args: unknown[]) => transaction),
 	};
 	const trend = {
-		getTrendingTerms: jest.fn(async () => [{ term: 'term', score: 3, distinctAuthors: 2, ignored: true }]),
+		getTrendingTerms: jest.fn(async (..._args: unknown[]) => [{ term: 'term', score: 3, distinctAuthors: 2, ignored: true }]),
 	};
 	const userRecommendation = {
-		getFollowCandidates: jest.fn(async () => [{ userId: 'user-2', reason: 'mutual', mutualCount: 4, ignored: true }]),
-		recordShown: jest.fn(async () => undefined),
+		getFollowCandidates: jest.fn(async (..._args: unknown[]) => [{ userId: 'user-2', reason: 'mutual', mutualCount: 4, ignored: true }]),
+		recordShown: jest.fn(async (..._args: unknown[]) => undefined),
 	};
 	const service = new HanamiRecommendationService(
 		redis as never,

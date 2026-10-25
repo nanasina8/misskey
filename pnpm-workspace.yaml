@@ -34,3 +34,8 @@ minimumReleaseAge: 10080 # delay 7days to mitigate supply-chain attack
 minimumReleaseAgeExclude:
   - '@syuilo/aiscript'
   - '@fastify/express'
+  - 'pnpm@10.34.8' # security update reviewed 2026-10-25
+  - 'nodemailer@10.1.4' # security update reviewed 2026-10-25
+  - 'body-parser@1.20.9 || 2.4.0' # security update reviewed 2026-10-25
+  - 'happy-dom@21.0.4' # security update reviewed 2026-10-25
+  - 'multer@2.5.0' # security update reviewed 2026-10-25

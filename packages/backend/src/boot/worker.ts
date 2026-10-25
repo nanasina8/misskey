@@ -29,6 +29,8 @@ export async function workerMain() {
 			profilesSampleRate: 1.0,
 
 			maxBreadcrumbs: 0,
+			// Do not send tracing identifiers to arbitrary federation / download targets.
+			tracePropagationTargets: [],
 
 			...config.sentryForBackend.options,
 		});

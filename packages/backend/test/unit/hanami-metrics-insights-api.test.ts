@@ -86,7 +86,7 @@ describe('HM-IMPLEMENT P3 strict request and response boundary', () => {
 		const expected = endpoint.method === 'opportunities' ? range
 			: endpoint.method === 'whatIf' ? { range, axis: 'exploration', thresholds: {} }
 			: { range, dimension: undefined, key: undefined };
-		expect(service[endpoint.method]).toHaveBeenCalledWith(expected);
+		expect(service[endpoint.method].mock.calls).toEqual([[expected]]);
 		const validate = ajv.compile(endpoint.module.meta.res);
 		expect(validate(responses[endpoint.method])).toBe(true);
 		expect(endpoint.module.meta.res).toBe(endpoint.schema);
@@ -140,7 +140,7 @@ describe('HM-IMPLEMENT P3 strict request and response boundary', () => {
 
 	test('forwards a paired notes filter and optional/default range unchanged', async () => {
 		const service = insightsMock();
-		const params = { range: { days: 7 }, dimension: 'contentType', key: '2' };
+		const params = { range: { days: 7 }, dimension: 'contentType', key: '2' } as const;
 		await new notes.default(service as unknown as InsightsService).exec(params, admin, null);
 		expect(service.notes).toHaveBeenCalledWith(params);
 		await new opportunities.default(service as unknown as InsightsService).exec({}, admin, null);

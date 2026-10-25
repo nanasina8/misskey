@@ -17,9 +17,9 @@ const peers = Array.from({ length: 100 }, (_, index) => ({ userId: `user${index}
 const entries = aggregateAffinity(me.id, peers.map(peer => ({ id: peer.userId, userId: peer.userId, kind: 'reply', direction: 'out', createdAt: now })), peers, now);
 
 function fixture() {
-	const computeTop = jest.fn(async () => entries);
-	const getComparisonSnapshot = jest.fn(async () => null);
-	const packMany = jest.fn(async (ids: string[]) => ids.map(id => ({ id, username: id })));
+	const computeTop = jest.fn(async (..._args: unknown[]) => entries);
+	const getComparisonSnapshot = jest.fn(async (..._args: unknown[]) => null);
+	const packMany = jest.fn(async (ids: string[], ..._args: unknown[]) => ids.map(id => ({ id, username: id })));
 	return {
 		endpoint: new AffinityEndpoint({ packMany } as never, { computeTop, getComparisonSnapshot } as never),
 		computeTop,

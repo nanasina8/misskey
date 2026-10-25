@@ -21,9 +21,9 @@ class MockBullNoteJudgeLifecycle {
 		name: 'hanamiNoteJudge',
 		data: { noteIds: ['note-1'], promptVersion: 1 },
 		token: 'worker-token',
-		log: jest.fn(async () => undefined),
-		updateProgress: jest.fn(async () => undefined),
-		moveToDelayed: jest.fn(async (timestamp: number) => {
+		log: jest.fn(async (..._args: unknown[]) => undefined),
+		updateProgress: jest.fn(async (..._args: unknown[]) => undefined),
+		moveToDelayed: jest.fn(async (timestamp: number, _token?: string) => {
 			this.state = 'delayed';
 			this.delayedUntil = timestamp;
 		}),
@@ -70,12 +70,12 @@ describe('Hanami note judge lock Bull lifecycle', () => {
 			return [];
 		});
 		const modelRuns = {
-			insert: jest.fn(async () => undefined),
-			update: jest.fn(async () => undefined),
+			insert: jest.fn(async (..._args: unknown[]) => undefined),
+			update: jest.fn(async (..._args: unknown[]) => undefined),
 		};
 		const redis = {
-			set: jest.fn(async () => lockAvailable ? 'OK' : null),
-			eval: jest.fn(async () => 1),
+			set: jest.fn(async (..._args: unknown[]) => lockAvailable ? 'OK' : null),
+			eval: jest.fn(async (..._args: unknown[]) => 1),
 		};
 		const batch = new HanamiForYouBatchService(
 			{ query } as never,
@@ -103,7 +103,7 @@ describe('Hanami note judge lock Bull lifecycle', () => {
 
 			expect(lifecycle.state).toBe('delayed');
 			expect(lifecycle.delayedUntil).toBe(1_700_000_000_000 + 60_000);
-			expect(lifecycle.job.moveToDelayed).toHaveBeenCalledWith(lifecycle.delayedUntil, 'worker-token');
+			expect(lifecycle.job.moveToDelayed).toHaveBeenCalledWith(lifecycle.delayedUntil!, 'worker-token');
 			expect(lifecycle.attemptsMade).toBe(0);
 			expect(lifecycle.terminalFailure).toBe(false);
 			expect(modelRuns.insert).not.toHaveBeenCalled();

@@ -169,7 +169,7 @@ describe('ApiCallService activity updates', () => {
 				getUserRoles: jest.fn(async () => []),
 			} as never,
 			{ updateLastActiveDate } as never,
-			{ logger: { error: loggerError, warn: loggerWarn } } as never,
+			{ logger: { error: loggerError, warn: loggerWarn, debug: jest.fn() } } as never,
 		);
 	});
 
@@ -237,7 +237,7 @@ describe('ApiCallService activity updates', () => {
 		expect(cleanup).toHaveBeenCalledTimes(1);
 	});
 
-	test('cleans the multipart file once when the upload pipeline fails', async () => {
+	test('returns 400 and cleans the multipart file once when reading fails', async () => {
 		const pipelineError = new Error('upload failed');
 		const upload = Readable.from((async function* () {
 			yield 'partial';
@@ -245,11 +245,15 @@ describe('ApiCallService activity updates', () => {
 		})()) as Readable & { truncated: boolean };
 		upload.truncated = false;
 
-		await expect(service.handleMultipartRequest(
-			createEndpoint({ requireFile: true }),
+		const endpoint = createEndpoint({ requireFile: true });
+		const reply = new TestReply();
+		await service.handleMultipartRequest(
+			endpoint,
 			createMultipartRequest({ stream: upload }),
-			new TestReply() as unknown as FastifyReply,
-		)).rejects.toBe(pipelineError);
+			reply as unknown as FastifyReply,
+		);
+		expect(reply.statusCode).toBe(400);
+		expect(endpoint.exec).not.toHaveBeenCalled();
 
 		expect(cleanup).toHaveBeenCalledTimes(1);
 	});

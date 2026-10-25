@@ -9,7 +9,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { AuthenticationResponseJSON } from '@simplewebauthn/types';
 import { HttpHeader } from 'fastify/types/utils.js';
-import { MockFunctionMetadata, ModuleMocker } from 'jest-mock';
+import { MockMetadata, ModuleMocker } from 'jest-mock';
 import { MiUser } from '@/models/User.js';
 import { MiUserProfile, UserProfilesRepository, UsersRepository } from '@/models/_.js';
 import { IdService } from '@/core/IdService.js';
@@ -95,7 +95,7 @@ describe('SigninWithPasskeyApiService', () => {
 			],
 		}).useMocker((token) => {
 			if (typeof token === 'function') {
-				const mockMetadata = moduleMocker.getMetadata(token) as MockFunctionMetadata<any, any>;
+				const mockMetadata = moduleMocker.getMetadata(token) as MockMetadata<new (...args: any[]) => any>;
 				const Mock = moduleMocker.generateFromMetadata(mockMetadata);
 				return new Mock();
 			}
@@ -131,6 +131,15 @@ describe('SigninWithPasskeyApiService', () => {
 	});
 
 	describe('Get Passkey Options', () => {
+		it('rejects requests when the rate limiter returns a limit result', async () => {
+			jest.spyOn(app.get(RateLimiterService), 'limit').mockResolvedValueOnce({ remaining: 0 } as never);
+			const req = new DummyFastifyRequest({}) as ApiFastifyRequestType;
+			const res = new DummyFastifyReply() as unknown as FastifyReply;
+			const result = await passkeyApiService.signin(req, res);
+			expect(res.statusCode).toBe(429);
+			expect(result).toMatchObject({ error: { code: 'TOO_MANY_AUTHENTICATION_FAILURES' } });
+		});
+
 		it('Should return passkey Auth Options', async () => {
 			const req = new DummyFastifyRequest({}) as ApiFastifyRequestType;
 			const res = new DummyFastifyReply() as unknown as FastifyReply;

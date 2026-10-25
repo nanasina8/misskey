@@ -87,24 +87,24 @@ function candidate(noteId: string, authorId: string, axis: HanamiPersonalFeedCan
 	return { noteId, authorId, axis, origin: 'personalCandidate', score: 1 };
 }
 
-function createService(queries: FakeNoteQueryBuilder[], profileFetch = jest.fn(async () => ({
+function createService(queries: FakeNoteQueryBuilder[], profileFetch = jest.fn(async (..._args: unknown[]) => ({
 	exploreMediaFilter: 'all',
 	mutedInstances: [],
 	mutedWords: [],
 	hardMutedWords: [],
 }))) {
-	const notesRepository = { createQueryBuilder: jest.fn(() => queries.shift()!) };
+	const notesRepository = { createQueryBuilder: jest.fn((..._args: unknown[]) => queries.shift()!) };
 	const queryService = {
 		generateBlockedHostQueryForNote: jest.fn(),
 		generateSuspendedUserQueryForNote: jest.fn(),
 	};
 	const cacheService = {
 		userProfileCache: { fetch: profileFetch },
-		userMutingsCache: { fetch: jest.fn(async () => []) },
-		userBlockedCache: { fetch: jest.fn(async () => []) },
-		userBlockingCache: { fetch: jest.fn(async () => []) },
+		userMutingsCache: { fetch: jest.fn(async (..._args: unknown[]) => []) },
+		userBlockedCache: { fetch: jest.fn(async (..._args: unknown[]) => []) },
+		userBlockingCache: { fetch: jest.fn(async (..._args: unknown[]) => []) },
 	};
-	const noteEntityService = { packMany: jest.fn(async () => []) };
+	const noteEntityService = { packMany: jest.fn(async (..._args: unknown[]) => []) };
 	return {
 		service: new HanamiForYouSafetyService(
 			notesRepository as never,
@@ -125,7 +125,7 @@ describe('Phase 4 personal generation safety', () => {
 			{ id: 'note-a', authorId: 'author-a' },
 			{ id: 'note-b', authorId: 'actual-author-b' },
 		]);
-		const profileFetch = jest.fn(async () => ({ exploreMediaFilter: 'hideSensitive', mutedInstances: [], mutedWords: [], hardMutedWords: [] }));
+		const profileFetch = jest.fn(async (..._args: unknown[]) => ({ exploreMediaFilter: 'hideSensitive', mutedInstances: [], mutedWords: [], hardMutedWords: [] }));
 		const fixture = createService([query], profileFetch);
 		const first = candidate('note-a', 'author-a', 'catchup');
 		const secondAxis = candidate('note-a', 'author-a', 'fof');
@@ -212,10 +212,10 @@ describe('Phase 4 personal generation safety', () => {
 	test('uses a caller-owned QueryRunner repository without managing its lifecycle', async () => {
 		const profileQuery = new FakeProfileQueryBuilder({ exploreMediaFilter: 'hideSensitive' });
 		const runnerQuery = new FakeNoteQueryBuilder([{ id: 'note-a', authorId: 'author-a' }]);
-		const profileRepository = { createQueryBuilder: jest.fn(() => profileQuery) };
-		const noteRepository = { createQueryBuilder: jest.fn(() => runnerQuery) };
+		const profileRepository = { createQueryBuilder: jest.fn((..._args: unknown[]) => profileQuery) };
+		const noteRepository = { createQueryBuilder: jest.fn((..._args: unknown[]) => runnerQuery) };
 		let repositoryCall = 0;
-		const getRepository = jest.fn(() => [profileRepository, noteRepository][repositoryCall++]!);
+		const getRepository = jest.fn((..._args: unknown[]) => [profileRepository, noteRepository][repositoryCall++]!);
 		const queryRunner = {
 			manager: { getRepository },
 			startTransaction: jest.fn(),
@@ -250,10 +250,10 @@ describe('Phase 4 personal generation safety', () => {
 
 	test('fails generation when the runner snapshot has no user profile row', async () => {
 		const profileQuery = new FakeProfileQueryBuilder(null);
-		const profileRepository = { createQueryBuilder: jest.fn(() => profileQuery) };
+		const profileRepository = { createQueryBuilder: jest.fn((..._args: unknown[]) => profileQuery) };
 		const noteRepository = { createQueryBuilder: jest.fn() };
 		let repositoryCall = 0;
-		const getRepository = jest.fn(() => [profileRepository, noteRepository][repositoryCall++]!);
+		const getRepository = jest.fn((..._args: unknown[]) => [profileRepository, noteRepository][repositoryCall++]!);
 		const fixture = createService([]);
 
 		await expect(fixture.service.filterPersonalEligibleCandidates({
@@ -271,10 +271,10 @@ describe('Phase 4 personal generation safety', () => {
 		const controller = new AbortController();
 		const reason = new Error('deadline expired during profile read');
 		const profileQuery = new FakeProfileQueryBuilder({ exploreMediaFilter: 'all' }, () => controller.abort(reason));
-		const profileRepository = { createQueryBuilder: jest.fn(() => profileQuery) };
+		const profileRepository = { createQueryBuilder: jest.fn((..._args: unknown[]) => profileQuery) };
 		const noteRepository = { createQueryBuilder: jest.fn() };
 		let repositoryCall = 0;
-		const getRepository = jest.fn(() => [profileRepository, noteRepository][repositoryCall++]!);
+		const getRepository = jest.fn((..._args: unknown[]) => [profileRepository, noteRepository][repositoryCall++]!);
 		const fixture = createService([]);
 
 		await expect(fixture.service.filterPersonalEligibleCandidates({
@@ -291,7 +291,7 @@ describe('Phase 4 personal generation safety', () => {
 	test('honors the computation AbortSignal between external boundaries', async () => {
 		const controller = new AbortController();
 		const reason = new Error('generation lease lost');
-		const profileFetch = jest.fn(async () => {
+		const profileFetch = jest.fn(async (..._args: unknown[]) => {
 			controller.abort(reason);
 			return { exploreMediaFilter: 'all', mutedInstances: [], mutedWords: [], hardMutedWords: [] };
 		});

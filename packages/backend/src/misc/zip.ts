@@ -86,9 +86,11 @@ export class ZipFile {
 	 * ディレクトリ以外のエントリを ZIP 内の順序で 1 件ずつ返します。
 	 * 不正な名前や重複した名前のエントリがあれば走査中に例外を投げます。
 	 */
-	public async *entries(): AsyncGenerator<FileEntry, void, undefined> {
+	public async *entries(maxEntries = Number.POSITIVE_INFINITY): AsyncGenerator<FileEntry, void, undefined> {
 		const seen = new Set<string>();
+		let count = 0;
 		for await (const entry of this.reader.getEntriesGenerator()) {
+			if (++count > maxEntries) throw new ZipExtractError('too many entries');
 			if (entry.directory) continue;
 			if (seen.has(entry.filename)) {
 				throw new ZipExtractError(`duplicate entry: ${entry.filename}`);
@@ -159,9 +161,7 @@ export async function extractZipToDirectory(source: string, destination: string,
 		const zip = await ZipFile.open(source);
 		try {
 			let remaining = options.maxBytes;
-			let count = 0;
-			for await (const entry of zip.entries()) {
-				if (++count > options.maxEntries) throw new ZipExtractError('too many entries');
+			for await (const entry of zip.entries(options.maxEntries)) {
 				const parts = entry.filename.split('/');
 				if (parts.length > 32 || parts.some(part => !part || part === '.' || part === '..' || /[\\:\x00]/.test(part))) {
 					throw new ZipExtractError('unsafe entry path');

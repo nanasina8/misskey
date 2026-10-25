@@ -123,11 +123,11 @@ function fixture(options: {
 		}))
 	));
 	const recordServedFeedEntries = jest.fn<(userId: string, entries: readonly HanamiDurableServedEntryInput[]) => Promise<void>>(async () => undefined);
-	const profileFetch = jest.fn(async () => ({
+	const profileFetch = jest.fn(async (..._args: unknown[]) => ({
 		hanamiRecommendationAxes: options.profileAxes ?? {},
 		hanamiShowRecommendationReason: options.showReason ?? false,
 	}));
-	const redisSet = jest.fn(async () => {
+	const redisSet = jest.fn(async (..._args: unknown[]) => {
 		if (options.redisFailure != null) throw options.redisFailure;
 		return 'OK' as const;
 	});

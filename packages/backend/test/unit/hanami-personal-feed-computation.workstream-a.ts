@@ -102,11 +102,11 @@ function createQueryRunner(queryImplementation?: (sql: string, parameters?: unkn
 	});
 	const queryRunner = {
 		query,
-		connect: jest.fn(async () => undefined),
-		startTransaction: jest.fn(async () => { queryRunner.isTransactionActive = true; }),
-		commitTransaction: jest.fn(async () => { queryRunner.isTransactionActive = false; }),
-		rollbackTransaction: jest.fn(async () => { queryRunner.isTransactionActive = false; }),
-		release: jest.fn(async () => { queryRunner.isReleased = true; }),
+		connect: jest.fn(async (..._args: unknown[]) => undefined),
+		startTransaction: jest.fn(async (..._args: unknown[]) => { queryRunner.isTransactionActive = true; }),
+		commitTransaction: jest.fn(async (..._args: unknown[]) => { queryRunner.isTransactionActive = false; }),
+		rollbackTransaction: jest.fn(async (..._args: unknown[]) => { queryRunner.isTransactionActive = false; }),
+		release: jest.fn(async (..._args: unknown[]) => { queryRunner.isReleased = true; }),
 		isTransactionActive: false,
 		isReleased: false,
 		manager: { getRepository: jest.fn() },
@@ -135,7 +135,7 @@ function createComputation(options: {
 	const commonRows = options.commonRows ?? [];
 	const queryRunner = options.queryRunner ?? createQueryRunner();
 	const driverQuery = queryRunner.query;
-	const db = { createQueryRunner: jest.fn(() => queryRunner) };
+	const db = { createQueryRunner: jest.fn((..._args: unknown[]) => queryRunner) };
 	const commonGenerationRead = {
 		loadReadyCommonCandidates: jest.fn(async (_generationId: string, _context?: HanamiCommonGenerationReadContext) => commonRows),
 		getLatestReadyCommonHead: jest.fn(),
@@ -215,7 +215,7 @@ describe('Phase 4 workstream A personal feed computation', () => {
 
 		expect(fixture.service.algorithmVersion).toBe(HANAMI_PERSONAL_FEED_ALGORITHM_VERSION);
 		expect(fixture.commonGenerationRead.loadReadyCommonCandidates).toHaveBeenCalledWith('common-generation-pinned', {
-			queryRunner: fixture.queryRunner,
+			queryRunner: fixture.queryRunner as never,
 			signal: expect.any(AbortSignal),
 			databaseDeadlineAt,
 		});
@@ -640,7 +640,7 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		await fixture.service.computePersonalFeed(computationInput);
 
 		expect(fixture.commonGenerationRead.loadReadyCommonCandidates.mock.calls[0]![1]).toEqual({
-			queryRunner: fixture.queryRunner,
+			queryRunner: fixture.queryRunner as never,
 			signal: controller.signal,
 			databaseDeadlineAt,
 		});
@@ -784,7 +784,7 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 			set: jest.fn(),
 		};
 		const durable = {
-			getDurableServedSeenForCandidates: jest.fn(async () => ({
+			getDurableServedSeenForCandidates: jest.fn(async (..._args: unknown[]) => ({
 				served: new Set(['durable-served', 'shared']),
 				seen: new Set(['durable-seen', 'shared']),
 			})),
@@ -814,12 +814,12 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 
 	test('keeps durable recency on Redis rejection and aborts a hung Redis read', async () => {
 		const durable = {
-			getDurableServedSeenForCandidates: jest.fn(async () => ({
+			getDurableServedSeenForCandidates: jest.fn(async (..._args: unknown[]) => ({
 				served: new Set(['durable-served']),
 				seen: new Set(['durable-seen']),
 			})),
 		};
-		const rejectingRedis = { zmscore: jest.fn(async () => { throw new Error('redis unavailable'); }), set: jest.fn() };
+		const rejectingRedis = { zmscore: jest.fn(async (..._args: unknown[]) => { throw new Error('redis unavailable'); }), set: jest.fn() };
 		const rejectingService = createGenerationForYou(rejectingRedis, durable) as unknown as {
 			getGenerationCandidateServedSeen(input: HanamiPersonalFeedGenerationContext, noteIds: readonly string[]): Promise<{ served: Set<string>; seen: Set<string> }>;
 		};
@@ -831,7 +831,7 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 
 		const controller = new AbortController();
 		const abortReason = new Error('recency read deadline');
-		const hangingRedis = { zmscore: jest.fn(() => new Promise<Array<string | null>>(() => undefined)), set: jest.fn() };
+		const hangingRedis = { zmscore: jest.fn((..._args: unknown[]) => new Promise<Array<string | null>>(() => undefined)), set: jest.fn() };
 		const hangingService = createGenerationForYou(hangingRedis, durable) as unknown as {
 			getGenerationCandidateServedSeen(input: HanamiPersonalFeedGenerationContext, noteIds: readonly string[]): Promise<{ served: Set<string>; seen: Set<string> }>;
 		};
@@ -872,12 +872,12 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 			userBlockedCache: { fetch: jest.fn() },
 		};
 		const redis = {
-			zrevrange: jest.fn(async () => redisRaw),
-			hgetall: jest.fn(async () => ({})),
+			zrevrange: jest.fn(async (..._args: unknown[]) => redisRaw),
+			hgetall: jest.fn(async (..._args: unknown[]) => ({})),
 		};
 		const service = createGenerationForYou(redis, {}, {}, {
 			cache: relationshipCaches,
-			idService: { parse: jest.fn(() => ({ date: new Date(generatedAt) })) },
+			idService: { parse: jest.fn((..._args: unknown[]) => ({ date: new Date(generatedAt) })) },
 		}) as unknown as {
 			reactionSimilarCandidates(userId: string, followeeIds: string[], served: ReadonlySet<string>, seen: ReadonlySet<string>, input: HanamiPersonalFeedGenerationContext): Promise<Array<{ userId: string | null }>>;
 		};
@@ -906,7 +906,7 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 
 	test('uses the author-driven bounded top-relation CTE for generation catchup', async () => {
 		const service = createGenerationForYou({}, {}, {}, {
-			idService: { gen: jest.fn(() => 'since-id') },
+			idService: { gen: jest.fn((..._args: unknown[]) => 'since-id') },
 		}) as unknown as {
 			catchupCandidates(userId: string, followeeIds: string[], input: HanamiPersonalFeedGenerationContext): Promise<Array<{ noteId: string; userId: string; score: number }>>;
 		};
@@ -928,7 +928,7 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 
 	test('maps persisted and personal acquisition to the authoritative seven axes without Featured or trend calls', async () => {
 		const featured = { getGlobalNotesRankingWithScores: jest.fn() };
-		const trend = { getTrendingNoteIds: jest.fn(), countRecentTermAuthors: jest.fn(async () => new Map([['term', 3]])) };
+		const trend = { getTrendingNoteIds: jest.fn(), countRecentTermAuthors: jest.fn(async (..._args: unknown[]) => new Map([['term', 3]])) };
 		const relationshipCaches = {
 			userProfileCache: { fetch: jest.fn() },
 			userFollowingsCache: { fetch: jest.fn() },
@@ -946,20 +946,20 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 			{} as never,
 			trend as never,
 			{} as never,
-			{ getLatestReadyRunId: jest.fn(async () => 'als-run') } as never,
+			{ getLatestReadyRunId: jest.fn(async (..._args: unknown[]) => 'als-run') } as never,
 			{} as never,
 			{} as never,
 			{} as never,
 		);
-		const computeConfidence = jest.fn(async (): Promise<HanamiConfidence> => 'high');
+		const computeConfidence = jest.fn(async (..._args: unknown[]): Promise<HanamiConfidence> => 'high');
 		Object.defineProperties(service, {
 			computeConfidence: { value: computeConfidence },
 			applyAuthorAffinityRerank: { value: jest.fn(async (_userId: string, _runId: string, values: unknown[]) => values) },
 			applyTasteClusterOrdering: { value: jest.fn(async (_userId: string, values: unknown[]) => values) },
-			neighborTrendingCandidates: { value: jest.fn(async () => [{ noteId: 'neighbor', userId: 'neighbor-author', score: 1 }]) },
-			reactionSimilarCandidates: { value: jest.fn(async () => [{ noteId: 'reaction', userId: 'reaction-author', score: 1, clusterId: 3, bucket: 'cluster' as const }]) },
-			catchupCandidates: { value: jest.fn(async () => [{ noteId: 'catchup', userId: 'catchup-author', score: 1 }]) },
-			fofCandidates: { value: jest.fn(async () => [{ noteId: 'fof', userId: 'fof-author', score: 1 }]) },
+			neighborTrendingCandidates: { value: jest.fn(async (..._args: unknown[]) => [{ noteId: 'neighbor', userId: 'neighbor-author', score: 1 }]) },
+			reactionSimilarCandidates: { value: jest.fn(async (..._args: unknown[]) => [{ noteId: 'reaction', userId: 'reaction-author', score: 1, clusterId: 3, bucket: 'cluster' as const }]) },
+			catchupCandidates: { value: jest.fn(async (..._args: unknown[]) => [{ noteId: 'catchup', userId: 'catchup-author', score: 1 }]) },
+			fofCandidates: { value: jest.fn(async (..._args: unknown[]) => [{ noteId: 'fof', userId: 'fof-author', score: 1 }]) },
 		});
 		const common = [
 			candidate('globalPopular', 'global'),
@@ -997,10 +997,10 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 	});
 
 	test('applies served=0.5 and seen=0.7 on every axis without invoking serving APIs', async () => {
-		const db = { query: jest.fn(async () => []) };
+		const db = { query: jest.fn(async (..._args: unknown[]) => []) };
 		const redis = { zmscore: jest.fn(async (_key: string, ...noteIds: string[]) => noteIds.map(() => null)) };
 		const durable = {
-			getDurableServedSeenForCandidates: jest.fn(async () => ({
+			getDurableServedSeenForCandidates: jest.fn(async (..._args: unknown[]) => ({
 				served: new Set(HANAMI_FOR_YOU_AXES.map(axis => `served-${axis}`)),
 				seen: new Set(HANAMI_FOR_YOU_AXES.map(axis => `seen-${axis}`)),
 			})),
@@ -1034,7 +1034,7 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 
 	test('keeps the legacy page on its request-time profile-cache path', async () => {
 		const cache = {
-			userProfileCache: { fetch: jest.fn(async () => ({ hanamiRecommendationEnabled: false })) },
+			userProfileCache: { fetch: jest.fn(async (..._args: unknown[]) => ({ hanamiRecommendationEnabled: false })) },
 			userFollowingsCache: { fetch: jest.fn() },
 		};
 		const service = createGenerationForYou({}, {}, {}, { cache });
@@ -1071,7 +1071,7 @@ describe('HanamiUserRecommendationService personal-feed adapter', () => {
 			repositories[3] as never,
 			repositories[4] as never,
 			relationshipCaches as never,
-			{ gen: jest.fn(() => 'since-id') } as never,
+			{ gen: jest.fn((..._args: unknown[]) => 'since-id') } as never,
 		);
 		const queryRunner = createQueryRunner(async sql => {
 			if (sql.includes('AS "withReplies"')) {
@@ -1117,11 +1117,11 @@ describe('HanamiUserRecommendationService personal-feed adapter', () => {
 			where: jest.fn(),
 			orderBy: jest.fn(),
 			limit: jest.fn(),
-			getRawMany: jest.fn(async () => pendingRows),
+			getRawMany: jest.fn(async (..._args: unknown[]) => pendingRows),
 		};
 		builder.select.mockReturnValue(builder);
 		builder.where.mockReturnValue(builder);
-		const followRequestsRepository = { createQueryBuilder: jest.fn(() => builder) };
+		const followRequestsRepository = { createQueryBuilder: jest.fn((..._args: unknown[]) => builder) };
 		const service = new HanamiUserRecommendationService(
 			{} as never,
 			{} as never,
@@ -1147,23 +1147,23 @@ describe('HanamiUserRecommendationService personal-feed adapter', () => {
 			addSelect: jest.fn(),
 			where: jest.fn(),
 			limit: jest.fn(),
-			getRawMany: jest.fn(async () => []),
+			getRawMany: jest.fn(async (..._args: unknown[]) => []),
 		};
 		queryBuilder.select.mockReturnValue(queryBuilder);
 		queryBuilder.addSelect.mockReturnValue(queryBuilder);
 		queryBuilder.where.mockReturnValue(queryBuilder);
 		queryBuilder.limit.mockReturnValue(queryBuilder);
 		const cache = {
-			userFollowingsCache: { fetch: jest.fn(async () => ({ seed: { withReplies: false } })) },
-			userMutingsCache: { fetch: jest.fn(async () => new Set(['muted'])) },
-			userBlockingCache: { fetch: jest.fn(async () => new Set(['blocked'])) },
-			userBlockedCache: { fetch: jest.fn(async () => new Set(['blocker'])) },
-			userProfileCache: { fetch: jest.fn(async () => ({ mutedInstances: ['muted.example'] })) },
+			userFollowingsCache: { fetch: jest.fn(async (..._args: unknown[]) => ({ seed: { withReplies: false } })) },
+			userMutingsCache: { fetch: jest.fn(async (..._args: unknown[]) => new Set(['muted'])) },
+			userBlockingCache: { fetch: jest.fn(async (..._args: unknown[]) => new Set(['blocked'])) },
+			userBlockedCache: { fetch: jest.fn(async (..._args: unknown[]) => new Set(['blocker'])) },
+			userProfileCache: { fetch: jest.fn(async (..._args: unknown[]) => ({ mutedInstances: ['muted.example'] })) },
 		};
 		const service = new HanamiUserRecommendationService(
-			{ get: jest.fn(async () => JSON.stringify([])) } as never,
-			{ createQueryBuilder: jest.fn(() => queryBuilder) } as never,
-			{ createQueryBuilder: jest.fn(() => queryBuilder) } as never,
+			{ get: jest.fn(async (..._args: unknown[]) => JSON.stringify([])) } as never,
+			{ createQueryBuilder: jest.fn((..._args: unknown[]) => queryBuilder) } as never,
+			{ createQueryBuilder: jest.fn((..._args: unknown[]) => queryBuilder) } as never,
 			{} as never,
 			{} as never,
 			{} as never,
@@ -1182,8 +1182,8 @@ describe('HanamiUserRecommendationService personal-feed adapter', () => {
 
 	test('caps generation shown-history reads without changing the legacy Redis command', async () => {
 		const redis = {
-			zrevrangebyscore: jest.fn(async () => [`candidate\t${Date.parse(generatedAt)}\t0`, String(Date.parse(generatedAt))]),
-			zrangebyscore: jest.fn(async () => []),
+			zrevrangebyscore: jest.fn(async (..._args: unknown[]) => [`candidate\t${Date.parse(generatedAt)}\t0`, String(Date.parse(generatedAt))]),
+			zrangebyscore: jest.fn(async (..._args: unknown[]) => []),
 		};
 		const service = new HanamiUserRecommendationService(
 			redis as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never,

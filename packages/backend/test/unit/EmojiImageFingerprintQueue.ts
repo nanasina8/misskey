@@ -200,13 +200,13 @@ describe('QueueService emoji image fingerprint jobs', () => {
 	test('makes a configured fingerprint queue available to queue administration', async () => {
 		const emojiQueue = {
 			...NOOP_QUEUE,
-			getJobCounts: jest.fn(async () => ({ waiting: 0 })),
-			isPaused: jest.fn(async () => false),
-			getMetrics: jest.fn(async () => ({ meta: {}, data: [], count: 0 })),
-			clean: jest.fn(async () => []),
+			getJobCounts: jest.fn(async (..._args: unknown[]) => ({ waiting: 0 })),
+			isPaused: jest.fn(async (..._args: unknown[]) => false),
+			getMetrics: jest.fn(async (..._args: unknown[]) => ({ meta: {}, data: [], count: 0 })),
+			clean: jest.fn(async (..._args: unknown[]) => []),
 			qualifiedName: 'bull:emojiImageFingerprint',
 			client: Promise.resolve({
-				info: jest.fn(async () => 'redis_version:7.0.0\r\nredis_mode:standalone\r\nrun_id:run\r\nprocess_id:1\r\ntcp_port:6379\r\nos:Linux\r\nuptime_in_seconds:1\r\ntotal_system_memory:1\r\nused_memory:1\r\nmem_fragmentation_ratio:1\r\nused_memory_peak:1\r\nconnected_clients:1\r\nblocked_clients:0\r\n'),
+				info: jest.fn(async (..._args: unknown[]) => 'redis_version:7.0.0\r\nredis_mode:standalone\r\nrun_id:run\r\nprocess_id:1\r\ntcp_port:6379\r\nos:Linux\r\nuptime_in_seconds:1\r\ntotal_system_memory:1\r\nused_memory:1\r\nmem_fragmentation_ratio:1\r\nused_memory_peak:1\r\nconnected_clients:1\r\nblocked_clients:0\r\n'),
 			}),
 		};
 		const service = makeService(emojiQueue, NOOP_QUEUE);

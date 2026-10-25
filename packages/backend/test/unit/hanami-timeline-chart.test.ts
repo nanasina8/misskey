@@ -49,9 +49,9 @@ function repository() {
 						if (typeof value === 'number') {
 							row[column] = value;
 						} else if (column.startsWith('unique_temp___')) {
-							const match = value().match(/'\{(.*)\}'::varchar\[\]/);
+							const match = value().match(/ARRAY\[(.*)\]::varchar\[\]/);
 							if (!match) throw new Error('Unexpected mock array update');
-							row[column] = [...row[column] as string[], ...JSON.parse(`[${match[1]}]`)];
+							row[column] = [...row[column] as string[], ...Array.from(match[1].matchAll(/'((?:[^']|'')*)'/g), item => item[1].replaceAll("''", "'"))];
 						} else {
 							const match = value().match(/\+ (\d+)$/);
 							if (!match) throw new Error('Unexpected mock counter update');
@@ -281,8 +281,8 @@ describe('HanamiTimelineChart (no external services)', () => {
 
 	test('health failures never break serving, skip counters, or expose identifiers', async () => {
 		const health = {
-			begin: jest.fn(() => { throw new Error('private-id'); }),
-			finish: jest.fn(() => { throw new Error('private-id'); }),
+			begin: jest.fn((..._args: unknown[]) => { throw new Error('private-id'); }),
+			finish: jest.fn((..._args: unknown[]) => { throw new Error('private-id'); }),
 		};
 		const { chart, query, logger } = makeChart(undefined, health);
 		await expect(chart.hit('home', null)).resolves.toBeUndefined();
@@ -303,7 +303,7 @@ function restHarness(kind: HanamiTimelineKind, useFanout = true) {
 	const noteEntity = { packMany: pack } as never;
 	const timeline = jest.fn<() => Promise<unknown[]>>().mockResolvedValue([]);
 	const fanout = { timeline } as never;
-	const getUserPolicies = jest.fn(async () => ({ ltlAvailable: true, gtlAvailable: true }));
+	const getUserPolicies = jest.fn(async (..._args: unknown[]) => ({ ltlAvailable: true, gtlAvailable: true }));
 	const roles = { getUserPolicies } as never;
 	const fetch = async () => ({});
 	const cache = {
@@ -319,7 +319,7 @@ function restHarness(kind: HanamiTimelineKind, useFanout = true) {
 	const notes = { createQueryBuilder: () => qb } as never;
 	const query = {
 		makePaginationQuery: () => qb,
-		generateBaseNoteFilteringQuery: jest.fn(), generateMutedUserRenotesQueryForNotes: jest.fn(),
+		generateBaseNoteFilteringQuery: jest.fn(), generateUgcVisibilityQueryForVisitor: jest.fn(), generateMutedUserRenotesQueryForNotes: jest.fn(),
 	} as never;
 	const unused = {} as never;
 	const serve = jest.fn<() => Promise<unknown>>().mockResolvedValue({ kind: 'ok', response: { items: [], mode: 'common' } });

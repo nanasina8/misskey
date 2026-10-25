@@ -216,7 +216,7 @@ function logger() {
 
 function dbWithResults(results: unknown[][]) {
 	return {
-		query: jest.fn(async () => {
+		query: jest.fn(async (..._args: unknown[]) => {
 			const next = results.shift();
 			if (next == null) throw new Error('unexpected db.query');
 			return next;
@@ -606,7 +606,7 @@ describe('HanamiForYouService reactionSimilarCandidates', () => {
 		const mutedCluster = noteId(1 * HOUR, 'muted-cluster');
 		const missingCluster = noteId(1 * HOUR, 'missing-cluster');
 		const redis = {
-			zrevrange: jest.fn(async () => [
+			zrevrange: jest.fn(async (..._args: unknown[]) => [
 				`${valid}:author-new:7`, '0.42',
 				`${own}:me:7`, '0.99',
 				`${followee}:followee-a:7`, '0.98',
@@ -622,7 +622,7 @@ describe('HanamiForYouService reactionSimilarCandidates', () => {
 			],
 		]);
 		const service = forYouService(db, redis);
-		(service as unknown as { computeMediaOddsCalibration: () => Promise<null> }).computeMediaOddsCalibration = jest.fn(async () => null);
+		(service as unknown as { computeMediaOddsCalibration: () => Promise<null> }).computeMediaOddsCalibration = jest.fn(async (..._args: unknown[]) => null);
 		const draw = jest.fn((
 			buckets: Map<number | 'general', { fresh: { cand: ForYouCandidate; clusterId?: number }[]; shown: { cand: ForYouCandidate; clusterId?: number }[] }>,
 		): ForYouCandidate[] => [...buckets.values()].flatMap(b => [...b.fresh, ...b.shown].map(it => ({ ...it.cand, clusterId: it.clusterId }))));
@@ -646,17 +646,17 @@ describe('HanamiForYouService reactionSimilarCandidates', () => {
 		const recent = noteId(1 * HOUR, 'recent-pick');
 		const cluster = noteId(1 * HOUR, 'cluster-pick');
 		const redis = {
-			zrevrange: jest.fn(async () => [
+			zrevrange: jest.fn(async (..._args: unknown[]) => [
 				`${recent}:author-recent:r`, '0.90',
 				`${cluster}:author-cluster:7`, '0.80',
 			]),
-			hgetall: jest.fn(async () => ({ totalHeat: '12', hasRecentVec: '1' })),
+			hgetall: jest.fn(async (..._args: unknown[]) => ({ totalHeat: '12', hasRecentVec: '1' })),
 		};
 		const db = dbWithResults([
 			[{ clusterId: 7, size: 10, userWeight: 1 }],
 		]);
 		const service = forYouService(db, redis);
-		(service as unknown as { computeMediaOddsCalibration: () => Promise<null> }).computeMediaOddsCalibration = jest.fn(async () => null);
+		(service as unknown as { computeMediaOddsCalibration: () => Promise<null> }).computeMediaOddsCalibration = jest.fn(async (..._args: unknown[]) => null);
 
 		const out = await (service as unknown as {
 			reactionSimilarCandidates: (meId: string, followeeIds: string[], served: ReadonlySet<string>, seen: ReadonlySet<string>) => Promise<ForYouCandidate[]>;
@@ -671,16 +671,16 @@ describe('HanamiForYouService reactionSimilarCandidates', () => {
 		jest.spyOn(Math, 'random').mockReturnValue(0);
 		const recent = noteId(1 * HOUR, 'recent-only');
 		const redis = {
-			zrevrange: jest.fn(async () => [
+			zrevrange: jest.fn(async (..._args: unknown[]) => [
 				`${recent}:author-recent:r`, '0.90',
 			]),
-			hgetall: jest.fn(async () => ({ totalHeat: '12', hasRecentVec: '1' })),
+			hgetall: jest.fn(async (..._args: unknown[]) => ({ totalHeat: '12', hasRecentVec: '1' })),
 		};
 		const db = dbWithResults([
 			[{ clusterId: 7, size: 10, userWeight: 1 }],
 		]);
 		const service = forYouService(db, redis);
-		(service as unknown as { computeMediaOddsCalibration: () => Promise<null> }).computeMediaOddsCalibration = jest.fn(async () => null);
+		(service as unknown as { computeMediaOddsCalibration: () => Promise<null> }).computeMediaOddsCalibration = jest.fn(async (..._args: unknown[]) => null);
 
 		const out = await (service as unknown as {
 			reactionSimilarCandidates: (meId: string, followeeIds: string[], served: ReadonlySet<string>, seen: ReadonlySet<string>) => Promise<ForYouCandidate[]>;
@@ -695,17 +695,17 @@ describe('HanamiForYouService reactionSimilarCandidates', () => {
 		const recent = noteId(1 * HOUR, 'recent-stale');
 		const cluster = noteId(1 * HOUR, 'cluster-live');
 		const redis = {
-			zrevrange: jest.fn(async () => [
+			zrevrange: jest.fn(async (..._args: unknown[]) => [
 				`${recent}:author-recent:r`, '0.90',
 				`${cluster}:author-cluster:7`, '0.80',
 			]),
-			hgetall: jest.fn(async () => ({})),
+			hgetall: jest.fn(async (..._args: unknown[]) => ({})),
 		};
 		const db = dbWithResults([
 			[{ clusterId: 7, size: 10, userWeight: 1 }],
 		]);
 		const service = forYouService(db, redis);
-		(service as unknown as { computeMediaOddsCalibration: () => Promise<null> }).computeMediaOddsCalibration = jest.fn(async () => null);
+		(service as unknown as { computeMediaOddsCalibration: () => Promise<null> }).computeMediaOddsCalibration = jest.fn(async (..._args: unknown[]) => null);
 
 		const out = await (service as unknown as {
 			reactionSimilarCandidates: (meId: string, followeeIds: string[], served: ReadonlySet<string>, seen: ReadonlySet<string>) => Promise<ForYouCandidate[]>;
@@ -721,17 +721,17 @@ describe('HanamiForYouService reactionSimilarCandidates', () => {
 			const recent = noteId(1 * HOUR, `recent-share-${totalHeat}`);
 			const cluster = noteId(1 * HOUR, `cluster-share-${totalHeat}`);
 			const redis = {
-				zrevrange: jest.fn(async () => [
+				zrevrange: jest.fn(async (..._args: unknown[]) => [
 					`${recent}:author-recent:r`, '0.90',
 					`${cluster}:author-cluster:7`, '0.80',
 				]),
-				hgetall: jest.fn(async () => ({ totalHeat: String(totalHeat), hasRecentVec: '1' })),
+				hgetall: jest.fn(async (..._args: unknown[]) => ({ totalHeat: String(totalHeat), hasRecentVec: '1' })),
 			};
 			const db = dbWithResults([
 				[{ clusterId: 7, size: 10, userWeight: 1 }],
 			]);
 			const service = forYouService(db, redis);
-			(service as unknown as { computeMediaOddsCalibration: () => Promise<null> }).computeMediaOddsCalibration = jest.fn(async () => null);
+			(service as unknown as { computeMediaOddsCalibration: () => Promise<null> }).computeMediaOddsCalibration = jest.fn(async (..._args: unknown[]) => null);
 			const draw = jest.fn<DrawClusterLotteryMock>(() => []);
 			(service as unknown as { drawClusterLottery: typeof draw }).drawClusterLottery = draw;
 
@@ -754,11 +754,11 @@ describe('HanamiForYouService reactionSimilarCandidates', () => {
 		const c7 = noteId(1 * HOUR, 'heat-c7');
 		const c8 = noteId(1 * HOUR, 'heat-c8');
 		const redis = {
-			zrevrange: jest.fn(async () => [
+			zrevrange: jest.fn(async (..._args: unknown[]) => [
 				`${c7}:author-c7:7`, '0.90',
 				`${c8}:author-c8:8`, '0.90',
 			]),
-			hgetall: jest.fn(async () => ({ totalHeat: '10', 'heat:7': '10', hasRecentVec: '0' })),
+			hgetall: jest.fn(async (..._args: unknown[]) => ({ totalHeat: '10', 'heat:7': '10', hasRecentVec: '0' })),
 		};
 		const db = dbWithResults([
 			[
@@ -767,7 +767,7 @@ describe('HanamiForYouService reactionSimilarCandidates', () => {
 			],
 		]);
 		const service = forYouService(db, redis);
-		(service as unknown as { computeMediaOddsCalibration: () => Promise<null> }).computeMediaOddsCalibration = jest.fn(async () => null);
+		(service as unknown as { computeMediaOddsCalibration: () => Promise<null> }).computeMediaOddsCalibration = jest.fn(async (..._args: unknown[]) => null);
 		const draw = jest.fn<DrawClusterLotteryMock>(() => []);
 		(service as unknown as { drawClusterLottery: typeof draw }).drawClusterLottery = draw;
 
@@ -784,9 +784,9 @@ describe('HanamiForYouService reactionSimilarCandidates', () => {
 		const recent = noteId(1 * HOUR, 'prov-recent');
 		const cluster = noteId(1 * HOUR, 'prov-cluster');
 		const service = forYouService(dbWithResults([]), {});
-		const recordServed = jest.fn(async () => undefined);
-		const recordShown = jest.fn(async () => undefined);
-		const recordServedEvents = jest.fn(async () => undefined);
+		const recordServed = jest.fn(async (..._args: unknown[]) => undefined);
+		const recordShown = jest.fn(async (..._args: unknown[]) => undefined);
+		const recordServedEvents = jest.fn(async (..._args: unknown[]) => undefined);
 		const internals = service as unknown as {
 			hanamiRecommendationService: { recordServed: typeof recordServed };
 			hanamiUserRecommendationService: { recordShown: typeof recordShown };
@@ -839,7 +839,7 @@ describe('HanamiForYouService taste cosNorm', () => {
 			],
 		]);
 		const service = forYouService(db, { zrevrange: jest.fn() });
-		(service as unknown as { computeMediaOddsCalibration: () => Promise<null> }).computeMediaOddsCalibration = jest.fn(async () => null);
+		(service as unknown as { computeMediaOddsCalibration: () => Promise<null> }).computeMediaOddsCalibration = jest.fn(async (..._args: unknown[]) => null);
 
 		const out = await (service as unknown as {
 			applyTasteClusterOrdering: (meId: string, candidates: ForYouCandidate[], served: ReadonlySet<string>, seen: ReadonlySet<string>) => Promise<ForYouCandidate[]>;
@@ -857,7 +857,7 @@ describe('HanamiForYouService taste cosNorm', () => {
 		const low = noteId(1 * HOUR, 'reaction-low-score');
 		const high = noteId(1 * HOUR, 'reaction-high-score');
 		const redis = {
-			zrevrange: jest.fn(async () => [
+			zrevrange: jest.fn(async (..._args: unknown[]) => [
 				`${low}:author-low:7`, '0.30',
 				`${high}:author-high:7`, '0.50',
 			]),
@@ -866,7 +866,7 @@ describe('HanamiForYouService taste cosNorm', () => {
 			[{ clusterId: 7, size: 10, userWeight: 1 }],
 		]);
 		const service = forYouService(db, redis);
-		(service as unknown as { computeMediaOddsCalibration: () => Promise<null> }).computeMediaOddsCalibration = jest.fn(async () => null);
+		(service as unknown as { computeMediaOddsCalibration: () => Promise<null> }).computeMediaOddsCalibration = jest.fn(async (..._args: unknown[]) => null);
 
 		const out = await (service as unknown as {
 			reactionSimilarCandidates: (meId: string, followeeIds: string[], served: ReadonlySet<string>, seen: ReadonlySet<string>) => Promise<ForYouCandidate[]>;
@@ -880,7 +880,7 @@ describe('HanamiTasteClusterBatchService daily cluster', () => {
 	test('shared LLM lock held: skips before either embedding or k-means Python work', async () => {
 		const redis = new FakeRedis();
 		redis.sharedLockOk = false;
-		const db = { query: jest.fn(async () => []) };
+		const db = { query: jest.fn(async (..._args: unknown[]) => []) };
 		const service = tasteBatchService(db, redis);
 		const embedTexts = jest.fn();
 		const clusterUserChunk = jest.fn();
@@ -959,7 +959,7 @@ describe('HanamiTasteClusterBatchService taste rebuild', () => {
 	test('rebuildロック取得に失敗したらDBもstatusも書かない', async () => {
 		const redis = new FakeRedis();
 		redis.lockOk = false;
-		const db = { query: jest.fn(async () => []) };
+		const db = { query: jest.fn(async (..._args: unknown[]) => []) };
 		const log = logger();
 
 		const res = await tasteBatchService(db, redis).runTasteRebuildChunk({

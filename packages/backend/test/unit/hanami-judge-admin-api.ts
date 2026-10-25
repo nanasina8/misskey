@@ -26,8 +26,8 @@ afterAll(() => {
 
 describe('Hanami judge admin endpoint contracts', () => {
 	test('settings gets defaults and persists validated updates with a server-owned promptVersion increment', async () => {
-		const getQuery = jest.fn(async () => []);
-		const queue = { enqueueHanamiGenerationReconcile: jest.fn(async () => undefined) };
+		const getQuery = jest.fn(async (..._args: unknown[]) => []);
+		const queue = { enqueueHanamiGenerationReconcile: jest.fn(async (..._args: unknown[]) => undefined) };
 		const get = new JudgeSettingsEndpoint({ query: getQuery } as never, queue as never);
 		await expect(get.exec({}, admin, null)).resolves.toEqual(createDefaultHanamiNoteJudgeSettings());
 		expect(getQuery).toHaveBeenCalledTimes(1);
@@ -57,7 +57,7 @@ describe('Hanami judge admin endpoint contracts', () => {
 			if (sql.includes('MAX("promptVersion")')) return [{ promptVersion: 7 }];
 			return [];
 		});
-		const queue = { enqueueHanamiGenerationReconcile: jest.fn(async () => undefined) };
+		const queue = { enqueueHanamiGenerationReconcile: jest.fn(async (..._args: unknown[]) => undefined) };
 		const update = new JudgeSettingsEndpoint({ transaction: async (operation: (manager: unknown) => unknown) => await operation({ query: transactionQuery }) } as never, queue as never);
 		const bonus = [0, 1, 3, 3, 3, 3, 0, 0, 0, 0];
 		const requested = { ...createDefaultHanamiNoteJudgeSettings(), promptVersion: 99, interestThreshold: 3.5, contentTypeBonus: bonus };
@@ -69,7 +69,7 @@ describe('Hanami judge admin endpoint contracts', () => {
 	});
 
 	test('rejects a content-type bonus table of the wrong shape or with negative values', async () => {
-		const queue = { enqueueHanamiGenerationReconcile: jest.fn(async () => undefined) };
+		const queue = { enqueueHanamiGenerationReconcile: jest.fn(async (..._args: unknown[]) => undefined) };
 		const update = new JudgeSettingsEndpoint({ transaction: async () => { throw new Error('unreachable'); } } as never, queue as never);
 		await expect(update.exec({ settings: { ...createDefaultHanamiNoteJudgeSettings(), contentTypeBonus: [0, 1, 2] } }, admin, null)).rejects.toThrow(); // schema (minItems/maxItems)
 		await expect(update.exec({ settings: { ...createDefaultHanamiNoteJudgeSettings(), contentTypeBonus: [0, 1, 2, 2, 2, 2, -1, 0, 0, 0] } }, admin, null)).rejects.toThrow(/contentTypeBonus/);
@@ -118,7 +118,7 @@ describe('Hanami judge admin endpoint contracts', () => {
 				}
 			},
 		};
-		const queue = { enqueueHanamiGenerationReconcile: jest.fn(async () => undefined) };
+		const queue = { enqueueHanamiGenerationReconcile: jest.fn(async (..._args: unknown[]) => undefined) };
 		const endpoint = new JudgeSettingsEndpoint(db as never, queue as never);
 		const first = endpoint.exec({ settings: { ...createDefaultHanamiNoteJudgeSettings(), interestThreshold: 3.1, examples: ['例1'] } }, admin, null);
 		await firstReadPromise;
@@ -156,7 +156,7 @@ describe('Hanami judge admin endpoint contracts', () => {
 
 	test('trial uses validated draft templates locally and neither reads saved settings nor writes judgements', async () => {
 		const draft = { ...createDefaultHanamiNoteJudgeSettings(), templatePatterns: ['draft-only'] };
-		const query = jest.fn(async () => [{ noteId: 'note-1', text: 'draft-only post', reactionScore: 4, hasFiles: false, isBot: false, isReply: false }]);
+		const query = jest.fn(async (..._args: unknown[]) => [{ noteId: 'note-1', text: 'draft-only post', reactionScore: 4, hasFiles: false, isBot: false, isReply: false }]);
 
 		await expect(new JudgeTrialEndpoint({ query } as never, {} as never).exec({ limit: 50, settings: draft }, admin, null)).resolves.toEqual({
 			items: [{ noteId: 'note-1', text: 'draft-only post', reactionScore: 4, ephemeralScore: null, interest: null, contentType: null, reason: 'template' }],
@@ -177,8 +177,8 @@ describe('Hanami judge admin endpoint contracts', () => {
 	});
 
 	test('trial returns retryable busy error without starting Python when the shared LLM lock is held', async () => {
-		const query = jest.fn(async () => [{ noteId: 'note-1', text: 'useful operational note', reactionScore: 4, hasFiles: false, isBot: false, isReply: false }]);
-		const redis = { set: jest.fn(async () => null), eval: jest.fn() };
+		const query = jest.fn(async (..._args: unknown[]) => [{ noteId: 'note-1', text: 'useful operational note', reactionScore: 4, hasFiles: false, isBot: false, isReply: false }]);
+		const redis = { set: jest.fn(async (..._args: unknown[]) => null), eval: jest.fn() };
 
 		await expect(new JudgeTrialEndpoint({ query } as never, redis as never).exec({ settings: createDefaultHanamiNoteJudgeSettings() }, admin, null)).rejects.toMatchObject({
 			code: 'HANAMI_LLM_BUSY', httpStatusCode: 503,
@@ -188,10 +188,10 @@ describe('Hanami judge admin endpoint contracts', () => {
 	});
 
 	test('trial releases its shared LLM lock with its acquisition token after Python completes', async () => {
-		const query = jest.fn(async () => [{ noteId: 'note-1', text: 'useful operational note', reactionScore: 4, hasFiles: false, isBot: false, isReply: false }]);
+		const query = jest.fn(async (..._args: unknown[]) => [{ noteId: 'note-1', text: 'useful operational note', reactionScore: 4, hasFiles: false, isBot: false, isReply: false }]);
 		const redis = {
 			set: jest.fn(async (_key: string, _value: string, ..._options: unknown[]) => 'OK' as const),
-			eval: jest.fn(async () => 1),
+			eval: jest.fn(async (..._args: unknown[]) => 1),
 		};
 		const directory = await mkdtemp(Path.join(tmpdir(), 'hanami-judge-trial-lock-'));
 		const scriptPath = Path.join(directory, 'judge.py');

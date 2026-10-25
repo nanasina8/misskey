@@ -19,7 +19,7 @@ const me = { id: 'user1' } as MiLocalUser;
 const items = [{ feedEntryId: 'entry1', noteId: 'note1' }];
 
 function fixture(error?: Error) {
-	const recordSeenFeedEntries = jest.fn(async () => {
+	const recordSeenFeedEntries = jest.fn(async (..._args: unknown[]) => {
 		if (error != null) throw error;
 	});
 	return {

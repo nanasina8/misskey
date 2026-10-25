@@ -29,8 +29,8 @@ function createComputation(options: {
 	const scores = options.scores ?? new Map<string, number>();
 	const trend = options.trend ?? emptyTrend();
 	const db = { query: jest.fn(options.dbQuery ?? (async () => [])) };
-	const featuredService = { getGlobalNotesScoresWithCache: jest.fn(async () => scores) };
-	const idService = { gen: jest.fn(() => 'fallback-since-id') };
+	const featuredService = { getGlobalNotesScoresWithCache: jest.fn(async (..._args: unknown[]) => scores) };
+	const idService = { gen: jest.fn((..._args: unknown[]) => 'fallback-since-id') };
 	const trendService = { computeTrendBundle: jest.fn(async (_scores: ReadonlyMap<string, number>) => trend) };
 	const safetyService = {
 		filterCommonEligibleNotes: jest.fn(async (noteIds: readonly string[]) => (
@@ -319,7 +319,7 @@ describe('HanamiCommonComputationService', () => {
 	});
 
 	test('does not query the DB for exploration when the axis is disabled', async () => {
-		const dbQuery = jest.fn(async () => []);
+		const dbQuery = jest.fn(async (..._args: unknown[]) => []);
 		const setup = createComputation({
 			scores: new Map([['featured', 1]]),
 			dbQuery,
@@ -422,12 +422,12 @@ class FakeNoteQueryBuilder extends FakeWhereBuilder {
 describe('HanamiForYouSafetyService common eligibility', () => {
 	test('uses only static Note/author/target/host rules and canonical pure-renote semantics', async () => {
 		const query = new FakeNoteQueryBuilder([{ id: 'eligible', authorId: 'author-1' }]);
-		const notesRepository = { createQueryBuilder: jest.fn(() => query) };
+		const notesRepository = { createQueryBuilder: jest.fn((..._args: unknown[]) => query) };
 		const queryService = {
 			generateBlockedHostQueryForNote: jest.fn(),
 			generateSuspendedUserQueryForNote: jest.fn(),
 		};
-		const profileFetch = jest.fn(async () => { throw new Error('personalized profile must not be read'); });
+		const profileFetch = jest.fn(async (..._args: unknown[]) => { throw new Error('personalized profile must not be read'); });
 		const cacheService = {
 			userProfileCache: { fetch: profileFetch },
 			userMutingsCache: { fetch: jest.fn() },

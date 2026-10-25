@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { BlobWriter, TextReader, Uint8ArrayReader, ZipWriter } from '@zip.js/zip.js';
-import { ZipExtractError, ZipFile } from '@/misc/zip.js';
+import { ZipExtractError, ZipFile, extractZipToDirectory } from '@/misc/zip.js';
 
 type TestEntry = {
 	name: string;
@@ -273,4 +273,41 @@ describe('misc:zip', () => {
 			await zip.close();
 		}
 	});
+
+	test('extracts a nested note archive into a new directory', async () => {
+		const source = await writeZip([{ name: 'data/tweets.js', data: '[]' }]);
+		const destination = path.join(dir, 'extracted');
+		await extractZipToDirectory(source, destination, { maxBytes: 64, maxEntries: 10 });
+		expect(await fs.promises.readFile(path.join(destination, 'data/tweets.js'), 'utf-8')).toBe('[]');
+	});
+
+	test.each([
+		{ name: 'total bytes', maxBytes: 5, maxEntries: 10 },
+		{ name: 'entry count', maxBytes: 64, maxEntries: 1 },
+	])('limits $name across the entire archive and removes partial output', async ({ maxBytes, maxEntries }) => {
+		const source = await writeZip([{ name: 'a.txt', data: '1234' }, { name: 'b.txt', data: '5678' }]);
+		const destination = path.join(dir, 'extracted');
+		await expect(extractZipToDirectory(source, destination, { maxBytes, maxEntries })).rejects.toThrow();
+		expect(fs.existsSync(destination)).toBe(false);
+	});
+
+	test('refuses an existing extraction directory containing symlinks', async () => {
+		const source = await writeZip([{ name: 'link/a.txt', data: '1234' }]);
+		const destination = path.join(dir, 'extracted');
+		const outside = path.join(dir, 'outside');
+		await fs.promises.mkdir(destination);
+		await fs.promises.mkdir(outside);
+		await fs.promises.symlink(outside, path.join(destination, 'link'));
+		await expect(extractZipToDirectory(source, destination, { maxBytes: 64, maxEntries: 10 })).rejects.toThrow();
+		expect(fs.existsSync(path.join(outside, 'a.txt'))).toBe(false);
+		expect(fs.existsSync(destination)).toBe(true);
+	});
+
+	test('refuses archive symlinks before writing subsequent entries', async () => {
+		const source = await writeZip([{ name: 'link', data: '../outside', unixMode: S_IFLNK | 0o777 }, { name: 'link/a.txt', data: '1234' }]);
+		const destination = path.join(dir, 'extracted');
+		await expect(extractZipToDirectory(source, destination, { maxBytes: 64, maxEntries: 10 })).rejects.toThrow();
+		expect(fs.existsSync(destination)).toBe(false);
+	});
+
 });

@@ -54,7 +54,10 @@ async function initializeMigratedTestDatabase(): Promise<void> {
 	});
 	try {
 		await db.initialize();
-		await db.dropDatabase();
+		// TypeORM's dropDatabase leaves PostgreSQL functions behind. The fork's
+		// migrations create trigger functions, so reset the whole test schema.
+		await db.query('DROP SCHEMA IF EXISTS public CASCADE');
+		await db.query('CREATE SCHEMA public');
 		await db.runMigrations();
 	} finally {
 		if (db.isInitialized) await db.destroy();

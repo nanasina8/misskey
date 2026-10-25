@@ -20,12 +20,12 @@ import { DI } from '@/di-symbols.js';
 
 function mockRedis() {
 	const hash = {} as any;
-	const set = jest.fn((key: string, value) => {
-		const ret = hash[key];
-		hash[key] = value;
+	const set = jest.fn<Redis['set']>().mockImplementation(async (key, value) => {
+		const ret = hash[String(key)];
+		hash[String(key)] = value;
 		return ret;
 	});
-	return set;
+	return set as unknown as jest.Mocked<Redis>['set'];
 }
 
 describe('FetchInstanceMetadataService', () => {
