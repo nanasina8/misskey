@@ -31,6 +31,14 @@ url: https://example.tld/
 # The port that your Misskey server should listen on.
 port: 3000
 
+# Trust only the reverse proxy addresses on your deployment network.
+# By default loopback and private networks are trusted; public proxies require an explicit list.
+# Do not use true: it lets arbitrary clients supply their own X-Forwarded-For address.
+#trustProxy:
+#  - '127.0.0.1/32'
+#  - '::1/128'
+#  - '172.20.0.2/32' # Replace with your reverse proxy container address.
+
 #   ┌──────────────────────────┐
 #───┘ PostgreSQL configuration └────────────────────────────────
 

@@ -154,7 +154,7 @@ export type Config = {
 	url: string;
 	port: number;
 	socket: string | undefined;
-	trustProxy: FastifyServerOptions['trustProxy'];
+	trustProxy: NonNullable<FastifyServerOptions['trustProxy']>;
 	chmodSocket: string | undefined;
 	disableHsts: boolean | undefined;
 	db: {
@@ -366,7 +366,14 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
 		url: url.origin,
 		port: config.port ?? parseInt(process.env.PORT ?? '', 10),
 		socket: config.socket,
-		trustProxy: config.trustProxy,
+		trustProxy: config.trustProxy ?? [
+			'10.0.0.0/8',
+			'172.16.0.0/12',
+			'192.168.0.0/16',
+			'127.0.0.1/32',
+			'::1/128',
+			'fc00::/7',
+		],
 		chmodSocket: config.chmodSocket,
 		disableHsts: config.disableHsts,
 		host,
