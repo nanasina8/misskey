@@ -68,9 +68,10 @@ export class AntennaChannel extends Channel {
 
 			const filtered = await this.noteStreamingHidingService.filter(note, this.user?.id ?? null);
 			if (!filtered) return;
-			note = await this.noteEntityService.withMyPollVotes(filtered, this.user?.id ?? null);
+			// 投票補完後のコピーでは、ミュート処理が保持する自己反応の判定を参照できない。
+			note = await this.noteEntityService.withMyRenoteReaction(filtered, this.user?.id ?? null);
 
-			this.send('note', await this.noteEntityService.withMyRenoteReaction(note, this.user?.id ?? null));
+			this.send('note', await this.noteEntityService.withMyPollVotes(note, this.user?.id ?? null));
 		} else {
 			this.send(data.type, data.body);
 		}
