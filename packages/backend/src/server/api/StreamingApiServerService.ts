@@ -8,7 +8,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import * as WebSocket from 'ws';
 import { DI } from '@/di-symbols.js';
-import type { UsersRepository, MiAccessToken } from '@/models/_.js';
+import type { UsersRepository, MiAccessToken, MiMeta } from '@/models/_.js';
 import { NotificationService } from '@/core/NotificationService.js';
 import { bindThis } from '@/decorators.js';
 import { CacheService } from '@/core/CacheService.js';
@@ -50,6 +50,8 @@ export class StreamingApiServerService {
 		private apiLoggerService: ApiLoggerService,
 		private channelFollowingService: ChannelFollowingService,
 		private channelMutingService: ChannelMutingService,
+		@Inject(DI.meta)
+		private meta: MiMeta,
 	) {
 	}
 
@@ -130,6 +132,7 @@ export class StreamingApiServerService {
 				this.channelFollowingService,
 				this.channelMutingService,
 				user, app,
+				this.meta,
 			);
 			try {
 				await stream.init();

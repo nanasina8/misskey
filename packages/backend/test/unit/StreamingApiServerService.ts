@@ -116,6 +116,7 @@ describe('StreamingApiServerService activity updates', () => {
 			{ logger: { error: loggerError } } as never,
 			{} as never,
 			{} as never,
+			{ ugcVisibilityForVisitor: 'all' } as never,
 		);
 		service.attach(server as unknown as http.Server);
 	});

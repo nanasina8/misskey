@@ -139,6 +139,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			this.queryService.generateBlockedHostQueryForNote(query);
 			this.queryService.generateSuspendedUserQueryForNote(query);
+			if (me == null) this.queryService.generateUgcVisibilityQueryForVisitor(query);
 
 			// みつけるのメディアフィルタ（ユーザー設定）。候補は最大300件に限定済みなので drive_file 参照でも安い。
 			if (mediaFilter === 'hideMedia') {

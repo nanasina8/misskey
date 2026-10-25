@@ -181,6 +181,9 @@ export class NoteEntityService implements OnModuleInit {
 		if (meId === packedNote.userId) return false;
 		// TODO: isVisibleForMe を使うようにしても良さそう(型違うけど)
 
+		// TODO: ugcVisibilityForVisitor が local の場合も、付随するリモートのノートをリンクだけ残して内容を隠せるようにする
+		if (meId == null && this.meta.ugcVisibilityForVisitor === 'none') return true;
+
 		if (packedNote.user.requireSigninToViewContents && meId == null) {
 			return true;
 		}
@@ -321,8 +324,21 @@ export class NoteEntityService implements OnModuleInit {
 	@bindThis
 	public async isVisibleForMe(note: MiNote, meId: MiUser['id'] | null): Promise<boolean> {
 		// This code must always be synchronized with the checks in QueryService.generateVisibilityQuery.
+		if (meId === note.userId) return true;
+
+		const author = note.user ?? await this.cacheService.findUserById(note.userId);
+		if (meId == null && author.requireSigninToViewContents) return false;
+
+		const createdAt = this.idService.parse(note.id).date;
+		if (shouldHideNoteByTime(author.makeNotesHiddenBefore, createdAt)) return false;
+
+		const visibility = (note.visibility === 'public' || note.visibility === 'home')
+			&& shouldHideNoteByTime(author.makeNotesFollowersOnlyBefore, createdAt)
+			? 'followers'
+			: note.visibility;
+
 		// visibility が specified かつ自分が指定されていなかったら非表示
-		if (note.visibility === 'specified') {
+		if (visibility === 'specified') {
 			if (meId == null) {
 				return false;
 			} else if (meId === note.userId) {
@@ -334,12 +350,12 @@ export class NoteEntityService implements OnModuleInit {
 		}
 
 		// visibility が followers かつ自分が投稿者のフォロワーでなかったら非表示
-		if (note.visibility === 'followers') {
+		if (visibility === 'followers') {
 			if (meId == null) {
 				return false;
 			} else if (meId === note.userId) {
 				return true;
-			} else if (note.reply && (meId === note.reply.userId)) {
+			} else if (note.replyUserId && (meId === note.replyUserId)) {
 				// 自分の投稿に対するリプライ
 				return true;
 			} else if (note.mentions && note.mentions.some(id => meId === id)) {
@@ -517,7 +533,6 @@ export class NoteEntityService implements OnModuleInit {
 			withReactionAndUserPairCache: false,
 		}, options);
 
-		const meId = me ? me.id : null;
 		const note = typeof src === 'object' ? src : await this.noteLoader.load(src);
 		const host = note.userHost;
 
@@ -639,7 +654,6 @@ export class NoteEntityService implements OnModuleInit {
 
 		const bufferedReactions = this.meta.enableReactionsBuffering ? await this.reactionsBufferingService.getMany([...getAppearNoteIds(notes)]) : null;
 
-		const meId = me ? me.id : null;
 		const myReactionsMap = new Map<MiNote['id'], string | null>();
 		if (meId) {
 			const idsNeedFetchMyReaction = new Set<MiNote['id']>();
@@ -780,24 +794,38 @@ export class NoteEntityService implements OnModuleInit {
 
 	@bindThis
 	public async fetchDiffs(noteIds: MiNote['id'][], me?: { id: MiUser['id'] } | null) {
+		const meId = me?.id ?? null;
 		if (noteIds.length === 0) return [];
+		// TODO: ugcVisibilityForVisitor が local の場合の扱いを shouldHideNote と揃える
+		if (meId == null && this.meta.ugcVisibilityForVisitor === 'none') return [];
 
-		const notes = await this.notesRepository.find({
+		const fetched = await this.notesRepository.find({
 			where: {
 				id: In(noteIds),
 			},
 			select: {
 				id: true,
+				userId: true,
 				userHost: true,
+				visibility: true,
+				visibleUserIds: true,
+				mentions: true,
+				replyUserId: true,
 				reactions: true,
 				reactionAndUserPairCache: true,
 				reactionAcceptance: true,
 			},
 		});
 
+		const notes: MiNote[] = [];
+		for (const note of fetched) {
+			if (await this.isVisibleForMe(note, meId)) {
+				notes.push(note);
+			}
+		}
+
 		const bufferedReactionsMap = this.meta.enableReactionsBuffering ? await this.reactionsBufferingService.getMany(noteIds) : null;
 
-		const meId = me ? me.id : null;
 
 		// ビューアロールと候補を一度だけ解決して使い回す（最大100ノート分をまとめて）
 		let viewerRoleIds: Set<MiRole['id']> | null = null;

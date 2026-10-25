@@ -83,6 +83,9 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.cannotTranslateInvisibleNote);
 			}
 
+			const packedNote = await this.noteEntityService.pack(note, me);
+			if (packedNote.isHidden) throw new ApiError(meta.errors.cannotTranslateInvisibleNote);
+
 			if (note.text == null) {
 				return;
 			}
