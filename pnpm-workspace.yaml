@@ -39,3 +39,4 @@ minimumReleaseAgeExclude:
   - 'body-parser@1.20.9 || 2.4.0' # security update reviewed 2026-10-25
   - 'happy-dom@21.0.4' # security update reviewed 2026-10-25
   - 'multer@2.5.0' # security update reviewed 2026-10-25
+  - 'fast-uri@3.1.9 || 4.2.3' # security update reviewed 2026-10-25

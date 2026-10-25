@@ -99,7 +99,13 @@
 			"ip-address@10": "10.7.4",
 			"@fastify/busboy@3": "3.2.3",
 			"@mapbox/node-pre-gyp>tar": "7.5.22",
-			"@tensorflow/tfjs-node>adm-zip": "0.6.1"
+			"@tensorflow/tfjs-node>adm-zip": "0.6.1",
+			"fast-uri@3": "3.1.9",
+			"fast-uri@4": "4.2.3",
+			"@misskey-dev/summaly>fastify": "5.12.7",
+			"uuid@11": "11.1.1",
+			"yaml@2": "2.8.3",
+			"@xhmikosr/downloader>file-type": "21.3.2"
 		},
 		"ignoredBuiltDependencies": [
 			"@sentry-internal/node-cpu-profiler",
