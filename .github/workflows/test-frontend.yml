@@ -10,6 +10,8 @@ on:
       - packages/misskey-js/**
       # for e2e
       - packages/backend/**
+      - .github/actions/setup-pgdog/**
+      - .github/pgdog/**
       - .github/workflows/test-frontend.yml
       - .github/misskey/test.yml
   pull_request:
@@ -21,8 +23,13 @@ on:
       - packages/misskey-js/**
       # for e2e
       - packages/backend/**
+      - .github/actions/setup-pgdog/**
+      - .github/pgdog/**
       - .github/workflows/test-frontend.yml
       - .github/misskey/test.yml
+permissions:
+  contents: read
+
 jobs:
   vitest:
     name: Unit tests (frontend)
@@ -55,7 +62,11 @@ jobs:
         files: ./packages/frontend/coverage/coverage-final.json
 
   e2e:
-    name: E2E tests (frontend)
+    strategy:
+      fail-fast: false
+      matrix:
+        database-route: [direct, pgdog]
+    name: E2E tests (frontend, ${{ matrix.database-route }})
     runs-on: ubuntu-latest
 
     services:
@@ -99,16 +110,22 @@ jobs:
     - run: pnpm i --frozen-lockfile
     - name: Copy Configure
       run: cp .github/misskey/test.yml .config
+    - uses: ./.github/actions/setup-pgdog
+      if: matrix.database-route == 'pgdog'
     - name: Build
       run: pnpm build
     - name: Playwright install
       working-directory: packages/frontend
       run: pnpm exec playwright install --with-deps chromium
     - name: Test
-      run: pnpm start-server-and-test start:test http://localhost:61812 "pnpm --filter frontend test:e2e"
+      run: pnpm start-server-and-test "pnpm --filter backend start:test" http://localhost:61812 "pnpm --filter frontend test:e2e"
       timeout-minutes: 15
     - uses: actions/upload-artifact@v7
       if: failure()
       with:
-        name: playwright-e2e-artifacts
+        name: playwright-e2e-artifacts-${{ matrix.database-route }}
         path: packages/frontend/test/e2e/artifacts
+
+    - name: PgDog logs
+      if: always() && matrix.database-route == 'pgdog'
+      run: docker logs misskey-test-pgdog
