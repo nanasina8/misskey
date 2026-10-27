@@ -14,7 +14,6 @@ import type { Config } from '@/config.js';
 import { bindThis } from '@/decorators.js';
 import { hanamiReturningRows } from '@/core/hanami/HanamiReturningRows.js';
 import { IdService } from '@/core/IdService.js';
-import { HanamiInvalidPersonalSeedError } from '@/core/hanami/HanamiUserFeedContracts.js';
 import {
 	HANAMI_PERSONAL_FEED_COMPUTATION,
 	HANAMI_USER_FEED_AXES,
@@ -27,7 +26,6 @@ import {
 	type HanamiUserFeedGenerationRunResult,
 } from './HanamiUserFeedContracts.js';
 import { HanamiCommonHeadQueries } from './HanamiCommonHeadQueries.js';
-import { encodeHanamiPersonalFeedEntryLocator } from './HanamiFeedCodec.js';
 import { classifyHanamiMetricsFailure, type HanamiMetricsFailureKind } from './HanamiMetricsFailure.js';
 import type { DataSource, QueryRunner } from 'typeorm';
 
@@ -178,17 +176,6 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 			if (primaryError === workerLease.timeoutError
 				|| (workerLease.controller.signal.aborted && workerLease.controller.signal.reason === workerLease.timeoutError)) {
 				throw workerLease.timeoutError;
-			}
-			if (primaryError instanceof HanamiInvalidPersonalSeedError) {
-				const recoveryBudget = this.forkRemainingBudget(workerLease);
-				if (recoveryBudget == null) throw primaryError;
-				try {
-					const recovery = await this.recoverInvalidPersonalSeed(claim, recoveryBudget);
-					if (recovery.kind === 'stale') return { kind: 'stale', batchId, attempt: claim.attempt };
-					return recovery;
-				} finally {
-					recoveryBudget.dispose();
-				}
 			}
 
 			const failureBudget = this.forkRemainingBudget(workerLease);
@@ -516,7 +503,6 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 
 				const batch = await this.lockBatch(queryRunner, budget, claim.batchId);
 				if (!this.isExactLiveClaim(state, batch, claim)) throw new HanamiUserFeedLeaseLostError();
-				await this.deleteUnservedOldHeadTail(queryRunner, budget, claim, state);
 				const commonRows = await this.deadlineQuery(queryRunner, budget, `
 					SELECT g."id" AS id FROM "hanami_common_generation" g
 					WHERE g."id" = $1 AND g."status" = 'ready'
@@ -615,46 +601,6 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 		}
 	}
 
-	private async deleteUnservedOldHeadTail(queryRunner: QueryRunner, budget: Budget, claim: Claim, state: StateRow): Promise<void> {
-		if (claim.trigger !== 'refresh' || state.latest_ready_batch_id == null || state.latest_ready_batch_id === claim.batchId) return;
-
-		const oldHeadBatchId = state.latest_ready_batch_id;
-		const entries = await this.deadlineQuery(queryRunner, budget, `
-			SELECT "sequence"::text AS sequence
-			FROM "hanami_user_feed_entry"
-			WHERE "userId" = $1 AND "epochId" = $2 AND "batchId" = $3
-			ORDER BY "sequence" DESC
-		`, [claim.userId, claim.epochId, oldHeadBatchId]) as Array<{ sequence: string }>;
-		if (entries.length === 0) return;
-
-		const sequenceByLocator = new Map(entries.map(({ sequence }) => [
-			encodeHanamiPersonalFeedEntryLocator({ userId: claim.userId, epochId: claim.epochId, sequence }),
-			sequence,
-		]));
-		const served = await this.deadlineQuery(queryRunner, budget, `
-			SELECT ev."feedEntryId" AS feed_entry_id
-			FROM "hanami_recommendation_event" ev
-			WHERE ev."userId" = $1 AND ev."eventType" = 'served' AND ev."feedEntryId" = ANY($2::varchar[])
-		`, [claim.userId, [...sequenceByLocator.keys()]]) as Array<{ feed_entry_id: string }>;
-		const servedSequences = served.flatMap(({ feed_entry_id }) => {
-			const sequence = sequenceByLocator.get(feed_entry_id);
-			return sequence == null ? [] : [BigInt(sequence)];
-		});
-		if (servedSequences.length === 0) {
-			await this.deadlineQuery(queryRunner, budget, `
-				DELETE FROM "hanami_user_feed_entry"
-				WHERE "userId" = $1 AND "epochId" = $2 AND "batchId" = $3
-			`, [claim.userId, claim.epochId, oldHeadBatchId]);
-			return;
-		}
-
-		const minServed = servedSequences.reduce((minimum, sequence) => sequence < minimum ? sequence : minimum);
-		await this.deadlineQuery(queryRunner, budget, `
-			DELETE FROM "hanami_user_feed_entry"
-			WHERE "userId" = $1 AND "epochId" = $2 AND "batchId" = $3 AND "sequence" < $4::bigint
-		`, [claim.userId, claim.epochId, oldHeadBatchId, minServed.toString()]);
-	}
-
 	private async resolveFailure(claim: Claim, budget: Budget, error: unknown): Promise<FailureResolution> {
 		const failure = classifyHanamiMetricsFailure(error);
 		try {
@@ -726,106 +672,6 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 			if (error instanceof HanamiUserFeedLeaseLostError) return { kind: 'stale' };
 			throw error;
 		}
-	}
-
-	/**
-	 * An invalid seed is distinct from a generation failure: its active epoch can
-	 * never satisfy the constraint window. Every row that can invalidate this
-	 * claim is locked before any mutation, so a delayed worker is fenced by the
-	 * old epoch, state pointer, and old batch lease CAS.
-	 */
-	private async recoverInvalidPersonalSeed(
-		claim: Claim,
-		budget: Budget,
-	): Promise<Extract<HanamiUserFeedGenerationRunResult, { kind: 'replaced' }> | { kind: 'stale' }> {
-		return await this.withDeadlineTransaction(budget, async (queryRunner) => {
-			// Lock order is intentionally fixed: user, state, epoch, batch, refreshes.
-			const users = await this.deadlineQuery(queryRunner, budget, `
-				SELECT u."id" AS id, u."isHibernated" AS is_hibernated
-				FROM "user" u WHERE u."id" = $1 FOR UPDATE OF u
-			`, [claim.userId]) as Array<{ id: string; is_hibernated: boolean }>;
-			const user = users.at(0);
-			if (user == null || user.is_hibernated) return { kind: 'stale' } as const;
-
-			const state = await this.lockState(queryRunner, budget, claim.userId);
-			if (state == null) return { kind: 'stale' } as const;
-			const epochs = await this.deadlineQuery(queryRunner, budget, `
-				SELECT e."epochId" AS epoch_id, e."retiredAt" AS retired_at
-				FROM "hanami_user_feed_epoch" e
-				WHERE e."userId" = $1 AND e."epochId" = $2
-				FOR UPDATE OF e
-			`, [claim.userId, claim.epochId]) as Array<{ epoch_id: string; retired_at: Date | string | null }>;
-			const epoch = epochs.at(0);
-			if (epoch == null || epoch.retired_at != null) return { kind: 'stale' } as const;
-
-			const batch = await this.lockBatch(queryRunner, budget, claim.batchId);
-			await this.deadlineQuery(queryRunner, budget, `
-				SELECT r."refreshTokenDigest"
-				FROM "hanami_user_feed_refresh" r
-				WHERE r."userId" = $1 AND r."epochId" = $2
-					AND r."requestedBatchId" = $3 AND r."status" = 'pending'
-				ORDER BY r."refreshTokenDigest" ASC
-				FOR UPDATE OF r
-			`, [claim.userId, claim.epochId, claim.batchId]);
-			if (!this.isExactLiveClaim(state, batch, claim)) return { kind: 'stale' } as const;
-
-			const replacementBatchId = this.idService.gen();
-			const replacementEpochId = this.idService.gen();
-			const obsolete = hanamiReturningRows(await this.deadlineQuery(queryRunner, budget, `
-				UPDATE "hanami_user_feed_batch"
-				SET "status" = 'obsolete', "leaseOwner" = NULL, "leaseExpiresAt" = NULL,
-					"finishedAt" = clock_timestamp()
-				WHERE "id" = $1 AND "status" = 'generating' AND "leaseOwner" = $2
-					AND "attempts" = $3 AND "leaseExpiresAt" > clock_timestamp()
-					AND clock_timestamp() < $4::timestamptz
-				RETURNING "id" AS id
-			`, [claim.batchId, claim.leaseOwner, claim.attempt, this.databaseDeadlineAt(budget)]) as Array<{ id: string }>);
-			if (obsolete.length !== 1) return { kind: 'stale' } as const;
-
-			const retired = hanamiReturningRows(await this.deadlineQuery(queryRunner, budget, `
-				UPDATE "hanami_user_feed_epoch"
-				SET "retiredAt" = clock_timestamp()
-				WHERE "userId" = $1 AND "epochId" = $2 AND "retiredAt" IS NULL
-				RETURNING "epochId" AS epoch_id
-			`, [claim.userId, claim.epochId]) as Array<{ epoch_id: string }>);
-			if (retired.length !== 1) throw new HanamiUserFeedLeaseLostError();
-
-			await this.deadlineQuery(queryRunner, budget, `
-				INSERT INTO "hanami_user_feed_epoch" ("epochId", "userId", "createdAt", "retiredAt")
-				VALUES ($1, $2, clock_timestamp(), NULL)
-			`, [replacementEpochId, claim.userId]);
-			const commonHead = await this.commonHeadQueries.lockLatestReadyCommonHead(queryRunner);
-			if (commonHead == null) throw new Error('Hanami common feed is not ready for invalid-seed recovery');
-
-			await this.deadlineQuery(queryRunner, budget, `
-				INSERT INTO "hanami_user_feed_batch" (
-					"id", "userId", "epochId", "trigger", "status", "attempts", "createdAt", "availableAt", "baseCommonGenerationId"
-				)
-				VALUES ($1, $2, $3, 'initial', 'pending', 0, clock_timestamp(), clock_timestamp(), $4)
-			`, [replacementBatchId, claim.userId, replacementEpochId, commonHead.generationId]);
-			const updatedState = hanamiReturningRows(await this.deadlineQuery(queryRunner, budget, `
-				UPDATE "hanami_user_feed_state"
-				SET "epochId" = $2, "mode" = 'common', "initialGenerationState" = 'requested',
-					"initialGenerationAttemptedAt" = clock_timestamp(), "latestReadyBatchId" = NULL,
-					"generatingBatchId" = $3, "latestSequence" = 0, "earliestRetainedSequence" = 0,
-					"commonEpochId" = $4, "commonHeadGenerationId" = $5,
-					"commonHeadSequence" = $6::bigint, "updatedAt" = clock_timestamp()
-				WHERE "userId" = $1 AND "epochId" = $7 AND "generatingBatchId" = $8
-				RETURNING "userId" AS user_id
-			`, [claim.userId, replacementEpochId, replacementBatchId, commonHead.epochId,
-				commonHead.generationId, commonHead.headSequence, claim.epochId, claim.batchId]) as Array<{ user_id: string }>);
-			if (updatedState.length !== 1) throw new HanamiUserFeedLeaseLostError();
-			await this.deadlineQuery(queryRunner, budget, `
-				UPDATE "hanami_user_feed_refresh"
-				SET "epochId" = $4, "requestedBatchId" = $5
-				WHERE "userId" = $1 AND "epochId" = $2 AND "requestedBatchId" = $3 AND "status" = 'pending'
-			`, [claim.userId, claim.epochId, claim.batchId, replacementEpochId, replacementBatchId]);
-
-			return { kind: 'replaced', batchId: claim.batchId, attempt: claim.attempt, replacementBatchId } as const;
-		}).catch((error: unknown) => {
-			if (error instanceof HanamiUserFeedLeaseLostError) return { kind: 'stale' } as const;
-			throw error;
-		});
 	}
 
 	private async reconcileBatch(candidate: ReconcileCandidate): Promise<'enqueue' | 'failed' | 'obsolete' | null> {

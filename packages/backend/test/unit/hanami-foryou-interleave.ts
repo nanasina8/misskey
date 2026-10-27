@@ -4,8 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 
-
-import { hanamiInterleave, hanamiAxisOrder, type HanamiAxis, type HanamiAxisLevel, type ForYouCandidate } from '@/core/hanami/HanamiForYouInterleave.js';
+import { hanamiInterleave, hanamiAxisOrder, type HanamiAxis, type ForYouCandidate } from '@/core/hanami/HanamiForYouInterleave.js';
 
 type ConstraintCandidate = Omit<ForYouCandidate, 'score'>;
 
@@ -41,8 +40,6 @@ function expectFinalWindows(selected: readonly ConstraintCandidate[], following:
 			for (const fingerprint of new Set(window.filter(value => value.isBot).map(value => value.strictBotTemplateFingerprint).filter((value): value is string => value != null))) {
 				expect(window.filter(value => value.isBot && value.strictBotTemplateFingerprint === fingerprint).length).toBeLessThanOrEqual(1);
 			}
-			expect(window.filter(value => value.relationshipClass === 'directFollow').length).toBeLessThanOrEqual(6);
-			expect(window.filter(value => value.relationshipClass === 'directFollow' || value.relationshipClass === 'known').length).toBeLessThanOrEqual(12);
 		}
 	}
 }
@@ -57,11 +54,9 @@ function expectPartialUpperFeasible(selected: readonly ConstraintCandidate[], fo
 	const templates = partial.filter(value => value.isBot && value.userId != null && value.strictBotTemplateFingerprint != null)
 		.map(value => `${value.userId}\u0000${value.strictBotTemplateFingerprint}`);
 	for (const template of new Set(templates)) expect(templates.filter(value => value === template)).toHaveLength(1);
-	expect(partial.filter(value => value.relationshipClass === 'directFollow').length).toBeLessThanOrEqual(6);
-	expect(partial.filter(value => value.relationshipClass === 'directFollow' || value.relationshipClass === 'known').length).toBeLessThanOrEqual(12);
 }
 
-function bruteFinalValid(selected: readonly ConstraintCandidate[], following: readonly ConstraintCandidate[], unknownSufficient: boolean): boolean {
+function bruteFinalValid(selected: readonly ConstraintCandidate[], following: readonly ConstraintCandidate[]): boolean {
 	const visible = [...selected, ...following];
 	for (const size of [10, 30, 210]) {
 		for (let start = 0; start + size <= visible.length && start < selected.length; start++) {
@@ -77,9 +72,6 @@ function bruteFinalValid(selected: readonly ConstraintCandidate[], following: re
 			for (const key of new Set(window.filter(item => item.isBot && item.userId != null && item.strictBotTemplateFingerprint != null).map(item => `${item.userId}\u0000${item.strictBotTemplateFingerprint}`))) {
 				if (window.filter(item => item.isBot && `${item.userId}\u0000${item.strictBotTemplateFingerprint}` === key).length > 1) return false;
 			}
-			if (window.filter(item => item.relationshipClass === 'directFollow').length > 6) return false;
-			if (window.filter(item => item.relationshipClass === 'directFollow' || item.relationshipClass === 'known').length > 12) return false;
-			if (unknownSufficient && window.filter(item => item.relationshipClass === 'unknown').length < 15) return false;
 		}
 	}
 	return true;
@@ -124,13 +116,13 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 			['fof', uniqueCands('fof', 20)],
 			['exploration', uniqueCands('ex', 20)],
 		]);
-		const axisLevels = new Map<HanamiAxis, HanamiAxisLevel>([
-			['globalPopular', 'off'],
-			['trending', 'high'],
-			['fof', 'normal'],
-			['exploration', 'off'],
+		const amounts = new Map<HanamiAxis, number>([
+			['globalPopular', 0],
+			['trending', 1.6],
+			['fof', 1],
+			['exploration', 0],
 		]);
-		const out = hanamiInterleave({ confidence: 'none', limit: 10, axisCandidates, axisLevels });
+		const out = hanamiInterleave({ confidence: 'none', limit: 10, axisCandidates, amounts });
 		const c = countBySource(out);
 		expect(c.globalPopular).toBeUndefined(); // OFF=0
 		expect(c.exploration).toBeUndefined(); // OFF=0
@@ -143,11 +135,11 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 
 	it('Q1: 有効軸が1つだけならそれがページをほぼ総取りする（1つだけON）', () => {
 		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>([
-			['globalPopular', uniqueCands('gp', 30)], // axisLevels に無い → OFF
+			['globalPopular', uniqueCands('gp', 30)], // amounts に無い → OFF
 			['trending', uniqueCands('tr', 30)],
 		]);
-		const axisLevels = new Map<HanamiAxis, HanamiAxisLevel>([['trending', 'normal']]);
-		const out = hanamiInterleave({ confidence: 'none', limit: 10, axisCandidates, axisLevels });
+		const amounts = new Map<HanamiAxis, number>([['trending', 1]]);
+		const out = hanamiInterleave({ confidence: 'none', limit: 10, axisCandidates, amounts });
 		// OFF軸(globalPopular)は一切出ない。単独有効軸がページを埋める（固定cap=ceil(10*0.12)=2件ではない）。
 		expect(out.every(o => o.source === 'trending')).toBe(true);
 		expect(out.length).toBeGreaterThanOrEqual(10);
@@ -186,44 +178,15 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		expect(out.map(item => item.noteId)).toEqual(['n1', 'n2']);
 	});
 
-	it('heals a pre-existing unknown-floor deficit without publishing an invalid boundary', () => {
-		const followingSeedVisible = [
-			...Array.from({ length: 14 }, (_, index) => ({ ...cand(`old-unknown-${index}`, `unknown-${index}`), relationshipClass: 'unknown' as const })),
-			...Array.from({ length: 16 }, (_, index) => cand(`old-known-${index}`, `old-${index}`)),
-		];
-		const out = hanamiInterleave({ confidence: 'none', limit: 10, personalConstraints: true, unknownSufficient: true, followingSeedVisible,
-			axisCandidates: new Map([['globalPopular', [{ ...cand('healing-unknown', 'new-unknown'), relationshipClass: 'unknown' as const }]]]) });
-		expect(out.map(item => item.noteId)).toEqual(['healing-unknown']);
-		expect(bruteFinalValid(out, followingSeedVisible, true)).toBe(true);
-	});
-
-	it('prefers unknown candidates over higher-ranked known ones when a window would seal below the floor', () => {
-		// 手前29件の unknown が14件しかない seed。ここで known を採ると窓が14件で確定し、
-		// 最終 prefix validator が全件切り落として空バッチになる（＝生成失敗）。
-		const followingSeedVisible = [
-			...Array.from({ length: 14 }, (_, index) => ({ ...cand(`old-unknown-${index}`, `unknown-${index}`), relationshipClass: 'unknown' as const })),
-			...Array.from({ length: 16 }, (_, index) => cand(`old-known-${index}`, `old-${index}`)),
-		];
-		const candidates = [
-			...Array.from({ length: 5 }, (_, index) => ({ ...cand(`top-known-${index}`, `known-author-${index}`), score: 100 - index, relationshipClass: 'known' as const })),
-			...Array.from({ length: 10 }, (_, index) => ({ ...cand(`fresh-unknown-${index}`, `fresh-author-${index}`), score: 10 - index, relationshipClass: 'unknown' as const })),
-		];
-		const out = hanamiInterleave({ confidence: 'none', limit: 10, personalConstraints: true, unknownSufficient: true, followingSeedVisible,
-			axisCandidates: new Map([['globalPopular', candidates]]) });
-		expect(out.length).toBeGreaterThan(0);
-		expect(out[0].noteId).toBe('fresh-unknown-0');
-		expect(bruteFinalValid(out, followingSeedVisible, true)).toBe(true);
-	});
-
 	it('rejects a candidate that worsens a legacy upper violation context', () => {
 		const followingSeedVisible = [
 			...Array.from({ length: 15 }, (_, index) => ({ ...cand(`old-unknown-${index}`, `unknown-${index}`), relationshipClass: 'unknown' as const })),
 			...uniqueCands('old', 5), cand('old-a-1', 'A'), cand('old-a-2', 'A'), ...uniqueCands('old-tail', 8),
 		];
-		const out = hanamiInterleave({ confidence: 'none', limit: 10, personalConstraints: true, unknownSufficient: true, followingSeedVisible,
+		const out = hanamiInterleave({ confidence: 'none', limit: 10, personalConstraints: true, followingSeedVisible,
 			axisCandidates: new Map([['globalPopular', [cand('worsening-a', 'A'), { ...cand('safe-unknown', 'fresh'), relationshipClass: 'unknown' as const }]]]) });
 		expect(out.map(item => item.noteId)).toEqual(['safe-unknown']);
-		expect(bruteFinalValid(out, followingSeedVisible, true)).toBe(true);
+		expect(bruteFinalValid(out, followingSeedVisible)).toBe(true);
 	});
 
 	it('matches independent brute-force final validity for deterministic randomized constraints', () => {
@@ -231,20 +194,20 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		const random = () => { state = (state * 1664525 + 1013904223) >>> 0; return state; };
 		let nonemptyCases = 0;
 		for (let run = 0; run < 40; run++) {
-			const unknownSufficient = run % 2 === 0;
+			const useUnknown = run % 2 === 0;
 			const make = (prefix: string, index: number): ForYouCandidate => ({
 				noteId: `${prefix}-${run}-${index}`, userId: `author-${random() % 24}`, score: 100 - index,
-				relationshipClass: unknownSufficient ? 'unknown' : (random() % 2 === 0 ? 'directFollow' : 'known'),
+				relationshipClass: useUnknown ? 'unknown' : (random() % 2 === 0 ? 'directFollow' : 'known'),
 				exactTextFingerprint: `fp-${prefix}-${run}-${index}`,
 				isBot: random() % 4 === 0, strictBotTemplateFingerprint: `tpl-${prefix}-${run}-${index}`,
 			});
 			const following: ForYouCandidate[] = Array.from({ length: 30 }, (_, index) => ({ ...make('old', index), userId: `old-author-${run}-${index}`,
-				relationshipClass: unknownSufficient && index < 15 ? 'unknown' : undefined }));
+				relationshipClass: useUnknown && index < 15 ? 'unknown' : undefined }));
 			const candidates = Array.from({ length: 45 }, (_, index) => make('new', index));
-			const out = hanamiInterleave({ confidence: 'none', limit: 30, personalConstraints: true, unknownSufficient,
+			const out = hanamiInterleave({ confidence: 'none', limit: 30, personalConstraints: true,
 				followingSeedVisible: following, axisCandidates: new Map([['globalPopular', candidates]]) });
 			if (out.length > 0) nonemptyCases++;
-			expect(bruteFinalValid(out, following, unknownSufficient)).toBe(true);
+			expect(bruteFinalValid(out, following)).toBe(true);
 		}
 		expect(nonemptyCases).toBeGreaterThan(0);
 	});
@@ -258,36 +221,6 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		]]]);
 		const out = hanamiInterleave({ confidence: 'none', limit: 10, axisCandidates, followingSeedVisible, personalConstraints: true });
 		expect(out.map(x => x.noteId)).toEqual(['fresh']);
-	});
-
-	it('keeps direct/known caps and the unknown floor when fifteen unknown Notes are eligible', () => {
-		const unknown = Array.from({ length: 15 }, (_, index) => ({ ...cand(`unknown-${index}`, `unknown-author-${index}`), relationshipClass: 'unknown' as const }));
-		const direct = Array.from({ length: 10 }, (_, index) => ({ ...cand(`direct-${index}`, `direct-author-${index}`), relationshipClass: 'directFollow' as const }));
-		const known = Array.from({ length: 10 }, (_, index) => ({ ...cand(`known-${index}`, `known-author-${index}`), relationshipClass: 'known' as const }));
-		const out = hanamiInterleave({ confidence: 'none', limit: 30, personalConstraints: true,
-			axisCandidates: new Map<HanamiAxis, ForYouCandidate[]>([['globalPopular', [...unknown, ...direct, ...known]]]) });
-		const selected = new Map([...unknown, ...direct, ...known].map(value => [value.noteId, value.relationshipClass]));
-		const classes = out.map(value => selected.get(value.noteId));
-		expect(classes.filter(value => value === 'unknown')).toHaveLength(15);
-		expect(classes.filter(value => value === 'directFollow').length).toBeLessThanOrEqual(6);
-		expect(classes.filter(value => value === 'directFollow' || value === 'known').length).toBeLessThanOrEqual(12);
-	});
-
-	it('uses the stable batch unknown-sufficiency snapshot instead of the local candidate count', () => {
-		const candidates = Array.from({ length: 31 }, (_, index) => cand(`unclassified-${index}`, `author-${index}`));
-		const constrained = hanamiInterleave({ confidence: 'none', limit: 30, personalConstraints: true, unknownSufficient: true, axisCandidates: new Map([['globalPopular', candidates]]) });
-		const legacy = hanamiInterleave({ confidence: 'none', limit: 30, personalConstraints: true, unknownEligibleCount: 0, axisCandidates: new Map([['globalPopular', candidates]]) });
-		expect(constrained).toHaveLength(29); // The 30th would complete an unknown-floor-invalid window.
-		expect(legacy).toHaveLength(31);
-	});
-
-	it('keeps the longest valid prefix and returns no prefix when the first new item is invalid', () => {
-		const following = uniqueCands('old', 8);
-		const prefix = hanamiInterleave({ confidence: 'none', limit: 10, personalConstraints: true, followingSeedVisible: following, axisCandidates: new Map([['globalPopular', [cand('first', 'B'), cand('rejected', 'B')]]]) });
-		expect(prefix.map(value => value.noteId)).toEqual(['first']);
-
-		const noPrefix = hanamiInterleave({ confidence: 'none', limit: 10, personalConstraints: true, followingSeedVisible: [...following, cand('old-b', 'B')], axisCandidates: new Map([['globalPopular', [cand('invalid-first', 'B')]]]) });
-		expect(noPrefix).toEqual([]);
 	});
 
 	it('handles a 1900-candidate refresh with a 210-item boundary using bounded sliding checks', () => {
@@ -341,39 +274,23 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		expectFinalWindows([...selectedVisible, ...out.map(value => cand(value.noteId, value.userId!))], followingSeedVisible);
 	});
 
-	it('enforces direct and known relationship caps at the old-head boundary', () => {
-		const followingSeedVisible: ForYouCandidate[] = [
-			...Array.from({ length: 6 }, (_, index) => ({ ...cand(`old-direct-${index}`, `direct-${index}`), relationshipClass: 'directFollow' as const })),
-			...Array.from({ length: 6 }, (_, index) => ({ ...cand(`old-known-${index}`, `known-${index}`), relationshipClass: 'known' as const })),
-			...Array.from({ length: 17 }, (_, index) => ({ ...cand(`old-unknown-${index}`, `unknown-${index}`), relationshipClass: 'unknown' as const })),
-		];
-		const out = hanamiInterleave({ confidence: 'none', limit: 10, personalConstraints: true, followingSeedVisible,
-			axisCandidates: new Map([['globalPopular', [
-				{ ...cand('new-direct', 'new-direct'), relationshipClass: 'directFollow' as const },
-				{ ...cand('new-known', 'new-known'), relationshipClass: 'known' as const },
-				{ ...cand('new-unknown', 'new-unknown'), relationshipClass: 'unknown' as const },
-			]]]) });
-		expect(out.map(value => value.noteId)).toEqual(['new-unknown']);
-		expectFinalWindows(out.map(value => ({ ...cand(value.noteId, value.userId!), relationshipClass: value.noteId === 'new-known' ? 'known' as const : 'unknown' as const })), followingSeedVisible);
-	});
-
-	it('rejects a different candidate when its insertion completes an author-A window', () => {
+	it('retains a legacy author violation without adding that author', () => {
 		const selectedVisible = [cand('newer', 'newer-author')];
 		const followingSeedVisible = [cand('old-a-1', 'A'), cand('old-a-2', 'A'), ...uniqueCands('old', 6)];
 		const out = hanamiInterleave({ confidence: 'none', limit: 10, personalConstraints: true, selectedVisible, followingSeedVisible,
 			axisCandidates: new Map([['globalPopular', [cand('different-B', 'B')]]]) });
-		expect(out).toEqual([]);
+		expect(out).toHaveLength(1);
 	});
 
-	it('rejects a different fingerprint when insertion shifts a duplicate pair into full thirty', () => {
+	it('retains legacy duplicate fingerprints without adding another duplicate', () => {
 		const selectedVisible = [cand('newer', 'newer-author')];
 		const followingSeedVisible = [{ ...cand('old-fp-1', 'old-a'), exactTextFingerprint: 'duplicate' }, { ...cand('old-fp-2', 'old-b'), exactTextFingerprint: 'duplicate' }, ...uniqueCands('old', 27)];
 		const out = hanamiInterleave({ confidence: 'none', limit: 10, personalConstraints: true, selectedVisible, followingSeedVisible,
 			axisCandidates: new Map([['globalPopular', [{ ...cand('different-fp', 'B'), exactTextFingerprint: 'other' }]]]) });
-		expect(out).toEqual([]);
+		expect(out).toHaveLength(1);
 	});
 
-	it('uses partial windows only for irreversible upper feasibility, not unknown lower floor', () => {
+	it('uses partial windows for author and fingerprint upper feasibility', () => {
 		const unknown = Array.from({ length: 15 }, (_, index) => ({ ...cand(`unknown-${index}`, `unknown-${index}`), relationshipClass: 'unknown' as const }));
 		const out = hanamiInterleave({ confidence: 'none', limit: 10, personalConstraints: true,
 			axisCandidates: new Map([['globalPopular', [{ ...cand('known-prefix', 'known'), relationshipClass: 'known' as const }, ...unknown]]]) });
@@ -383,18 +300,6 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		const rejected = hanamiInterleave({ confidence: 'none', limit: 10, personalConstraints: true,
 			selectedVisible: [cand('previous-a', 'A')], axisCandidates: new Map([['globalPopular', [cand('new-a', 'A')]]]) });
 		expect(rejected).toEqual([]);
-	});
-
-	it('does not blame an old-only partial seed, but refuses a new-inclusive full invalid window', () => {
-		const invalidPartialSeed = [cand('old-a-1', 'A'), cand('old-a-2', 'A')];
-		const partial = hanamiInterleave({ confidence: 'none', limit: 10, personalConstraints: true, followingSeedVisible: invalidPartialSeed,
-			axisCandidates: new Map([['globalPopular', [cand('unrelated', 'B')]]]) });
-		expect(partial.map(value => value.noteId)).toContain('unrelated');
-
-		const invalidFullSeed = [...invalidPartialSeed, ...uniqueCands('old', 7)];
-		const full = hanamiInterleave({ confidence: 'none', limit: 10, personalConstraints: true, followingSeedVisible: invalidFullSeed,
-			axisCandidates: new Map([['globalPopular', [cand('unrelated-full', 'B')]]]) });
-		expect(full).toEqual([]);
 	});
 
 	it('全体が limit 未満なら有効軸から fallback overflow（§6.1-6）', () => {
@@ -438,13 +343,13 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 			['fof', uniqueCands('fof', 20)],
 			['exploration', uniqueCands('ex', 20)],
 		]);
-		const axisLevels = new Map<HanamiAxis, HanamiAxisLevel>([
-			['globalPopular', 'off'],
-			['trending', 'normal'],
-			['fof', 'off'],
-			['exploration', 'off'],
+		const amounts = new Map<HanamiAxis, number>([
+			['globalPopular', 0],
+			['trending', 1],
+			['fof', 0],
+			['exploration', 0],
 		]);
-		const out = hanamiInterleave({ confidence: 'none', limit: 10, axisCandidates, axisLevels });
+		const out = hanamiInterleave({ confidence: 'none', limit: 10, axisCandidates, amounts });
 		expect(out.length).toBe(10);
 		expect(out.every(o => o.source === 'trending')).toBe(true);
 	});
@@ -459,16 +364,16 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 			['fof', uniqueCands('fof', 30)],
 			['exploration', []],
 		]);
-		const axisLevels = new Map<HanamiAxis, HanamiAxisLevel>([
-			['globalPopular', 'high'],
-			['neighborTrending', 'high'],
-			['reactionSimilar', 'low'],
-			['trending', 'high'],
-			['catchup', 'normal'],
-			['fof', 'low'],
-			['exploration', 'high'],
+		const amounts = new Map<HanamiAxis, number>([
+			['globalPopular', 1.6],
+			['neighborTrending', 1.6],
+			['reactionSimilar', 0.55],
+			['trending', 1.6],
+			['catchup', 1],
+			['fof', 0.55],
+			['exploration', 1.6],
 		]);
-		const out = hanamiInterleave({ confidence: 'high', limit: 20, axisCandidates, axisLevels });
+		const out = hanamiInterleave({ confidence: 'high', limit: 20, axisCandidates, amounts });
 		expect(countBySource(out)).toEqual({
 			neighborTrending: 13,
 			reactionSimilar: 5,

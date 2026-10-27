@@ -601,6 +601,7 @@ export class UserEntityService implements OnModuleInit {
 				injectFeaturedNote: profile!.injectFeaturedNote,
 				exploreMediaFilter: profile!.exploreMediaFilter,
 				hanamiRecommendationEnabled: profile!.hanamiRecommendationEnabled,
+				hanamiTuning: profile!.hanamiTuning ?? {},
 				hanamiRecommendationAxes: profile!.hanamiRecommendationAxes,
 				hanamiShowRecommendationReason: profile!.hanamiShowRecommendationReason,
 				hanamiReduceEphemeralPosts: profile!.hanamiReduceEphemeralPosts,

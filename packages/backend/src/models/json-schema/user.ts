@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { hanamiTuningSchema } from './hanami-tuning.js';
+
 export const notificationRecieveConfig = {
 	type: 'object',
 	oneOf: [
@@ -488,6 +490,7 @@ export const packedMeDetailedOnlySchema = {
 			type: 'boolean',
 			nullable: false, optional: true,
 		},
+		hanamiTuning: { ...hanamiTuningSchema, optional: false, nullable: false },
 		hanamiRecommendationAxes: {
 			type: 'object',
 			nullable: false, optional: true,

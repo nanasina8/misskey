@@ -26,6 +26,7 @@ type CursorlessRequestOptions = {
 } | {
 	refresh: true;
 	refreshToken: string;
+	reason?: 'tuning';
 };
 
 type CursorlessRetry = {
@@ -88,6 +89,10 @@ export class HanamiTimelinePaginator {
 	public readonly headBatchId = ref<string | null>(null);
 	public readonly refreshRateLimited = ref(false);
 
+	private pendingHeadTimer: number | null = null;
+	private headRevision = 0;
+	private disposed = false;
+
 	private nextCursor: string | null = null;
 	private retryState: RetryState | null = null;
 	private operationId = 0;
@@ -125,6 +130,51 @@ export class HanamiTimelinePaginator {
 		}, true);
 	}
 
+	public async refreshTuning(refreshToken = generateHanamiRefreshToken()): Promise<void> {
+		this.generationPending.value = true;
+		await this.startCursorless({
+			kind: 'cursorless', request: this.cursorlessRequest({ refresh: true, refreshToken, reason: 'tuning' }),
+			allowRefreshTokenReplacement: true, allowCursorRestart: true,
+		}, false);
+	}
+
+	public dispose(): void {
+		this.disposed = true;
+		this.operationId++;
+		this.cancelPendingHead();
+		this.clearRefreshRateLimit();
+	}
+
+	private cancelPendingHead(): void {
+		this.headRevision++;
+		if (this.pendingHeadTimer != null) window.clearTimeout(this.pendingHeadTimer);
+		this.pendingHeadTimer = null;
+	}
+
+	private schedulePendingHead(withFiles?: boolean): void {
+		this.cancelPendingHead();
+		const revision = this.headRevision;
+		const previousHead = this.headBatchId.value;
+		this.pendingHeadTimer = window.setTimeout(async () => {
+			this.pendingHeadTimer = null;
+			try {
+				const response = await misskeyApi('notes/hanami-timeline', { limit: INITIAL_LIMIT, refresh: false, ...(withFiles === undefined ? {} : { withFiles }) });
+				if (this.disposed || revision !== this.headRevision || response.headBatchId === previousHead) return;
+				if (!this.validCursorProgress(response, null)) return;
+				this.operationId++;
+				this.fetchingOlder.value = false;
+				this.mode.value = response.mode;
+				this.feedEpochId.value = response.feedEpochId;
+				this.headBatchId.value = response.headBatchId;
+				this.generationPending.value = response.generationPending;
+				this.error.value = null;
+				this.retryState = null;
+				this.replaceItems(response.items);
+				this.updateCursor(response);
+			} catch { /* Keep the pending banner; H3 never creates or retries a batch. */ }
+		}, 4000);
+	}
+
 	public async retry(): Promise<void> {
 		const retryState = this.retryState;
 		if (retryState == null) return;
@@ -159,7 +209,7 @@ export class HanamiTimelinePaginator {
 			...(withFiles === undefined ? {} : { withFiles }),
 		};
 		return options.refresh
-			? { ...request, refresh: true, refreshToken: options.refreshToken }
+			? { ...request, refresh: true, refreshToken: options.refreshToken, ...(options.reason ? { reason: options.reason } : {}) }
 			: request;
 	}
 
@@ -184,9 +234,12 @@ export class HanamiTimelinePaginator {
 	}
 
 	private async startCursorless(state: CursorlessRetry, reset: boolean): Promise<void> {
+		this.cancelPendingHead();
+		this.error.value = null;
+		this.retryState = null;
 		const operationId = ++this.operationId;
 		if (reset) this.reset();
-		this.fetching.value = true;
+		this.fetching.value = state.request.reason !== 'tuning';
 		this.fetchingOlder.value = false;
 		await this.loadCursorless(state, operationId);
 		if (operationId === this.operationId) this.fetching.value = false;
@@ -238,6 +291,7 @@ export class HanamiTimelinePaginator {
 		this.headBatchId.value = response.headBatchId;
 		const retainedCount = this.replaceItems(response.items);
 		this.updateCursor(response);
+		if (response.generationPending) this.schedulePendingHead(state.request.withFiles);
 
 		if (retainedCount === 0 && response.hasMore && response.nextCursor != null) {
 			await this.loadOlder({

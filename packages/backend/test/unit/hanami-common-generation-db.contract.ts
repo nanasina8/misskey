@@ -4,7 +4,6 @@
  */
 import { describe, test, expect } from 'vitest';
 
-
 import { randomBytes } from 'node:crypto';
 import { Client } from 'pg';
 import { vi as jest } from 'vitest';
@@ -19,6 +18,9 @@ import type {
 	HanamiCommonSourceBundle,
 } from '@/core/hanami/HanamiCommonGenerationContracts.js';
 import { HanamiPersistedTimelinePhase11787097600000 } from '../../migration/1787097600000-hanamiPersistedTimelinePhase1.js';
+import { HanamiTrendTopics1791244800000 } from '../../migration/1791244800000-hanamiTrendTopics.js';
+import { HanamiTrendTopicNotes1791331200000 } from '../../migration/1791331200000-hanamiTrendTopicNotes.js';
+import { HanamiTopicMembers1791331201000 } from '../../migration/1791331201000-hanamiTopicMembers.js';
 
 type DbRow = Record<string, unknown>;
 type DbQuery = <T extends DbRow = DbRow>(sql: string, values?: unknown[]) => Promise<T[]>;
@@ -252,6 +254,9 @@ const withMigratedSchema = async (run: (context: { schema: string; query: DbQuer
 			"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL
 		)`);
 		await new HanamiPersistedTimelinePhase11787097600000().up({ query } as never);
+		await new HanamiTrendTopics1791244800000().up({ query } as never);
+		await new HanamiTrendTopicNotes1791331200000().up({ query } as never);
+		await new HanamiTopicMembers1791331201000().up({ query } as never);
 		await run({ schema, query });
 	} catch (error) {
 		if (isDbConnectionError(error)) {
@@ -575,8 +580,10 @@ describe('Hanami common generation PostgreSQL contracts', () => {
 			});
 			const delayedRequest = await delayed.service.requestCommonGeneration('scheduled');
 			if (delayedRequest.kind !== 'dispatch') throw new Error('expected partition-deadline delayed dispatch');
-			await query(`UPDATE "hanami_common_generation" SET "startedAt" = '2026-10-01T00:00:00Z' WHERE "id" = $1`, [delayedRequest.generationId]);
-			await query(`UPDATE "hanami_trend_snapshot" SET "generatedAt" = '2026-10-01T00:00:00Z' WHERE "commonGenerationId" = $1`, [delayedRequest.generationId]);
+			const [{ month: futureMonth }] = await query<{ month: Date }>(`SELECT date_trunc('month', clock_timestamp()) + INTERVAL '1 year' AS month`);
+			const futureSuffix = `${futureMonth.getUTCFullYear()}${String(futureMonth.getUTCMonth() + 1).padStart(2, '0')}`;
+			await query(`UPDATE "hanami_common_generation" SET "startedAt" = $2 WHERE "id" = $1`, [delayedRequest.generationId, futureMonth]);
+			await query(`UPDATE "hanami_trend_snapshot" SET "generatedAt" = $2 WHERE "commonGenerationId" = $1`, [delayedRequest.generationId, futureMonth]);
 
 			const holder = await openSchemaClient(schema);
 			try {
@@ -599,10 +606,10 @@ describe('Hanami common generation PostgreSQL contracts', () => {
 				JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 				WHERE n.nspname = $1 AND c.relname = ANY($2::text[])
 			`, [schema, [
-				'hanami_common_candidate_202610',
-				'hanami_common_feed_entry_202610',
-				'hanami_trend_snapshot_entry_202610',
-				'hanami_trend_snapshot_representative_note_202610',
+				`hanami_common_candidate_${futureSuffix}`,
+				`hanami_common_feed_entry_${futureSuffix}`,
+				`hanami_trend_snapshot_entry_${futureSuffix}`,
+				`hanami_trend_snapshot_representative_note_${futureSuffix}`,
 			]]);
 			expect(futurePartitions).toEqual([]);
 

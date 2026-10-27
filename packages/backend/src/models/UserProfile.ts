@@ -228,6 +228,9 @@ export class MiUserProfile {
 	})
 	public hanamiRecommendationAxes: Record<string, string>;
 
+	@Column('jsonb', { default: {} })
+	public hanamiTuning: Partial<import('../core/hanami/HanamiTuning.js').HanamiTuning>;
+
 	@Column('boolean', {
 		default: false,
 		comment: 'はなみTLおすすめに理由ラベルを表示するか（ユーザー設定）',

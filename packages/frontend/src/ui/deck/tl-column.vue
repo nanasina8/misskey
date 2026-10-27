@@ -34,6 +34,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script lang="ts" setup>
 import { onMounted, watch, ref, useTemplateRef, computed } from 'vue';
+import { openHanamiTuning } from '@/utility/hanami-tuning-client.js';
 import XColumn from './column.vue';
 import type { Column } from '@/deck.js';
 import type { MenuItem } from '@/types/menu.js';
@@ -125,6 +126,7 @@ async function setType() {
 
 const menu = computed<MenuItem[]>(() => {
 	const menuItems: MenuItem[] = [];
+	if (props.column.tl === 'hanami') menuItems.push({ icon: 'ti ti-adjustments', text: i18n.ts._hana._tuning.button, action: () => openHanamiTuning() });
 
 	menuItems.push({
 		icon: 'ti ti-pencil',

@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { hanamiTuningParamDef } from '@/models/json-schema/hanami-tuning.js';
+import { normalizeHanamiTuning } from '@/core/hanami/HanamiTuning.js';
 import RE2 from 're2';
 import * as mfm from 'mfm-js';
 import { Inject, Injectable } from '@nestjs/common';
@@ -214,6 +216,7 @@ export const paramDef = {
 		hanamiRecommendationEnabled: { type: 'boolean' },
 		hanamiShowRecommendationReason: { type: 'boolean' },
 		hanamiReduceEphemeralPosts: { type: 'boolean' },
+		hanamiTuning: { ...hanamiTuningParamDef, required: ['mode', 'closeness', 'freshness', 'discovery'] },
 		hanamiRecommendationAxes: {
 			type: 'object', nullable: false,
 			properties: {
@@ -426,6 +429,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (typeof ps.hanamiRecommendationEnabled === 'boolean') profileUpdates.hanamiRecommendationEnabled = ps.hanamiRecommendationEnabled;
 			if (typeof ps.hanamiShowRecommendationReason === 'boolean') profileUpdates.hanamiShowRecommendationReason = ps.hanamiShowRecommendationReason;
 			if (typeof ps.hanamiReduceEphemeralPosts === 'boolean') profileUpdates.hanamiReduceEphemeralPosts = ps.hanamiReduceEphemeralPosts;
+			if (ps.hanamiTuning !== undefined) profileUpdates.hanamiTuning = normalizeHanamiTuning({ hanamiTuning: ps.hanamiTuning });
 			if (ps.hanamiRecommendationAxes !== undefined) {
 				// 既知の軸キーのみ採用（未知キーは無視＝廃止軸 lowExposure の保存値もここで自然に消える）。
 				// 値は量レベル（off/low/normal/high）に正規化。旧booleanは true=normal / false=off。

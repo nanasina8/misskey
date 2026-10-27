@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, vi as jest, test } from 'vitest';
-import type { ForYouCandidate, HanamiAxis, HanamiAxisLevel } from '@/core/hanami/HanamiForYouInterleave.js';
+import type { ForYouCandidate, HanamiAxis } from '@/core/hanami/HanamiForYouInterleave.js';
 import type { HanamiPersonalFeedCandidate } from '@/core/hanami/HanamiUserFeedContracts.js';
 import type { MiNote } from '@/models/Note.js';
 import { HanamiTrendService } from '@/core/hanami/HanamiTrendService.js';
@@ -181,29 +181,29 @@ describe('same-time baselines (2B)', () => {
 	});
 });
 
-function personalSetup(level: HanamiAxisLevel = 'normal') {
+function personalSetup(amount = 1) {
 	const service = new HanamiForYouService(...Array.from({ length: 13 }, () => ({})) as ConstructorParameters<typeof HanamiForYouService>);
 	const affinity = jest.fn(async (_user: string, _run: string | null, candidates: ForYouCandidate[]) => candidates);
 	const taste = jest.fn(async (_user: string, candidates: ForYouCandidate[], ..._args: unknown[]) => candidates);
 	Object.assign(service, { applyAuthorAffinityRerank: affinity, applyTasteClusterOrdering: taste, hanamiTrendService: { countRecentTermAuthors: async () => new Map() } });
 	const input = { userId: 'me', generatedAt: '2026-09-25T12:00:00Z', signal: new AbortController().signal, queryRunner: { query: jest.fn(async (..._args: unknown[]) => []) } } as unknown as HanamiPersonalFeedGenerationContext;
-	const axes = new Map<HanamiAxis, HanamiAxisLevel>([['globalPopular', 'normal'], ['trending', level]]);
+	const axes = new Map<HanamiAxis, number>([['globalPopular', 1], ['trending', amount]]);
 	const common: HanamiPersonalFeedCandidate[] = [
 		{ noteId: 'shared', authorId: 'author', score: 1, axis: 'globalPopular', origin: 'commonCandidate' },
 		{ noteId: 'shared', authorId: 'author', score: 1, axis: 'trending', origin: 'commonCandidate', term: 'topic' },
 	];
 	const gather = (items = common) => (service as unknown as {
-		gatherGenerationCandidates: (input: HanamiPersonalFeedGenerationContext, confidence: string, run: null, axes: Map<HanamiAxis, HanamiAxisLevel>, candidates: HanamiPersonalFeedCandidate[]) => Promise<Map<HanamiAxis, ForYouCandidate[]>>;
+		gatherGenerationCandidates: (input: HanamiPersonalFeedGenerationContext, confidence: string, run: null, axes: Map<HanamiAxis, number>, candidates: HanamiPersonalFeedCandidate[]) => Promise<Map<HanamiAxis, ForYouCandidate[]>>;
 	}).gatherGenerationCandidates(input, 'none', null, axes, items);
 	return { service, affinity, taste, input, axes, common, gather };
 }
 
 describe('popular overlap (1A)', () => {
-	test.each(['normal', 'off'] as const)('personal trending %s controls popular removal', async level => {
-		const setup = personalSetup(level);
+	test.each([1, 0])('personal trending amount %i controls popular removal', async amount => {
+		const setup = personalSetup(amount);
 		const result = await setup.gather();
-		expect(result.get('globalPopular')).toHaveLength(level === 'off' ? 1 : 0);
-		if (level !== 'off') expect(result.get('trending')?.[0].noteId).toBe('shared');
+		expect(result.get('globalPopular')).toHaveLength(amount === 0 ? 1 : 0);
+		if (amount !== 0) expect(result.get('trending')?.[0].noteId).toBe('shared');
 	});
 });
 

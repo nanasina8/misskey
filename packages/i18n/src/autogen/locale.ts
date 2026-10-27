@@ -14104,6 +14104,10 @@ export interface Locale extends ILocale {
          */
         "hanamiTimeline": string;
         /**
+         * はなみTL
+         */
+        "hanamiTimelineShort": string;
+        /**
          * はなみTLでも日付セパレーターを表示する
          */
         "showHanamiTimelineDateSeparators": string;
@@ -14112,7 +14116,7 @@ export interface Locale extends ILocale {
          */
         "showHanamiTimelineDateSeparatorsDescription": string;
         /**
-         * おすすめを更新しています。現在の内容を表示しています。
+         * 新しい並びを作っています…
          */
         "hanamiTimelineGenerationPending": string;
         /**
@@ -14131,6 +14135,358 @@ export interface Locale extends ILocale {
          * 読み込みに時間がかかっています。
          */
         "takingTooLongToLoad": string;
+        "_tuning": {
+            /**
+             * 調整
+             */
+            "button": string;
+            /**
+             * TLの並びを調整
+             */
+            "title": string;
+            /**
+             * 並びの調整
+             */
+            "settingsTitle": string;
+            /**
+             * 下の「表示」で For You を有効にすると調整できます
+             */
+            "enableForYou": string;
+            /**
+             * おまかせ
+             */
+            "auto": string;
+            /**
+             * 手動
+             */
+            "manual": string;
+            /**
+             * 調整のしかた
+             */
+            "mode": string;
+            /**
+             * 身近 ⇄ 広く
+             */
+            "closeness": string;
+            /**
+             * いま ⇄ じっくり
+             */
+            "freshness": string;
+            /**
+             * 人気 ⇄ 好み
+             */
+            "discovery": string;
+            /**
+             * 身近
+             */
+            "closenessLeft": string;
+            /**
+             * 広く
+             */
+            "closenessRight": string;
+            /**
+             * いま
+             */
+            "freshnessLeft": string;
+            /**
+             * じっくり
+             */
+            "freshnessRight": string;
+            /**
+             * 人気
+             */
+            "discoveryLeft": string;
+            /**
+             * 好み
+             */
+            "discoveryRight": string;
+            /**
+             * 知っている人の投稿を多めにするか、知らない人まで広げるか。
+             */
+            "closenessDescription": string;
+            /**
+             * 数時間以内の投稿を多めにするか、数日前のよい投稿も拾うか。
+             */
+            "freshnessDescription": string;
+            /**
+             * 右に寄せるほど、あなたのリアクションや好みから選んだ投稿が増えます。左はサーバー全体で人気・話題の投稿が中心です。
+             */
+            "discoveryDescription": string;
+            /**
+             * とても身近
+             */
+            "closeness0": string;
+            /**
+             * やや身近
+             */
+            "closeness1": string;
+            /**
+             * ふつう
+             */
+            "closeness2": string;
+            /**
+             * やや広く
+             */
+            "closeness3": string;
+            /**
+             * とても広く
+             */
+            "closeness4": string;
+            /**
+             * いま重視
+             */
+            "freshness0": string;
+            /**
+             * やや新しめ
+             */
+            "freshness1": string;
+            /**
+             * ふつう
+             */
+            "freshness2": string;
+            /**
+             * ややじっくり
+             */
+            "freshness3": string;
+            /**
+             * じっくり
+             */
+            "freshness4": string;
+            /**
+             * 人気重視
+             */
+            "discovery0": string;
+            /**
+             * やや人気
+             */
+            "discovery1": string;
+            /**
+             * ふつう
+             */
+            "discovery2": string;
+            /**
+             * やや好み
+             */
+            "discovery3": string;
+            /**
+             * 好み重視
+             */
+            "discovery4": string;
+            /**
+             * 種類ごとの量
+             */
+            "amounts": string;
+            /**
+             * 100% がふつう
+             */
+            "amountsDescription": string;
+            /**
+             * 新しさの重み
+             */
+            "freshWeights": string;
+            /**
+             * 時間帯ごとに点数を何倍にするか
+             */
+            "freshWeightsDescription": string;
+            /**
+             * 6時間以内
+             */
+            "within6h": string;
+            /**
+             * 24時間以内
+             */
+            "within24h": string;
+            /**
+             * それ以前
+             */
+            "older": string;
+            /**
+             * 知り合いの重み
+             */
+            "closeWeights": string;
+            /**
+             * 人気・話題の中で、相手との関係ごとに何倍にするか
+             */
+            "closeWeightsDescription": string;
+            /**
+             * フォロー中
+             */
+            "following": string;
+            /**
+             * あなたをフォロー
+             */
+            "follower": string;
+            /**
+             * その他
+             */
+            "other": string;
+            /**
+             * 同じ人の投稿
+             */
+            "authorCap": string;
+            /**
+             * 30件あたり
+             */
+            "per30": string;
+            /**
+             * {n}件
+             */
+            "authorCount": ParameterizedString<"n">;
+            /**
+             * 種類ごとの配分
+             */
+            "composition": string;
+            /**
+             * 約{n}%
+             */
+            "approxPercent": ParameterizedString<"n">;
+            /**
+             * その場限りの投稿を減らす
+             */
+            "reduceEphemeral": string;
+            /**
+             * フォローしていない人の「おはよう」「ねむい」などを出しにくくします
+             */
+            "reduceEphemeralDescription": string;
+            /**
+             * はじめの状態に戻す
+             */
+            "reset": string;
+            /**
+             * あなたの反応から
+             */
+            "suggestion": string;
+            /**
+             * 直近14日
+             */
+            "period": string;
+            /**
+             * 見た投稿の割合と、反応した投稿の割合を種類ごとに比べています。反応が多い種類を増やし、少ない種類を減らすと、2つが揃っていきます。
+             */
+            "suggestionDescription": string;
+            /**
+             * 見た割合
+             */
+            "seenShare": string;
+            /**
+             * 反応した割合
+             */
+            "reactionShare": string;
+            /**
+             * 反応{reactions}件 / 見た{seen}件
+             */
+            "suggestionCounts": ParameterizedString<"reactions" | "seen">;
+            /**
+             * 提案：{changes}（見た{seen}件・反応{reactions}件。件数が少ない種類はサーバー全体の反応率に寄せて計算）
+             */
+            "suggestionSummary": ParameterizedString<"changes" | "seen" | "reactions">;
+            /**
+             * {axis} {current}→{suggested}%
+             */
+            "suggestionChange": ParameterizedString<"axis" | "current" | "suggested">;
+            /**
+             * いまの量で、見た割合と反応した割合はほぼ揃っています。
+             */
+            "suggestionUnchanged": string;
+            /**
+             * 反応に合わせた量にする
+             */
+            "applySuggestion": string;
+            /**
+             * まだ十分な反応がありません（見た投稿200件・反応10件から提案します）
+             */
+            "ineligible": string;
+            /**
+             * {axis}を増やす
+             */
+            "increase": ParameterizedString<"axis">;
+            /**
+             * {axis}を減らす
+             */
+            "decrease": ParameterizedString<"axis">;
+            /**
+             * この傾向の投稿を減らす
+             */
+            "reduceCluster": string;
+            /**
+             * この人の投稿を出さない
+             */
+            "muteAuthor": string;
+            /**
+             * {axis}を {amount}% にしました
+             */
+            "adjusted": ParameterizedString<"axis" | "amount">;
+            /**
+             * 手動に切り替えて、{axis}を {amount}% にしました
+             */
+            "switchedAndAdjusted": ParameterizedString<"axis" | "amount">;
+            /**
+             * 取り消す
+             */
+            "undo": string;
+            /**
+             * 、
+             */
+            "listSeparator": string;
+            "_axis": {
+                /**
+                 * 人気
+                 */
+                "globalPopular": string;
+                /**
+                 * 近くで話題
+                 */
+                "neighborTrending": string;
+                /**
+                 * 好みが近い
+                 */
+                "reactionSimilar": string;
+                /**
+                 * いま話題
+                 */
+                "trending": string;
+                /**
+                 * 見逃し
+                 */
+                "catchup": string;
+                /**
+                 * 友達の友達
+                 */
+                "fof": string;
+                /**
+                 * 発見
+                 */
+                "exploration": string;
+            };
+            /**
+             * サーバー全体で人気の投稿です。
+             */
+            "reasonGlobalPopular": string;
+            /**
+             * 好みが近い人の間で話題の投稿です。
+             */
+            "reasonNeighborTrending": string;
+            /**
+             * あなたのリアクションや興味から選んだ投稿です。
+             */
+            "reasonReactionSimilar": string;
+            /**
+             * いま話題になっている投稿です。
+             */
+            "reasonTrending": string;
+            /**
+             * 見ていない間に伸びた、フォロー中の人の投稿です。
+             */
+            "reasonCatchup": string;
+            /**
+             * つながりのある人から広げて選んだ投稿です。
+             */
+            "reasonFof": string;
+            /**
+             * 新しい興味を見つけるための投稿です。
+             */
+            "reasonExploration": string;
+        };
         "_recommendation": {
             /**
              * はなみTL For You
@@ -14265,7 +14621,7 @@ export interface Locale extends ILocale {
              */
             "showReason": string;
             /**
-             * おすすめノートの上に、おすすめされた理由（人気・トレンドなど）を表示します。
+             * 投稿に選ばれた理由を表示します。ラベルを押すと、その種類を増やしたり減らしたりできます
              */
             "showReasonDescription": string;
             "_reason": {

@@ -165,7 +165,7 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 
 				const state = context.state;
 				const head = await this.requireStateHead(queryRunner, state);
-				if (state.initial_state === 'requested' && context.activeBatch != null && context.activeBatch.id === state.generating_batch_id) {
+				if (context.activeBatch != null && context.activeBatch.id === state.generating_batch_id) {
 					return {
 						result: this.pendingResult(head, context.activeBatch.id),
 						batchId: context.activeBatch.id,
@@ -188,7 +188,7 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 	}
 
 	@bindThis
-	public async requestRefresh(userId: string, refreshToken: string): Promise<HanamiUserFeedRequestResult> {
+	public async requestRefresh(userId: string, refreshToken: string, reason?: 'tuning'): Promise<HanamiUserFeedRequestResult> {
 		// A missing counter means unavailable, not zero. Initialize only when this
 		// instrumentation actually observes requests; retain through the query horizon.
 		const metricsKey = `hanami:metrics:429:${jstDay()}`;
@@ -247,12 +247,12 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 					};
 				}
 
-				if (await this.isRefreshRateLimited(queryRunner, userId)) {
+				if (await this.isRefreshRateLimited(queryRunner, userId, reason)) {
 					return { result: { kind: 'refreshRateLimited' }, batchId: null, refreshDigest: null };
 				}
 
 				let state = context.state;
-				if (state != null && state.mode === 'personalized' && state.latest_ready_batch_id != null && context.activeBatch == null
+				if (reason !== 'tuning' && state != null && state.mode === 'personalized' && state.latest_ready_batch_id != null && context.activeBatch == null
 					&& await this.isUnservedReadyHead(queryRunner, state)) {
 					const head = await this.requireStateHead(queryRunner, state);
 					await queryRunner.query(`
@@ -270,6 +270,18 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 					};
 				}
 
+				// A tuning request must use a fresh settings snapshot. Fence an older
+				// worker without retiring the epoch or touching ready feed entries.
+				if (reason === 'tuning' && context.activeBatch != null && state != null) {
+					await queryRunner.query(`UPDATE "hanami_user_feed_batch" SET status = 'obsolete', "leaseOwner" = NULL,
+						"leaseExpiresAt" = NULL, "finishedAt" = clock_timestamp() WHERE id = $1`, [context.activeBatch.id]);
+					await queryRunner.query(`UPDATE "hanami_user_feed_refresh" SET status = 'obsolete'
+						WHERE "requestedBatchId" = $1 AND status = 'pending'`, [context.activeBatch.id]);
+					await queryRunner.query(`UPDATE "hanami_user_feed_state" SET "generatingBatchId" = NULL
+						WHERE "userId" = $1 AND "epochId" = $2`, [userId, state.epoch_id]);
+					state = { ...state, generating_batch_id: null };
+					context.activeBatch = null;
+				}
 				let batchId: string;
 				if (state == null || state.initial_state === 'notEvaluated') {
 					const commonHead = await this.requireLockedCommonHead(queryRunner);
@@ -302,11 +314,11 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 
 				await queryRunner.query(`
 					INSERT INTO "hanami_user_feed_refresh" (
-						"userId", "epochId", "refreshTokenDigest", "requestedBatchId", "status", "createdAt", "expiresAt"
+						"userId", "epochId", "refreshTokenDigest", "requestedBatchId", "status", "createdAt", "expiresAt", "reason"
 					)
 					VALUES ($1, $2, $3, $4, 'pending', clock_timestamp(),
-						clock_timestamp() + INTERVAL '${REFRESH_TTL_MINUTES} minutes')
-				`, [userId, state.epoch_id, refreshDigest, batchId]);
+						clock_timestamp() + INTERVAL '${REFRESH_TTL_MINUTES} minutes', $5)
+				`, [userId, state.epoch_id, refreshDigest, batchId, reason ?? 'normal']);
 
 				const fallback = await this.requireStateHead(queryRunner, state);
 				return {
@@ -627,14 +639,14 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 		`, [userId, digest]) as RefreshRow[];
 	}
 
-	private async isRefreshRateLimited(queryRunner: QueryRunner, userId: string): Promise<boolean> {
+	private async isRefreshRateLimited(queryRunner: QueryRunner, userId: string, reason?: 'tuning'): Promise<boolean> {
 		const rows = await queryRunner.query(`
 			SELECT COUNT(*)::text AS count
 			FROM "hanami_user_feed_refresh" r
 			WHERE r."userId" = $1
-				AND r."createdAt" > clock_timestamp() - INTERVAL '1 minute'
-		`, [userId]) as Array<{ count: string }>;
-		return Number(rows.at(0)?.count ?? '0') >= REFRESH_RATE_LIMIT;
+				AND r."createdAt" > clock_timestamp() - INTERVAL '1 minute' AND r."reason" = $2
+		`, [userId, reason ?? 'normal']) as Array<{ count: string }>;
+		return Number(rows.at(0)?.count ?? '0') >= (reason === 'tuning' ? 10 : REFRESH_RATE_LIMIT);
 	}
 
 	private async isUnservedReadyHead(queryRunner: QueryRunner, state: StateRow): Promise<boolean> {

@@ -274,3 +274,44 @@ describe('HanamiTimelinePaginator', () => {
 		vi.unstubAllGlobals();
 	});
 });
+
+describe('Hanami H3 and tuning refresh', () => {
+	beforeEach(() => { vi.useFakeTimers(); misskeyApiMock.mockReset(); });
+	afterEach(() => { vi.useRealTimers(); });
+	test('tuning keeps existing items, uses its own reason, and checks once after 4s then replaces only a changed head', async () => {
+		misskeyApiMock.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ generationPending: true })).mockResolvedValueOnce(response({ headBatchId: 'head-2', items: [item('new-entry')] }));
+		const p = paginator(); await p.init();
+		const refreshing = p.refreshTuning('new-token');
+		expect(p.items.value).toHaveLength(1); expect(p.generationPending.value).toBe(true); expect(p.fetching.value).toBe(false);
+		await refreshing;
+		expect(misskeyApiMock.mock.calls[1][1]).toMatchObject({ refresh: true, reason: 'tuning', refreshToken: 'new-token', limit: 15 });
+		await vi.advanceTimersByTimeAsync(3999); expect(misskeyApiMock).toHaveBeenCalledTimes(2);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(misskeyApiMock.mock.calls[2][1]).toEqual({ limit: 15, refresh: false, withFiles: false });
+		expect(p.items.value[0].feedEntryId).toBe('new-entry'); expect(p.generationPending.value).toBe(false);
+		await vi.advanceTimersByTimeAsync(40000); expect(misskeyApiMock).toHaveBeenCalledTimes(3);
+		p.dispose();
+	});
+	test('same head keeps items and pending banner even when cursorless response is no longer pending', async () => {
+		misskeyApiMock.mockResolvedValueOnce(response({ generationPending: true })).mockResolvedValueOnce(response({ items: [item('should-not-replace')] }));
+		const p = paginator(); await p.init(); await vi.advanceTimersByTimeAsync(4000);
+		expect(p.items.value[0].feedEntryId).toBe('entry-1'); expect(p.generationPending.value).toBe(true);
+		await vi.advanceTimersByTimeAsync(40000); expect(misskeyApiMock).toHaveBeenCalledTimes(2); p.dispose();
+	});
+	test('a new refresh cancels the previous H3 timer and dispose cancels the next one', async () => {
+		misskeyApiMock.mockResolvedValue(response({ generationPending: true }));
+		const p = paginator(); await p.init(); await vi.advanceTimersByTimeAsync(3000);
+		await p.refreshTuning('next'); await vi.advanceTimersByTimeAsync(1000);
+		expect(misskeyApiMock).toHaveBeenCalledTimes(2);
+		p.dispose(); await vi.advanceTimersByTimeAsync(5000); expect(misskeyApiMock).toHaveBeenCalledTimes(2);
+	});
+});
+
+test('a successful tuning retry clears a previous timeline error', async () => {
+	misskeyApiMock.mockReset();
+	misskeyApiMock.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(response());
+	const p = paginator();
+	await p.refreshTuning('first'); expect(p.error.value).not.toBeNull();
+	await p.refreshTuning('second'); expect(p.error.value).toBeNull(); expect(p.items.value).toHaveLength(1);
+	p.dispose();
+});

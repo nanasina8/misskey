@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { resolveHanamiTuningUpdateLimit } from './hanami-tuning-limit.js';
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as stream from 'node:stream/promises';
@@ -399,7 +400,7 @@ export class ApiCallService implements OnApplicationShutdown {
 				limitActor = getIpHash(request.ip);
 			}
 
-			const limit = Object.assign({}, ep.meta.limit);
+			const limit = Object.assign({}, resolveHanamiTuningUpdateLimit(ep.name, data, ep.meta.limit));
 
 			if (limit.key == null) {
 				(limit as any).key = ep.name;

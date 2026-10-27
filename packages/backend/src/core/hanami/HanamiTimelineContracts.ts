@@ -12,6 +12,7 @@ export type HanamiTimelineRequest = {
 	readonly limit: number;
 	readonly cursor: string | null;
 	readonly refresh: boolean;
+	readonly reason?: 'tuning';
 	readonly refreshToken: string | null;
 	readonly withFiles: boolean;
 };

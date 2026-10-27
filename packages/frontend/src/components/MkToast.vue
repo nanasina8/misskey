@@ -15,6 +15,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<div v-if="showing" class="_acrylic" :class="$style.root" :style="{ zIndex }">
 			<div style="padding: 16px 24px;">
 				{{ message }}
+				<button v-if="actionLabel" type="button" class="_textButton" :class="$style.action" @click="act">{{ actionLabel }}</button>
 			</div>
 		</div>
 	</Transition>
@@ -22,29 +23,42 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { onMounted, ref } from 'vue';
+import { onMounted, onUnmounted, ref } from 'vue';
 import * as os from '@/os.js';
 import { prefer } from '@/preferences.js';
 
-defineProps<{
+const props = withDefaults(defineProps<{
 	message: string;
-}>();
+	actionLabel?: string;
+	duration?: number;
+}>(), { duration: 4000 });
 
 const emit = defineEmits<{
 	(ev: 'closed'): void;
+	(ev: 'action'): void;
 }>();
 
 const zIndex = os.claimZIndex('high');
 const showing = ref(true);
 
+let timer: number;
+
+function act(): void {
+	if (!showing.value) return;
+	showing.value = false;
+	emit('action');
+}
+
+onUnmounted(() => window.clearTimeout(timer));
 onMounted(() => {
-	window.setTimeout(() => {
+	timer = window.setTimeout(() => {
 		showing.value = false;
-	}, 4000);
+	}, props.duration);
 });
 </script>
 
 <style lang="scss" module>
+.action { pointer-events: auto; padding: 8px; }
 .transition_toast_enterActive,
 .transition_toast_leaveActive {
 	transition: opacity 0.3s, transform 0.3s !important;

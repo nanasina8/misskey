@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { resolveHanamiTuning } from '@/core/hanami/HanamiTuning.js';
 import { Inject, Injectable } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import type { Config } from '@/config.js';
@@ -32,7 +33,6 @@ import type {
 } from '@/core/hanami/HanamiTimelineContracts.js';
 import {
 	HANAMI_PERSISTED_FEED_READ,
-	HANAMI_USER_FEED_AXES,
 	HANAMI_USER_FEED_REQUEST,
 	type HanamiFeedHeadSnapshot,
 	type HanamiPersistedFeedEntry,
@@ -43,21 +43,7 @@ import {
 	type HanamiUserFeedRequestResult,
 } from '@/core/hanami/HanamiUserFeedContracts.js';
 
-type LegacyHanamiAxis = 'popular';
-type HanamiAxisLevel = 'off' | 'low' | 'normal' | 'high';
-type HanamiAxisServerConfig = Partial<Record<HanamiUserFeedAxis | LegacyHanamiAxis, { available?: boolean; default?: boolean }>>;
-type HanamiAxisUserConfig = Partial<Record<HanamiUserFeedAxis | LegacyHanamiAxis, HanamiAxisLevel | boolean>>;
-type HanamiTimelineProfile = Pick<MiUserProfile, 'hanamiRecommendationAxes' | 'hanamiShowRecommendationReason'>;
-
-const AXIS_CONFIG_KEYS: Record<HanamiUserFeedAxis, readonly (HanamiUserFeedAxis | LegacyHanamiAxis)[]> = {
-	globalPopular: ['globalPopular', 'popular'],
-	exploration: ['exploration', 'popular'],
-	neighborTrending: ['neighborTrending', 'reactionSimilar'],
-	reactionSimilar: ['reactionSimilar'],
-	catchup: ['catchup'],
-	trending: ['trending'],
-	fof: ['fof'],
-};
+type HanamiTimelineProfile = Pick<MiUserProfile, 'hanamiRecommendationAxes' | 'hanamiTuning' | 'hanamiShowRecommendationReason'>;
 
 @Injectable()
 export class HanamiTimelinePageService {
@@ -132,7 +118,9 @@ export class HanamiTimelinePageService {
 		let requested: HanamiUserFeedRequestResult;
 		if (input.request.refresh) {
 			if (input.request.refreshToken == null) return { kind: 'invalidRefreshToken' };
-			requested = await this.requestPort.requestRefresh(input.me.id, input.request.refreshToken);
+			requested = input.request.reason === 'tuning'
+				? await this.requestPort.requestRefresh(input.me.id, input.request.refreshToken, 'tuning')
+				: await this.requestPort.requestRefresh(input.me.id, input.request.refreshToken);
 		} else {
 			requested = await this.requestPort.evaluateCursorless(input.me.id);
 		}
@@ -284,26 +272,8 @@ export class HanamiTimelinePageService {
 		return entries.filter(entry => entry.kind !== 'common' || enabled.has(entry.source));
 	}
 
-	private enabledAxes(profile: Pick<MiUserProfile, 'hanamiRecommendationAxes'>): ReadonlySet<HanamiUserFeedAxis> {
-		const serverConfig = (this.meta.hanamiRecommendationAxisConfig ?? {}) as HanamiAxisServerConfig;
-		const userConfig = (profile.hanamiRecommendationAxes ?? {}) as HanamiAxisUserConfig;
-		const enabled = new Set<HanamiUserFeedAxis>();
-		for (const axis of HANAMI_USER_FEED_AXES) {
-			const keys = AXIS_CONFIG_KEYS[axis];
-			const available = keys.map(key => serverConfig[key]?.available).find(value => value !== undefined) ?? true;
-			if (!available) continue;
-			const defaultEnabled = keys.map(key => serverConfig[key]?.default).find(value => value !== undefined) ?? true;
-			const userValue = keys.map(key => userConfig[key]).find(value => value !== undefined);
-			const level = this.normalizeAxisLevel(userValue, defaultEnabled);
-			if (level !== 'off') enabled.add(axis);
-		}
-		return enabled;
-	}
-
-	private normalizeAxisLevel(value: unknown, defaultEnabled: boolean): HanamiAxisLevel {
-		if (value === 'off' || value === 'low' || value === 'normal' || value === 'high') return value;
-		if (value === true) return 'normal';
-		if (value === false) return 'off';
-		return defaultEnabled ? 'normal' : 'off';
+	private enabledAxes(profile: HanamiTimelineProfile): ReadonlySet<HanamiUserFeedAxis> {
+		return new Set([...resolveHanamiTuning(profile, this.meta.hanamiRecommendationAxisConfig).amounts]
+			.filter(([, amount]) => amount > 0).map(([axis]) => axis));
 	}
 }

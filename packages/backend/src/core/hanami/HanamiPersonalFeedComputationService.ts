@@ -18,7 +18,6 @@ import {
 	type HanamiPersonalFeedComputationPort,
 	type HanamiPersonalFeedComputationResult,
 	type HanamiPersonalFeedItem,
-	HanamiInvalidPersonalSeedError,
 } from '@/core/hanami/HanamiUserFeedContracts.js';
 import { hanamiInterleave, type HanamiAxis, type ForYouCandidate } from '@/core/hanami/HanamiForYouInterleave.js';
 import {
@@ -81,31 +80,6 @@ export const HANAMI_PERSONAL_FEED_ALGORITHM_VERSION = 'hanami-personal-v1';
 export type HanamiPersonalFeedCapturedComputationResult = HanamiPersonalFeedComputationResult & {
 	readonly metricsCandidates: readonly HanamiMetricsCandidateDecision[];
 };
-
-/** Pure old-head check: a new item cannot repair an existing upper excess. */
-export function hanamiHasUnhealablePersonalSeedHead(seed: readonly ForYouCandidate[], unknownSufficient: boolean): boolean {
-	for (const size of [10, 30, 210] as const) {
-		// Without W - 1 old entries no new-inclusive full W window exists yet.
-		if (seed.length < size - 1) continue;
-		const head = seed.slice(0, size - 1);
-		const authorLimit = size === 10 ? 1 : size === 30 ? 2 : 6;
-		const exceeds = (values: readonly string[], limit: number): boolean => {
-			const counts = new Map<string, number>();
-			for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
-			return [...counts.values()].some(count => count > limit);
-		};
-		if (exceeds(head.flatMap(item => item.userId == null ? [] : [item.userId]), authorLimit)) return true;
-		if (size !== 30) continue;
-		if (exceeds(head.flatMap(item => item.exactTextFingerprint == null ? [] : [item.exactTextFingerprint]), 1)) return true;
-		if (exceeds(head.flatMap(item => item.isBot === true && item.userId != null && item.strictBotTemplateFingerprint != null
-			? [`${item.userId}\u0000${item.strictBotTemplateFingerprint}`] : []), 1)) return true;
-		const direct = head.filter(item => item.relationshipClass === 'directFollow').length;
-		const knownIncludingDirect = head.filter(item => item.relationshipClass === 'directFollow' || item.relationshipClass === 'known').length;
-		if (direct > 6 || knownIncludingDirect > 12) return true;
-		if (unknownSufficient && head.filter(item => item.relationshipClass === 'unknown').length < 14) return true;
-	}
-	return false;
-}
 
 @Injectable()
 export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedComputationPort {
@@ -570,16 +544,6 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 			explorationPoolMaximum,
 			metricsCandidates,
 		);
-		// This is a refresh-wide eligibility fact, not a segment-local one. Reusing
-		// it for every interleave prevents later segments from silently dropping the
-		// 30-item unknown floor merely because earlier segments consumed candidates.
-		const unknownEligibleCount = new Set(finalCandidates
-			.filter(candidate => candidate.relationshipClass === 'unknown')
-			.map(candidate => candidate.noteId)).size;
-		const unknownSufficient = unknownEligibleCount >= 15;
-		if (hanamiHasUnhealablePersonalSeedHead(constrained.seed, unknownSufficient)) {
-			throw new HanamiInvalidPersonalSeedError();
-		}
 		const byAxis = new Map<HanamiAxis, HanamiPersonalFeedCandidate[]>();
 		for (const candidate of finalCandidates) {
 			const list = byAxis.get(candidate.axis) ?? [];
@@ -618,11 +582,11 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 				confidence: preparation.confidence,
 				limit: SEGMENT_SIZE,
 				axisCandidates,
-				axisLevels: preparation.axisLevels,
+				amounts: preparation.tuning.amounts,
+				authorCap: preparation.tuning.authorCap,
 				personalConstraints: true,
 				selectedVisible: selectedHistory,
 				followingSeedVisible: constrained.seed,
-				unknownSufficient,
 			}).slice(0, SEGMENT_SIZE);
 			if (interleaved.length === 0) break;
 

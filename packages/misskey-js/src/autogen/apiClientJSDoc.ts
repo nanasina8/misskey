@@ -3361,6 +3361,17 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
+     * Suggest Hanami timeline amounts from the authenticated user’s reactions over the last 14 days.
+     *
+     * **Credential required**: *Yes* / **Permission**: *read:account*
+     */
+    request<E extends 'i/hanami-tuning-suggestion', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
      * No description provided.
      * 
      * **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.

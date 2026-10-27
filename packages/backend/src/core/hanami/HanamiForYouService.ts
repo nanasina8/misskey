@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { resolveHanamiTuning, hanamiTuningScore, type ResolvedHanamiTuning } from '@/core/hanami/HanamiTuning.js';
 import { DataSource, type QueryRunner } from 'typeorm';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import * as Redis from 'ioredis';
@@ -46,7 +47,6 @@ import {
 	hanamiAxisOrder,
 	HANAMI_FOR_YOU_AXES,
 	type HanamiAxis,
-	type HanamiAxisLevel,
 	type HanamiConfidence,
 	type ForYouCandidate,
 } from '@/core/hanami/HanamiForYouInterleave.js';
@@ -138,29 +138,14 @@ type ClusterLotteryBucket = number | 'general' | 'r';
 type ClusterLotteryItem = { cand: ForYouCandidateWithReason; clusterId?: number; bucket?: ReasonBucket; bestCos?: number | null; cosNorm?: number };
 type TasteMatchMeta = { totalHeat: number; heatOf: Map<number, number>; hasRecentVec: boolean };
 
-type LegacyHanamiAxis = 'popular';
-type HanamiAxisServerConfig = Partial<Record<HanamiAxis | LegacyHanamiAxis, { available?: boolean; default?: boolean }>>;
-type HanamiAxisUserConfig = Partial<Record<HanamiAxis | LegacyHanamiAxis, HanamiAxisLevel | boolean>>;
-
 export type HanamiPersonalFeedCandidatePreparation = {
 	readonly confidence: HanamiConfidence;
-	readonly axisLevels: ReadonlyMap<HanamiAxis, HanamiAxisLevel>;
+	readonly tuning: ResolvedHanamiTuning;
 	readonly candidates: readonly HanamiPersonalFeedCandidate[];
 };
 
 export type HanamiPersonalFeedGenerationContext = HanamiPersonalFeedComputationInput & {
 	readonly queryRunner: QueryRunner;
-};
-
-// 旧5軸設定からの互換解決。新キーがあれば新キーを優先し、無ければ旧キーを既定値として読む。
-const AXIS_CONFIG_KEYS: Record<HanamiAxis, readonly (HanamiAxis | LegacyHanamiAxis)[]> = {
-	globalPopular: ['globalPopular', 'popular'],
-	exploration: ['exploration', 'popular'],
-	neighborTrending: ['neighborTrending', 'reactionSimilar'],
-	reactionSimilar: ['reactionSimilar'],
-	catchup: ['catchup'],
-	trending: ['trending'],
-	fof: ['fof'],
 };
 
 // UI 表示用の理由ラベル。provenance と同じ7軸名を返し、設定画面と表示理由を一致させる。
@@ -273,8 +258,9 @@ export class HanamiForYouService {
 		const profile = await this.cacheService.userProfileCache.fetch(me.id);
 		if (!profile.hanamiRecommendationEnabled) return [];
 		const showReason = profile.hanamiShowRecommendationReason;
-		const axisLevels = this.resolveAxisLevels(profile);
-		if (axisLevels.size === 0) return [];
+		const tuning = resolveHanamiTuning(profile, this.meta.hanamiRecommendationAxisConfig);
+		const amounts = tuning.amounts;
+		if (![...amounts.values()].some(amount => amount > 0)) return [];
 
 		// taste match バッチの対象ゲート用アクティブマーカー（fire-and-forget。served は TTL30分なので流用しない）。
 		refreshHanamiForYouActiveMarker(this.redisClient, me.id);
@@ -288,7 +274,7 @@ export class HanamiForYouService {
 		// 既出（served/seen）は「除外」ではなく軸内スコアの弱い減点＝沈むが再登場（人気は再キュー）。§6/§9
 		const { served, seen } = await this.hanamiRecommendationService.getServedSeenForExclusion(me.id);
 
-		const axisCandidates = await this.gatherCandidates(me.id, confidence, alsRunId, followeeIds, opts.withFiles, axisLevels, served, seen);
+		const axisCandidates = await this.gatherCandidates(me.id, confidence, alsRunId, followeeIds, opts.withFiles, amounts, served, seen);
 		await this.resolveAuthors(axisCandidates);
 		// 前段除外: noteベースのグローバル安全＋ユーザーのメディア設定を interleave の前で候補から除く。
 		// 除外で空いた枠は interleave が他候補で埋め直す＝hideSensitive でもページが痩せない。
@@ -298,7 +284,8 @@ export class HanamiForYouService {
 		// 既出のソフト減点を軸内スコアへ乗算（tier ゲートは廃止＝決定論・痩せない）。
 		this.applyRecencyPenalty(axisCandidates, served, seen);
 
-		const interleaved = hanamiInterleave({ confidence, limit: opts.limit, axisCandidates, axisLevels });
+		await this.applyTuningWeights(me.id, axisCandidates, tuning);
+		const interleaved = hanamiInterleave({ confidence, limit: opts.limit, axisCandidates, amounts });
 		if (interleaved.length === 0) return [];
 
 		// source=枠を消費した軸 / sources=全寄与軸（§6.1-2）。
@@ -332,17 +319,18 @@ export class HanamiForYouService {
 		commonCandidates: readonly HanamiPersonalFeedCandidate[],
 	): Promise<HanamiPersonalFeedCandidatePreparation> {
 		this.throwIfGenerationAborted(input.signal);
-		const profiles = await this.generationDbQuery<Array<Pick<MiUserProfile, 'hanamiRecommendationEnabled' | 'hanamiRecommendationAxes'>>>(input, `
-			SELECT p."hanamiRecommendationEnabled", p."hanamiRecommendationAxes"
+		const profiles = await this.generationDbQuery<Array<Pick<MiUserProfile, 'hanamiRecommendationEnabled' | 'hanamiRecommendationAxes' | 'hanamiTuning'>>>(input, `
+			SELECT p."hanamiRecommendationEnabled", p."hanamiRecommendationAxes", p."hanamiTuning"
 			FROM "user_profile" p
 			WHERE p."userId" = $1
 			LIMIT 1
 		`, [input.userId]);
 		const profile = profiles[0];
 		if (profile == null) throw new Error(`Hanami personal-generation profile is missing for user ${input.userId}`);
-		const axisLevels = this.resolveAxisLevels(profile);
-		if (!profile.hanamiRecommendationEnabled || axisLevels.size === 0) {
-			return { confidence: 'none', axisLevels, candidates: Object.freeze([]) };
+		const tuning = resolveHanamiTuning(profile, this.meta.hanamiRecommendationAxisConfig);
+		const amounts = tuning.amounts;
+		if (!profile.hanamiRecommendationEnabled || ![...amounts.values()].some(amount => amount > 0)) {
+			return { confidence: 'none', tuning, candidates: Object.freeze([]) };
 		}
 
 		const hasFollowing = await this.exists(
@@ -352,7 +340,7 @@ export class HanamiForYouService {
 		);
 		const alsRunId = await this.getGenerationLatestReadyRunId(input);
 		const confidence = await this.computeConfidence(input.userId, hasFollowing, alsRunId, input);
-		const axisCandidates = await this.gatherGenerationCandidates(input, confidence, alsRunId, axisLevels, commonCandidates);
+		const axisCandidates = await this.gatherGenerationCandidates(input, confidence, alsRunId, amounts, commonCandidates);
 
 		const candidates: HanamiPersonalFeedCandidate[] = [];
 		for (const axis of hanamiAxisOrder(confidence)) {
@@ -374,7 +362,7 @@ export class HanamiForYouService {
 			}
 		}
 		this.throwIfGenerationAborted(input.signal);
-		return { confidence, axisLevels, candidates: Object.freeze(candidates) };
+		return { confidence, tuning, candidates: Object.freeze(candidates) };
 	}
 
 	/** Applies the existing taste, aux, and served/seen ranking after D safety. */
@@ -390,7 +378,7 @@ export class HanamiForYouService {
 		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>();
 		const original = new Map<string, HanamiPersonalFeedCandidate>();
 		for (const candidate of safeCandidates) {
-			if (!preparation.axisLevels.has(candidate.axis)) continue;
+			if ((preparation.tuning.amounts.get(candidate.axis) ?? 0) <= 0) continue;
 			const list = axisCandidates.get(candidate.axis) ?? [];
 			list.push({
 				noteId: candidate.noteId,
@@ -407,6 +395,7 @@ export class HanamiForYouService {
 
 		await this.applyTasteAndBoost(input.userId, axisCandidates, input);
 		this.applyRecencyPenalty(axisCandidates, recency.served, recency.seen, true);
+		await this.applyTuningWeights(input.userId, axisCandidates, preparation.tuning, input);
 
 		const ranked: HanamiPersonalFeedCandidate[] = [];
 		for (const axis of hanamiAxisOrder(preparation.confidence)) {
@@ -486,11 +475,33 @@ export class HanamiForYouService {
 		};
 	}
 
+	private async applyTuningWeights(userId: string, candidates: Map<HanamiAxis, ForYouCandidate[]>, tuning: ResolvedHanamiTuning, generation?: HanamiPersonalFeedGenerationContext): Promise<void> {
+		if ([...tuning.freshWeights, ...tuning.closeWeights].every(weight => weight === 1)) return;
+		const ids = [...new Set([...candidates.values()].flat().map(candidate => candidate.noteId))];
+		if (ids.length === 0) return;
+		const sql = `SELECT n.id,
+			CASE WHEN EXISTS (SELECT 1 FROM following f WHERE f."followerId" = $1 AND f."followeeId" = n."userId") THEN 'directFollow'
+				WHEN EXISTS (SELECT 1 FROM following f WHERE f."followerId" = n."userId" AND f."followeeId" = $1) THEN 'known'
+				ELSE 'unknown' END AS relationship
+			FROM note n WHERE n.id = ANY($2::varchar[])`;
+		type Row = { id: string; relationship: ForYouCandidate['relationshipClass'] };
+		const rows: Row[] = generation ? await this.generationDbQuery<Row[]>(generation, sql, [userId, ids]) : await this.db.query(sql, [userId, ids]);
+		const relationships = new Map(rows.map(row => [row.id, row.relationship]));
+		const now = generation ? this.generationNow(generation) : Date.now();
+		for (const [axis, list] of candidates) {
+			for (const candidate of list) {
+				candidate.relationshipClass = relationships.get(candidate.noteId);
+				candidate.score = hanamiTuningScore(axis, candidate, this.idService.parse(candidate.noteId).date.getTime(), now, tuning);
+			}
+			list.sort((a, b) => b.score - a.score);
+		}
+	}
+
 	private async gatherGenerationCandidates(
 		input: HanamiPersonalFeedGenerationContext,
 		confidence: HanamiConfidence,
 		alsRunId: string | null,
-		axisLevels: ReadonlyMap<HanamiAxis, HanamiAxisLevel>,
+		amounts: ReadonlyMap<HanamiAxis, number>,
 		commonCandidates: readonly HanamiPersonalFeedCandidate[],
 	): Promise<Map<HanamiAxis, ForYouCandidate[]>> {
 		// Candidate-specific recency is applied once after safety filtering.
@@ -509,7 +520,7 @@ export class HanamiForYouService {
 			commonByAxis.set(candidate.axis, list);
 		}
 
-		if (axisLevels.has('trending') && axisLevels.get('trending') !== 'off') {
+		if ((amounts.get('trending') ?? 0) > 0) {
 			const trendingIds = new Set((commonByAxis.get('trending') ?? []).map(candidate => candidate.noteId));
 			const popular = commonByAxis.get('globalPopular') ?? [];
 			const remaining = popular.filter(candidate => !trendingIds.has(candidate.noteId));
@@ -518,7 +529,7 @@ export class HanamiForYouService {
 		}
 
 		const map = new Map<HanamiAxis, ForYouCandidate[]>();
-		const order = hanamiAxisOrder(confidence).filter(axis => axisLevels.has(axis) && axisLevels.get(axis) !== 'off');
+		const order = hanamiAxisOrder(confidence).filter(axis => (amounts.get(axis) ?? 0) > 0);
 		for (const axis of order) {
 			try {
 				let candidates: ForYouCandidate[];
@@ -640,46 +651,11 @@ export class HanamiForYouService {
 
 	// ───────────────────────── ユーザー別軸量（7軸） ─────────────────────────
 
-	private normalizeAxisLevel(v: unknown, def: boolean): HanamiAxisLevel {
-		if (v === 'off' || v === 'low' || v === 'normal' || v === 'high') return v;
-		if (v === true) return 'normal';
-		if (v === false) return 'off';
-		return def ? 'normal' : 'off';
-	}
-
-	private axisServerConfig(axis: HanamiAxis, serverCfg: HanamiAxisServerConfig): { available: boolean; default: boolean } {
-		const keys = AXIS_CONFIG_KEYS[axis];
-		const available = keys.map(k => serverCfg[k]?.available).find(v => v !== undefined) ?? true;
-		const def = keys.map(k => serverCfg[k]?.default).find(v => v !== undefined) ?? true;
-		return { available, default: def };
-	}
-
-	private axisUserValue(axis: HanamiAxis, userCfg: HanamiAxisUserConfig): HanamiAxisLevel | boolean | undefined {
-		for (const key of AXIS_CONFIG_KEYS[axis]) {
-			const v = userCfg[key];
-			if (v !== undefined) return v;
-		}
-		return undefined;
-	}
-
-	private resolveAxisLevels(profile: Pick<MiUserProfile, 'hanamiRecommendationAxes'>): Map<HanamiAxis, HanamiAxisLevel> {
-		const serverCfg = (this.meta.hanamiRecommendationAxisConfig ?? {}) as HanamiAxisServerConfig;
-		const userCfg = (profile.hanamiRecommendationAxes ?? {}) as HanamiAxisUserConfig;
-		const out = new Map<HanamiAxis, HanamiAxisLevel>();
-		for (const axis of HANAMI_FOR_YOU_AXES) {
-			const server = this.axisServerConfig(axis, serverCfg);
-			if (!server.available) continue;
-			const level = this.normalizeAxisLevel(this.axisUserValue(axis, userCfg), server.default);
-			if (level !== 'off') out.set(axis, level);
-		}
-		return out;
-	}
-
 	// ───────────────────────── 候補生成（§4/§5） ─────────────────────────
 
 	@bindThis
-	private async gatherCandidates(meId: MiUser['id'], confidence: HanamiConfidence, alsRunId: string | null, followeeIds: string[], withFiles: boolean, axisLevels: ReadonlyMap<HanamiAxis, HanamiAxisLevel>, served: ReadonlySet<string>, seen: ReadonlySet<string>): Promise<Map<HanamiAxis, ForYouCandidate[]>> {
-		const order = hanamiAxisOrder(confidence).filter(axis => axisLevels.has(axis)); // exploration を含む
+	private async gatherCandidates(meId: MiUser['id'], confidence: HanamiConfidence, alsRunId: string | null, followeeIds: string[], withFiles: boolean, amounts: ReadonlyMap<HanamiAxis, number>, served: ReadonlySet<string>, seen: ReadonlySet<string>): Promise<Map<HanamiAxis, ForYouCandidate[]>> {
+		const order = hanamiAxisOrder(confidence).filter(axis => (amounts.get(axis) ?? 0) > 0); // exploration を含む
 		const map = new Map<HanamiAxis, ForYouCandidate[]>();
 		await Promise.all(order.map(async axis => {
 			try {

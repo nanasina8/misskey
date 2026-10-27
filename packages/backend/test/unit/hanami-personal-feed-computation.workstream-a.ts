@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { resolveHanamiTuning, HANAMI_LEVEL_WEIGHT } from '@/core/hanami/HanamiTuning.js';
 import { describe, expect, vi as jest, test } from 'vitest';
 import {
 	HANAMI_FOR_YOU_AXES,
@@ -13,7 +14,6 @@ import {
 import {
 	HanamiPersonalFeedComputationService,
 	HANAMI_PERSONAL_FEED_ALGORITHM_VERSION,
-	hanamiHasUnhealablePersonalSeedHead,
 } from '@/core/hanami/HanamiPersonalFeedComputationService.js';
 import {
 	HanamiForYouService,
@@ -24,7 +24,6 @@ import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvena
 import { HanamiUserRecommendationService } from '@/core/hanami/HanamiUserRecommendationService.js';
 import type { HanamiCommonGenerationReadContext, HanamiPersistedCommonCandidate } from '@/core/hanami/HanamiCommonGenerationContracts.js';
 import {
-	HanamiInvalidPersonalSeedError,
 } from '@/core/hanami/HanamiUserFeedContracts.js';
 import type {
 	HanamiPersonalFeedCandidate,
@@ -151,7 +150,7 @@ function createComputation(options: {
 	const safety = { filterCommonEligibleNotes, filterPersonalEligibleCandidates, filterAndPack };
 	const defaultGather = async (_computationInput: HanamiPersonalFeedGenerationContext, common: readonly HanamiPersonalFeedCandidate[]): Promise<HanamiPersonalFeedCandidatePreparation> => ({
 		confidence: options.confidence ?? 'high',
-		axisLevels: options.axisLevels ?? allLevels(),
+		tuning: { ...resolveHanamiTuning({}), amounts: new Map([...(options.axisLevels ?? allLevels())].map(([axis, level]) => [axis, HANAMI_LEVEL_WEIGHT[level]])) },
 		candidates: [...common, ...(options.candidates ?? [])],
 	});
 	const gatherPersonalFeedCandidates = jest.fn(options.gather ?? defaultGather);
@@ -533,63 +532,6 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		expect(result.items).toEqual([]);
 		expect(fixture.driverQuery.mock.calls.filter(call => String(call[0]).includes('FROM meta m LEFT JOIN "user_profile"'))).toHaveLength(1);
 		expect(fixture.driverQuery.mock.calls.filter(call => String(call[0]).includes('SELECT "hanamiNoteJudgeSettings" AS settings FROM meta'))).toEqual([]);
-	});
-
-	test('heals a legacy old-head unknown deficit before returning a personal prefix', async () => {
-		const candidatesForRun = Array.from({ length: 15 }, (_, index) => candidate('globalPopular', `new-unknown-${index}`, `new-author-${index}`));
-		const seed = [
-			...Array.from({ length: 14 }, (_, index) => ({ note_id: `old-unknown-${index}`, author_id: `old-unknown-author-${index}`, text: `old unknown ${index}`, is_bot: false, relationship_class: 'unknown' as const })),
-			...Array.from({ length: 12 }, (_, index) => ({ note_id: `old-known-${index}`, author_id: `old-known-author-${index}`, text: `old known ${index}`, is_bot: false, relationship_class: 'known' as const })),
-			...Array.from({ length: 3 }, (_, index) => ({ note_id: `old-neutral-${index}`, author_id: `old-neutral-author-${index}`, text: `old neutral ${index}`, is_bot: false, relationship_class: undefined })),
-		];
-		const queryRunner = createQueryRunner(async (sql, parameters) => {
-			if (sql.includes("set_config('statement_timeout'")) return [{}];
-			if (sql.includes('AS before_deadline')) return [{ before_deadline: true }];
-			if (sql.includes('ORDER BY e."sequence" DESC LIMIT 210')) return seed;
-			if (sql.includes('FROM note n JOIN "user" u')) return (parameters?.[1] as string[]).map(noteId => ({
-				note_id: noteId, author_id: `resolved-${noteId}`, text: noteId, is_bot: false, relationship_class: 'unknown',
-			}));
-			return [];
-		});
-		const fixture = createComputation({
-			confidence: 'none',
-			axisLevels: new Map([['globalPopular', 'normal']]),
-			candidates: candidatesForRun,
-			queryRunner,
-		});
-
-		const result = await fixture.service.computePersonalFeed({ ...input(), latestReadyBatchId: 'head' });
-
-		expect(result.items).toHaveLength(15);
-		expect(result.items.every(item => item.noteId.startsWith('new-unknown-'))).toBe(true);
-		expect(fixture.driverQuery.mock.calls.some(call => String(call[0]).includes('ORDER BY e."sequence" DESC LIMIT 210'))).toBe(true);
-	});
-
-	test('throws the typed seed error only for mathematically unhealable old heads', async () => {
-		const makeSeed = (kind: 'exact' | 'combined') => Array.from({ length: 29 }, (_, index) => ({
-			note_id: `old-${kind}-${index}`, author_id: `old-author-${index}`, text: kind === 'exact' && index < 2 ? 'duplicate' : `old ${index}`,
-			is_bot: false, relationship_class: kind === 'combined' && index < 7 ? 'directFollow' as const : kind === 'combined' && index < 13 ? 'known' as const : 'unknown' as const,
-		}));
-		for (const kind of ['exact', 'combined'] as const) {
-			const queryRunner = createQueryRunner(async (sql, parameters) => {
-				if (sql.includes("set_config('statement_timeout'")) return [{}];
-				if (sql.includes('AS before_deadline')) return [{ before_deadline: true }];
-				if (sql.includes('ORDER BY e."sequence" DESC LIMIT 210')) return makeSeed(kind);
-				if (sql.includes('FROM note n JOIN "user" u')) return (parameters?.[1] as string[]).map(noteId => ({ note_id: noteId, author_id: `author-${noteId}`, text: noteId, is_bot: false, relationship_class: 'unknown' }));
-				return [];
-			});
-			const fixture = createComputation({ candidates: Array.from({ length: 15 }, (_, index) => candidate('globalPopular', `new-${kind}-${index}`)), queryRunner });
-			await expect(fixture.service.computePersonalFeed({ ...input(), latestReadyBatchId: 'head' })).rejects.toBeInstanceOf(HanamiInvalidPersonalSeedError);
-		}
-	});
-
-	test('classifies only active unknown-floor and upper-cap seed heads as unhealable', () => {
-		const base = Array.from({ length: 29 }, (_, index) => ({ noteId: `old-${index}`, userId: `author-${index}`, score: 0, relationshipClass: index < 13 ? 'unknown' as const : undefined }));
-		expect(hanamiHasUnhealablePersonalSeedHead(base, true)).toBe(true);
-		expect(hanamiHasUnhealablePersonalSeedHead(base, false)).toBe(false);
-		const fourteenUnknown = base.map((item, index) => ({ ...item, relationshipClass: index < 14 ? 'unknown' as const : undefined }));
-		expect(hanamiHasUnhealablePersonalSeedHead(fourteenUnknown, true)).toBe(false);
-		expect(hanamiHasUnhealablePersonalSeedHead([], true)).toBe(false);
 	});
 
 	test('returns an ordinary empty result when candidates are exhausted', async () => {
@@ -1013,7 +955,7 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 		]);
 		const preparation: HanamiPersonalFeedCandidatePreparation = {
 			confidence: 'high',
-			axisLevels: allLevels(),
+			tuning: resolveHanamiTuning({}),
 			candidates: safe,
 		};
 

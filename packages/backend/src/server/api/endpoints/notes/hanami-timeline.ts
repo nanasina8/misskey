@@ -97,6 +97,7 @@ export const paramDef = {
 		cursor: { type: 'string', minLength: 1, maxLength: 1024 },
 		refresh: { type: 'boolean', default: false },
 		refreshToken: { type: 'string' },
+		reason: { type: 'string', enum: ['tuning'] },
 		withFiles: { type: 'boolean', default: false },
 	},
 	required: [],
@@ -112,7 +113,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		super(meta, paramDef, async (ps, me) => {
 			const cursor = ps.cursor ?? null;
 			const refreshToken = ps.refreshToken ?? null;
-			if ((ps.refresh && (cursor != null || refreshToken == null)) || (!ps.refresh && refreshToken != null)) {
+			if ((ps.refresh && (cursor != null || refreshToken == null)) || (!ps.refresh && (refreshToken != null || ps.reason != null))) {
 				throw new ApiError(meta.errors.invalidParam);
 			}
 			if (refreshToken != null) {
@@ -130,6 +131,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					cursor,
 					refresh: ps.refresh,
 					refreshToken,
+					reason: ps.reason,
 					withFiles: ps.withFiles,
 				},
 			});

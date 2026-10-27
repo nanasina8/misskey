@@ -5,6 +5,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <component :is="prefer.s.enablePullToRefresh ? MkPullToRefresh : 'div'" :refresher="() => reloadTimeline()">
+	<div v-if="src === 'hanami'" :class="$style.tuningHeader">
+		<button type="button" class="_button" @click="openHanamiTuning($event.currentTarget as HTMLElement)"><i class="ti ti-adjustments"></i> {{ i18n.ts._hana._tuning.button }}</button>
+	</div>
 	<MkLoading v-if="fetching"/>
 
 	<MkError v-else-if="error" @retry="retryTimeline"/>
@@ -82,6 +85,7 @@ import { DI } from '@/di.js';
 import { globalEvents, useGlobalEvent } from '@/events.js';
 import { isSeparatorNeeded, getSeparatorInfo } from '@/utility/timeline-date-separate.js';
 import { Paginator } from '@/utility/paginator.js';
+import { openHanamiTuning } from '@/utility/hanami-tuning-client.js';
 import { HanamiTimelinePaginator } from '@/utility/hanami-timeline-paginator.js';
 import type { HanamiTimelineItem } from '@/utility/hanami-timeline-paginator.js';
 
@@ -206,6 +210,9 @@ const fetching = computed(() => hanamiPaginator?.fetching.value ?? paginator?.fe
 const fetchingOlder = computed(() => hanamiPaginator?.fetchingOlder.value ?? paginator?.fetchingOlder.value ?? false);
 const canFetchOlder = computed(() => hanamiPaginator?.canFetchOlder.value ?? paginator?.canFetchOlder.value ?? false);
 const error = computed(() => hanamiPaginator?.error.value ?? (paginator?.error.value ? true : null));
+if (hanamiPaginator) useGlobalEvent('hanamiTuningChanged', token => { void hanamiPaginator?.refreshTuning(token); });
+onUnmounted(() => hanamiPaginator?.dispose());
+
 const generationPending = computed(() => hanamiPaginator?.generationPending.value ?? false);
 const queuedAheadItemsCount = computed(() => paginator?.queuedAheadItemsCount.value ?? 0);
 
@@ -485,6 +492,7 @@ defineExpose({
 </script>
 
 <style lang="scss" module>
+.tuningHeader { display: flex; justify-content: flex-end; padding: 8px 16px; border-bottom: solid 1px var(--MI_THEME-divider); }
 .transition_x_move {
 	transition: transform 0.7s cubic-bezier(0.23, 1, 0.32, 1);
 }

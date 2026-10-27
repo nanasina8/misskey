@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { resolveHanamiTuning } from '@/core/hanami/HanamiTuning.js';
 import { describe, expect, vi as jest, test } from 'vitest';
 import { createHanamiMetricsCandidateRows, HanamiMetricsCaptureService, type HanamiMetricsCandidateDecision } from '@/core/hanami/HanamiMetricsCaptureService.js';
 import { HanamiPersonalFeedComputationService } from '@/core/hanami/HanamiPersonalFeedComputationService.js';
@@ -52,7 +53,7 @@ function fixture(reduceEphemeralPosts = true) {
 		{ createQueryRunner: () => runner } as never,
 		{ loadReadyCommonCandidates: async () => [] } as never,
 		{
-			gatherPersonalFeedCandidates: async () => ({ candidates, confidence: 'high', axisLevels: new Map(HANAMI_FOR_YOU_AXES.map(axis => [axis, 'normal'])) }),
+			gatherPersonalFeedCandidates: async () => ({ candidates, confidence: 'high', tuning: resolveHanamiTuning({}) }),
 			rankPersonalFeedCandidates: async (_context: unknown, _preparation: unknown, safe: HanamiPersonalFeedCandidate[]) => safe,
 		} as never,
 		{

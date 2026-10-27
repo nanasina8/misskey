@@ -112,7 +112,7 @@ const menuDef = computed<SuperMenuDef[]>(() => [{
 }, {
 	items: [{
 		icon: 'ti ti-flower-filled',
-		text: i18n.ts._hana.hanaMode,
+		text: i18n.ts._hana.hanamiTimelineShort,
 		to: '/settings/hanamode',
 		active: currentPage.value?.route.name === 'hanamode',
 	}],

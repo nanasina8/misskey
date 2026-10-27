@@ -4,7 +4,6 @@
  */
 import { describe, test, expect } from 'vitest';
 
-
 import { createHash, randomBytes } from 'node:crypto';
 import { vi as jest } from 'vitest';
 import { Client } from 'pg';
@@ -18,7 +17,6 @@ import { HanamiPersistedFeedReadService } from '@/core/hanami/HanamiPersistedFee
 import { HanamiUserFeedGenerationService } from '@/core/hanami/HanamiUserFeedGenerationService.js';
 import { HanamiUserFeedRequestService } from '@/core/hanami/HanamiUserFeedRequestService.js';
 import {
-	HanamiInvalidPersonalSeedError,
 	type HanamiPersonalFeedComputationInput,
 	type HanamiPersonalFeedComputationPort,
 	type HanamiPersonalFeedComputationResult,
@@ -211,6 +209,7 @@ const withMigratedSchema = async (run: (context: { schema: string; query: DbQuer
 			"createdAt" TIMESTAMP WITH TIME ZONE NOT NULL
 		)`);
 		await new HanamiPersistedTimelinePhase11787097600000().up({ query } as never);
+		await query(`ALTER TABLE "hanami_user_feed_refresh" ADD "reason" varchar(16) NOT NULL DEFAULT 'normal'`);
 		// Match 1789948800000-hanamiMetricsDaily without its unrelated metrics tables.
 		await query(`ALTER TABLE "hanami_user_feed_batch"
 			ADD COLUMN "failureKind" varchar(32), ADD COLUMN "failureMessage" varchar(512)`);
@@ -842,70 +841,6 @@ describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 			hibernateHeld.resolve(personalResult('personal-note-4'));
 			await expect(hibernateRun).resolves.toEqual({ kind: 'stale', batchId: hibernateRequest.requestedBatchId, attempt: 1 });
 			expect(await query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM "hanami_user_feed_entry" WHERE "userId" = 'hibernate-user'`)).toEqual([{ count: '0' }]);
-		});
-	}, 20_000);
-
-	test('rotates only an invalid personal seed into a fresh initial epoch and remaps pending refreshes', async () => {
-		await withMigratedSchema(async ({ schema, query }) => {
-			await seedUser(query, 'ordinary-error-user');
-			const ordinary = new Computation();
-			ordinary.compute = async () => { throw new Error('ordinary generation error'); };
-			const ordinaryRuntime = makeRuntime(schema, { computation: ordinary, idPrefix: 'oe' });
-			const ordinaryRequest = await ordinaryRuntime.request.requestRefresh('ordinary-error-user', token(41));
-			if (ordinaryRequest.kind !== 'serve' || !ordinaryRequest.generationPending) throw new Error('expected ordinary batch');
-			await expect(ordinaryRuntime.generation.runUserFeedGeneration(ordinaryRequest.requestedBatchId)).resolves.toEqual({
-				kind: 'failed', batchId: ordinaryRequest.requestedBatchId, attempt: 1, terminal: false,
-				failureKind: 'exception', failureMessage: 'ordinary generation error',
-			});
-			expect(await query(`SELECT "status", "epochId", "failureKind", "failureMessage"
-				FROM "hanami_user_feed_batch" WHERE "id" = $1`, [ordinaryRequest.requestedBatchId])).toEqual([{
-				status: 'pending', epochId: expect.any(String),
-				failureKind: 'exception', failureMessage: 'generation failed with an exception',
-			}]);
-
-			ordinary.compute = async () => personalResult('personal-note-1');
-			await query(`UPDATE "hanami_user_feed_batch" SET "availableAt" = clock_timestamp() - INTERVAL '1 millisecond'
-				WHERE "id" = $1`, [ordinaryRequest.requestedBatchId]);
-			await expect(ordinaryRuntime.generation.runUserFeedGeneration(ordinaryRequest.requestedBatchId)).resolves.toMatchObject({
-				kind: 'published', batchId: ordinaryRequest.requestedBatchId, attempt: 2, itemCount: 1, headSequence: '1',
-			});
-			expect(await query(`SELECT "status", "attempts", "failureKind", "failureMessage"
-				FROM "hanami_user_feed_batch" WHERE "id" = $1`, [ordinaryRequest.requestedBatchId])).toEqual([{
-				status: 'ready', attempts: 2, failureKind: null, failureMessage: null,
-			}]);
-
-			await seedUser(query, 'invalid-seed-user');
-			const invalid = new Computation();
-			invalid.compute = async () => { throw new HanamiInvalidPersonalSeedError(); };
-			const runtime = makeRuntime(schema, { computation: invalid, idPrefix: 'is' });
-			const requested = await runtime.request.requestRefresh('invalid-seed-user', token(42));
-			if (requested.kind !== 'serve' || !requested.generationPending) throw new Error('expected invalid-seed batch');
-			const oldState = await query<{ epoch_id: string }>(`SELECT "epochId" AS epoch_id FROM "hanami_user_feed_state" WHERE "userId" = 'invalid-seed-user'`);
-			const result = await runtime.generation.runUserFeedGeneration(requested.requestedBatchId);
-			expect(result).toMatchObject({ kind: 'replaced', batchId: requested.requestedBatchId, attempt: 1, replacementBatchId: expect.any(String) });
-			if (result.kind !== 'replaced') throw new Error('expected replacement');
-
-			expect(await query(`SELECT "status", "leaseOwner", "leaseExpiresAt" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [requested.requestedBatchId]))
-				.toEqual([{ status: 'obsolete', leaseOwner: null, leaseExpiresAt: null }]);
-			expect(await query(`SELECT "retiredAt" IS NOT NULL AS retired FROM "hanami_user_feed_epoch" WHERE "userId" = 'invalid-seed-user' AND "epochId" = $1`, [oldState[0]!.epoch_id]))
-				.toEqual([{ retired: true }]);
-			expect(await query(`SELECT "epochId", "mode", "initialGenerationState", "latestReadyBatchId", "generatingBatchId",
-			"latestSequence"::text AS "latestSequence", "earliestRetainedSequence"::text AS "earliestRetainedSequence",
-			"commonEpochId", "commonHeadGenerationId", "commonHeadSequence"::text AS "commonHeadSequence"
-			FROM "hanami_user_feed_state" WHERE "userId" = 'invalid-seed-user'`)).toEqual([{
-				epochId: expect.any(String), mode: 'common', initialGenerationState: 'requested', latestReadyBatchId: null,
-				generatingBatchId: result.replacementBatchId, latestSequence: '0', earliestRetainedSequence: '0',
-				commonEpochId: 'common-epoch-1', commonHeadGenerationId: 'common-generation-1', commonHeadSequence: '3',
-			}]);
-			expect(await query(`SELECT "trigger", "status", "attempts", "baseCommonGenerationId" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [result.replacementBatchId]))
-				.toEqual([{ trigger: 'initial', status: 'pending', attempts: 0, baseCommonGenerationId: 'common-generation-1' }]);
-			expect(await query(`SELECT r."epochId", r."requestedBatchId", r."status", r."resultMode", r."resultHeadBatchId"
-			FROM "hanami_user_feed_refresh" r WHERE r."userId" = 'invalid-seed-user'`)).toEqual([{
-				epochId: expect.any(String), requestedBatchId: result.replacementBatchId, status: 'pending', resultMode: null, resultHeadBatchId: null,
-			}]);
-			await expect(runtime.generation.runUserFeedGeneration(requested.requestedBatchId)).resolves.toEqual({
-				kind: 'obsolete', batchId: requested.requestedBatchId,
-			});
 		});
 	}, 20_000);
 

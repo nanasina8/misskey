@@ -2755,6 +2755,15 @@ export type paths = {
          */
         post: operations['i___hanami-taste-clusters'];
     };
+    '/i/hanami-tuning-suggestion': {
+        /**
+         * i/hanami-tuning-suggestion
+         * @description Suggest Hanami timeline amounts from the authenticated user’s reactions over the last 14 days.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:account*
+         */
+        post: operations['i___hanami-tuning-suggestion'];
+    };
     '/i/import-antennas': {
         /**
          * i/import-antennas
@@ -4407,6 +4416,27 @@ export type components = {
             /** @enum {string} */
             exploreMediaFilter: 'all' | 'hideSensitive' | 'hideMedia';
             hanamiRecommendationEnabled?: boolean;
+            hanamiTuning: {
+                /** @enum {string} */
+                mode?: 'auto' | 'manual';
+                closeness?: number;
+                freshness?: number;
+                discovery?: number;
+                manual?: {
+                    amounts: {
+                        globalPopular?: number;
+                        neighborTrending?: number;
+                        reactionSimilar?: number;
+                        catchup?: number;
+                        trending?: number;
+                        fof?: number;
+                        exploration?: number;
+                    };
+                    freshWeights: number[];
+                    closeWeights: number[];
+                    authorCap: number;
+                };
+            };
             hanamiRecommendationAxes?: {
                 /** @enum {string} */
                 globalPopular?: 'off' | 'low' | 'normal' | 'high';
@@ -28309,6 +28339,88 @@ export interface operations {
             };
         };
     };
+    'i___hanami-tuning-suggestion': {
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        eligible: boolean;
+                        minSeen: number;
+                        minReactions: number;
+                        totalSeen: number;
+                        totalReactions: number;
+                        axes: {
+                            /** @enum {string} */
+                            axis: 'globalPopular' | 'neighborTrending' | 'reactionSimilar' | 'catchup' | 'trending' | 'fof' | 'exploration';
+                            seen: number;
+                            reactions: number;
+                            rate: number;
+                            current: number;
+                            suggested: number;
+                        }[];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
     'i___import-antennas': {
         requestBody: {
             content: {
@@ -30112,6 +30224,27 @@ export interface operations {
                     hanamiRecommendationEnabled?: boolean;
                     hanamiShowRecommendationReason?: boolean;
                     hanamiReduceEphemeralPosts?: boolean;
+                    hanamiTuning?: {
+                        /** @enum {string} */
+                        mode: 'auto' | 'manual';
+                        closeness: number;
+                        freshness: number;
+                        discovery: number;
+                        manual?: {
+                            amounts: {
+                                globalPopular?: number;
+                                neighborTrending?: number;
+                                reactionSimilar?: number;
+                                catchup?: number;
+                                trending?: number;
+                                fof?: number;
+                                exploration?: number;
+                            };
+                            freshWeights: number[];
+                            closeWeights: number[];
+                            authorCap: number;
+                        };
+                    };
                     hanamiRecommendationAxes?: {
                         /** @enum {string} */
                         globalPopular?: 'off' | 'low' | 'normal' | 'high';
@@ -32759,6 +32892,8 @@ export interface operations {
                     /** @default false */
                     refresh?: boolean;
                     refreshToken?: string;
+                    /** @enum {string} */
+                    reason?: 'tuning';
                     /** @default false */
                     withFiles?: boolean;
                 };

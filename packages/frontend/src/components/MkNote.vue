@@ -14,7 +14,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 >
 	<MkNoteSub v-if="appearNote.replyId && !renoteCollapsed" :note="appearNote?.reply ?? null" :class="$style.replyTo"/>
 	<div v-if="pinned" :class="$style.tip"><i class="ti ti-pin"></i> {{ i18n.ts.pinnedNote }}</div>
-	<div v-if="hanamiReason" :class="[$style.tip, $style.hanamiReason]"><i :class="hanamiReasonIcon"></i> {{ hanamiReasonLabel }}</div>
+	<button v-if="hanamiReason" type="button" class="_button" :class="[$style.tip, $style.hanamiReason]" @click.stop="showHanamiReasonMenu"><i :class="hanamiReasonIcon"></i> {{ hanamiReasonLabel }}</button>
 	<div v-if="isRenote" :class="$style.renote">
 		<div v-if="note.channel" :class="$style.colorBar" :style="{ background: note.channel.color }"></div>
 		<MkAvatar :class="$style.renoteAvatar" :user="note.user" link preview/>
@@ -201,6 +201,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
+import { $i } from '@/i.js';
+import { showHanamiReasonMenuForNote } from '@/utility/hanami-tuning-reason.js';
 import { inject, ref, useTemplateRef, provide, computed, watch, onUnmounted, onActivated, onDeactivated } from 'vue';
 import type { Ref } from 'vue';
 import * as Misskey from 'misskey-js';
@@ -256,7 +258,12 @@ const hanamiRecommendationMeta = computed(() => props.note as {
 	_hanamiRecommended?: boolean;
 	_hanamiReason?: { reason: string; term?: string; socialCount?: number; clusterId?: number; bucket?: 'cluster' | 'recent' };
 });
-const hanamiReason = computed(() => hanamiRecommendationMeta.value._hanamiReason ?? null);
+const hanamiReason = computed(() => $i?.hanamiShowRecommendationReason === false ? null : hanamiRecommendationMeta.value._hanamiReason ?? null);
+
+function showHanamiReasonMenu(event: MouseEvent): void {
+	if (hanamiReason.value) showHanamiReasonMenuForNote(props.note, hanamiReason.value, event.currentTarget as HTMLElement);
+}
+
 const hanamiRecommended = computed(() => hanamiRecommendationMeta.value._hanamiRecommended === true || hanamiReason.value != null);
 const hanamiReasonLabel = computed(() => {
 	const r = hanamiReason.value;

@@ -461,6 +461,7 @@ import type {
 	IGalleryPostsRequest,
 	IGalleryPostsResponse,
 	IHanamiTasteClustersResponse,
+	IHanamiTuningSuggestionResponse,
 	IImportAntennasRequest,
 	IImportBlockingRequest,
 	IImportFollowingRequest,
@@ -1025,6 +1026,7 @@ export type Endpoints = {
 	'i/gallery/likes': { req: IGalleryLikesRequest; res: IGalleryLikesResponse };
 	'i/gallery/posts': { req: IGalleryPostsRequest; res: IGalleryPostsResponse };
 	'i/hanami-taste-clusters': { req: EmptyRequest; res: IHanamiTasteClustersResponse };
+	'i/hanami-tuning-suggestion': { req: EmptyRequest; res: IHanamiTuningSuggestionResponse };
 	'i/import-antennas': { req: IImportAntennasRequest; res: EmptyResponse };
 	'i/import-blocking': { req: IImportBlockingRequest; res: EmptyResponse };
 	'i/import-following': { req: IImportFollowingRequest; res: EmptyResponse };

@@ -34,7 +34,7 @@ function fixture(result: HanamiTimelinePageResult = { kind: 'ok', response }) {
 describe('Hanami Phase 5 workstream C endpoint contract', () => {
 	test('exposes only the breaking request and exact response fields', () => {
 		expect(paramDef.additionalProperties).toBe(false);
-		expect(Object.keys(paramDef.properties)).toEqual(['limit', 'cursor', 'refresh', 'refreshToken', 'withFiles']);
+		expect(Object.keys(paramDef.properties)).toEqual(['limit', 'cursor', 'refresh', 'refreshToken', 'reason', 'withFiles']);
 		expect(paramDef.properties.cursor).toEqual({ type: 'string', minLength: 1, maxLength: 1024 });
 		expect(paramDef.properties.refreshToken).toEqual({ type: 'string' });
 		expect(meta.res).toMatchObject({ type: 'object', additionalProperties: false });

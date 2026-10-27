@@ -38,6 +38,9 @@ export class MiHanamiUserFeedRefresh {
 	@Column('varchar', { length: 32 })
 	public status: string;
 
+	@Column('varchar', { length: 16, default: 'normal' })
+	public reason: 'normal' | 'tuning';
+
 	@Column('timestamp with time zone')
 	public createdAt: Date;
 

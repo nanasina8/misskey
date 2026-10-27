@@ -206,6 +206,12 @@ type AdminEmojiListRequest = operations['admin___emoji___list']['requestBody']['
 type AdminEmojiListResponse = operations['admin___emoji___list']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type AdminEmojiRefingerprintRequest = operations['admin___emoji___refingerprint']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminEmojiRefingerprintResponse = operations['admin___emoji___refingerprint']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type AdminEmojiRemoveAliasesBulkRequest = operations['admin___emoji___remove-aliases-bulk']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -246,6 +252,81 @@ type AdminGetUserIpsRequest = operations['admin___get-user-ips']['requestBody'][
 
 // @public (undocumented)
 type AdminGetUserIpsResponse = operations['admin___get-user-ips']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiJudgeAggregateRequest = operations['admin___hanami___judge-aggregate']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiJudgeAggregateResponse = operations['admin___hanami___judge-aggregate']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiJudgeSettingsRequest = operations['admin___hanami___judge-settings']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiJudgeSettingsResponse = operations['admin___hanami___judge-settings']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiJudgeStatusRequest = operations['admin___hanami___judge-status']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiJudgeStatusResponse = operations['admin___hanami___judge-status']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiJudgeTrialRequest = operations['admin___hanami___judge-trial']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiJudgeTrialResponse = operations['admin___hanami___judge-trial']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiMetricsBreakdownRequest = operations['admin___hanami___metrics___breakdown']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiMetricsBreakdownResponse = operations['admin___hanami___metrics___breakdown']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiMetricsErrorsRequest = operations['admin___hanami___metrics___errors']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiMetricsErrorsResponse = operations['admin___hanami___metrics___errors']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiMetricsNotesRequest = operations['admin___hanami___metrics___notes']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiMetricsNotesResponse = operations['admin___hanami___metrics___notes']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiMetricsOpportunitiesRequest = operations['admin___hanami___metrics___opportunities']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiMetricsOpportunitiesResponse = operations['admin___hanami___metrics___opportunities']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiMetricsSummaryRequest = operations['admin___hanami___metrics___summary']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiMetricsSummaryResponse = operations['admin___hanami___metrics___summary']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiMetricsWhatIfRequest = operations['admin___hanami___metrics___what-if']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiMetricsWhatIfResponse = operations['admin___hanami___metrics___what-if']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiSuggestionEventsExportRequest = operations['admin___hanami___suggestion-events-export']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiSuggestionEventsExportResponse = operations['admin___hanami___suggestion-events-export']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiTasteRebuildRequest = operations['admin___hanami___taste-rebuild']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiTasteRebuildResponse = operations['admin___hanami___taste-rebuild']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiTasteRebuildStatusResponse = operations['admin___hanami___taste-rebuild-status']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type AdminInviteCreateRequest = operations['admin___invite___create']['requestBody']['content']['application/json'];
@@ -703,17 +784,6 @@ export type Channels = {
         };
         receives: null;
     };
-    hanamiTimeline: {
-        params: {
-            withRenotes?: boolean;
-            withReplies?: boolean;
-            withFiles?: boolean;
-        };
-        events: {
-            note: (payload: Note) => void;
-        };
-        receives: null;
-    };
     localTimeline: {
         params: {
             withRenotes?: boolean;
@@ -1051,6 +1121,12 @@ type ChartsFederationRequest = operations['charts___federation']['requestBody'][
 
 // @public (undocumented)
 type ChartsFederationResponse = operations['charts___federation']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type ChartsHanamiTimelineRequest = operations['charts___hanami-timeline']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChartsHanamiTimelineResponse = operations['charts___hanami-timeline']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type ChartsInstanceRequest = operations['charts___instance']['requestBody']['content']['application/json'];
@@ -1612,6 +1688,8 @@ declare namespace entities {
         AdminEmojiListResponse,
         AdminEmojiListRemoteRequest,
         AdminEmojiListRemoteResponse,
+        AdminEmojiRefingerprintRequest,
+        AdminEmojiRefingerprintResponse,
         AdminEmojiRemoveAliasesBulkRequest,
         AdminEmojiSetAliasesBulkRequest,
         AdminEmojiSetCategoryBulkRequest,
@@ -1626,6 +1704,31 @@ declare namespace entities {
         AdminGetTableStatsResponse,
         AdminGetUserIpsRequest,
         AdminGetUserIpsResponse,
+        AdminHanamiJudgeAggregateRequest,
+        AdminHanamiJudgeAggregateResponse,
+        AdminHanamiJudgeSettingsRequest,
+        AdminHanamiJudgeSettingsResponse,
+        AdminHanamiJudgeStatusRequest,
+        AdminHanamiJudgeStatusResponse,
+        AdminHanamiJudgeTrialRequest,
+        AdminHanamiJudgeTrialResponse,
+        AdminHanamiMetricsBreakdownRequest,
+        AdminHanamiMetricsBreakdownResponse,
+        AdminHanamiMetricsErrorsRequest,
+        AdminHanamiMetricsErrorsResponse,
+        AdminHanamiMetricsNotesRequest,
+        AdminHanamiMetricsNotesResponse,
+        AdminHanamiMetricsOpportunitiesRequest,
+        AdminHanamiMetricsOpportunitiesResponse,
+        AdminHanamiMetricsSummaryRequest,
+        AdminHanamiMetricsSummaryResponse,
+        AdminHanamiMetricsWhatIfRequest,
+        AdminHanamiMetricsWhatIfResponse,
+        AdminHanamiSuggestionEventsExportRequest,
+        AdminHanamiSuggestionEventsExportResponse,
+        AdminHanamiTasteRebuildRequest,
+        AdminHanamiTasteRebuildResponse,
+        AdminHanamiTasteRebuildStatusResponse,
         AdminInviteCreateRequest,
         AdminInviteCreateResponse,
         AdminInviteListRequest,
@@ -1767,6 +1870,8 @@ declare namespace entities {
         ChartsDriveResponse,
         ChartsFederationRequest,
         ChartsFederationResponse,
+        ChartsHanamiTimelineRequest,
+        ChartsHanamiTimelineResponse,
         ChartsInstanceRequest,
         ChartsInstanceResponse,
         ChartsNotesRequest,
@@ -1950,6 +2055,8 @@ declare namespace entities {
         GalleryPostsUpdateResponse,
         GetAvatarDecorationsResponse,
         GetOnlineUsersCountResponse,
+        HanamiStatsRequest,
+        HanamiStatsResponse,
         HashtagsListRequest,
         HashtagsListResponse,
         HashtagsSearchRequest,
@@ -1984,6 +2091,8 @@ declare namespace entities {
         IGalleryLikesResponse,
         IGalleryPostsRequest,
         IGalleryPostsResponse,
+        IHanamiTasteClustersResponse,
+        IHanamiTuningSuggestionResponse,
         IImportAntennasRequest,
         IImportBlockingRequest,
         IImportFollowingRequest,
@@ -2026,6 +2135,8 @@ declare namespace entities {
         IUpdateResponse,
         IUpdateEmailRequest,
         IUpdateEmailResponse,
+        IUpdateHanamiTasteClusterRequest,
+        IUpdateHanamiTasteClusterResponse,
         IWebhooksCreateRequest,
         IWebhooksCreateResponse,
         IWebhooksDeleteRequest,
@@ -2076,6 +2187,18 @@ declare namespace entities {
         NotesGlobalTimelineResponse,
         NotesHanamiTimelineRequest,
         NotesHanamiTimelineResponse,
+        NotesHanamiTimelineSeenRequest,
+        NotesHanamiTimelineSeenResponse,
+        NotesHanamiTopicRequest,
+        NotesHanamiTopicResponse,
+        NotesHanamiTopicNotesRequest,
+        NotesHanamiTopicNotesResponse,
+        NotesHanamiTrendHistoryRequest,
+        NotesHanamiTrendHistoryResponse,
+        NotesHanamiTrendTopicNotesRequest,
+        NotesHanamiTrendTopicNotesResponse,
+        NotesHanamiTrendsRequest,
+        NotesHanamiTrendsResponse,
         NotesHanamisearchV1Request,
         NotesHanamisearchV1Response,
         NotesHybridTimelineRequest,
@@ -2186,6 +2309,10 @@ declare namespace entities {
         UsersGetFollowingUsersByBirthdayResponse,
         UsersGetFrequentlyRepliedUsersRequest,
         UsersGetFrequentlyRepliedUsersResponse,
+        UsersHanamiAffinityRequest,
+        UsersHanamiAffinityResponse,
+        UsersHanamiRecommendationsRequest,
+        UsersHanamiRecommendationsResponse,
         UsersListsCreateRequest,
         UsersListsCreateResponse,
         UsersListsCreateFromPublicRequest,
@@ -2540,6 +2667,12 @@ type GetAvatarDecorationsResponse = operations['get-avatar-decorations']['respon
 type GetOnlineUsersCountResponse = operations['get-online-users-count']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type HanamiStatsRequest = operations['hanami___stats']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type HanamiStatsResponse = operations['hanami___stats']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type Hashtag = components['schemas']['Hashtag'];
 
 // @public (undocumented)
@@ -2672,6 +2805,12 @@ type IGalleryPostsRequest = operations['i___gallery___posts']['requestBody']['co
 
 // @public (undocumented)
 type IGalleryPostsResponse = operations['i___gallery___posts']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type IHanamiTasteClustersResponse = operations['i___hanami-taste-clusters']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type IHanamiTuningSuggestionResponse = operations['i___hanami-tuning-suggestion']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type IImportAntennasRequest = operations['i___import-antennas']['requestBody']['content']['application/json'];
@@ -2855,6 +2994,12 @@ type IUpdateEmailRequest = operations['i___update-email']['requestBody']['conten
 type IUpdateEmailResponse = operations['i___update-email']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type IUpdateHanamiTasteClusterRequest = operations['i___update-hanami-taste-cluster']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type IUpdateHanamiTasteClusterResponse = operations['i___update-hanami-taste-cluster']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type IUpdateRequest = operations['i___update']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -2930,7 +3075,7 @@ type ModerationLog = {
 }[keyof ModerationLogPayloads]);
 
 // @public (undocumented)
-export const moderationLogTypes: readonly ["updateServerSettings", "suspend", "unsuspend", "updateUserNote", "addCustomEmoji", "updateCustomEmoji", "deleteCustomEmoji", "assignRole", "unassignRole", "createRole", "updateRole", "deleteRole", "clearQueue", "promoteQueue", "deleteDriveFile", "deleteNote", "createGlobalAnnouncement", "createUserAnnouncement", "updateGlobalAnnouncement", "updateUserAnnouncement", "deleteGlobalAnnouncement", "deleteUserAnnouncement", "resetPassword", "suspendRemoteInstance", "unsuspendRemoteInstance", "updateRemoteInstanceNote", "markSensitiveDriveFile", "unmarkSensitiveDriveFile", "resolveAbuseReport", "forwardAbuseReport", "updateAbuseReportNote", "createInvitation", "createAd", "updateAd", "deleteAd", "createAvatarDecoration", "updateAvatarDecoration", "deleteAvatarDecoration", "unsetMfa", "unsetUserAvatar", "unsetUserBanner", "createSystemWebhook", "updateSystemWebhook", "deleteSystemWebhook", "createAbuseReportNotificationRecipient", "updateAbuseReportNotificationRecipient", "deleteAbuseReportNotificationRecipient", "deleteAccount", "deletePage", "deleteFlash", "deleteGalleryPost", "deleteChatRoom", "updateProxyAccountDescription"];
+export const moderationLogTypes: readonly ["updateServerSettings", "suspend", "unsuspend", "updateUserNote", "addCustomEmoji", "updateCustomEmoji", "deleteCustomEmoji", "assignRole", "unassignRole", "createRole", "updateRole", "deleteRole", "clearQueue", "promoteQueue", "deleteDriveFile", "deleteNote", "createGlobalAnnouncement", "createUserAnnouncement", "updateGlobalAnnouncement", "updateUserAnnouncement", "deleteGlobalAnnouncement", "deleteUserAnnouncement", "resetPassword", "suspendRemoteInstance", "unsuspendRemoteInstance", "updateRemoteInstanceNote", "markSensitiveDriveFile", "unmarkSensitiveDriveFile", "resolveAbuseReport", "forwardAbuseReport", "updateAbuseReportNote", "createInvitation", "createAd", "updateAd", "deleteAd", "createAvatarDecoration", "updateAvatarDecoration", "deleteAvatarDecoration", "unsetMfa", "unsetUserAvatar", "unsetUserBanner", "createSystemWebhook", "updateSystemWebhook", "deleteSystemWebhook", "createAbuseReportNotificationRecipient", "updateAbuseReportNotificationRecipient", "deleteAbuseReportNotificationRecipient", "deleteAccount", "deletePage", "deleteFlash", "deleteGalleryPost", "deleteChatRoom", "updateProxyAccountDescription", "exportHanamiSuggestionEvents"];
 
 // @public (undocumented)
 type MuteCreateRequest = operations['mute___create']['requestBody']['content']['application/json'];
@@ -3058,6 +3203,42 @@ type NotesHanamiTimelineRequest = operations['notes___hanami-timeline']['request
 
 // @public (undocumented)
 type NotesHanamiTimelineResponse = operations['notes___hanami-timeline']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTimelineSeenRequest = operations['notes___hanami-timeline-seen']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTimelineSeenResponse = operations['notes___hanami-timeline-seen']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTopicNotesRequest = operations['notes___hanami-topic-notes']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTopicNotesResponse = operations['notes___hanami-topic-notes']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTopicRequest = operations['notes___hanami-topic']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTopicResponse = operations['notes___hanami-topic']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTrendHistoryRequest = operations['notes___hanami-trend-history']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTrendHistoryResponse = operations['notes___hanami-trend-history']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTrendsRequest = operations['notes___hanami-trends']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTrendsResponse = operations['notes___hanami-trends']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTrendTopicNotesRequest = operations['notes___hanami-trend-topic-notes']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type NotesHanamiTrendTopicNotesResponse = operations['notes___hanami-trend-topic-notes']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type NotesHybridTimelineRequest = operations['notes___hybrid-timeline']['requestBody']['content']['application/json'];
@@ -3296,7 +3477,7 @@ type QueueStats = {
 type QueueStatsLog = QueueStats[];
 
 // @public (undocumented)
-export const queueTypes: readonly ["system", "endedPollNotification", "postScheduledNote", "deliver", "inbox", "db", "relationship", "objectStorage", "userWebhookDeliver", "systemWebhookDeliver"];
+export const queueTypes: readonly ["system", "endedPollNotification", "postScheduledNote", "deliver", "inbox", "db", "relationship", "objectStorage", "userWebhookDeliver", "systemWebhookDeliver", "hanamiGeneration", "emojiImageFingerprint"];
 
 // @public (undocumented)
 type RenoteMuteCreateRequest = operations['renote-mute___create']['requestBody']['content']['application/json'];
@@ -3688,6 +3869,18 @@ type UsersGetFrequentlyRepliedUsersRequest = operations['users___get-frequently-
 type UsersGetFrequentlyRepliedUsersResponse = operations['users___get-frequently-replied-users']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type UsersHanamiAffinityRequest = operations['users___hanami-affinity']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type UsersHanamiAffinityResponse = operations['users___hanami-affinity']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type UsersHanamiRecommendationsRequest = operations['users___hanami-recommendations']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type UsersHanamiRecommendationsResponse = operations['users___hanami-recommendations']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type UsersListsCreateFromPublicRequest = operations['users___lists___create-from-public']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -3816,8 +4009,8 @@ type VerifyEmailRequest = operations['verify-email']['requestBody']['content']['
 // Warnings were encountered during analysis:
 //
 // src/streaming.ts:57:3 - (ae-forgotten-export) The symbol "ReconnectingWebSocket" needs to be exported by the entry point index.d.ts
-// src/streaming.types.ts:247:4 - (ae-forgotten-export) The symbol "ReversiUpdateKey" needs to be exported by the entry point index.d.ts
-// src/streaming.types.ts:262:4 - (ae-forgotten-export) The symbol "ReversiUpdateSettings" needs to be exported by the entry point index.d.ts
+// src/streaming.types.ts:236:4 - (ae-forgotten-export) The symbol "ReversiUpdateKey" needs to be exported by the entry point index.d.ts
+// src/streaming.types.ts:251:4 - (ae-forgotten-export) The symbol "ReversiUpdateSettings" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)
 

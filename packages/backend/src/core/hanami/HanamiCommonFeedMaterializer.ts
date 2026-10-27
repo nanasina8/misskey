@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { resolveHanamiTuning } from '@/core/hanami/HanamiTuning.js';
 import { Injectable } from '@nestjs/common';
 import Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
@@ -17,7 +18,6 @@ import {
 	hanamiInterleave,
 	type ForYouCandidate,
 	type HanamiAxis,
-	type HanamiAxisLevel,
 } from '@/core/hanami/HanamiForYouInterleave.js';
 
 const logger = new Logger('hanami');
@@ -35,7 +35,8 @@ function isCommonAxis(axis: HanamiAxis): axis is HanamiCommonAxis {
 /** Pure common-feed ranking. Source candidates and metadata are never mutated. */
 export function materializeHanamiCommonFeed(input: HanamiCommonFeedBuildInput): HanamiCommonFeedMaterialization {
 	const enabledAxes = HANAMI_COMMON_AXES.filter(axis => input.source.enabledAxes.includes(axis));
-	const axisLevels = new Map<HanamiAxis, HanamiAxisLevel>(enabledAxes.map(axis => [axis, 'normal']));
+	const amounts = resolveHanamiTuning({}, Object.fromEntries(HANAMI_COMMON_AXES.map(axis => [axis, { available: enabledAxes.includes(axis) }]))).amounts;
+	for (const axis of amounts.keys()) if (!isCommonAxis(axis)) amounts.set(axis, 0);
 	const adjustedByAxis = new Map<HanamiCommonAxis, ForYouCandidate[]>();
 
 	for (const axis of enabledAxes) {
@@ -86,7 +87,7 @@ export function materializeHanamiCommonFeed(input: HanamiCommonFeedBuildInput): 
 			confidence: 'none',
 			limit: COMMON_SEGMENT_SIZE,
 			axisCandidates,
-			axisLevels,
+			amounts,
 		}).slice(0, COMMON_SEGMENT_SIZE);
 		if (segment.length === 0) break;
 

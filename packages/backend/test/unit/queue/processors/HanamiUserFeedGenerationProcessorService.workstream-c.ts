@@ -4,7 +4,6 @@
  */
 import { describe, test, expect } from 'vitest';
 
-
 import { vi as jest } from 'vitest';
 import * as Bull from 'bullmq';
 import type {
@@ -85,40 +84,6 @@ describe('HanamiUserFeedGenerationProcessorService workstream C', () => {
 
 		expect(lifecycle.runUserFeedGeneration).toHaveBeenNthCalledWith(1, 'batch-01');
 		expect(lifecycle.runUserFeedGeneration).toHaveBeenNthCalledWith(2, 'batch-01');
-	});
-
-	test('enqueues a replacement batch and never re-enqueues the replaced batch', async () => {
-		const { service, lifecycle, queueService, logger } = createHarness();
-		const result = { kind: 'replaced', batchId: 'batch-01', attempt: 1, replacementBatchId: 'batch-02' } as const;
-		lifecycle.runUserFeedGeneration.mockResolvedValue(result);
-		const generationJob = job({ batchId: 'batch-01' });
-
-		await expect(service.process(generationJob as never)).resolves.toEqual(result);
-
-		expect(queueService.enqueueHanamiUserFeedGeneration).toHaveBeenCalledTimes(1);
-		expect(queueService.enqueueHanamiUserFeedGeneration).toHaveBeenCalledWith('batch-02');
-		expect(queueService.enqueueHanamiUserFeedGeneration).not.toHaveBeenCalledWith('batch-01');
-		expect(logger.info).toHaveBeenCalledWith('hanami user feed generation delivery completed', {
-			batchId: 'batch-01',
-			result: 'replaced',
-		});
-	});
-
-	test('logs but ignores a queue enqueue rejection for replaced batches', async () => {
-		const { service, lifecycle, queueService, logger } = createHarness();
-		const enqueueFailure = new Error('queue unavailable');
-		queueService.enqueueHanamiUserFeedGeneration.mockRejectedValue(enqueueFailure);
-		const result = { kind: 'replaced', batchId: 'batch-01', attempt: 1, replacementBatchId: 'batch-02' } as const;
-		lifecycle.runUserFeedGeneration.mockResolvedValue(result);
-		const generationJob = job({ batchId: 'batch-01' });
-
-		await expect(service.process(generationJob as never)).resolves.toEqual(result);
-
-		expect(queueService.enqueueHanamiUserFeedGeneration).toHaveBeenCalledWith('batch-02');
-		expect(logger.error).toHaveBeenCalledWith('failed to enqueue replacement user feed batch', {
-			e: enqueueFailure,
-			replacementBatchId: 'batch-02',
-		});
 	});
 
 	test.each([

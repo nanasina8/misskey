@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { resolveHanamiTuning, type HanamiTuningProfile, type HanamiAxisServerConfig } from '@/core/hanami/HanamiTuning.js';
+import { HANAMI_FOR_YOU_AXES, type HanamiAxis } from '@/core/hanami/HanamiForYouInterleave.js';
 import { Inject, Injectable } from '@nestjs/common';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
@@ -18,22 +20,9 @@ type Reason = typeof HANAMI_DIAGNOSTIC_REASONS[number];
 type Counts = Record<Reason, number>;
 const emptyCounts = (): Counts => Object.fromEntries(HANAMI_DIAGNOSTIC_REASONS.map(reason => [reason, 0])) as Counts;
 
-// Same compatibility keys/default resolution as HanamiForYouService.resolveAxisLevels.
-const AXIS_KEYS = {
-	globalPopular: ['globalPopular', 'popular'], exploration: ['exploration', 'popular'],
-	neighborTrending: ['neighborTrending', 'reactionSimilar'], reactionSimilar: ['reactionSimilar'],
-	catchup: ['catchup'], trending: ['trending'], fof: ['fof'],
-} as const;
-type Axis = keyof typeof AXIS_KEYS;
-type AxisConfig = Record<string, { available?: boolean; default?: boolean } | undefined>;
-
-export function diagnosticAxisLevel(axis: Axis, axes: Record<string, unknown>, config: AxisConfig): string {
-	const keys = AXIS_KEYS[axis];
-	if ((keys.map(key => config[key]?.available).find(value => value !== undefined) ?? true) === false) return 'off';
-	const value = keys.map(key => axes[key]).find(item => item !== undefined);
-	if (value === 'off' || value === 'low' || value === 'normal' || value === 'high') return value;
-	if (typeof value === 'boolean') return value ? 'normal' : 'off';
-	return (keys.map(key => config[key]?.default).find(item => item !== undefined) ?? true) ? 'normal' : 'off';
+export function diagnosticAxisLevel(axis: HanamiAxis, axes: Record<string, unknown>, config: HanamiAxisServerConfig, hanamiTuning?: HanamiTuningProfile['hanamiTuning']): string {
+	const amount = resolveHanamiTuning({ hanamiRecommendationAxes: axes, hanamiTuning }, config).amounts.get(axis) ?? 0;
+	return amount === 0 ? 'off' : amount === 0.55 ? 'low' : amount === 1 ? 'normal' : amount === 1.6 ? 'high' : `${Math.round(amount * 100)}%`;
 }
 
 /** First failure follows the personal-generation pipeline, then selector gate order.
@@ -66,12 +55,12 @@ export type HanamiMetricsDiagnosticRow = {
 	scope: 'dropped' | 'tuning'; key: string; users: number; data: Record<string, unknown>; capturedAt: string;
 };
 
-type Viewer = { userId: string; epochId: string; axes: Record<string, unknown> | null; hideEphemeral: boolean };
+type Viewer = { userId: string; epochId: string; axes: Record<string, unknown> | null; hanamiTuning?: HanamiTuningProfile['hanamiTuning']; hideEphemeral: boolean };
 type Inventory = { noteId: string; authorId: string | null; reactionScore: number; ephemeralScore: number | null; interest: number | null; contentType: number | null; campaignTags: string[] | null };
 
 // A keyset page bounds memory without selecting an unrepresentative fixed user sample.
 export const HANAMI_DIAGNOSTIC_VIEWERS_SQL = `SELECT s."userId", s."epochId",
-	p."hanamiRecommendationAxes" AS axes, p."hanamiReduceEphemeralPosts" AS "hideEphemeral"
+	p."hanamiRecommendationAxes" AS axes, p."hanamiTuning", p."hanamiReduceEphemeralPosts" AS "hideEphemeral"
 	FROM hanami_user_feed_state s JOIN user_profile p ON p."userId" = s."userId"
 	JOIN "user" u ON u.id = s."userId"
 	WHERE s.mode = 'personalized' AND p."hanamiRecommendationEnabled" = true
@@ -116,7 +105,7 @@ export class HanamiMetricsDiagnosticsService {
 			const runner = manager.queryRunner;
 			if (runner == null) throw new Error('Diagnostics require a transaction query runner');
 			const signal = new AbortController().signal;
-			const meta = await manager.query('SELECT "hanamiNoteJudgeSettings" AS settings, "hanamiRecommendationAxisConfig" AS axes FROM meta LIMIT 1') as { settings: unknown; axes: AxisConfig }[];
+			const meta = await manager.query('SELECT "hanamiNoteJudgeSettings" AS settings, "hanamiRecommendationAxisConfig" AS axes FROM meta LIMIT 1') as { settings: unknown; axes: HanamiAxisServerConfig }[];
 			const validated = validateHanamiNoteJudgeSettings(meta[0]?.settings);
 			const settings = validated.ok ? validated.value : createDefaultHanamiNoteJudgeSettings();
 			const config = meta[0]?.axes ?? {};
@@ -142,7 +131,7 @@ export class HanamiMetricsDiagnosticsService {
 				const page = await manager.query(HANAMI_DIAGNOSTIC_VIEWERS_SQL, [cursor]) as Viewer[];
 				for (const viewer of page) {
 					profileViewers++;
-					const levels = Object.keys(AXIS_KEYS).map(axis => ({ axis, level: diagnosticAxisLevel(axis as Axis, viewer.axes ?? {}, config) }));
+					const levels = HANAMI_FOR_YOU_AXES.map(axis => ({ axis: axis as string, level: diagnosticAxisLevel(axis, viewer.axes ?? {}, config, viewer.hanamiTuning) }));
 					levels.push({ axis: 'hideEphemeral', level: viewer.hideEphemeral !== false ? 'on' : 'off' });
 					for (const { axis, level } of levels) {
 						const key = `${axis}:${level}`;

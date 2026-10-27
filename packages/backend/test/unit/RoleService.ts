@@ -43,6 +43,7 @@ describe('RoleService', () => {
 	let meta: Mocked<MiMeta>;
 	let notificationService: Mocked<NotificationService>;
 	let clock: lolex.Clock;
+	let waitForRoleUpdates: () => Promise<unknown>;
 
 	async function createUser(data: Partial<MiUser> = {}) {
 		const un = secureRndstr(16);
@@ -146,6 +147,8 @@ describe('RoleService', () => {
 		usersRepository = app.get<UsersRepository>(DI.usersRepository);
 		rolesRepository = app.get<RolesRepository>(DI.rolesRepository);
 		roleAssignmentsRepository = app.get<RoleAssignmentsRepository>(DI.roleAssignmentsRepository);
+		const updates = vi.spyOn(rolesRepository, 'update');
+		waitForRoleUpdates = () => Promise.all(updates.mock.results.flatMap(result => result.type === 'return' ? [result.value] : []));
 
 		meta = app.get<MiMeta>(DI.meta) as Mocked<MiMeta>;
 		notificationService = app.get<NotificationService>(NotificationService) as Mocked<NotificationService>;
@@ -155,6 +158,8 @@ describe('RoleService', () => {
 
 	afterEach(async () => {
 		clock.uninstall();
+		// assign/unassign update lastUsedAt asynchronously; finish before deleting rows or closing the pool.
+		await waitForRoleUpdates();
 
 		/**
 		 * Delete meta and roleAssignment first to avoid deadlock due to schema dependencies
