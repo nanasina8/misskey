@@ -6,6 +6,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as Path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { expect, test } from 'vitest';
 import { HANAMI_PYTHON_THREAD_ENV, prepareHanamiPythonCommand, resolveHanamiPython, resolveHanamiRepoRoot } from '@/core/hanami/HanamiPythonRuntime.js';
 
@@ -34,5 +35,19 @@ test('Hanami Python runtime retains inherited env, resolves from module location
 	expect(command.file).toBe(injection);
 	expect(command.args).toEqual(['worker.py', 'in.json']);
 	expect(command.env).toEqual(expect.objectContaining({ REQUIRED_VALUE: 'kept', ...HANAMI_PYTHON_THREAD_ENV }));
-	expect(resolveHanamiRepoRoot('file:///workspace/packages/backend/src/core/hanami/HanamiPythonRuntime.ts')).toBe('/workspace');
+});
+
+test('Hanami repo root is found from both the source tree and the flat bundled build', () => {
+	const root = mkdtempSync(Path.join(tmpdir(), 'hanami-repo-root-'));
+	try {
+		writeFileSync(Path.join(root, 'pnpm-workspace.yaml'), '');
+		const source = Path.join(root, 'packages/backend/src/core/hanami/HanamiPythonRuntime.ts');
+		const bundled = Path.join(root, 'packages/backend/built/chunk-abc123.js');
+		mkdirSync(Path.dirname(source), { recursive: true });
+		mkdirSync(Path.dirname(bundled), { recursive: true });
+		expect(resolveHanamiRepoRoot(pathToFileURL(source).href)).toBe(root);
+		expect(resolveHanamiRepoRoot(pathToFileURL(bundled).href)).toBe(root);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });

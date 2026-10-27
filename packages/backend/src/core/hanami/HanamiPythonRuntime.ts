@@ -4,7 +4,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { accessSync, constants } from 'node:fs';
+import { accessSync, constants, existsSync } from 'node:fs';
 import * as Path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -25,9 +25,18 @@ export type HanamiPythonCommand = {
 	env: NodeJS.ProcessEnv;
 };
 
-/** Resolve the repository without depending on process.cwd() (workers run from arbitrary cwd). */
+/**
+ * Resolve the repository without depending on process.cwd() (workers run from arbitrary cwd).
+ * Walk up to pnpm-workspace.yaml: the module depth differs between src/ and the bundled built/.
+ */
 export function resolveHanamiRepoRoot(moduleUrl = import.meta.url): string {
-	return Path.resolve(Path.dirname(fileURLToPath(moduleUrl)), '../../../../../');
+	let dir = Path.dirname(fileURLToPath(moduleUrl));
+	while (!existsSync(Path.join(dir, 'pnpm-workspace.yaml'))) {
+		const parent = Path.dirname(dir);
+		if (parent === dir) throw new Error('Cannot find the repository root for Hanami Python scripts');
+		dir = parent;
+	}
+	return dir;
 }
 
 /**

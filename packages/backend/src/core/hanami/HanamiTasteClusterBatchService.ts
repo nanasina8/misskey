@@ -9,7 +9,6 @@ import { promisify } from 'node:util';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { cpus, tmpdir } from 'node:os';
 import * as Path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Inject, Injectable } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { DataSource } from 'typeorm';
@@ -20,10 +19,10 @@ import { HanamiTokenizerService } from '@/core/hanami/tokenize/HanamiTokenizerSe
 import { extractMfmText } from '@/core/hanami/HanamiForYouTextNormalization.js';
 import { HANAMI_TASTE_MATCH_KEY_PREFIX, HANAMI_TASTE_MATCH_META_KEY_PREFIX, HANAMI_TASTE_MATCH_RAW_KEY_PREFIX, HANAMI_TASTE_MATCH_RAW_META_KEY_PREFIX, HANAMI_TASTE_MATCH_STATE_KEY_PREFIX, HANAMI_RECENT_ACT_KEY_PREFIX, HANAMI_FORYOU_ACTIVE_KEY_PREFIX } from '@/core/hanami/HanamiForYouKeys.js';
 import { pureRenoteSql } from '@/misc/is-renote.js';
+import { resolveHanamiRepoRoot } from '@/core/hanami/HanamiPythonRuntime.js';
 import type Logger from '@/logger.js';
 
 const execFileAsync = promisify(execFile);
-const _dirname = Path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * MFM を mfm-js でパースして本文だけ抽出する（v0.7 敵対レビューR2-H2:
@@ -611,7 +610,7 @@ export class HanamiTasteClusterBatchService {
 			await writeFile(inputPath, JSON.stringify({ model: TASTE_EMBED_MODEL, timeBudgetSec, texts }), 'utf8');
 
 			const scriptPath = process.env.HANAMI_TASTE_EMBED_SCRIPT
-				?? Path.resolve(_dirname, '../../../../../scripts/hanami-foryou/taste_embed_sweep.py');
+				?? Path.join(resolveHanamiRepoRoot(), 'scripts/hanami-foryou/taste_embed_sweep.py');
 			const python = process.env.HANAMI_FORYOU_PYTHON ?? 'python3';
 			await execFileAsync(python, [scriptPath, inputPath, outputPath], { env: this.tastePythonEnv(logger), timeout: TASTE_PROCESS_TIMEOUT_MS, maxBuffer: 512 * 1024 * 1024 });
 
@@ -1432,7 +1431,7 @@ export class HanamiTasteClusterBatchService {
 			}), 'utf8');
 
 			const scriptPath = process.env.HANAMI_TASTE_KMEANS_SCRIPT
-				?? Path.resolve(_dirname, '../../../../../scripts/hanami-foryou/taste_kmeans.py');
+				?? Path.join(resolveHanamiRepoRoot(), 'scripts/hanami-foryou/taste_kmeans.py');
 			const python = process.env.HANAMI_FORYOU_PYTHON ?? 'python3';
 			await execFileAsync(python, [scriptPath, inputPath, binPath, outputPath], { env: this.tastePythonEnv(logger), timeout: TASTE_PROCESS_TIMEOUT_MS, maxBuffer: 512 * 1024 * 1024 });
 			out = JSON.parse(await readFile(outputPath, 'utf8')) as { users: KmeansOutUser[] };
