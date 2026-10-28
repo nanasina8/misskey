@@ -33058,6 +33058,7 @@ export interface operations {
                     'application/json': {
                         topicId: string;
                         term: string;
+                        title: string | null;
                         relatedTerms: string[];
                         /** Format: date-time */
                         startedAt: string | null;
@@ -33223,6 +33224,7 @@ export interface operations {
                             items: {
                                 topicId: string | null;
                                 term: string;
+                                title: string | null;
                                 relatedTerms: string[];
                                 /** Format: date-time */
                                 startedAt: string | null;
@@ -33384,6 +33386,7 @@ export interface operations {
                             /** Format: date-time */
                             snapshotGeneratedAt: string;
                             term: string;
+                            title: string | null;
                             topicId: string | null;
                             relatedTerms: string[];
                             /** Format: date-time */

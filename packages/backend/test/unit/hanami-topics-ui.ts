@@ -86,7 +86,7 @@ describe('V-3: public topic metadata', () => {
 	test.each([true, false])('returns newest metadata, all-time peak and active=%s', async active => {
 		const query = jest.fn(async (sql: string) => sql.includes('WITH points') ? [] : [{ term: 'title', related_terms: ['related'], started_at: before(3600000), at, recent_authors: 7, peak_authors: 45, active }]);
 		const service = new HanamiTrendSnapshotService({ query } as never, {} as never, {} as never);
-		expect(await new TopicEndpoint(service).exec({ topicId: 'topic' }, null, null)).toEqual({ topicId: 'topic', term: 'title', relatedTerms: ['related'], startedAt: before(3600000), lastSeenAt: at, peakAuthors: 45, series: [], kind: 'new', active });
+		expect(await new TopicEndpoint(service).exec({ topicId: 'topic' }, null, null)).toEqual({ topicId: 'topic', term: 'title', title: null, relatedTerms: ['related'], startedAt: before(3600000), lastSeenAt: at, peakAuthors: 45, series: [], kind: 'new', active });
 		expect(query.mock.calls[0][0]).toContain('MAX(entry."distinctAuthors") OVER ()');
 		expect(query.mock.calls[0][0]).toContain('ORDER BY at DESC, ordinal DESC');
 		expect(query.mock.calls[0][0]).toContain('WHERE entry."topicId" = $1');

@@ -21,7 +21,7 @@ import HistoryEndpoint from '@/server/api/endpoints/notes/hanami-trend-history.j
 
 import { HanamiForYouBatchService, type HanamiTrendTopicJudgeJobData } from '@/core/hanami/HanamiForYouBatchService.js';
 import { probeHanamiNoteJudgeRuntime } from '@/core/hanami/HanamiPythonRuntime.js';
-import { HanamiTrendService, trendDailyKey, trendSameKey, trendSameSetKey } from '@/core/hanami/HanamiTrendService.js';
+import { HanamiTrendService, trendDailyKey, trendSameKey, trendSameSetKey, trendTitleKey } from '@/core/hanami/HanamiTrendService.js';
 import { HanamiCommonGenerationProcessorService } from '@/queue/processors/HanamiCommonGenerationProcessorService.js';
 import { QueueService } from '@/core/QueueService.js';
 
@@ -139,7 +139,7 @@ describe('pure Python trend topics (U-3)', () => {
 		expect(topics).toHaveLength(3);
 		expect(topics.flatMap(topic => topic.terms)).not.toContain('一般');
 		expect(topics.flatMap(topic => topic.terms)).not.toContain('偽の語');
-		expect(topics.find(topic => topic.terms.includes('地震'))).toMatchObject({ authors6h: 5, authors2h: 5, noteIds: ['0', '1', '2', 'extra0', 'extra1'] });
+		expect(topics.find(topic => topic.terms.includes('地震'))).toMatchObject({ authors6h: 4.1, authors2h: 4.1, noteIds: ['0', '1', '2', 'extra0', 'extra1'] });
 	});
 	pythonTest('V-19: the configurable candidate cap keeps the newest eligible posts', () => {
 		const notes = [note('a'), note('b'),
@@ -175,7 +175,7 @@ describe('topic persistence and public history (U-8, U-9)', () => {
 	});
 	test('keeps existing trend parameters and fields while extending topic presentation', () => {
 		expect(Object.keys(trendParams.properties)).toEqual(['limit', 'history', 'cursor']);
-		expect(Object.keys(trendMeta.res.properties.items.items.properties).sort()).toEqual(['trendEntryId', 'snapshotId', 'snapshotGeneratedAt', 'term', 'score', 'distinctAuthors', 'representativeNote', 'topicId', 'relatedTerms', 'startedAt', 'series', 'participants', 'kind'].sort());
+		expect(Object.keys(trendMeta.res.properties.items.items.properties).sort()).toEqual(['trendEntryId', 'snapshotId', 'snapshotGeneratedAt', 'term', 'title', 'score', 'distinctAuthors', 'representativeNote', 'topicId', 'relatedTerms', 'startedAt', 'series', 'participants', 'kind'].sort());
 		expect(historyMeta).toMatchObject({ requireCredential: false, allowGet: true });
 		expect(historyParams.properties.blocks).toMatchObject({ minimum: 1, maximum: 4, default: 2 });
 	});
@@ -300,7 +300,7 @@ describe('GPU topic judge jobs (U-7)', () => {
 			expect(get).not.toHaveBeenCalled();
 		});
 	});
-	test('selects only top ten, uncached daily/pairs, non-replies, ten texts and eight terms', async () => {
+	test('selects up to fifteen daily topics, ten pair topics, non-replies, ten texts and eight terms', async () => {
 		await withRuntime(true, async () => {
 			const topics = Array.from({ length: 11 }, (_, i) => ({ topicId: String(i), terms: Array.from({ length: 9 }, (_, j) => `語${j}`), noteIds: Array.from({ length: 12 }, (_, j) => `${i}-${String(j).padStart(2, '0')}`) }));
 			const rows = topics.flatMap(topic => topic.noteIds.map(id => ({ id, text: 'あ'.repeat(150), replyId: id.endsWith('11') ? 'parent' : null })));
@@ -308,12 +308,12 @@ describe('GPU topic judge jobs (U-7)', () => {
 			const mget = jest.fn(async (...keys: string[]) => Promise.all(keys.map(get)));
 			const service = topicBatch({ get, mget }, jest.fn(async (..._args: unknown[]) => rows), new Map([['0-00', 100]]));
 			const result = (await service.prepareTrendTopicJudgeJob())!;
-			expect(result.topics).toHaveLength(10);
-			expect(result.dailyIds).toHaveLength(9);
+			expect(result.topics).toHaveLength(11);
+			expect(result.dailyIds).toHaveLength(10);
 			expect(result.dailyIds).not.toContain('0');
 			expect(result.pairs).toHaveLength(44);
-			expect(mget).toHaveBeenCalledTimes(2);
-			expect(mget.mock.calls.map(keys => keys.length)).toEqual([10, 45]);
+			expect(mget).toHaveBeenCalledTimes(3);
+			expect(mget.mock.calls.map(keys => keys.length)).toEqual([11, 11, 45]);
 			expect(result.topics[0].text.split('\n')[0]).toBe('関連語: 語0・語1・語2・語3・語4・語5・語6・語7');
 			expect(result.topics[0].text.split('\n').slice(2)).toHaveLength(10);
 			expect(result.topics[0].text.split('\n')[2]).toBe('- ' + 'あ'.repeat(120));
@@ -596,7 +596,7 @@ describe('V-19: topic expansion collection', () => {
 		for (const sql of [linkSql, embeddingSql]) {
 			expect(sql).toContain("n.visibility IN ('public', 'home')");
 			expect(sql).toContain('n."channelId" IS NULL AND NOT author."isBot"');
-			expect(sql).toContain('n.id >= $1 AND n.id <= $2');
+			expect(sql).toContain('n.id >= $1 AND n.id < $2');
 			expect(sql).toContain('NOT (n.id = ANY($3::varchar[]))');
 		}
 		expect(linkArgs).toEqual([String(now - 21600000), String(now), ['seed']]);
@@ -605,6 +605,24 @@ describe('V-19: topic expansion collection', () => {
 		expect(embeddingSql).toContain("char_length(regexp_replace(COALESCE(n.text, ''), $5, '', 'g')) >= $6");
 		expect(embeddingSql).toContain('ORDER BY n.id DESC LIMIT $7');
 		expect(embeddingArgs.slice(3, 4)).toEqual(['intfloat/multilingual-e5-base']);
-		expect(embeddingArgs.slice(5)).toEqual([15, 8000]);
+		expect(embeddingArgs.slice(5)).toEqual([10, 8000]);
+	});
+});
+
+
+test('R2: ignores an unrequested title and saves the following requested titles', async () => {
+	await withRuntime(true, async dir => {
+		const script = join(dir, 'judge.py');
+		writeFileSync(script, `import json,sys
+json.dump({'status':'ok','judgements':[],'titles':[{'topicId':'unexpected','title':'古い題'},{'topicId':'a','title':'寒波'}]},open(sys.argv[2],'w'))`);
+		process.env.HANAMI_TREND_TOPIC_JUDGE_SCRIPT = script;
+		const set = jest.fn(async (..._args: unknown[]) => 'OK');
+		const logger = { info: jest.fn(), warn: jest.fn() };
+		await topicBatch({ mget: async (...keys: string[]) => keys.map(() => null), set, eval: async () => 1 }).runTrendTopicJudgeJob({
+			topics: [], dailyIds: [], pairs: [], titles: [{ topicId: 'a', posts: ['投稿甲', '投稿乙', '投稿丙'], noteIds: ['n1', 'n2', 'n3'] }],
+		}, logger as never);
+		expect(set).toHaveBeenCalledWith(trendTitleKey('a'), JSON.stringify({ title: '寒波', noteIds: ['n1', 'n2', 'n3'] }), 'EX', 48 * 60 * 60);
+		expect(set.mock.calls.some(args => args[0] === trendTitleKey('unexpected'))).toBe(false);
+		expect(logger.warn).toHaveBeenCalledWith('hanami trend topic judge: ignoring unexpected title', { topicId: 'unexpected' });
 	});
 });

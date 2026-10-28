@@ -68,6 +68,13 @@ function controlBodyWidth() {
 	return { resize: (width: number) => callback([{ contentRect: { width } }]), element: () => observed, disconnect };
 }
 
+test('topic page shows the generated title and keeps source terms', async () => {
+	api.mockImplementation(async endpoint => endpoint === 'notes/hanami-trends' ? { items: [{ ...trendItem, title: '寒波' }] } : { notes: [] });
+	const view = render(Trends, { global });
+	expect(await view.findByRole('heading', { name: '寒波' })).toBeTruthy();
+	expect(view.getAllByText('headline（one・two・three・four）').length).toBeGreaterThan(0);
+});
+
 describe('V-5: current row and momentum graph', () => {
 	test('uses topic IDs, two related words, avatars capped at three, badge, since time and note link', () => {
 		const view = render(Row, { props: { item: { ...trendItem, kind: 'rising', participants: ['u1', 'u2', 'u3', 'u4'].map(id => ({ id })) as never,

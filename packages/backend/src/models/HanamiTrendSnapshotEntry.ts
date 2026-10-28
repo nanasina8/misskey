@@ -26,6 +26,9 @@ export class MiHanamiTrendSnapshotEntry {
 	@Column('varchar', { length: 256 })
 	public term: string;
 
+	@Column('varchar', { length: 64, nullable: true })
+	public title: string | null;
+
 	@Column('varchar', { length: 32, nullable: true })
 	public topicId: string | null;
 

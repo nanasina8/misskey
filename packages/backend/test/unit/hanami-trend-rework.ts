@@ -106,8 +106,8 @@ export function memoryRedis() {
 	};
 }
 
-describe('template suppression (2D)', () => {
-	test('counts the first four authors only and bypasses short fingerprints', async () => {
+describe('template authors remain indexed for topic-level discounting', () => {
+	test('indexes every author including repeated templates', async () => {
 		const redis = memoryRedis();
 		const tokenizer = { tokenizeWithKind: jest.fn(async (..._args: unknown[]) => [{ term: '質問', proper: false }]) };
 		const service = new HanamiTrendService(redis as never, {} as never, tokenizer as never, { query: async () => [] } as never);
@@ -115,39 +115,34 @@ describe('template suppression (2D)', () => {
 		for (let i = 1; i <= 6; i++) {
 			await service.indexNote({ id: `note-${i}`, userId: `user-${i}`, text: `質問募集中です！ 第${i % 2 ? i : '１２'}回 https://example.com/${i} @user${i}@host.example` } as MiNote, at);
 		}
-		expect(tokenizer.tokenizeWithKind).toHaveBeenCalledTimes(4);
+		expect(tokenizer.tokenizeWithKind).toHaveBeenCalledTimes(6);
 		const rank = [...redis.sorted].find(([key]) => key.startsWith('hanami:trend:rank:'))?.[1];
-		expect(rank?.get('質問')).toBe(4);
+		expect(rank?.get('質問')).toBe(6);
 		for (let i = 7; i <= 12; i++) await service.indexNote({ id: `note-${i}`, userId: `user-${i}`, text: '短い本文' } as MiNote, at);
-		expect(rank?.get('質問')).toBe(10);
-		expect(tokenizer.tokenizeWithKind).toHaveBeenCalledTimes(10);
+		expect(rank?.get('質問')).toBe(12);
+		expect(tokenizer.tokenizeWithKind).toHaveBeenCalledTimes(12);
 	});
 });
 
 describe('V-18: hashtag trend terms', () => {
-	test('indexes tags even without tokenizer terms, including every time/author/note key and the proper flag', async () => {
+	test('does not index tags in any time, author, note or proper key', async () => {
 		const redis = memoryRedis();
 		const service = new HanamiTrendService(redis as never, {} as never, { tokenizeWithKind: async () => [] } as never, {} as never);
 		const at = Date.now();
 		await service.indexNote({ id: 'tag-note', userId: 'author', text: '#災害', tags: ['災害'] } as MiNote, at);
-		expect(redis.sets.get('hanami:trend:proper')?.has('#災害')).toBe(true);
-		for (const prefix of ['hanami:trend:rank:', 'hanami:trend:hrank:']) {
-			expect([...redis.sorted].find(([key]) => key.startsWith(prefix))?.[1].get('#災害')).toBe(1);
-		}
-		for (const key of ['hanami:trend:authorsz:#災害', 'hanami:trend:ra:#災害']) expect(redis.sorted.get(key)?.get('author')).toBe(at);
-		expect(redis.sorted.get('hanami:trend:notes:#災害')?.get('tag-note')).toBe(at);
-		expect([...redis.sets].some(([key, authors]) => key.startsWith('hanami:trend:as:') && key.endsWith(':#災害') && authors.has('author'))).toBe(true);
+		expect(redis.sorted.size).toBe(0);
+		expect(redis.sets.size).toBe(0);
 	});
-	test('deduplicates tags, prioritizes them, and shares the sixteen-term limit with tokenizer terms', async () => {
+	test('uses the sixteen-term limit for text tokens alone', async () => {
 		const redis = memoryRedis();
 		const service = new HanamiTrendService(redis as never, {} as never, { tokenizeWithKind: async () => Array.from({ length: 20 }, (_, i) => ({ term: 'word' + i, proper: false })) } as never, {} as never);
 		await service.indexNote({ id: 'many', userId: 'author', text: '短文', tags: ['first', 'first', ...Array.from({ length: 13 }, (_, i) => 'tag' + i)] } as MiNote);
 		const ranked = [...redis.sorted].find(([key]) => key.startsWith('hanami:trend:rank:'))![1];
 		expect(ranked.size).toBe(16);
-		expect(ranked.get('#first')).toBe(1);
-		expect(ranked.has('#tag12')).toBe(true);
+		expect(ranked.has('#first')).toBe(false);
+		expect(ranked.has('#tag12')).toBe(false);
 		expect(ranked.has('word1')).toBe(true);
-		expect(ranked.has('word2')).toBe(false);
+		expect(ranked.has('word15')).toBe(true);
 	});
 });
 

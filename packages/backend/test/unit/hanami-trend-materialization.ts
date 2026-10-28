@@ -5,7 +5,7 @@
 
 import { afterEach, describe, expect, vi as jest, test } from 'vitest';
 import Logger from '@/logger.js';
-import { HanamiTrendService, trendDailyKey, trendSameKey, trendSameSetKey, trendTopicTagGame } from '@/core/hanami/HanamiTrendService.js';
+import { HanamiTrendService, trendDailyKey, trendSameKey, trendSameSetKey, trendTopicTagGame, trendTitleKey } from '@/core/hanami/HanamiTrendService.js';
 
 import { HanamiCommonComputationService, type HanamiTrendSnapshotTerm } from '@/core/hanami/HanamiCommonComputationService.js';
 import { HanamiCommonGenerationService } from '@/core/hanami/HanamiCommonGenerationService.js';
@@ -290,7 +290,7 @@ describe('topic materialization (U-4, U-5, U-6, U-7)', () => {
 		const setup = fixture(Array.from({ length: 150 }, (_, i) => notesFor(`term-${i}`)).flat());
 		await setup.service.computeTrendBundle(new Map());
 		expect(setup.redis.get.mock.calls.map(([key]) => key)).toEqual(['hanami:trend:topics:prev']);
-		expect(setup.redis.mget).toHaveBeenCalledTimes(1);
+		expect(setup.redis.mget).toHaveBeenCalledTimes(2);
 		expect(setup.redis.mget.mock.calls[0]).toHaveLength(150);
 		const setsPipe = setup.pipeline.mock.results[1].value as ReturnType<typeof setup.pipeline>;
 		expect(setsPipe.smembers).toHaveBeenCalledTimes(150);
@@ -317,7 +317,7 @@ describe('topic materialization (U-4, U-5, U-6, U-7)', () => {
 		expect(last.terms.map(topic => topic.term)).toEqual(['a', 'b']);
 		expect(last.terms[0]).toMatchObject({ topicId: 'topic-1', relatedTerms: ['c'], distinctAuthors: 9 });
 		expect(last.terms[1]).toMatchObject({ topicId: 'topic-2', relatedTerms: [], distinctAuthors: 3 });
-		expect(setup.redis.mget).toHaveBeenCalledTimes(2);
+		expect(setup.redis.mget).toHaveBeenCalledTimes(3);
 		expect(new Set(setup.redis.mget.mock.calls[1])).toEqual(new Set([trendSameKey('topic-1', 'topic-2'), trendSameKey('topic-1', 'topic-3')]));
 	});
 	test.each([null, '0'])('R7: ignores stale indexes when the pair verdict is %s', async verdict => {
@@ -411,7 +411,7 @@ describe('V-20: tag-game ranking', () => {
 		const log = jest.spyOn(Logger.prototype, 'info').mockImplementation(() => undefined);
 		const result = await setup.service.computeTrendBundle(new Map());
 		expect(result.terms.map(topic => topic.term)).toEqual(['event', 'game']);
-		expect(result.terms[1]).toMatchObject({ daily: true, distinctAuthors: 10, recentAuthors: 10 });
+		expect(result.terms[1]).toMatchObject({ daily: true, distinctAuthors: 5, recentAuthors: 5 });
 		const data = log.mock.calls.find(([message]) => message === 'hanami trend topics')?.[1] as { topics: { terms: string[]; reasons: string[] }[] };
 		expect(data.topics.find(topic => topic.terms[0] === 'game')?.reasons).toEqual(['tagGame']);
 	});
@@ -439,4 +439,27 @@ describe('common topic source fields (U-6, U-8)', () => {
 			expect(() => generation['validateSourceBundle'](bad)).toThrow();
 		}
 	});
+});
+
+
+test.each([['a-0', 'a-1'], ['a-0', 'old'], ['old', 'older']] as const)('R2: snapshots only attach titles retaining at least half the named posts (%s, %s)', async (a, b) => {
+	jest.spyOn(Date, 'now').mockReturnValue(NOW);
+	const setup = fixture(notesFor('a'));
+	setup.strings.set(trendTitleKey('topic-1'), JSON.stringify({ title: '寒波', noteIds: [a, b] }));
+	const bundle = await setup.service.computeTrendBundle(new Map());
+	expect(bundle.terms[0].title).toBe(a === 'old' ? null : '寒波');
+});
+
+test('R2: chooses unused representative words in rank order and keeps candidate labels consistent', async () => {
+	jest.spyOn(Date, 'now').mockReturnValue(NOW);
+	const setup = fixture([...notesFor('a', 5), ...notesFor('b', 4), ...notesFor('c', 3)]);
+	jest.mocked(setup.service['buildTopics']).mockResolvedValue([
+		{ terms: ['共通', '甲'], noteIds: notesFor('a', 5).map(n => n.id), authors6h: 5, authors2h: 5, center: null },
+		{ terms: ['共通', '乙'], noteIds: notesFor('b', 4).map(n => n.id), authors6h: 4, authors2h: 4, center: null },
+		{ terms: ['共通', '乙'], noteIds: notesFor('c', 3).map(n => n.id), authors6h: 3, authors2h: 3, center: null },
+	]);
+	const bundle = await setup.service.computeTrendBundle(new Map());
+	expect(bundle.terms.map(t => [t.term, t.relatedTerms])).toEqual([['共通', ['甲']], ['乙', ['共通']]]);
+	expect(bundle.noteCandidates.filter(n => n.noteId.startsWith('b-')).every(n => n.term === '乙')).toBe(true);
+	expect(bundle.noteCandidates.some(n => n.noteId.startsWith('c-'))).toBe(false);
 });

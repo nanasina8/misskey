@@ -37,7 +37,7 @@ import {
 	validateHanamiNoteJudgeSettings,
 	type HanamiNoteJudgeSettings,
 } from './HanamiNoteJudgeContracts.js';
-import { trendDailyKey, trendSameKey, trendSameSetKey, type HanamiTrendPreviousTopics } from './HanamiTrendService.js';
+import { trendDailyKey, trendSameKey, trendSameSetKey, trendTitleKey, readTrendTitle, trendTitleNeedsRename, trendTitlePosts, validateTrendTitle, trendTopicVisible, TREND_TITLE_TOP, TREND_CONTENT_JUDGE_EXTRA, type HanamiTrendPreviousTopics } from './HanamiTrendService.js';
 import { applyHanamiNoteJudgeRules } from './HanamiNoteJudgeRules.js';
 
 const execFileAsync = promisify(execFile);
@@ -100,6 +100,7 @@ export type HanamiNoteJudgeJobData = Readonly<{ noteIds: readonly string[]; prom
 export type HanamiTrendTopicJudgeJobData = {
 	readonly topics: readonly { readonly topicId: string; readonly text: string }[];
 	readonly dailyIds: readonly string[];
+	readonly titles?: readonly { readonly topicId: string; readonly posts: readonly string[]; readonly noteIds: readonly string[] }[];
 	readonly pairs: readonly { readonly a: string; readonly b: string }[];
 };
 
@@ -779,7 +780,7 @@ export class HanamiForYouBatchService {
 		return Object.freeze(splitHanamiNoteJudgeBatches(judgeable, this.noteJudgeBatchSize()).map(noteIds => Object.freeze({ noteIds: Object.freeze(noteIds), promptVersion: settings.promptVersion })));
 	}
 
-	/** Only uncached verdicts for the top ten topics, dispatched after common publication. */
+	/** Daily verdicts include content candidates; titles only use visible topics. */
 	@bindThis
 	public async prepareTrendTopicJudgeJob(): Promise<HanamiTrendTopicJudgeJobData | null> {
 		const runtime = peekHanamiNoteJudgeRuntime() ?? await probeHanamiNoteJudgeRuntime();
@@ -787,22 +788,37 @@ export class HanamiForYouBatchService {
 		const previous = await this.redisClient.get('hanami:trend:topics:prev');
 		if (previous == null) return null;
 		const parsed = JSON.parse(previous) as HanamiTrendPreviousTopics | HanamiTrendPreviousTopics['topics'];
-		const topics = (Array.isArray(parsed) ? parsed : parsed.topics).slice(0, 10);
-		if (topics.length === 0) return null;
-		const daily = await this.redisClient.mget(...topics.map(topic => trendDailyKey(topic.topicId)));
-		const dailyIds = topics.filter((_, i) => daily[i] == null).map(topic => topic.topicId);
-		const possiblePairs = topics.flatMap((topic, i) => topics.slice(i + 1).map(other => ({ a: topic.topicId, b: other.topicId })));
+		const all = Array.isArray(parsed) ? parsed : parsed.topics;
+		if (all.length === 0) return null;
+		const daily = await this.redisClient.mget(...all.map(topic => trendDailyKey(topic.topicId)));
+		const verdict = new Map(all.map((topic, i) => [topic.topicId, daily[i]]));
+		const top = all.slice(0, TREND_TITLE_TOP);
+		const extra = all.slice(TREND_TITLE_TOP).filter(topic => topic.origin === 'content' && verdict.get(topic.topicId) == null)
+			.sort((a, b) => b.authors2h - a.authors2h).slice(0, TREND_CONTENT_JUDGE_EXTRA);
+		const dailyIds = [...top, ...extra].filter(topic => verdict.get(topic.topicId) == null).map(topic => topic.topicId);
+		const visible = all.filter(topic => trendTopicVisible(topic.origin, verdict.get(topic.topicId))).slice(0, TREND_TITLE_TOP);
+		const cachedTitles = visible.length ? await this.redisClient.mget(...visible.map(topic => trendTitleKey(topic.topicId))) : [];
+		const needsTitle = visible.filter((topic, i) => trendTitleNeedsRename(readTrendTitle(cachedTitles[i]), topic.noteIds));
+		const sameTopics = visible.slice(0, 10);
+		const possiblePairs = sameTopics.flatMap((topic, i) => sameTopics.slice(i + 1).map(other => ({ a: topic.topicId, b: other.topicId })));
 		const same = possiblePairs.length === 0 ? [] : await this.redisClient.mget(...possiblePairs.map(pair => trendSameKey(pair.a, pair.b)));
 		const pairs = possiblePairs.filter((_, i) => same[i] == null);
-		if (dailyIds.length === 0 && pairs.length === 0) return null;
+		if (dailyIds.length === 0 && pairs.length === 0 && needsTitle.length === 0) return null;
+		const topics = [...new Map([...top, ...extra, ...visible].map(topic => [topic.topicId, topic])).values()];
 		const ids = [...new Set(topics.flatMap(topic => topic.noteIds))];
-		const rows = await this.db.query<Array<{ id: string; text: string; replyId: string | null }>>('SELECT id, text, "replyId" FROM note WHERE id = ANY($1::varchar[]) AND "replyId" IS NULL AND text IS NOT NULL', [ids]);
+		const rows = await this.db.query<Array<{ id: string; text: string; replyId: string | null }>>('SELECT id, text, "replyId" FROM note WHERE id = ANY($1::varchar[]) AND text IS NOT NULL', [ids]);
 		const scores = await this.featuredService.getGlobalNotesScoresWithCache();
 		const byId = new Map(rows.map(row => [row.id, row]));
-		return { dailyIds, pairs, topics: topics.map(topic => ({
+		const sorted = (topic: typeof topics[number]) => topic.noteIds.flatMap(id => byId.has(id) ? [byId.get(id)!] : [])
+			.sort((a, b) => (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0) || b.id.localeCompare(a.id));
+		const titles = needsTitle.flatMap(topic => {
+			const posts = trendTitlePosts(sorted(topic));
+			return posts.length ? [{ topicId: topic.topicId, posts, noteIds: topic.noteIds.slice(0, 50) }] : [];
+		});
+		if (dailyIds.length === 0 && pairs.length === 0 && titles.length === 0) return null;
+		return { dailyIds, pairs, titles, topics: topics.map(topic => ({
 			topicId: topic.topicId,
-			text: `関連語: ${topic.terms.slice(0, 8).join('・')}\n投稿:\n` + topic.noteIds.map(id => byId.get(id)).filter((row): row is typeof rows[number] => row != null && row.replyId == null)
-				.sort((a, b) => (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0) || b.id.localeCompare(a.id))
+			text: `関連語: ${topic.terms.slice(0, 8).join('・')}\n投稿:\n` + sorted(topic).filter(row => row.replyId == null)
 				.slice(0, 10).map(row => `- ${Array.from(row.text).slice(0, 120).join('')}`).join('\n'),
 		})) };
 	}
@@ -820,18 +836,20 @@ export class HanamiForYouBatchService {
 			const dailyIds = data.dailyIds.filter((_, i) => daily[i] == null);
 			const same = data.pairs.length === 0 ? [] : await this.redisClient.mget(...data.pairs.map(pair => trendSameKey(pair.a, pair.b)));
 			const pairs = data.pairs.filter((_, i) => same[i] == null);
-			if (dailyIds.length === 0 && pairs.length === 0) return;
+			const cachedTitles = data.titles?.length ? await this.redisClient.mget(...data.titles.map(topic => trendTitleKey(topic.topicId))) : [];
+			const titles = (data.titles ?? []).filter((topic, i) => trendTitleNeedsRename(readTrendTitle(cachedTitles[i]), topic.noteIds));
+			if (dailyIds.length === 0 && pairs.length === 0 && titles.length === 0) return;
 			dir = await mkdtemp(Path.join(tmpdir(), 'hanami-trend-topic-judge-'));
 			const inputPath = Path.join(dir, 'input.json');
 			const outputPath = Path.join(dir, 'output.json');
-			await writeFile(inputPath, JSON.stringify({ topics: data.topics, dailyIds, pairs }));
+			await writeFile(inputPath, JSON.stringify({ topics: data.topics, dailyIds, pairs, titles }));
 			const command = prepareHanamiPythonCommand([resolveHanamiTrendTopicJudgeScript(), inputPath, outputPath], { env: this.noteJudgePythonEnv() });
 			let failure: unknown;
 			try {
 				await execFileAsync(command.file, command.args, { env: command.env, timeout: NOTE_JUDGE_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
 			} catch (error) { failure = error; }
 			const result = JSON.parse(await readFile(outputPath, 'utf8')) as {
-				status: string; error?: string;
+				status: string; error?: string; titles?: { topicId: string; title: string }[];
 				judgements: ({ kind: 'daily'; topicId: string; probability: number } | { kind: 'same'; a: string; b: string; probability: number })[];
 			};
 			for (const judgement of result.judgements) {
@@ -855,6 +873,19 @@ export class HanamiForYouBatchService {
 				}
 				await pipe.exec();
 				logger.info('hanami trend topic judgement', { ...judgement, verdict });
+			}
+			for (const title of result.titles ?? []) {
+				const requested = titles.find(topic => topic.topicId === title.topicId);
+				if (requested == null || typeof title.title !== 'string') {
+					logger.warn('hanami trend topic judge: ignoring unexpected title', { topicId: title.topicId });
+					continue;
+				}
+				const valid = validateTrendTitle(title.title);
+				if (valid == null) {
+					await this.redisClient.del(trendTitleKey(title.topicId));
+					continue;
+				}
+				await this.redisClient.set(trendTitleKey(title.topicId), JSON.stringify({ title: valid, noteIds: requested.noteIds.slice(0, 50) }), 'EX', 48 * 60 * 60);
 			}
 			if (failure != null || result.status !== 'ok') logger.warn('hanami trend topic judge: partial/unavailable', { error: String(failure ?? result.error ?? result.status) });
 		} catch (error) {

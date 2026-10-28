@@ -657,6 +657,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 			if (trend.topicId != null && (typeof trend.topicId !== 'string' || trend.topicId.length === 0 || trend.topicId.length > 32)) throw new Error('Invalid trend topicId');
 			if (trend.relatedTerms !== undefined && (!Array.isArray(trend.relatedTerms) || trend.relatedTerms.length > 5 || trend.relatedTerms.some(term => typeof term !== 'string' || term.length === 0 || term.length > 256))) throw new Error('Invalid trend relatedTerms');
 			if (trend.startedAt != null && (typeof trend.startedAt !== 'string' || !Number.isFinite(Date.parse(trend.startedAt)))) throw new Error('Invalid trend startedAt');
+			if (trend.title != null && (typeof trend.title !== 'string' || Array.from(trend.title).length > 64)) throw new Error('Invalid trend title');
 			if (trend.daily !== undefined && typeof trend.daily !== 'boolean') throw new Error('Invalid trend daily');
 			if (trend.recentAuthors !== undefined && (!Number.isSafeInteger(trend.recentAuthors) || trend.recentAuthors < 0 || trend.recentAuthors > 2_147_483_647)) throw new Error('Invalid trend recentAuthors');
 			if (trend.topicNoteIds !== undefined && (!Array.isArray(trend.topicNoteIds) || trend.topicNoteIds.length > 500
@@ -998,12 +999,12 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 			if (trendTerms.length > 0) {
 				await publicationQuery(`
 					INSERT INTO "hanami_trend_snapshot_entry" (
-						"generatedMonth", "id", "snapshotId", "rank", "term", "score", "distinctAuthors", "topicId", "relatedTerms", "startedAt", "daily", "recentAuthors"
+						"generatedMonth", "id", "snapshotId", "rank", "term", "score", "distinctAuthors", "topicId", "relatedTerms", "startedAt", "daily", "recentAuthors", "title"
 					)
 					SELECT $1::date, input.entry_id, t."id", (input.ordinality::bigint - '1'::bigint),
 						input.term, input.score, input.distinct_authors,
 						topic.value->>'topicId', ARRAY(SELECT jsonb_array_elements_text(topic.value->'relatedTerms')),
-						(topic.value->>'startedAt')::timestamptz, (topic.value->>'daily')::boolean, (topic.value->>'recentAuthors')::integer
+						(topic.value->>'startedAt')::timestamptz, (topic.value->>'daily')::boolean, (topic.value->>'recentAuthors')::integer, topic.value->>'title'
 					FROM "hanami_trend_snapshot" t,
 						unnest($3::varchar[], $4::text[], $5::double precision[], $6::integer[])
 							WITH ORDINALITY AS input(entry_id, term, score, distinct_authors, ordinality),
@@ -1016,7 +1017,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 					trendTerms.map((term) => term.term),
 					trendTerms.map((term) => term.score),
 					trendTerms.map((term) => term.distinctAuthors),
-					JSON.stringify(trendTerms.map(term => ({ topicId: term.topicId ?? null, relatedTerms: term.relatedTerms ?? [], startedAt: term.startedAt ?? null, daily: term.daily ?? false, recentAuthors: term.recentAuthors ?? 0 }))),
+					JSON.stringify(trendTerms.map(term => ({ title: term.title ?? null, topicId: term.topicId ?? null, relatedTerms: term.relatedTerms ?? [], startedAt: term.startedAt ?? null, daily: term.daily ?? false, recentAuthors: term.recentAuthors ?? 0 }))),
 				]);
 
 				const representatives = trendTerms.flatMap((term, rank) => term.representativeNoteIds

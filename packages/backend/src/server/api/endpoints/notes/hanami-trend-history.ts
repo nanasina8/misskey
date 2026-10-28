@@ -33,6 +33,7 @@ export const meta = {
 								properties: {
 									topicId: { type: 'string', optional: false, nullable: true },
 									term: { type: 'string', optional: false, nullable: false },
+									title: { type: 'string', optional: false, nullable: true },
 									relatedTerms: { type: 'array', optional: false, nullable: false, items: { type: 'string', optional: false, nullable: false } },
 									startedAt: { type: 'string', format: 'date-time', optional: false, nullable: true },
 									daily: { type: 'boolean', optional: false, nullable: false },

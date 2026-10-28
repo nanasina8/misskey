@@ -4,14 +4,16 @@
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { DataSource } from 'typeorm';
+import * as Redis from 'ioredis';
 import type { Config } from '@/config.js';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import type { MiLocalUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { HanamiForYouSafetyService } from './HanamiForYouSafetyService.js';
+import { trendDuplicateAuthorsKey } from './HanamiTrendService.js';
 
 const CURSOR_PREFIX = 'hts1';
 const PG_BIGINT_MAX = '9223372036854775807';
@@ -45,7 +47,7 @@ type TrendRow = {
 	snapshot_generated_at: Date | string;
 	snapshot_ordinal: string;
 	rank: string;
-	term: string;
+	term: string; title: string | null;
 	topic_id: string | null;
 	related_terms: string[];
 	started_at: Date | string | null;
@@ -70,7 +72,7 @@ export function hanamiTopicKind(startedAt: string | null, at: string, recentAuth
 }
 
 export type HanamiTopicResponse = {
-	topicId: string; term: string; relatedTerms: string[]; startedAt: string | null; lastSeenAt: string;
+	topicId: string; term: string; title: string | null; relatedTerms: string[]; startedAt: string | null; lastSeenAt: string;
 	peakAuthors: number; series: HanamiTopicSeries; kind: HanamiTopicKind; active: boolean;
 };
 
@@ -81,7 +83,7 @@ export type HanamiTrendSnapshotResult = {
 			trendEntryId: string;
 			snapshotId: string;
 			snapshotGeneratedAt: string;
-			term: string;
+			term: string; title: string | null;
 			topicId: string | null;
 			relatedTerms: string[];
 			startedAt: string | null;
@@ -101,7 +103,7 @@ export type HanamiTrendSnapshotResult = {
 
 export type HanamiTrendHistoryResponse = {
 	blocks: { from: string; to: string; items: {
-		topicId: string | null; term: string; relatedTerms: string[]; startedAt: string | null; daily: boolean;
+		topicId: string | null; term: string; title: string | null; relatedTerms: string[]; startedAt: string | null; daily: boolean;
 		firstSeenAt: string; lastSeenAt: string; peakAuthors: number; representativeNote: Packed<'Note'> | null;
 	}[] }[];
 	nextUntil: string | null;
@@ -115,6 +117,10 @@ export class HanamiTrendSnapshotService {
 		@Inject(DI.config)
 		private config: Config,
 		private safetyService: HanamiForYouSafetyService,
+
+		@Optional()
+		@Inject(DI.redis)
+		private redisClient?: Redis.Redis,
 	) {}
 
 	@bindThis
@@ -149,7 +155,7 @@ export class HanamiTrendSnapshotService {
 		const rows = await this.db.query(`
 			SELECT entry."id" AS trend_entry_id, snapshot."id" AS snapshot_id,
 				snapshot."generatedAt" AS snapshot_generated_at, snapshot."ordinal"::text AS snapshot_ordinal,
-				entry."rank"::text AS rank, entry."term" AS term, entry."score" AS score,
+				entry."rank"::text AS rank, entry."term" AS term, entry."title" AS title, entry."score" AS score,
 				entry."distinctAuthors" AS distinct_authors,
 				entry."recentAuthors" AS recent_authors,
 				entry."topicId" AS topic_id, entry."relatedTerms" AS related_terms,
@@ -187,7 +193,7 @@ export class HanamiTrendSnapshotService {
 					trendEntryId: row.trend_entry_id,
 					snapshotId: row.snapshot_id,
 					snapshotGeneratedAt: this.toIsoString(row.snapshot_generated_at),
-					term: row.term,
+					term: row.term, title: row.title ?? null,
 					topicId: row.topic_id ?? null,
 					relatedTerms: row.related_terms ?? [],
 					startedAt: row.started_at == null ? null : this.toIsoString(row.started_at),
@@ -236,7 +242,7 @@ export class HanamiTrendSnapshotService {
 	@bindThis
 	public async getTopic(topicId: string): Promise<HanamiTopicResponse | null> {
 		const rows = await this.db.query<Array<{
-			term: string; related_terms: string[]; started_at: Date | string | null; at: Date | string; recent_authors: number; peak_authors: number; active: boolean;
+			term: string; title: string | null; related_terms: string[]; started_at: Date | string | null; at: Date | string; recent_authors: number; peak_authors: number; active: boolean;
 		}>>(`
 			WITH retained_months AS (
 				SELECT date_trunc('month', MIN(snapshot."generatedAt") AT TIME ZONE 'UTC')::date AS from_month,
@@ -260,7 +266,7 @@ export class HanamiTrendSnapshotService {
 					AND entry."generatedMonth" >= (SELECT from_month FROM retained_months)
 					AND entry."generatedMonth" < (SELECT to_month FROM retained_months)
 			)
-			SELECT "term" AS term, "relatedTerms" AS related_terms, "startedAt" AS started_at, at,
+			SELECT "term" AS term, "title" AS title, "relatedTerms" AS related_terms, "startedAt" AS started_at, at,
 				"recentAuthors" AS recent_authors, peak_authors,
 				EXISTS (SELECT 1 FROM "hanami_trend_snapshot_entry" current_entry
 					WHERE current_entry."topicId" = $1 AND current_entry."snapshotId" = (SELECT id FROM latest_ready)
@@ -272,26 +278,31 @@ export class HanamiTrendSnapshotService {
 		const at = this.toIsoString(row.at);
 		const startedAt = row.started_at == null ? null : this.toIsoString(row.started_at);
 		const [series] = await this.getSeries([{ topicId, at }]);
-		return { topicId, term: row.term, relatedTerms: row.related_terms, startedAt, lastSeenAt: at,
+		return { topicId, term: row.term, title: row.title ?? null, relatedTerms: row.related_terms, startedAt, lastSeenAt: at,
 			peakAuthors: Number(row.peak_authors), series, kind: hanamiTopicKind(startedAt, at, Number(row.recent_authors), series), active: row.active };
 	}
 
 	@bindThis
 	public async getMemberNotes(input: { topicId: string; sort: 'popular' | 'recent'; limit: number; offset: number; me: MiLocalUser | null }): Promise<Packed<'Note'>[]> {
+		// Author groups are computed during generation, keeping this public read bounded.
+		const cached = await this.redisClient?.get(trendDuplicateAuthorsKey(input.topicId));
+		const duplicates = cached == null ? [] : JSON.parse(cached) as string[];
 		const noteJoin = input.sort === 'popular' ? `CROSS JOIN LATERAL (
-			SELECT n."reactions", n."renoteCount", n."repliesCount"
+			SELECT n."reactions", n."renoteCount", n."repliesCount"${duplicates.length ? ', n."userId"' : ''}
 			FROM "note" n WHERE n."id" = member."noteId"
-		) note` : '';
-		const order = input.sort === 'popular' ? `(
+		) note` : duplicates.length ? 'JOIN note ON note.id = member."noteId"' : '';
+		const duplicateOrder = duplicates.length ? 'CASE WHEN note."userId" = ANY($4::varchar[]) THEN 1 ELSE 0 END,' : '';
+		const score = input.sort === 'popular' ? `(
 			COALESCE((SELECT SUM(reaction.value::double precision) FROM jsonb_each_text(note."reactions"::jsonb) reaction), 0)
 			+ note."renoteCount" + note."repliesCount"
-		) * POWER(0.5::double precision, EXTRACT(EPOCH FROM (statement_timestamp() - member."noteCreatedAt")) / 43200.0) DESC,` : '';
+		) * POWER(0.5::double precision, EXTRACT(EPOCH FROM (statement_timestamp() - member."noteCreatedAt")) / 43200.0) DESC,` : 'member."noteCreatedAt" DESC,';
 		const rows = await this.db.query<Array<{ note_id: string }>>(`
 			SELECT member."noteId" AS note_id FROM "hanami_trend_topic_note" member
 			${noteJoin}
 			WHERE member."topicId" = $1
-			ORDER BY ${order} member."noteCreatedAt" DESC, member."noteId" DESC LIMIT $2 OFFSET $3
-		`, [input.topicId, input.limit, input.offset]);
+			ORDER BY ${score} ${duplicateOrder}
+				member."noteCreatedAt" DESC, member."noteId" DESC LIMIT $2 OFFSET $3
+		`, [input.topicId, input.limit, input.offset, ...(duplicates.length ? [duplicates] : [])]);
 		const ids = rows.map(row => row.note_id);
 		if (ids.length === 0) return [];
 		const packed = await this.safetyService.filterAndPackPublic(ids, input.me);
@@ -313,14 +324,14 @@ export class HanamiTrendSnapshotService {
 			new Date(Date.UTC(toMonth.getUTCFullYear(), toMonth.getUTCMonth() + 1, 1)).toISOString().slice(0, 10)];
 		type HistoryRow = {
 			block_from: Date | string; snapshot_id: string; rank: string;
-			topic_id: string | null; term: string; related_terms: string[]; started_at: Date | string | null; daily: boolean;
+			topic_id: string | null; term: string; title: string | null; related_terms: string[]; started_at: Date | string | null; daily: boolean;
 			first_seen_at: Date | string; last_seen_at: Date | string; peak_authors: number;
 		};
 		const rows = await this.db.query<HistoryRow[]>(`
 			WITH observations AS (
 				SELECT snapshot."id" AS snapshot_id, snapshot."generatedAt" AS generated_at,
 					snapshot."ordinal" AS ordinal, entry."rank"::text AS rank,
-					entry."term" AS term, entry."topicId" AS topic_id, entry."relatedTerms" AS related_terms,
+					entry."term" AS term, entry."title" AS title, entry."topicId" AS topic_id, entry."relatedTerms" AS related_terms,
 					entry."startedAt" AS started_at, entry."daily" AS daily, entry."distinctAuthors" AS authors,
 					date_bin(INTERVAL '6 hours', snapshot."generatedAt", TIMESTAMPTZ '1970-01-01 00:00:00+09') AS block_from,
 					CASE WHEN entry."topicId" IS NULL THEN 'term:' || entry."term" ELSE 'topic:' || entry."topicId" END AS topic_key
@@ -343,7 +354,7 @@ export class HanamiTrendSnapshotService {
 				SELECT *, ROW_NUMBER() OVER (PARTITION BY block_from ORDER BY daily ASC, peak_authors DESC, last_seen_at DESC) AS block_rank
 				FROM topics WHERE latest = 1
 			)
-			SELECT block_from, snapshot_id, rank, topic_id, term, related_terms, started_at, daily,
+			SELECT block_from, snapshot_id, rank, topic_id, term, title, related_terms, started_at, daily,
 				first_seen_at, last_seen_at, peak_authors
 			FROM ranked WHERE block_rank <= 15 ORDER BY block_from DESC, block_rank
 		`, [new Date(oldestFrom).toISOString(), new Date(newestFrom + blockMs).toISOString(), ...months]);
@@ -376,7 +387,7 @@ export class HanamiTrendSnapshotService {
 		) AS exists`, [new Date(oldestFrom).toISOString()]) as { exists: boolean }[];
 		return {
 			blocks: grouped.map(block => ({ from: block.from, to: block.to, items: block.items.map(item => ({
-				topicId: item.topic_id, term: item.term, relatedTerms: item.related_terms,
+				topicId: item.topic_id, term: item.term, title: item.title ?? null, relatedTerms: item.related_terms,
 				startedAt: item.started_at == null ? null : this.toIsoString(item.started_at), daily: item.daily,
 				firstSeenAt: this.toIsoString(item.first_seen_at), lastSeenAt: this.toIsoString(item.last_seen_at), peakAuthors: Number(item.peak_authors),
 				representativeNote: (noteIds.get(`${item.snapshot_id}:${item.rank}`) ?? []).map(id => byId.get(id)).find(note => note != null) ?? null,

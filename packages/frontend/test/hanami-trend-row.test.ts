@@ -31,6 +31,12 @@ describe('HanamiTrendRow', () => {
 		expect(view.container.querySelectorAll('[aria-label="41 people"]')).toHaveLength(1);
 	});
 
+	test.each(['current', 'past'] as const)('renders a title with the source terms below in %s rows', variant => {
+		const view = render(Row, { props: { item: { ...base, title: '地域一帯の停電', relatedTerms: ['復旧'], representativeNote: note }, rank: 1, variant }, global: { stubs: rowStubs } });
+		expect(view.getByText('地域一帯の停電').getAttribute('href')).toBe('/hanami/trends?topic=topic');
+		expect(view.getByText('停電（復旧）')).toBeTruthy();
+	});
+
 	test('showAuthors=false hides the authors label while keeping the term and rank', () => {
 		const view = render(Row, { props: { item: { ...base, representativeNote: null }, rank: 1, showAuthors: false }, global: { stubs: rowStubs } });
 		expect(view.getByText('停電')).toBeTruthy();
@@ -102,6 +108,13 @@ describe('Hanami trends widget requests', () => {
 		expect((await view.findByText('Widget representative')).closest('a')?.getAttribute('href')).toBe('/notes/preview');
 		expect(view.container.querySelectorAll('a[href^="/notes/"]')).toHaveLength(1);
 		expect(view.queryByRole('button', { name: 'Show posts on this topic' })).toBeNull();
+	});
+	test('widget uses the shared title and source-term presentation', async () => {
+		api.mockResolvedValue({ items: [{ ...item('停電', 'a'), title: '地域一帯の停電', topicId: 'topic' }], nextCursor: null, hasMore: false });
+		const view = render(Widget, { global: { stubs } });
+		await interval.mock.calls.at(-1)![0]();
+		expect(view.getByText('地域一帯の停電').getAttribute('href')).toBe('/hanami/trends?topic=topic');
+		expect(view.getByText('停電')).toBeTruthy();
 	});
 	test('uses the same read request for refresh and the ten minute interval', async () => {
 		api.mockResolvedValue({ items: [item('word', 'a')], nextCursor: null, hasMore: false });

@@ -31,6 +31,7 @@ export const meta = {
 						snapshotId: { type: 'string', optional: false, nullable: false },
 						snapshotGeneratedAt: { type: 'string', format: 'date-time', optional: false, nullable: false },
 						term: { type: 'string', optional: false, nullable: false },
+						title: { type: 'string', optional: false, nullable: true },
 						topicId: { type: 'string', optional: false, nullable: true },
 						relatedTerms: { type: 'array', optional: false, nullable: false, items: { type: 'string', optional: false, nullable: false } },
 						startedAt: { type: 'string', format: 'date-time', optional: false, nullable: true },

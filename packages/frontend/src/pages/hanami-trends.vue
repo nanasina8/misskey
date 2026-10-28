@@ -10,14 +10,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div v-if="wide && chips.length" ref="topicList" :class="$style.topicList" role="group" :aria-label="i18n.ts._hana._trends.title">
 				<button v-for="(item, index) in chips" :key="item.topicId" class="_button" :class="[$style.topicRow, { [$style.selectedRow]: selected?.topicId === item.topicId }]" :aria-pressed="selected?.topicId === item.topicId" @click="chooseChip(item)">
 					<span :class="$style.rank">{{ index + 1 }}</span>
-					<span :class="$style.rowHeading">{{ item.term }}{{ item.relatedTerms.length ? '（' + item.relatedTerms.slice(0, 2).join('・') + '）' : '' }}</span>
+					<span :class="$style.rowHeading">{{ item.title || topicTerms(item, 2) }}<small v-if="item.title" :class="$style.sourceTerms">{{ topicTerms(item) }}</small></span>
 					<HanamiTopicBadge :kind="item.kind"/>
 					<span :class="$style.rowAuthors">{{ item.past ? i18n.tsx._hana._trends.peakAuthorsLong({ n: item.authors }) : i18n.tsx._hana._trends.authors({ n: item.authors }) }}</span>
 				</button>
 			</div>
 			<div v-if="!wide && chips.length" ref="chipStrip" :class="$style.chips" role="group" :aria-label="i18n.ts._hana._trends.title">
 				<button v-for="item in chips" :key="item.topicId" class="_button" :class="[$style.chip, { [$style.selected]: selected?.topicId === item.topicId }]" :aria-pressed="selected?.topicId === item.topicId" @click="chooseChip(item)">
-					<span :class="[$style.dot, $style[item.kind]]" aria-hidden="true"></span>{{ item.term }}
+					<span :class="[$style.dot, $style[item.kind]]" aria-hidden="true"></span>{{ item.title || item.term }}<small v-if="item.title" :class="$style.sourceTerms">{{ topicTerms(item) }}</small>
 				</button>
 			</div>
 			<div :class="$style.detailPane">
@@ -26,6 +26,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<template v-else-if="selected">
 					<section :class="$style.summary">
 						<h1>{{ heading }}</h1>
+						<div v-if="selected.title" :class="$style.sourceTerms">{{ topicTerms(selected) }}</div>
 						<div :class="$style.details">
 							<HanamiTopicBadge :kind="selected.kind"/>
 							<span v-if="selected.startedAt">{{ i18n.tsx._hana._trends.ongoingSince({ time: timeFormat.format(new Date(selected.startedAt)) }) }}</span>
@@ -56,7 +57,7 @@ import { useRouter } from '@/router.js';
 import { toast } from '@/os.js';
 import { i18n } from '@/i18n.js';
 
-type TopicSummary = Pick<Misskey.entities.NotesHanamiTopicResponse, 'topicId' | 'term' | 'relatedTerms' | 'startedAt' | 'series' | 'kind'> & { authors: number; past: boolean };
+type TopicSummary = Pick<Misskey.entities.NotesHanamiTopicResponse, 'title' | 'topicId' | 'term' | 'relatedTerms' | 'startedAt' | 'series' | 'kind'> & { authors: number; past: boolean };
 const props = defineProps<{ initialTopic?: string }>();
 const router = useRouter();
 const items = ref<TopicSummary[]>([]);
@@ -67,7 +68,8 @@ const wide = ref(false);
 const topicList = ref<HTMLElement | null>(null);
 const chipStrip = ref<HTMLElement | null>(null);
 const chips = computed(() => temporary.value == null || items.value.some(item => item.topicId === temporary.value?.topicId) ? items.value : [temporary.value, ...items.value]);
-const heading = computed(() => selected.value == null ? '' : selected.value.term + (selected.value.relatedTerms.length ? '（' + selected.value.relatedTerms.join('・') + '）' : ''));
+const topicTerms = (topic: TopicSummary, limit = topic.relatedTerms.length) => topic.term + (topic.relatedTerms.length ? '（' + topic.relatedTerms.slice(0, limit).join('・') + '）' : '');
+const heading = computed(() => selected.value == null ? '' : selected.value.title || topicTerms(selected.value));
 const timeFormat = new Intl.DateTimeFormat(versatileLang, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
 const fetching = ref(false);
 const failed = ref(false);
@@ -171,6 +173,7 @@ definePage(() => ({ title: i18n.ts._hana._trends.title, icon: 'ti ti-trending-up
 .selectedRow { background: var(--MI_THEME-accentedBg); border-left-color: var(--MI_THEME-accent); }
 .rank { width: 1.5em; flex-shrink: 0; color: var(--MI_THEME-fgTransparent); font-size: 0.8em; }
 .rowHeading { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.85em; }
+.sourceTerms { display: block; font-size: 0.8em; color: var(--MI_THEME-fgTransparent); overflow-wrap: anywhere; }
 .rowAuthors { flex-shrink: 0; white-space: nowrap; font-size: 0.8em; color: var(--MI_THEME-fgTransparent); }
 .topicRow > :not(.rowHeading) { flex-shrink: 0; }
 .detailPane { min-width: 0; min-height: 0; }

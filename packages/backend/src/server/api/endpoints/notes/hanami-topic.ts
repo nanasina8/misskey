@@ -18,6 +18,7 @@ export const meta = {
 		properties: {
 			topicId: { type: 'string', optional: false, nullable: false },
 			term: { type: 'string', optional: false, nullable: false },
+			title: { type: 'string', optional: false, nullable: true },
 			relatedTerms: { type: 'array', optional: false, nullable: false, items: { type: 'string', optional: false, nullable: false } },
 			startedAt: { type: 'string', format: 'date-time', optional: false, nullable: true },
 			lastSeenAt: { type: 'string', format: 'date-time', optional: false, nullable: false },

@@ -304,6 +304,7 @@ export class HanamiCommonComputationService implements HanamiCommonComputationPo
 				...(term.topicId !== undefined ? { topicId: term.topicId, relatedTerms: Object.freeze([...(term.relatedTerms ?? [])]), startedAt: term.startedAt ?? null, daily: term.daily ?? false } : {}),
 				...(term.recentAuthors !== undefined ? { recentAuthors: term.recentAuthors } : {}),
 				...(term.topicNoteIds !== undefined ? { topicNoteIds: term.topicNoteIds } : {}),
+				title: term.title ?? null,
 				term: term.term,
 				score: term.score,
 				distinctAuthors: term.distinctAuthors,

@@ -13,6 +13,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<HanamiTopicSparkline v-if="variant === 'current'" :series="item.series ?? []"/>
 		<span v-if="variant === 'past'" :class="$style.rank">{{ rank }}</span>
 	</div>
+	<div v-if="item.title" :class="$style.sourceTerms">{{ termsHeading }}</div>
 	<MkA v-if="item.representativeNote" :class="$style.note" :to="`/notes/${item.representativeNote.id}`">
 		<MkAvatar :class="$style.avatar" :user="item.representativeNote.user"/>
 		<MkUserName :class="$style.user" :user="item.representativeNote.user"/>
@@ -39,7 +40,7 @@ import HanamiTopicBadge from '@/components/HanamiTopicBadge.vue';
 import { i18n } from '@/i18n.js';
 
 const props = withDefaults(defineProps<{
-	item: Pick<Misskey.entities.NotesHanamiTrendsResponse['items'][number], 'term' | 'relatedTerms' | 'distinctAuthors' | 'representativeNote'> & Partial<Pick<Misskey.entities.NotesHanamiTrendsResponse['items'][number], 'topicId' | 'startedAt' | 'series' | 'participants' | 'kind'>>;
+	item: Pick<Misskey.entities.NotesHanamiTrendsResponse['items'][number], 'term' | 'relatedTerms' | 'distinctAuthors' | 'representativeNote'> & Partial<Pick<Misskey.entities.NotesHanamiTrendsResponse['items'][number], 'title' | 'topicId' | 'startedAt' | 'series' | 'participants' | 'kind'>>;
 	rank: number;
 	showAuthors?: boolean;
 	variant?: 'current' | 'past';
@@ -47,7 +48,8 @@ const props = withDefaults(defineProps<{
 
 const timeFormat = new Intl.DateTimeFormat(versatileLang, { hour: '2-digit', minute: '2-digit', hour12: false });
 
-const heading = computed(() => {
+const heading = computed(() => props.item.title || termsHeading.value);
+const termsHeading = computed(() => {
 	const related = props.item.relatedTerms?.slice(0, props.variant === 'current' ? 2 : 3) ?? [];
 	return props.item.term + (related.length > 0 ? `（${related.join('・')}）` : '');
 });
@@ -84,6 +86,8 @@ const summary = computed(() => {
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
+
+.sourceTerms { font-size: 0.75em; color: var(--MI_THEME-fgTransparent); overflow-wrap: anywhere; }
 
 .authors {
 	flex: 1;
