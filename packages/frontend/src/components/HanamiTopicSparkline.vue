@@ -4,14 +4,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div v-if="series.length >= 2" :class="[$style.graph, { [$style.large]: large }]">
+<span v-if="series.length >= 2" :class="[$style.graph, { [$style.large]: large }]">
 	<svg :width="large ? '100%' : 64" :height="height" :viewBox="`0 0 ${width} ${height}`" preserveAspectRatio="none" aria-hidden="true">
 		<polygon :points="area" :class="$style.area"/>
 		<polyline :points="line" :class="$style.line" vector-effect="non-scaling-stroke"/>
 		<circle :cx="points.at(-1)?.x" :cy="points.at(-1)?.y" r="2.2" :class="$style.point"/>
 	</svg>
-	<div v-if="large" :class="$style.ticks"><span>{{ time(series[0].at) }}</span><span>{{ time(series.at(-1)!.at) }}</span></div>
-</div>
+	<span v-if="large" :class="$style.ticks"><span>{{ time(series[0].at) }}</span><span>{{ time(series.at(-1)!.at) }}</span></span>
+</span>
 </template>
 
 <script lang="ts" setup>
@@ -38,7 +38,7 @@ function time(at: string): string { return timeFormat.format(new Date(at)); }
 </script>
 
 <style lang="scss" module>
-.graph { width: 64px; flex-shrink: 0; }
+.graph { display: block; width: 64px; flex-shrink: 0; }
 .large { width: 100%; }
 .area { fill: var(--MI_THEME-accent); opacity: 0.12; }
 .line { fill: none; stroke: var(--MI_THEME-accent); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }

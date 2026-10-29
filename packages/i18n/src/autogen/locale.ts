@@ -14707,6 +14707,18 @@ export interface Locale extends ILocale {
         };
         "_explore": {
             /**
+             * 話題
+             */
+            "tabTopics": string;
+            /**
+             * 人気の投稿
+             */
+            "popularNotes": string;
+            /**
+             * この話題の投稿をすべて見る
+             */
+            "showAllTopicNotes": string;
+            /**
              * みつけるの画像・動画の表示
              */
             "mediaFilter": string;

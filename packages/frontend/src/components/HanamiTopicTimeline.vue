@@ -12,7 +12,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<MkNote v-for="note in notes" :key="note.id" :note="note"/>
 	<MkLoading v-if="fetching"/>
 	<div v-else-if="failed" :class="$style.status" role="alert"><p>{{ i18n.ts.somethingHappened }}</p><MkButton @click="fetchNotes">{{ i18n.ts.retry }}</MkButton></div>
-	<div v-else-if="hasMore" :class="$style.status"><MkButton v-appear="fetchNotes" rounded @click="fetchNotes">{{ i18n.ts.loadMore }}</MkButton></div>
+	<div v-else-if="previewLimit === undefined && hasMore" :class="$style.status"><MkButton v-appear="fetchNotes" rounded @click="fetchNotes">{{ i18n.ts.loadMore }}</MkButton></div>
 	<p v-else-if="notes.length === 0" :class="$style.status">{{ i18n.ts._hana._trends.noTopicNotes }}</p>
 </section>
 </template>
@@ -26,7 +26,10 @@ import { misskeyApiGet } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
 import { useGlobalEvent } from '@/events.js';
 
-const props = defineProps<{ topicId: string }>();
+const props = defineProps<{
+	topicId: string;
+	previewLimit?: number;
+}>();
 const sort = ref<'popular' | 'recent'>('popular');
 const notes = ref<Misskey.entities.Note[]>([]);
 const deletedIds = new Set<string>();
@@ -46,16 +49,18 @@ useGlobalEvent('noteDeleted', id => {
 async function fetchNotes(): Promise<void> {
 	if (disposed || fetching.value || !hasMore.value) return;
 	const version = requestVersion;
+	const limit = props.previewLimit ?? 20;
 	fetching.value = true;
 	failed.value = false;
 	try {
-		const result = await misskeyApiGet('notes/hanami-topic-notes', { topicId: props.topicId, sort: sort.value, limit: 20, offset });
+		const result = await misskeyApiGet('notes/hanami-topic-notes', { topicId: props.topicId, sort: sort.value, limit, offset });
 		if (version !== requestVersion) return;
 		const seen = new Set(notes.value.map(note => note.id));
-		notes.value.push(...result.filter(note => !deletedIds.has(note.id) && !seen.has(note.id)));
+		const visible = props.previewLimit === undefined ? result : result.slice(0, limit);
+		notes.value.push(...visible.filter(note => !deletedIds.has(note.id) && !seen.has(note.id)));
 		// Offsets count the SQL window, including posts removed by the safety filter.
-		offset += 20;
-		hasMore.value = result.length > 0 && offset < 500;
+		offset += limit;
+		hasMore.value = props.previewLimit === undefined && result.length > 0 && offset < 500;
 	} catch {
 		if (version === requestVersion) failed.value = true;
 	} finally {

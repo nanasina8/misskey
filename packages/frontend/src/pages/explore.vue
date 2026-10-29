@@ -5,7 +5,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <PageWithHeader v-model:tab="tab" :actions="headerActions" :tabs="headerTabs" :swipable="true">
-	<div v-if="tab === 'featured'">
+	<div v-if="tab === 'topics'">
+		<XTopics @showFeatured="tab = 'featured'"/>
+	</div>
+	<div v-else-if="tab === 'featured'">
 		<XFeatured/>
 	</div>
 	<div v-else-if="tab === 'users'">
@@ -18,7 +21,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, watch, ref, useTemplateRef } from 'vue';
+import { computed, ref } from 'vue';
+import XTopics from './explore.topics.vue';
 import XFeatured from './explore.featured.vue';
 import XUsers from './explore.users.vue';
 import XRoles from './explore.roles.vue';
@@ -28,7 +32,7 @@ import { i18n } from '@/i18n.js';
 const props = withDefaults(defineProps<{
 	initialTab?: string;
 }>(), {
-	initialTab: 'featured',
+	initialTab: 'topics',
 });
 
 const tab = ref(props.initialTab);
@@ -36,6 +40,10 @@ const tab = ref(props.initialTab);
 const headerActions = computed(() => []);
 
 const headerTabs = computed(() => [{
+	key: 'topics',
+	icon: 'ti ti-trending-up',
+	title: i18n.ts._hana._explore.tabTopics,
+}, {
 	key: 'featured',
 	icon: 'ti ti-bolt',
 	title: i18n.ts.featured,
