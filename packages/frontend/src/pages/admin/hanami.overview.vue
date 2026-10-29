@@ -29,7 +29,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</div>
 		<small>{{ summary.range.from }} — {{ summary.range.to }}</small>
 	</template>
-	<MkInfo v-for="entry in coverageWarnings" :key="entry.name" warn>{{ partialNotice(entry.coverage) }}</MkInfo>
+	<MkInfo v-for="notice in coverageNotices" :key="notice" warn>{{ notice }}</MkInfo>
 	<MkFolder :defaultOpen="true">
 		<template #label>{{ t.usage }}</template>
 		<div v-if="summary" class="_gaps">
@@ -121,6 +121,8 @@ const coverageWarnings = computed(() => [
 	{ name: t.breakdown, coverage: breakdown.value?.coverage },
 	{ name: t.generationErrors, coverage: errors.value?.coverage },
 ].flatMap(entry => entry.coverage && (entry.coverage.status !== 'complete' || entry.coverage.unavailable.length > 0) ? [{ name: entry.name, coverage: entry.coverage }] : []));
+// The summary, breakdown and error panels usually share one measurement start, so identical notices are shown once.
+const coverageNotices = computed(() => [...new Set(coverageWarnings.value.map(entry => partialNotice(entry.coverage)))]);
 const timelineColors = ['#888', '#58a65c', '#548cc5', '#a582c9', 'var(--MI_THEME-accent)'];
 const timelineShares = computed(() => {
 	const shares = summary.value?.usage.tlShare;

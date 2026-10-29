@@ -571,6 +571,17 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
+     * Inspect Hanami GPU jobs, bounded queue counts, model runs and recent diagnostic events without accessing logs or the database.
+     * 
+     * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+     */
+    request<E extends 'admin/hanami/jobs-status', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
      * Get legacy last-24-hour judge aggregates. Supplying range or axis selects the served-exploration what-if cohort at the current interest threshold (max 30 days); cohort contains the result and legacy counts are null with empty legacy lists.
      * 
      * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
@@ -3362,7 +3373,7 @@ declare module '../api.js' {
 
     /**
      * Suggest Hanami timeline amounts from the authenticated user’s reactions over the last 14 days.
-     *
+     * 
      * **Credential required**: *Yes* / **Permission**: *read:account*
      */
     request<E extends 'i/hanami-tuning-suggestion', P extends Endpoints[E]['req']>(

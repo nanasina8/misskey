@@ -21,6 +21,7 @@ import { HANAMI_TASTE_MATCH_KEY_PREFIX, HANAMI_TASTE_MATCH_META_KEY_PREFIX, HANA
 import { pureRenoteSql } from '@/misc/is-renote.js';
 import { resolveHanamiRepoRoot } from '@/core/hanami/HanamiPythonRuntime.js';
 import type Logger from '@/logger.js';
+import { acquireHanamiLocalLlmLock, recordHanamiLlmEvent, HANAMI_LOCAL_LLM_LOCK_KEY, type HanamiLocalLlmLock } from './HanamiLocalLlmLock.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -108,8 +109,6 @@ const RECENT_BACKFILL_TIME_BUDGET_SEC = 60;
 // budget.  The former is part of the worker compatibility contract; the
 // latter prevents overlap with note judgement workers.
 const TASTE_TICK_LEGACY_LOCK_KEY = 'hanami:taste:tick:lock';
-const TASTE_TICK_LOCK_KEY = 'hanami:llm:exclusive:v1';
-const TASTE_TICK_LOCK_TTL_SEC = 35 * 60;
 const TASTE_MATCH_SLOW_WARN_MS = 60 * 1000; // これを超えたらスケール対策（ANN/差分化）検討のサイン
 const TASTE_REBUILD_STATUS_KEY = 'hanami:taste:rebuild:status';
 const TASTE_REBUILD_STATUS_TTL_SEC = 7 * 24 * 60 * 60;
@@ -280,23 +279,8 @@ export class HanamiTasteClusterBatchService {
 		return Number.isFinite(n) && n > 0 ? Math.floor(n) : TASTE_REBUILD_DEFAULT_CHUNK;
 	}
 
-	private async acquireTasteTickLock(): Promise<string | null> {
-		const lockToken = `${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
-		const legacy = await this.redisClient.set(TASTE_TICK_LEGACY_LOCK_KEY, lockToken, 'EX', TASTE_TICK_LOCK_TTL_SEC, 'NX');
-		if (legacy == null) return null;
-		const shared = await this.redisClient.set(TASTE_TICK_LOCK_KEY, lockToken, 'EX', TASTE_TICK_LOCK_TTL_SEC, 'NX');
-		if (shared == null) {
-			await this.releaseTasteTickLock(lockToken);
-			return null;
-		}
-		return lockToken;
-	}
-
-	private async releaseTasteTickLock(lockToken: string): Promise<void> {
-		await this.redisClient.eval(
-			'local deleted = 0; for i = 1, 2 do if redis.call("get", KEYS[i]) == ARGV[1] then deleted = deleted + redis.call("del", KEYS[i]) end end; return deleted',
-			2, TASTE_TICK_LEGACY_LOCK_KEY, TASTE_TICK_LOCK_KEY, lockToken,
-		).catch(() => { /* TTLで解ける */ });
+	private async acquireTasteTickLock(): Promise<HanamiLocalLlmLock | null> {
+		return await acquireHanamiLocalLlmLock(this.redisClient, 'tasteTick', { keys: [TASTE_TICK_LEGACY_LOCK_KEY, HANAMI_LOCAL_LLM_LOCK_KEY] });
 	}
 
 	private tastePythonMaxThreads(): number {
@@ -672,27 +656,40 @@ export class HanamiTasteClusterBatchService {
 			logger.warn('hanami taste tick: previous run still in progress, skip');
 			return;
 		}
+		const startedAt = Date.now();
+		const counts = { embedded: 0, matchedNotes: 0, failedSteps: 0 };
+		await recordHanamiLlmEvent(this.redisClient, { job: 'tasteTick', event: 'started' });
 		try {
 			const clusterRows = await this.loadTasteClusterRows();
 			const activeUids = await this.filterActiveTasteUserIds(clusterRows.map(r => r.uid));
 			try {
-				await this.runRecentBackfill(activeUids, logger);
+				counts.embedded += (await this.runRecentBackfill(activeUids, logger)).processed;
 			} catch (err) {
+				counts.failedSteps++;
+				await recordHanamiLlmEvent(this.redisClient, { job: 'tasteTick', event: 'failed', error: err });
 				logger.warn(`hanami taste recent backfill failed: ${(err as Error).message}`);
 			}
 			try {
-				await this.runTasteSweep(logger);
+				counts.embedded += (await this.runTasteSweep(logger)).processed;
 			} catch (err) {
+				counts.failedSteps++;
+				await recordHanamiLlmEvent(this.redisClient, { job: 'tasteTick', event: 'failed', error: err });
 				// python 不在などの環境では警告に留めて次回に任せる（serve は general 縮退で壊れない）。
 				logger.warn(`hanami taste sweep failed: ${(err as Error).message}`);
 			}
 			try {
-				await this.computeTasteMatches(logger, lockToken, clusterRows, activeUids);
+				counts.matchedNotes = (await this.computeTasteMatches(logger, lockToken.token, clusterRows, activeUids)).notes;
 			} catch (err) {
+				counts.failedSteps++;
+				await recordHanamiLlmEvent(this.redisClient, { job: 'tasteTick', event: 'failed', error: err });
 				logger.warn(`hanami taste match failed: ${(err as Error).message}`);
 			}
+			await recordHanamiLlmEvent(this.redisClient, { job: 'tasteTick', event: counts.embedded + counts.matchedNotes === 0 && counts.failedSteps === 0 ? 'empty' : 'finished', durationMs: Date.now() - startedAt, counts });
+		} catch (error) {
+			await recordHanamiLlmEvent(this.redisClient, { job: 'tasteTick', event: 'failed', durationMs: Date.now() - startedAt, error });
+			throw error;
 		} finally {
-			await this.releaseTasteTickLock(lockToken);
+			await lockToken.release();
 		}
 	}
 
@@ -766,6 +763,8 @@ export class HanamiTasteClusterBatchService {
 			logger.warn('hanami taste rebuild: taste tick lock busy, retry later');
 			return { action: 'retry', delayMs: TASTE_REBUILD_LOCK_RETRY_MS, data };
 		}
+		const startedAt = Date.now();
+		await recordHanamiLlmEvent(this.redisClient, { job: 'tasteTick', event: 'started' });
 		try {
 			await this.writeTasteRebuildStatus('running', data);
 			const next = data.phase === 'embeddings'
@@ -776,12 +775,14 @@ export class HanamiTasteClusterBatchService {
 			} else {
 				await this.writeTasteRebuildStatus('running', next.data);
 			}
+			await recordHanamiLlmEvent(this.redisClient, { job: 'tasteTick', event: 'finished', durationMs: Date.now() - startedAt, counts: { ...next.data.stats } });
 			return next;
 		} catch (err) {
+			await recordHanamiLlmEvent(this.redisClient, { job: 'tasteTick', event: 'failed', durationMs: Date.now() - startedAt, error: err });
 			await this.writeTasteRebuildStatus('error', data, (err as Error).message);
 			throw err;
 		} finally {
-			await this.releaseTasteTickLock(lockToken);
+			await lockToken.release();
 		}
 	}
 
@@ -1172,10 +1173,17 @@ export class HanamiTasteClusterBatchService {
 			logger.warn('hanami taste cluster: taste/LLM lock busy, skip');
 			return { users: 0 };
 		}
+		const startedAt = Date.now();
+		await recordHanamiLlmEvent(this.redisClient, { job: 'tasteTick', event: 'started' });
 		try {
-			return await this.runTasteClusterBatchLocked(logger);
+			const result = await this.runTasteClusterBatchLocked(logger);
+			await recordHanamiLlmEvent(this.redisClient, { job: 'tasteTick', event: result.users > 0 ? 'finished' : 'empty', durationMs: Date.now() - startedAt, counts: { users: result.users } });
+			return result;
+		} catch (error) {
+			await recordHanamiLlmEvent(this.redisClient, { job: 'tasteTick', event: 'failed', durationMs: Date.now() - startedAt, error });
+			throw error;
 		} finally {
-			await this.releaseTasteTickLock(lockToken);
+			await lockToken.release();
 		}
 	}
 
@@ -1258,6 +1266,7 @@ export class HanamiTasteClusterBatchService {
 				done += await this.clusterUserChunk(chunkUsers, meanVec, userMeta, logger);
 			} catch (err) {
 				logger.warn(`hanami taste cluster: chunk failed: ${(err as Error).message}`);
+				await recordHanamiLlmEvent(this.redisClient, { job: 'tasteTick', event: 'failed', counts: { users: chunkUsers.length }, error: err });
 			}
 		}
 		logger.info(`hanami taste cluster: rebuilt clusters for ${done}/${targets.length} users`);
@@ -1449,6 +1458,7 @@ export class HanamiTasteClusterBatchService {
 				done++;
 			} catch (err) {
 				logger.warn(`hanami taste cluster: ingest failed for ${res.userId}: ${(err as Error).message}`);
+				await recordHanamiLlmEvent(this.redisClient, { job: 'tasteTick', event: 'failed', counts: { users: 1 }, error: err });
 			}
 		}
 		return done;

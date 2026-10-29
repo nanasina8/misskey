@@ -142,8 +142,8 @@ describe('Hanami judge admin endpoint contracts', () => {
 			return [{ count: '12' }];
 		});
 
-		await expect(new JudgeStatusEndpoint({ query } as never).exec({}, admin, null)).resolves.toEqual({
-			model: HANAMI_NOTE_JUDGE_MODEL,
+		await expect(new JudgeStatusEndpoint({ query } as never, { get: async () => null } as never).exec({}, admin, null)).resolves.toEqual({
+			trendTopicJudge: null, model: HANAMI_NOTE_JUDGE_MODEL,
 			promptVersion: 4,
 			latestRun: { id: 'run-1', status: 'ready', params: { processedCount: 2 }, startedAt: 'start', finishedAt: 'end' },
 			backlog: 12,
@@ -183,7 +183,7 @@ describe('Hanami judge admin endpoint contracts', () => {
 		await expect(new JudgeTrialEndpoint({ query } as never, redis as never).exec({ settings: createDefaultHanamiNoteJudgeSettings() }, admin, null)).rejects.toMatchObject({
 			code: 'HANAMI_LLM_BUSY', httpStatusCode: 503,
 		});
-		expect(redis.set).toHaveBeenCalledWith('hanami:llm:exclusive:v1', expect.any(String), 'EX', 35 * 60, 'NX');
+		expect(redis.set).toHaveBeenCalledWith('hanami:llm:exclusive:v1', expect.any(String), 'EX', 90, 'NX');
 		expect(redis.eval).not.toHaveBeenCalled();
 	});
 
@@ -204,7 +204,7 @@ describe('Hanami judge admin endpoint contracts', () => {
 				items: [expect.objectContaining({ noteId: 'note-1', ephemeralScore: 0.25, interest: 4, contentType: 2 })],
 			});
 			const token = redis.set.mock.calls[0]![1] as unknown as string;
-			expect(redis.eval).toHaveBeenCalledWith(expect.stringContaining('redis.call("get", KEYS[1]) == ARGV[1]'), 1, 'hanami:llm:exclusive:v1', token);
+			expect(redis.eval).toHaveBeenCalledWith(expect.stringContaining('redis.call("get", KEYS[i]) == ARGV[1]'), 1, 'hanami:llm:exclusive:v1', token);
 		} finally {
 			if (previousScript == null) delete process.env.HANAMI_NOTE_JUDGE_SCRIPT;
 			else process.env.HANAMI_NOTE_JUDGE_SCRIPT = previousScript;

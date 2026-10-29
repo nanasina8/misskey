@@ -71,6 +71,8 @@ import type {
 	AdminGetTableStatsResponse,
 	AdminGetUserIpsRequest,
 	AdminGetUserIpsResponse,
+	AdminHanamiJobsStatusRequest,
+	AdminHanamiJobsStatusResponse,
 	AdminHanamiJudgeAggregateRequest,
 	AdminHanamiJudgeAggregateResponse,
 	AdminHanamiJudgeSettingsRequest,
@@ -775,6 +777,7 @@ export type Endpoints = {
 	'admin/get-index-stats': { req: EmptyRequest; res: AdminGetIndexStatsResponse };
 	'admin/get-table-stats': { req: EmptyRequest; res: AdminGetTableStatsResponse };
 	'admin/get-user-ips': { req: AdminGetUserIpsRequest; res: AdminGetUserIpsResponse };
+	'admin/hanami/jobs-status': { req: AdminHanamiJobsStatusRequest; res: AdminHanamiJobsStatusResponse };
 	'admin/hanami/judge-aggregate': { req: AdminHanamiJudgeAggregateRequest; res: AdminHanamiJudgeAggregateResponse };
 	'admin/hanami/judge-settings': { req: AdminHanamiJudgeSettingsRequest; res: AdminHanamiJudgeSettingsResponse };
 	'admin/hanami/judge-status': { req: AdminHanamiJudgeStatusRequest; res: AdminHanamiJudgeStatusResponse };

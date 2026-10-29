@@ -1290,6 +1290,35 @@ export class QueueService implements OnModuleInit {
 		}
 	}
 
+	/** Same BullMQ source as queueGetJobs, without payloads and with a bounded scan per state. */
+	@bindThis
+	public async getHanamiJobsStatus() {
+		const queue = this.getHanamiGenerationQueue();
+		const states = ['active', 'wait', 'delayed', 'failed'] as const;
+		const samples = await Promise.all(states.map(state => queue.getJobs([state], 0, 500, true)));
+		const rows = new Map<string, { name: string; active: number; wait: number; delayed: number; failed: number; oldestWaitingAt: string | null }>();
+		const rowFor = (name: string) => {
+			let row = rows.get(name);
+			if (row == null) {
+				row = { name, active: 0, wait: 0, delayed: 0, failed: 0, oldestWaitingAt: null };
+				rows.set(name, row);
+			}
+			return row;
+		};
+		for (const name of ['hanamiCommonGeneration', 'hanamiCommonGenerationTick', 'hanamiGenerationReconcile', 'hanamiNoteJudge', 'hanamiTrendTopicJudge']) rowFor(name);
+		for (const [index, state] of states.entries()) {
+			for (const job of samples[index].slice(0, 500)) {
+				const row = rowFor(job.name);
+				row[state]++;
+				if ((state === 'wait' || state === 'delayed') && Number.isFinite(job.timestamp)) {
+					const at = new Date(job.timestamp).toISOString();
+					if (row.oldestWaitingAt == null || at < row.oldestWaitingAt) row.oldestWaitingAt = at;
+				}
+			}
+		}
+		return { jobs: [...rows.values()], truncated: samples.some(jobs => jobs.length > 500) };
+	}
+
 	@bindThis
 	public async queueGetQueues() {
 		// The image fingerprint queue can be omitted in partial deployments. Do not

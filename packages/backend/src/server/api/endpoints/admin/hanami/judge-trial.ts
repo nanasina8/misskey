@@ -2,7 +2,6 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as Path from 'node:path';
@@ -10,6 +9,7 @@ import { promisify } from 'node:util';
 import { Inject, Injectable } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { DataSource } from 'typeorm';
+import { acquireHanamiLocalLlmLock, recordHanamiLlmEvent } from '@/core/hanami/HanamiLocalLlmLock.js';
 import { DI } from '@/di-symbols.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { ApiError } from '@/server/api/error.js';
@@ -19,9 +19,6 @@ import { prepareHanamiPythonCommand, probeHanamiNoteJudgeRuntime, resolveHanamiN
 
 const execFileAsync = promisify(execFile);
 const TRIAL_TIMEOUT_MS = 5 * 60 * 1000;
-// Must match the process-wide LLM reservation used by judgement and taste jobs.
-const LLM_LOCK_KEY = 'hanami:llm:exclusive:v1';
-const LLM_LOCK_TTL_SEC = 35 * 60;
 
 const settingsRequestSchema = {
 	type: 'object', nullable: true,
@@ -131,15 +128,25 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			const notes = ruled.flatMap(({ candidate, rule }) => rule.shouldJudge ? [{ noteId: candidate.noteId, cleanedText: rule.cleanedText, hasFiles: candidate.hasFiles }] : []);
 			let judgements: ReadonlyMap<string, TrialJudgement>;
 			if (notes.length === 0) {
+				await recordHanamiLlmEvent(this.redisClient, { job: 'judgeTrial', event: 'empty', counts: { requested: 0 } });
 				judgements = new Map();
 			} else {
-				if (!(await probeHanamiNoteJudgeRuntime()).available) throw new ApiError(meta.errors.runtimeUnavailable);
-				const lockToken = await this.acquireLlmLock();
+				if (!(await probeHanamiNoteJudgeRuntime()).available) {
+					await recordHanamiLlmEvent(this.redisClient, { job: 'judgeTrial', event: 'noGpu' });
+					throw new ApiError(meta.errors.runtimeUnavailable);
+				}
+				const lockToken = await acquireHanamiLocalLlmLock(this.redisClient, 'judgeTrial');
 				if (lockToken == null) throw new ApiError(meta.errors.llmBusy);
+				const startedAt = Date.now();
 				try {
+					await recordHanamiLlmEvent(this.redisClient, { job: 'judgeTrial', event: 'started', counts: { requested: notes.length } });
 					judgements = await evaluateLocally(settings, notes);
+					await recordHanamiLlmEvent(this.redisClient, { job: 'judgeTrial', event: 'finished', durationMs: Date.now() - startedAt, counts: { requested: notes.length, saved: judgements.size } });
+				} catch (error) {
+					await recordHanamiLlmEvent(this.redisClient, { job: 'judgeTrial', event: 'failed', durationMs: Date.now() - startedAt, error });
+					throw error;
 				} finally {
-					await this.releaseLlmLock(lockToken);
+					await lockToken.release();
 				}
 			}
 			return { items: ruled.map(({ candidate, rule }) => {
@@ -148,15 +155,5 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				return { noteId: candidate.noteId, text: candidate.text.slice(0, 160), reactionScore: candidate.reactionScore, ephemeralScore: judgement?.ephemeralScore ?? null, interest: judgement?.interest ?? null, contentType: judgement?.contentType ?? null, reason };
 			}) };
 		});
-	}
-
-	private async acquireLlmLock(): Promise<string | null> {
-		const token = randomUUID();
-		const result = await this.redisClient.set(LLM_LOCK_KEY, token, 'EX', LLM_LOCK_TTL_SEC, 'NX');
-		return result == null ? null : token;
-	}
-
-	private async releaseLlmLock(token: string): Promise<void> {
-		await this.redisClient.eval('if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end', 1, LLM_LOCK_KEY, token).catch(() => undefined);
 	}
 }

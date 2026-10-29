@@ -467,6 +467,15 @@ export type paths = {
          */
         post: operations['admin___get-user-ips'];
     };
+    '/admin/hanami/jobs-status': {
+        /**
+         * admin/hanami/jobs-status
+         * @description Inspect Hanami GPU jobs, bounded queue counts, model runs and recent diagnostic events without accessing logs or the database.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['admin___hanami___jobs-status'];
+    };
     '/admin/hanami/judge-aggregate': {
         /**
          * admin/hanami/judge-aggregate
@@ -9728,6 +9737,296 @@ export interface operations {
             };
         };
     };
+    'admin___hanami___jobs-status': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /**
+                     * @description Maximum number of matching newest events.
+                     * @default 50
+                     */
+                    eventsLimit?: number;
+                    /** @description Restrict events to these job families; omitted means all families. */
+                    eventJobs?: ('noteJudge' | 'topicJudge' | 'als' | 'tasteTick' | 'judgeTrial' | 'generation')[];
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        /** @description Same cached Python runtime probe as admin/hanami/judge-status.runtime; CPU override can be available without CUDA. */
+                        gpu: {
+                            /** @description Whether the judge runtime is usable according to the Python probe. */
+                            available: boolean;
+                            /** @description Selected Python runtime device, such as cuda or cpu. */
+                            device: string | null;
+                            /** @description GPU device name reported by the Python probe. */
+                            deviceName: string | null;
+                            /** @description Runtime probe explanation when the runtime is unavailable. */
+                            reason: string | null;
+                            /**
+                             * Format: date-time
+                             * @description UTC time of the runtime probe.
+                             */
+                            probedAt: string;
+                        };
+                        /** @description Atomic Redis GET/PTTL snapshot of hanami:llm:exclusive:v1; legacy owners are retained as held with unknown metadata. */
+                        lock: {
+                            /** @description Whether the shared Redis lock exists. */
+                            held: boolean;
+                            /** @description Owner kind parsed from the token; null for missing, legacy or unreadable tokens. */
+                            kind: string | null;
+                            /**
+                             * Format: date-time
+                             * @description UTC acquisition time encoded in the owner token; null if unreadable.
+                             */
+                            acquiredAt: string | null;
+                            /** @description Remaining Redis lock TTL in milliseconds; null if absent or without expiry. */
+                            expiresInMs: number | null;
+                        };
+                        /** @description Whether the Redis topic-judge-waiting marker asks note judges to yield. */
+                        topicJudgeWaiting: boolean;
+                        /** @description hanamiGeneration jobs read from the same BullMQ getJobs source as admin/queue/jobs. */
+                        queue: {
+                            /** @description True if any state contains more than 500 jobs; counts and oldest timestamps then cover the scanned subset. */
+                            truncated: boolean;
+                            /** @description Job-name groups, including the five primary generation/judge names even when empty. */
+                            jobs: {
+                                /** @description BullMQ job name. */
+                                name: string;
+                                /** @description Number of active jobs in the scan. */
+                                active: number;
+                                /** @description Number of waiting jobs in the scan. */
+                                wait: number;
+                                /** @description Number of delayed jobs in the scan. */
+                                delayed: number;
+                                /** @description Number of failed jobs in the scan. */
+                                failed: number;
+                                /**
+                                 * Format: date-time
+                                 * @description Oldest creation timestamp among scanned wait and delayed jobs of this name; null if none.
+                                 */
+                                oldestWaitingAt: string | null;
+                            }[];
+                        };
+                        /** @description Persisted note-judge, als and embedding model runs. Taste tick has no model_run rows; its activity is recorded in events. */
+                        runs: {
+                            /**
+                             * @description Persisted model_run kind; embedding is the existing taste/centroid embedding batch.
+                             * @enum {string}
+                             */
+                            kind: 'note-judge' | 'als' | 'embedding';
+                            /** @description Latest run ordered by startedAt and id, including empty runs; null if none. */
+                            latest: {
+                                /** @description Persisted model run status: pending, ready or failed. */
+                                status: string;
+                                /**
+                                 * Format: date-time
+                                 * @description Run start time in UTC from startedAt.
+                                 */
+                                startedAt: string;
+                                /**
+                                 * Format: date-time
+                                 * @description Run completion time in UTC from finishedAt; null while pending.
+                                 */
+                                finishedAt: string | null;
+                                /** @description Number of items processed, from params.processedCount; null when unrecorded. */
+                                processedCount: number | null;
+                                /** @description Failure reason from params.failure; null when unrecorded. */
+                                failure: string | null;
+                                /** @description True when params.interrupted marks a pending run recovered after interruption. */
+                                interrupted: boolean;
+                                /** @description Reason for skipping this run from params.skippedReason; null when unrecorded. */
+                                skippedReason: string | null;
+                            } | null;
+                            /** @description Latest run with numeric params.processedCount > 0, ordered by startedAt and id; null if none. */
+                            latestWork: {
+                                /** @description Persisted model run status: pending, ready or failed. */
+                                status: string;
+                                /**
+                                 * Format: date-time
+                                 * @description Run start time in UTC from startedAt.
+                                 */
+                                startedAt: string;
+                                /**
+                                 * Format: date-time
+                                 * @description Run completion time in UTC from finishedAt; null while pending.
+                                 */
+                                finishedAt: string | null;
+                                /** @description Number of items processed, from params.processedCount; null when unrecorded. */
+                                processedCount: number | null;
+                                /** @description Failure reason from params.failure; null when unrecorded. */
+                                failure: string | null;
+                                /** @description True when params.interrupted marks a pending run recovered after interruption. */
+                                interrupted: boolean;
+                                /** @description Reason for skipping this run from params.skippedReason; null when unrecorded. */
+                                skippedReason: string | null;
+                            } | null;
+                            /** @description Counts of currently retained runs in the last 24 hours using finishedAt, or startedAt if unfinished; runs pruned by existing retention are excluded. Interrupted is a subset of failed; empty is a subset of ready. */
+                            last24h: {
+                                /** @description Runs with status ready in the window. */
+                                ready: number;
+                                /** @description Runs with status failed in the window. */
+                                failed: number;
+                                /** @description Runs marked params.interrupted = true in the window. */
+                                interrupted: number;
+                                /** @description Ready runs with numeric params.processedCount = 0 in the window. */
+                                empty: number;
+                            };
+                        }[];
+                        /** @description Same inventory and throughput calculation as admin/hanami/judge-status. */
+                        noteJudge: {
+                            /** @description Unjudged distinct notes in the latest ready generation and fence; null if no ready inventory exists. */
+                            backlog: number | null;
+                            /** @description Seconds per processed note from the latest run; null when unavailable. */
+                            secPerNote: number | null;
+                        };
+                        /** @description Last topic judgement from hanami:trend:topic-judge:last:v1 (seven-day TTL); null before any record. */
+                        topicJudge: {
+                            /**
+                             * Format: date-time
+                             * @description UTC time the latest topic outcome was recorded.
+                             */
+                            at: string;
+                            /**
+                             * @description Latest topic judge outcome.
+                             * @enum {string}
+                             */
+                            outcome: 'ok' | 'partial' | 'noGpu' | 'nothingToDo' | 'waiting' | 'gaveUp' | 'rejected' | 'failed';
+                            /** @description Requested task counts after cache filtering, or input counts when waiting/rejected. */
+                            requested: {
+                                /** @description Requested daily-topic verdicts. */
+                                daily: number;
+                                /** @description Requested same-topic pair verdicts. */
+                                pairs: number;
+                                /** @description Requested topic titles. */
+                                titles: number;
+                            };
+                            /** @description Results successfully saved in Redis. */
+                            saved: {
+                                /** @description Saved daily-topic verdicts. */
+                                daily: number;
+                                /** @description Saved same-topic verdicts. */
+                                same: number;
+                                /** @description Saved titles. */
+                                titles: number;
+                            };
+                            /** @description Returned titles rejected by validation. */
+                            rejectedTitles: number;
+                            /**
+                             * Format: date-time
+                             * @description Last ok, partial or nothingToDo (everything already judged) time, retained across subsequent outcomes; null before the first success.
+                             */
+                            lastSuccessAt: string | null;
+                            /** @description Elapsed queue waiting time in milliseconds when recorded. */
+                            waitedMs?: number;
+                            /** @description Recorded topic error, at most 300 characters. */
+                            error?: string;
+                        } | null;
+                        /** @description At most ten failed model runs in the last 24 hours, newest completion first (startedAt fallback). */
+                        recentFailures: {
+                            /** @description Persisted model_run kind. */
+                            kind: string;
+                            /**
+                             * Format: date-time
+                             * @description UTC start time of the failed run.
+                             */
+                            startedAt: string;
+                            /** @description First 200 characters of params.failure; null when no reason was recorded. */
+                            failure: string | null;
+                        }[];
+                        /** @description Server-evaluated conditions: CUDA unavailable; lock older than ten minutes; topic success older than forty minutes/missing; delayed queue at least thirty; failure in last hour; note-judge pending older than ten minutes, or als/embedding pending older than 35 minutes (their Python timeout is 30 minutes). */
+                        warnings: ('gpuUnavailable' | 'lockLong' | 'topicJudgeStale' | 'queueBacklog' | 'recentFailures' | 'stuckPending')[];
+                        /** @description Newest-first events from the Redis list, filtered by eventJobs before applying eventsLimit; up to 2000 retained for seven days. Repeated lockBusy/waiting events are recorded at most once per job family per minute. */
+                        events: {
+                            /**
+                             * Format: date-time
+                             * @description UTC event recording time.
+                             */
+                            at: string;
+                            /**
+                             * @description Job family that emitted the event.
+                             * @enum {string}
+                             */
+                            job: 'noteJudge' | 'topicJudge' | 'als' | 'tasteTick' | 'judgeTrial' | 'generation';
+                            /**
+                             * @description Stable event code; successful lock renewals are not recorded.
+                             * @enum {string}
+                             */
+                            event: 'dispatched' | 'dispatchFailed' | 'rejected' | 'lockAcquired' | 'lockBusy' | 'lockRenewFailed' | 'lockReleased' | 'waiting' | 'gaveUp' | 'started' | 'finished' | 'empty' | 'failed' | 'interrupted' | 'noGpu';
+                            /** @description BullMQ job id when available; omitted for direct batch/API calls. */
+                            jobId?: string;
+                            /** @description Elapsed operation or waiting time in milliseconds when available. */
+                            durationMs?: number;
+                            /** @description Small operation-specific integer counts, such as requested, saved, jobs, notes or failedSteps. */
+                            counts?: {
+                                [key: string]: number;
+                            };
+                            /** @description Diagnostic error details, with bounded text. */
+                            error?: {
+                                /** @description Error class name, or Error for non-Error rejections. */
+                                name: string;
+                                /** @description First 500 characters of the error message. */
+                                message: string;
+                                /** @description Last 1000 characters of Python standard error, when provided by the process error. */
+                                stderrTail?: string;
+                            };
+                        }[];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
     'admin___hanami___judge-aggregate': {
         requestBody: {
             content: {
@@ -9957,6 +10256,27 @@ export interface operations {
                             startedAt: string;
                             /** Format: date-time */
                             finishedAt: string | null;
+                        } | null;
+                        trendTopicJudge: {
+                            /** Format: date-time */
+                            at: string;
+                            /** @enum {string} */
+                            outcome: 'ok' | 'partial' | 'noGpu' | 'nothingToDo' | 'waiting' | 'gaveUp' | 'rejected' | 'failed';
+                            requested: {
+                                daily: number;
+                                pairs: number;
+                                titles: number;
+                            };
+                            saved: {
+                                daily: number;
+                                same: number;
+                                titles: number;
+                            };
+                            rejectedTitles: number;
+                            /** Format: date-time */
+                            lastSuccessAt: string | null;
+                            waitedMs?: number;
+                            error?: string;
                         } | null;
                         /** @description Unjudged distinct notes in the latest ready generation and fence; null when no ready inventory exists. */
                         backlog: number | null;

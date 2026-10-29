@@ -275,7 +275,7 @@ async function withRuntime(cuda: boolean, operation: (dir: string) => Promise<vo
 }
 
 function topicBatch(redis: unknown, query = jest.fn(async (..._args: unknown[]) => [] as { id: string; text: string; replyId: string | null }[]), scores = new Map<string, number>()) {
-	return new HanamiForYouBatchService({ query } as never, {} as never, redis as never, { gen: () => 'id' } as never, { getGlobalNotesScoresWithCache: async () => scores } as never);
+	return new HanamiForYouBatchService({ query } as never, {} as never, { eval: async () => 1, ...(redis as object) } as never, { gen: () => 'id' } as never, { getGlobalNotesScoresWithCache: async () => scores } as never);
 }
 
 const jobData: HanamiTrendTopicJudgeJobData = { topics: [{ topicId: 'a', text: 'A' }, { topicId: 'b', text: 'B' }], dailyIds: ['a', 'b'], pairs: [{ a: 'a', b: 'b' }] };
@@ -297,7 +297,7 @@ describe('GPU topic judge jobs (U-7)', () => {
 			const set = jest.fn(async (..._args: unknown[]) => null);
 			const get = jest.fn(async (..._args: unknown[]) => null);
 			await expect(topicBatch({ get, set }).runTrendTopicJudgeJob(jobData, {} as never)).rejects.toBeInstanceOf(HanamiNoteJudgeLockContentionError);
-			expect(set).toHaveBeenCalledWith('hanami:llm:exclusive:v1', expect.any(String), 'EX', 35 * 60, 'NX');
+			expect(set).toHaveBeenCalledWith('hanami:llm:exclusive:v1', expect.any(String), 'EX', 90, 'NX');
 			expect(set).toHaveBeenCalledWith('hanami:llm:topic-judge-waiting:v1', '1', 'EX', 600);
 			expect(get).not.toHaveBeenCalled();
 		});
@@ -338,7 +338,7 @@ describe('GPU topic judge jobs (U-7)', () => {
 					sadd: (...args: unknown[]) => { pending.push(() => sadd(...args)); return pipe; },
 					srem: (key: string, member: string) => { pending.push(() => srem(key, member)); return pipe; },
 					expire: (...args: unknown[]) => { pending.push(() => expire(...args)); return pipe; },
-					exec: async () => Promise.all(pending.map(run => run())),
+					exec: async () => Promise.all(pending.map(async run => [null, await run()])),
 				};
 				return pipe;
 			};
@@ -364,14 +364,14 @@ describe('GPU topic judge jobs (U-7)', () => {
 	});
 	test('dispatches the new job after publication and runs it through the common generation processor', async () => {
 		const queue = { enqueueHanamiTrendTopicJudge: jest.fn(async (..._args: unknown[]) => undefined), enqueueHanamiNoteJudge: jest.fn() };
-		const batch = { prepareTrendTopicJudgeJob: async () => jobData, prepareNoteJudgeJobs: async () => [], runTrendTopicJudgeJob: jest.fn(async (..._args: unknown[]) => undefined) };
+		const batch = { prepareTrendTopicJudgeJob: async () => jobData, prepareNoteJudgeJobs: async () => [], recordTrendTopicJudgeResult: jest.fn(async (..._args: unknown[]) => undefined), runTrendTopicJudgeJob: jest.fn(async (..._args: unknown[]) => undefined) };
 		const logger = { info: jest.fn(), succ: jest.fn() };
 		const processor = new HanamiCommonGenerationProcessorService({ runCommonGeneration: async () => ({ kind: 'published', generationId: 'g' }) } as never, queue as never, { logger: { createSubLogger: () => logger } } as never, batch as never);
 		const job = { name: 'hanamiCommonGeneration', data: { generationId: 'g' }, log: async () => undefined, updateProgress: async () => undefined };
 		await processor.processGeneration(job as never);
 		expect(queue.enqueueHanamiTrendTopicJudge).toHaveBeenCalledWith(jobData);
 		await processor.processTrendTopicJudge({ ...job, name: 'hanamiTrendTopicJudge', data: jobData } as never);
-		expect(batch.runTrendTopicJudgeJob).toHaveBeenCalledWith(jobData, logger);
+		expect(batch.runTrendTopicJudgeJob).toHaveBeenCalledWith(jobData, logger, undefined);
 	});
 	test('the processor accepts the job prepare actually builds (titles and more than ten topics)', async () => {
 		await withRuntime(true, async () => {
@@ -382,14 +382,14 @@ describe('GPU topic judge jobs (U-7)', () => {
 			const data = (await topicBatch({ get, mget: async (...keys: string[]) => Promise.all(keys.map(get)) }, jest.fn(async (..._args: unknown[]) => rows)).prepareTrendTopicJudgeJob())!;
 			expect(data.topics.length).toBeGreaterThan(10);
 			expect(data.titles).toHaveLength(11);
-			const batch = { runTrendTopicJudgeJob: jest.fn(async (..._args: unknown[]) => undefined) };
+			const batch = { recordTrendTopicJudgeResult: jest.fn(async (..._args: unknown[]) => undefined), runTrendTopicJudgeJob: jest.fn(async (..._args: unknown[]) => undefined) };
 			const processor = new HanamiCommonGenerationProcessorService({} as never, {} as never, { logger: { createSubLogger: () => ({}) } } as never, batch as never);
 			await processor.processTrendTopicJudge({ name: 'hanamiTrendTopicJudge', data, updateProgress: async () => undefined } as never);
-			expect(batch.runTrendTopicJudgeJob).toHaveBeenCalledWith(data, expect.anything());
+			expect(batch.runTrendTopicJudgeJob).toHaveBeenCalledWith(data, expect.anything(), undefined);
 		});
 	});
 	test('the processor accepts legacy jobs and the largest title job, and rejects malformed titles', async () => {
-		const batch = { runTrendTopicJudgeJob: jest.fn(async (..._args: unknown[]) => undefined) };
+		const batch = { recordTrendTopicJudgeResult: jest.fn(async (..._args: unknown[]) => undefined), runTrendTopicJudgeJob: jest.fn(async (..._args: unknown[]) => undefined) };
 		const processor = new HanamiCommonGenerationProcessorService({} as never, {} as never, { logger: { createSubLogger: () => ({}) } } as never, batch as never);
 		const run = (data: unknown) => processor.processTrendTopicJudge({ name: 'hanamiTrendTopicJudge', data, updateProgress: async () => undefined } as never);
 		const topics = Array.from({ length: 40 }, (_, i) => ({ topicId: `t${i}`, text: 'T' }));
@@ -410,7 +410,7 @@ describe('GPU topic judge jobs (U-7)', () => {
 		expect(batch.runTrendTopicJudgeJob).toHaveBeenCalledTimes(2);
 	});
 	test('the processor retries a topic judge that lost the lock, and gives up once the topics are stale', async () => {
-		const batch = { runTrendTopicJudgeJob: jest.fn(async (..._args: unknown[]) => { throw new HanamiNoteJudgeLockContentionError(); }) };
+		const batch = { recordTrendTopicJudgeResult: jest.fn(async (..._args: unknown[]) => undefined), runTrendTopicJudgeJob: jest.fn(async (..._args: unknown[]) => { throw new HanamiNoteJudgeLockContentionError(); }) };
 		const warn = jest.fn();
 		const processor = new HanamiCommonGenerationProcessorService({} as never, {} as never, { logger: { createSubLogger: () => ({ warn }) } } as never, batch as never);
 		const job = (timestamp: number) => ({ name: 'hanamiTrendTopicJudge', data: jobData, timestamp, token: 'worker-token', updateProgress: jest.fn(async () => undefined), moveToDelayed: jest.fn(async (..._args: unknown[]) => undefined) });

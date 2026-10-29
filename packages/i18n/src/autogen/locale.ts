@@ -15019,6 +15019,398 @@ export interface Locale extends ILocale {
              */
             "axes": string;
             /**
+             * ジョブ
+             */
+            "jobs": string;
+            "_jobs": {
+                /**
+                 * 問題は見つかっていません
+                 */
+                "healthy": string;
+                /**
+                 * 最後に取得した時刻
+                 */
+                "lastFetched": string;
+                /**
+                 * 更新
+                 */
+                "refresh": string;
+                /**
+                 * GPU
+                 */
+                "gpu": string;
+                /**
+                 * GPU とロック
+                 */
+                "gpuAndLock": string;
+                /**
+                 * 使えます
+                 */
+                "gpuAvailable": string;
+                /**
+                 * 使えません
+                 */
+                "gpuUnavailable": string;
+                /**
+                 * GPU のロック
+                 */
+                "lock": string;
+                /**
+                 * 空き
+                 */
+                "lockFree": string;
+                /**
+                 * 使用中
+                 */
+                "lockHeld": string;
+                /**
+                 * 処理名不明
+                 */
+                "unknownOwner": string;
+                /**
+                 * 使用開始
+                 */
+                "acquiredAt": string;
+                /**
+                 * あと {seconds} 秒で期限切れ
+                 */
+                "expiresIn": ParameterizedString<"seconds">;
+                /**
+                 * 有効期限の記録なし
+                 */
+                "noExpiry": string;
+                /**
+                 * 順番待ち
+                 */
+                "waiting": string;
+                /**
+                 * 順番待ちはありません
+                 */
+                "notWaiting": string;
+                /**
+                 * キュー
+                 */
+                "queue": string;
+                /**
+                 * 処理
+                 */
+                "jobName": string;
+                /**
+                 * 実行中
+                 */
+                "active": string;
+                /**
+                 * 待ち
+                 */
+                "wait": string;
+                /**
+                 * 遅延
+                 */
+                "delayed": string;
+                /**
+                 * 失敗
+                 */
+                "failed": string;
+                /**
+                 * 一番古い待ち
+                 */
+                "oldestWaiting": string;
+                /**
+                 * キューが多いため、各状態の先頭500件までを表示しています。件数と最も古い待ちは集計範囲内の値です
+                 */
+                "truncated": string;
+                /**
+                 * 処理ごとの最後の実行
+                 */
+                "latestRuns": string;
+                /**
+                 * 最後に実際に処理した時刻と件数
+                 */
+                "latestWork": string;
+                /**
+                 * {count} 件
+                 */
+                "processed": ParameterizedString<"count">;
+                /**
+                 * 最後の実行の結果
+                 */
+                "latest": string;
+                /**
+                 * 処理中
+                 */
+                "pending": string;
+                /**
+                 * 成功
+                 */
+                "ready": string;
+                /**
+                 * 中断
+                 */
+                "interrupted": string;
+                /**
+                 * 空振り
+                 */
+                "empty": string;
+                /**
+                 * 直近24時間
+                 */
+                "last24h": string;
+                /**
+                 * 中断は失敗の内数、空振りは成功の内数です
+                 */
+                "last24hNote": string;
+                /**
+                 * 実行の集計は、現在保存されている記録が対象です。世代の整理で削除された記録は含みません
+                 */
+                "retainedRunsHint": string;
+                /**
+                 * 実際に処理した記録はありません
+                 */
+                "noWorkYet": string;
+                /**
+                 * 実行記録はありません
+                 */
+                "noRuns": string;
+                /**
+                 * スキップ理由
+                 */
+                "skipped": string;
+                /**
+                 * この実行履歴は埋め込み処理の記録です。好みの定期学習の動作は「最近の出来事」で確認できます
+                 */
+                "tasteRunHint": string;
+                /**
+                 * 直近の失敗
+                 */
+                "recentFailures": string;
+                /**
+                 * 直近24時間の失敗記録はありません
+                 */
+                "noFailures": string;
+                /**
+                 * 理由の記録なし
+                 */
+                "noFailureReason": string;
+                /**
+                 * 最近の出来事
+                 */
+                "events": string;
+                /**
+                 * 出来事の記録はありません
+                 */
+                "noEvents": string;
+                /**
+                 * 経過 {seconds} 秒
+                 */
+                "duration": ParameterizedString<"seconds">;
+                /**
+                 * Python の標準エラー
+                 */
+                "stderr": string;
+                "_job": {
+                    /**
+                     * 投稿の判定
+                     */
+                    "noteJudge": string;
+                    /**
+                     * 話題の判定
+                     */
+                    "topicJudge": string;
+                    /**
+                     * おすすめの計算
+                     */
+                    "als": string;
+                    /**
+                     * 好みの学習
+                     */
+                    "tasteTick": string;
+                    /**
+                     * 判定の試し
+                     */
+                    "judgeTrial": string;
+                    /**
+                     * 共通の生成
+                     */
+                    "generation": string;
+                };
+                "_queue": {
+                    /**
+                     * 共通の生成
+                     */
+                    "hanamiCommonGeneration": string;
+                    /**
+                     * 生成の刻み
+                     */
+                    "hanamiCommonGenerationTick": string;
+                    /**
+                     * 突き合わせ
+                     */
+                    "hanamiGenerationReconcile": string;
+                    /**
+                     * 投稿の判定
+                     */
+                    "hanamiNoteJudge": string;
+                    /**
+                     * 話題の判定
+                     */
+                    "hanamiTrendTopicJudge": string;
+                    /**
+                     * 反応記録の再送
+                     */
+                    "hanamiRecommendationEventCacheReplay": string;
+                };
+                "_warning": {
+                    /**
+                     * GPU が使えません。判定と見出しは止まっています
+                     */
+                    "gpuUnavailable": string;
+                    /**
+                     * GPU のロックを同じ処理が10分以上持っています
+                     */
+                    "lockLong": string;
+                    /**
+                     * 話題の判定が40分以上成功していません（見出し・日常判定が古いままです）
+                     */
+                    "topicJudgeStale": string;
+                    /**
+                     * 遅延しているジョブが30件以上あります（ロック待ちのやり直しなど）
+                     */
+                    "queueBacklog": string;
+                    /**
+                     * 直近1時間に失敗したジョブがあります
+                     */
+                    "recentFailures": string;
+                    /**
+                     * 「処理中」のまま長く止まっている実行があります（投稿の判定は10分、ほかは35分以上）
+                     */
+                    "stuckPending": string;
+                };
+                "_event": {
+                    /**
+                     * 判定ジョブを投入
+                     */
+                    "dispatched": string;
+                    /**
+                     * ジョブの投入に失敗
+                     */
+                    "dispatchFailed": string;
+                    /**
+                     * 入力不正で破棄
+                     */
+                    "rejected": string;
+                    /**
+                     * GPU のロックを取得
+                     */
+                    "lockAcquired": string;
+                    /**
+                     * GPU のロックが使用中
+                     */
+                    "lockBusy": string;
+                    /**
+                     * GPU のロックの延長に失敗
+                     */
+                    "lockRenewFailed": string;
+                    /**
+                     * GPU のロックを解放
+                     */
+                    "lockReleased": string;
+                    /**
+                     * ロック待ちで再試行
+                     */
+                    "waiting": string;
+                    /**
+                     * 待ちきれず中止
+                     */
+                    "gaveUp": string;
+                    /**
+                     * 処理を開始
+                     */
+                    "started": string;
+                    /**
+                     * 処理を完了
+                     */
+                    "finished": string;
+                    /**
+                     * 対象なしで終了
+                     */
+                    "empty": string;
+                    /**
+                     * 処理に失敗
+                     */
+                    "failed": string;
+                    /**
+                     * 中断した実行を整理
+                     */
+                    "interrupted": string;
+                    /**
+                     * GPU なしでスキップ
+                     */
+                    "noGpu": string;
+                };
+            };
+            /**
+             * 最後の結果
+             */
+            "trendTopicJudgeLastResult": string;
+            /**
+             * 記録時刻
+             */
+            "trendTopicJudgeAt": string;
+            /**
+             * 依頼件数
+             */
+            "trendTopicJudgeRequested": string;
+            /**
+             * 保存件数
+             */
+            "trendTopicJudgeSaved": string;
+            /**
+             * 日常: {daily}・同じ話題: {same}・見出し: {titles}
+             */
+            "trendTopicJudgeCounts": ParameterizedString<"daily" | "same" | "titles">;
+            /**
+             * 却下した見出し数
+             */
+            "trendTopicJudgeRejectedTitles": string;
+            /**
+             * 最後の成功時刻
+             */
+            "trendTopicJudgeLastSuccessAt": string;
+            "_trendTopicJudgeOutcome": {
+                /**
+                 * 完了
+                 */
+                "ok": string;
+                /**
+                 * 一部完了
+                 */
+                "partial": string;
+                /**
+                 * GPU なし
+                 */
+                "noGpu": string;
+                /**
+                 * 対象なし
+                 */
+                "nothingToDo": string;
+                /**
+                 * ロック待ち
+                 */
+                "waiting": string;
+                /**
+                 * 待ちきれず中止
+                 */
+                "gaveUp": string;
+                /**
+                 * 入力不正で破棄
+                 */
+                "rejected": string;
+                /**
+                 * 失敗
+                 */
+                "failed": string;
+            };
+            /**
              * 判定器
              */
             "judge": string;

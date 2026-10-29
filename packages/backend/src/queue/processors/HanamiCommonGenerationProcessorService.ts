@@ -5,6 +5,9 @@
 
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import * as Bull from 'bullmq';
+import * as Redis from 'ioredis';
+import { DI } from '@/di-symbols.js';
+import { HANAMI_LLM_EVENT_THROTTLE_MS, recordHanamiLlmEvent, type HanamiLlmEvent } from '@/core/hanami/HanamiLocalLlmLock.js';
 import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import {
@@ -44,8 +47,8 @@ function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<
 	return actualKeys.length === keys.length && keys.every(key => Object.hasOwn(value, key));
 }
 
-function malformedPayload(jobName: string): never {
-	throw new Bull.UnrecoverableError(`Invalid payload for ${jobName}`);
+function malformedPayload(jobName: string, reason: string): never {
+	throw new Bull.UnrecoverableError(`Invalid payload for ${jobName}: ${reason}`);
 }
 
 function normalizeBullRejection(error: unknown): Error {
@@ -64,15 +67,21 @@ export class HanamiCommonGenerationProcessorService {
 		private queueLoggerService: QueueLoggerService,
 		@Optional()
 		private hanamiForYouBatchService?: HanamiForYouBatchService,
+		@Optional() @Inject(DI.redis) private redisClient?: Redis.Redis,
 	) {
 		this.logger = this.queueLoggerService.logger.createSubLogger('hanami-common-generation');
+	}
+
+	private async recordEvent(event: Omit<HanamiLlmEvent, 'at' | 'error'> & { error?: unknown; throttleMs?: number }): Promise<void> {
+		if (this.redisClient != null) await recordHanamiLlmEvent(this.redisClient, event);
+		else await this.hanamiForYouBatchService?.recordLlmEvent?.(event);
 	}
 
 	@bindThis
 	public async processTick(job: HanamiCommonGenerationTickJob): Promise<HanamiCommonGenerationRequestResult> {
 		try {
 			if (!hasExactKeys(job.data, ['reason']) || (job.data.reason !== 'scheduled' && job.data.reason !== 'seed')) {
-				malformedPayload(job.name);
+				malformedPayload(job.name, 'expected reason=scheduled or seed and no extra fields');
 			}
 
 			const result = await this.lifecycle.requestCommonGeneration(job.data.reason);
@@ -93,6 +102,7 @@ export class HanamiCommonGenerationProcessorService {
 			await job.updateProgress(100);
 			return result;
 		} catch (error) {
+			await this.recordEvent({ job: 'generation', event: error instanceof Bull.UnrecoverableError ? 'rejected' : 'dispatchFailed', jobId: job.id, error });
 			throw normalizeBullRejection(error);
 		}
 	}
@@ -101,19 +111,23 @@ export class HanamiCommonGenerationProcessorService {
 	public async processGeneration(job: HanamiCommonGenerationJob): Promise<HanamiCommonGenerationRunResult> {
 		try {
 			if (!hasExactKeys(job.data, ['generationId']) || typeof job.data.generationId !== 'string' || job.data.generationId.trim().length === 0) {
-				malformedPayload(job.name);
+				malformedPayload(job.name, 'expected a nonempty generationId and no extra fields');
 			}
 
 			const result = await this.lifecycle.runCommonGeneration(job.data.generationId);
 			if (result.kind === 'published' && this.hanamiForYouBatchService != null) {
 				try {
 					const topicJob = await this.hanamiForYouBatchService.prepareTrendTopicJudgeJob?.();
-					if (topicJob != null) await this.queueService.enqueueHanamiTrendTopicJudge(topicJob);
+					if (topicJob != null) {
+						const queued = await this.queueService.enqueueHanamiTrendTopicJudge(topicJob);
+						await this.recordEvent({ job: 'generation', event: 'dispatched', jobId: queued?.id, counts: { jobs: 1, daily: topicJob.dailyIds.length, pairs: topicJob.pairs.length, titles: topicJob.titles?.length ?? 0 } });
+					}
 				} catch (error) {
 					this.logger.warn('hanami trend topic judge dispatch failed', { error: String(error) });
+					await this.recordEvent({ job: 'generation', event: 'dispatchFailed', jobId: job.id, error });
 				}
 				const judgeJobs = await this.hanamiForYouBatchService.prepareNoteJudgeJobs(result.generationId);
-				for (const judgeJob of judgeJobs) await this.queueService.enqueueHanamiNoteJudge(judgeJob.noteIds, judgeJob.promptVersion);
+				for (const judgeJob of judgeJobs) await this.enqueueNoteJudge(judgeJob);
 			}
 			switch (result.kind) {
 				case 'published':
@@ -144,34 +158,63 @@ export class HanamiCommonGenerationProcessorService {
 			await job.updateProgress(100);
 			return result;
 		} catch (error) {
+			await this.recordEvent({ job: 'generation', event: error instanceof Bull.UnrecoverableError ? 'rejected' : 'dispatchFailed', jobId: job.id, error });
 			throw normalizeBullRejection(error);
+		}
+	}
+
+	private async enqueueNoteJudge(data: { noteIds: readonly string[]; promptVersion: number }): Promise<void> {
+		if (this.hanamiForYouBatchService == null) return;
+		const noteIds = await this.hanamiForYouBatchService.reserveNoteJudgeNotes(data.noteIds);
+		if (noteIds.length === 0) return;
+		try {
+			const queued = await this.queueService.enqueueHanamiNoteJudge(noteIds, data.promptVersion);
+			await this.recordEvent({ job: 'generation', event: 'dispatched', jobId: queued?.id, counts: { jobs: 1, notes: noteIds.length } });
+		} catch (error) {
+			await this.hanamiForYouBatchService.clearQueuedNoteJudgeNotes(noteIds);
+			await this.recordEvent({ job: 'generation', event: 'dispatchFailed', counts: { notes: noteIds.length }, error });
+			throw error;
 		}
 	}
 
 	@bindThis
 	public async processTrendTopicJudge(job: HanamiTrendTopicJudgeJob): Promise<void> {
-		// Jobs queued before titles existed carry only the first three keys.
-		if (!(hasExactKeys(job.data, ['topics', 'dailyIds', 'pairs']) || hasExactKeys(job.data, ['topics', 'dailyIds', 'pairs', 'titles'])) || !Array.isArray(job.data.topics) || job.data.topics.length > TREND_TOPIC_JUDGE_MAX_TOPICS || !Array.isArray(job.data.dailyIds) || !Array.isArray(job.data.pairs) || job.data.pairs.length > 45) malformedPayload(job.name);
-		const ids = new Set<string>();
-		for (const topic of job.data.topics) {
-			if (!hasExactKeys(topic, ['topicId', 'text']) || typeof topic.topicId !== 'string' || topic.topicId.length === 0 || typeof topic.text !== 'string' || ids.has(topic.topicId)) malformedPayload(job.name);
-			ids.add(topic.topicId);
-		}
-		if (job.data.dailyIds.some(id => typeof id !== 'string' || !ids.has(id)) || job.data.pairs.some(pair => !hasExactKeys(pair, ['a', 'b']) || typeof pair.a !== 'string' || typeof pair.b !== 'string' || pair.a === pair.b || !ids.has(pair.a) || !ids.has(pair.b))) malformedPayload(job.name);
-		const titles = job.data.titles;
-		if (titles !== undefined && (!Array.isArray(titles) || titles.length > TREND_TITLE_TOP || titles.some(title => !hasExactKeys(title, ['topicId', 'posts', 'noteIds']) || typeof title.topicId !== 'string' || !ids.has(title.topicId)
-			|| !Array.isArray(title.posts) || title.posts.length < 3 || title.posts.length > TREND_TITLE_SAMPLE_POSTS || title.posts.some(post => typeof post !== 'string')
-			|| !Array.isArray(title.noteIds) || title.noteIds.length > 50 || title.noteIds.some(id => typeof id !== 'string')))) malformedPayload(job.name);
 		try {
-			await this.hanamiForYouBatchService?.runTrendTopicJudgeJob(job.data, this.logger);
+			// Jobs queued before titles existed carry only the first three keys.
+			if (!(hasExactKeys(job.data, ['topics', 'dailyIds', 'pairs']) || hasExactKeys(job.data, ['topics', 'dailyIds', 'pairs', 'titles'])) || !Array.isArray(job.data.topics) || job.data.topics.length > TREND_TOPIC_JUDGE_MAX_TOPICS || !Array.isArray(job.data.dailyIds) || !Array.isArray(job.data.pairs) || job.data.pairs.length > 45) malformedPayload(job.name, 'expected topics/dailyIds/pairs arrays within limits, optional titles, and no extra fields');
+			const ids = new Set<string>();
+			for (const topic of job.data.topics) {
+				if (!hasExactKeys(topic, ['topicId', 'text']) || typeof topic.topicId !== 'string' || topic.topicId.length === 0 || typeof topic.text !== 'string' || ids.has(topic.topicId)) malformedPayload(job.name, 'topics must have unique nonempty topicId and string text');
+				ids.add(topic.topicId);
+			}
+			if (job.data.dailyIds.some(id => typeof id !== 'string' || !ids.has(id)) || job.data.pairs.some(pair => !hasExactKeys(pair, ['a', 'b']) || typeof pair.a !== 'string' || typeof pair.b !== 'string' || pair.a === pair.b || !ids.has(pair.a) || !ids.has(pair.b))) malformedPayload(job.name, 'dailyIds and distinct pair endpoints must reference supplied topics');
+			const titles = job.data.titles;
+			if (titles !== undefined && (!Array.isArray(titles) || titles.length > TREND_TITLE_TOP || titles.some(title => !hasExactKeys(title, ['topicId', 'posts', 'noteIds']) || typeof title.topicId !== 'string' || !ids.has(title.topicId)
+				|| !Array.isArray(title.posts) || title.posts.length < 3 || title.posts.length > TREND_TITLE_SAMPLE_POSTS || title.posts.some(post => typeof post !== 'string')
+				|| !Array.isArray(title.noteIds) || title.noteIds.length > 50 || title.noteIds.some(id => typeof id !== 'string')))) malformedPayload(job.name, 'titles must reference supplied topics and have 3..10 string posts plus at most 50 string noteIds');
 		} catch (error) {
-			if (!(error instanceof HanamiNoteJudgeLockContentionError)) throw error;
+			await this.recordEvent({ job: 'topicJudge', event: 'rejected', jobId: job.id, error });
+			await this.hanamiForYouBatchService?.recordTrendTopicJudgeResult(job.data, 'rejected', { error: String(error) });
+			throw error;
+		}
+		try {
+			await this.hanamiForYouBatchService?.runTrendTopicJudgeJob(job.data, this.logger, job.id);
+		} catch (error) {
+			if (!(error instanceof HanamiNoteJudgeLockContentionError)) {
+				await this.recordEvent({ job: 'topicJudge', event: 'failed', jobId: job.id, error });
+				await this.hanamiForYouBatchService?.recordTrendTopicJudgeResult(job.data, 'failed', { error: String(error) });
+				throw error;
+			}
 			// Wait for the shared local-LLM lock instead of skipping the generation, until the topics are stale.
 			if (Date.now() - job.timestamp > TREND_TOPIC_JUDGE_MAX_WAIT_MS) {
+				await this.recordEvent({ job: 'topicJudge', event: 'gaveUp', jobId: job.id, durationMs: Date.now() - job.timestamp });
+				await this.hanamiForYouBatchService?.recordTrendTopicJudgeResult(job.data, 'gaveUp', { waitedMs: Date.now() - job.timestamp });
 				this.logger.warn('hanami trend topic judge: gave up waiting for the local LLM', { waitedMs: Date.now() - job.timestamp });
 				return;
 			}
 			await job.moveToDelayed(Date.now() + TREND_TOPIC_JUDGE_RETRY_DELAY_MS, job.token);
+			await this.recordEvent({ job: 'topicJudge', event: 'waiting', jobId: job.id, durationMs: Date.now() - job.timestamp, throttleMs: HANAMI_LLM_EVENT_THROTTLE_MS });
+			await this.hanamiForYouBatchService?.recordTrendTopicJudgeResult(job.data, 'waiting', { waitedMs: Date.now() - job.timestamp });
 			throw new Bull.DelayedError(error.message);
 		}
 		await job.updateProgress(100);
@@ -180,17 +223,19 @@ export class HanamiCommonGenerationProcessorService {
 	@bindThis
 	public async processNoteJudge(job: HanamiNoteJudgeJob): Promise<{ runId: string; status: 'ready' | 'failed'; processedCount: number }> {
 		try {
-			if (!hasExactKeys(job.data, ['noteIds', 'promptVersion']) || !Array.isArray(job.data.noteIds) || job.data.noteIds.length === 0 || job.data.noteIds.length > 64 || !job.data.noteIds.every(noteId => typeof noteId === 'string' && noteId.length > 0) || !Number.isSafeInteger(job.data.promptVersion) || job.data.promptVersion < 1) malformedPayload(job.name);
+			if (!hasExactKeys(job.data, ['noteIds', 'promptVersion']) || !Array.isArray(job.data.noteIds) || job.data.noteIds.length === 0 || job.data.noteIds.length > 64 || !job.data.noteIds.every(noteId => typeof noteId === 'string' && noteId.length > 0) || !Number.isSafeInteger(job.data.promptVersion) || job.data.promptVersion < 1) malformedPayload(job.name, 'expected 1..64 nonempty noteIds and a positive integer promptVersion');
 			if (this.hanamiForYouBatchService == null) throw new Error('Hanami note judge service is unavailable');
-			const result = await this.hanamiForYouBatchService.runNoteJudgeJob(job.data, this.logger);
+			const result = await this.hanamiForYouBatchService.runNoteJudgeJob(job.data, this.logger, job.id);
 			await job.log(`note judge ${result.status}: ${result.processedCount}`);
 			await job.updateProgress(100);
 			return result;
 		} catch (error) {
 			if (error instanceof HanamiNoteJudgeLockContentionError) {
 				await job.moveToDelayed(Date.now() + NOTE_JUDGE_LOCK_CONTENTION_DELAY_MS, job.token);
+				await this.recordEvent({ job: 'noteJudge', event: 'waiting', jobId: job.id, throttleMs: HANAMI_LLM_EVENT_THROTTLE_MS });
 				throw new Bull.DelayedError(error.message);
 			}
+			if (error instanceof Bull.UnrecoverableError) await this.recordEvent({ job: 'noteJudge', event: 'rejected', jobId: job.id, error });
 			throw normalizeBullRejection(error);
 		}
 	}
@@ -211,7 +256,7 @@ export class HanamiCommonGenerationProcessorService {
 		}
 		if (this.hanamiForYouBatchService != null) {
 			const judgeJobs = await this.hanamiForYouBatchService.reconcileNoteJudgeJobs();
-			for (const judgeJob of judgeJobs) await this.queueService.enqueueHanamiNoteJudge(judgeJob.noteIds, judgeJob.promptVersion);
+			for (const judgeJob of judgeJobs) await this.enqueueNoteJudge(judgeJob);
 			await job.log(`reconciled ${judgeJobs.length} note judge batches`);
 		}
 		return dispatch;
@@ -221,13 +266,14 @@ export class HanamiCommonGenerationProcessorService {
 	public async processReconcile(job: HanamiGenerationReconcileJob): Promise<HanamiCommonGenerationDispatch | null> {
 		try {
 			if (!hasExactKeys(job.data, [])) {
-				malformedPayload(job.name);
+				malformedPayload(job.name, 'expected an empty object');
 			}
 
 			const dispatch = await this.processCommonReconcile(job);
 			await job.updateProgress(100);
 			return dispatch;
 		} catch (error) {
+			await this.recordEvent({ job: 'generation', event: error instanceof Bull.UnrecoverableError ? 'rejected' : 'dispatchFailed', jobId: job.id, error });
 			throw normalizeBullRejection(error);
 		}
 	}

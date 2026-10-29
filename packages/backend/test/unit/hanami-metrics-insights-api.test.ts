@@ -270,7 +270,7 @@ describe('HM-IMPLEMENT judge-status latest ready inventory', () => {
 			.mockResolvedValueOnce([{ settings }])
 			.mockResolvedValueOnce([{ id: 'run', status: 'ready', params, startedAt: '2026-09-01T00:00:00.000Z', finishedAt: '2026-09-01T00:00:10.000Z' }])
 			.mockResolvedValueOnce(inventory);
-		return { endpoint: new status.default({ query } as never), query };
+		return { endpoint: new status.default({ query } as never, { get: async () => null } as never), query };
 	}
 
 	test('backlog and rejudgement count use distinct notes, only latest ready generation, exact fence and prompt version', async () => {

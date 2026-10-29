@@ -422,8 +422,8 @@ describe('HanamiTasteClusterBatchService reactionSimilar match', () => {
 		expect(log.warn).not.toHaveBeenCalled();
 		expect(db.query).toHaveBeenCalledTimes(4);
 		expect(redis.setCalls).toEqual([
-			['hanami:taste:tick:lock', expect.any(String), 'EX', 35 * 60, 'NX'],
-			['hanami:llm:exclusive:v1', expect.any(String), 'EX', 35 * 60, 'NX'],
+			['hanami:taste:tick:lock', expect.any(String), 'EX', 90, 'NX'],
+			['hanami:llm:exclusive:v1', expect.any(String), 'EX', 90, 'NX'],
 		]);
 		expect(redis.evalCalls).toHaveLength(1);
 
@@ -890,16 +890,16 @@ describe('HanamiTasteClusterBatchService daily cluster', () => {
 		await expect(service.runTasteClusterBatch(logger() as never)).resolves.toEqual({ users: 0 });
 
 		expect(redis.setCalls).toEqual([
-			['hanami:taste:tick:lock', expect.any(String), 'EX', 35 * 60, 'NX'],
-			['hanami:llm:exclusive:v1', expect.any(String), 'EX', 35 * 60, 'NX'],
+			['hanami:taste:tick:lock', expect.any(String), 'EX', 90, 'NX'],
+			['hanami:llm:exclusive:v1', expect.any(String), 'EX', 90, 'NX'],
 		]);
 		expect(db.query).not.toHaveBeenCalled();
 		expect(embedTexts).not.toHaveBeenCalled();
 		expect(clusterUserChunk).not.toHaveBeenCalled();
 		expect(redis.evalCalls).toHaveLength(1);
 		expect(redis.evalCalls[0]?.[0]).toContain('redis.call("get", KEYS[i]) == ARGV[1]');
-		expect(redis.evalCalls[0]?.slice(1, 4)).toEqual([2, 'hanami:taste:tick:lock', 'hanami:llm:exclusive:v1']);
-		expect(redis.evalCalls[0]?.[4]).toBe(redis.setCalls[0]?.[1]);
+		expect(redis.evalCalls[0]?.slice(1, 3)).toEqual([1, 'hanami:taste:tick:lock']);
+		expect(redis.evalCalls[0]?.[3]).toBe(redis.setCalls[0]?.[1]);
 	});
 });
 
