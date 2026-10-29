@@ -74,6 +74,7 @@ describe('Hanami note judge lock Bull lifecycle', () => {
 			update: jest.fn(async (..._args: unknown[]) => undefined),
 		};
 		const redis = {
+			get: jest.fn(async (..._args: unknown[]) => null),
 			set: jest.fn(async (..._args: unknown[]) => lockAvailable ? 'OK' : null),
 			eval: jest.fn(async (..._args: unknown[]) => 1),
 		};

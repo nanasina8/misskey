@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as Bull from 'bullmq';
 import { describe, expect, test, vi as jest } from 'vitest';
 import { encodeFp16 } from '@/core/hanami/HanamiTasteClusterBatchService.js';
 import { prepareHanamiPythonCommand, resolveHanamiTrendTopicsScript } from '@/core/hanami/HanamiPythonRuntime.js';
@@ -19,7 +20,7 @@ import TopicNotesEndpoint, { meta as topicNotesMeta } from '@/server/api/endpoin
 import TrendsEndpoint from '@/server/api/endpoints/notes/hanami-trends.js';
 import HistoryEndpoint from '@/server/api/endpoints/notes/hanami-trend-history.js';
 
-import { HanamiForYouBatchService, type HanamiTrendTopicJudgeJobData } from '@/core/hanami/HanamiForYouBatchService.js';
+import { HanamiForYouBatchService, HanamiNoteJudgeLockContentionError, type HanamiTrendTopicJudgeJobData } from '@/core/hanami/HanamiForYouBatchService.js';
 import { probeHanamiNoteJudgeRuntime } from '@/core/hanami/HanamiPythonRuntime.js';
 import { HanamiTrendService, trendDailyKey, trendSameKey, trendSameSetKey, trendTitleKey } from '@/core/hanami/HanamiTrendService.js';
 import { HanamiCommonGenerationProcessorService } from '@/queue/processors/HanamiCommonGenerationProcessorService.js';
@@ -291,12 +292,13 @@ describe('GPU topic judge jobs (U-7)', () => {
 			expect(get).not.toHaveBeenCalled(); expect(set).not.toHaveBeenCalled(); expect(query).not.toHaveBeenCalled();
 		});
 	});
-	test('uses the existing note judge exclusive lock and skips when unavailable', async () => {
+	test('waits instead of skipping while the shared lock is busy, and asks note judges to step aside', async () => {
 		await withRuntime(true, async () => {
 			const set = jest.fn(async (..._args: unknown[]) => null);
 			const get = jest.fn(async (..._args: unknown[]) => null);
-			await topicBatch({ get, set }).runTrendTopicJudgeJob(jobData, {} as never);
+			await expect(topicBatch({ get, set }).runTrendTopicJudgeJob(jobData, {} as never)).rejects.toBeInstanceOf(HanamiNoteJudgeLockContentionError);
 			expect(set).toHaveBeenCalledWith('hanami:llm:exclusive:v1', expect.any(String), 'EX', 35 * 60, 'NX');
+			expect(set).toHaveBeenCalledWith('hanami:llm:topic-judge-waiting:v1', '1', 'EX', 600);
 			expect(get).not.toHaveBeenCalled();
 		});
 	});
@@ -341,9 +343,11 @@ describe('GPU topic judge jobs (U-7)', () => {
 				return pipe;
 			};
 			const release = jest.fn(async (..._args: unknown[]) => 1);
+			const del = jest.fn(async (..._args: unknown[]) => 1);
 			const logger = { info: jest.fn(), warn: jest.fn() };
 			const data = { ...jobData, topics: [...jobData.topics, { topicId: 'c', text: 'C' }], pairs: [...jobData.pairs, { a: 'a', b: 'c' }] };
-			await topicBatch({ mget: async (...keys: string[]) => keys.map(() => null), set, multi, eval: release }).runTrendTopicJudgeJob(data, logger as never);
+			await topicBatch({ mget: async (...keys: string[]) => keys.map(() => null), set, del, multi, eval: release }).runTrendTopicJudgeJob(data, logger as never);
+			expect(del).toHaveBeenCalledWith('hanami:llm:topic-judge-waiting:v1');
 			expect(set).toHaveBeenCalledWith(trendDailyKey('a'), '1', 'EX', 21600);
 			expect(set).toHaveBeenCalledWith(trendDailyKey('b'), '0', 'EX', 21600);
 			expect(set).toHaveBeenCalledWith(trendSameKey('a', 'b'), '1', 'EX', 21600);
@@ -404,6 +408,22 @@ describe('GPU topic judge jobs (U-7)', () => {
 			{ topics, dailyIds: [], pairs: [], titles: [], extra: 1 },
 		]) await expect(run(bad)).rejects.toThrow('Invalid payload');
 		expect(batch.runTrendTopicJudgeJob).toHaveBeenCalledTimes(2);
+	});
+	test('the processor retries a topic judge that lost the lock, and gives up once the topics are stale', async () => {
+		const batch = { runTrendTopicJudgeJob: jest.fn(async (..._args: unknown[]) => { throw new HanamiNoteJudgeLockContentionError(); }) };
+		const warn = jest.fn();
+		const processor = new HanamiCommonGenerationProcessorService({} as never, {} as never, { logger: { createSubLogger: () => ({ warn }) } } as never, batch as never);
+		const job = (timestamp: number) => ({ name: 'hanamiTrendTopicJudge', data: jobData, timestamp, token: 'worker-token', updateProgress: jest.fn(async () => undefined), moveToDelayed: jest.fn(async (..._args: unknown[]) => undefined) });
+		const fresh = job(Date.now() - 60_000);
+		await expect(processor.processTrendTopicJudge(fresh as never)).rejects.toBeInstanceOf(Bull.DelayedError);
+		expect(fresh.moveToDelayed).toHaveBeenCalledWith(expect.any(Number), 'worker-token');
+		const delay = (fresh.moveToDelayed.mock.calls[0][0] as number) - Date.now();
+		expect(delay).toBeGreaterThan(25_000);
+		expect(delay).toBeLessThanOrEqual(30_000);
+		const stale = job(Date.now() - 21 * 60_000);
+		await processor.processTrendTopicJudge(stale as never);
+		expect(stale.moveToDelayed).not.toHaveBeenCalled();
+		expect(warn).toHaveBeenCalledWith('hanami trend topic judge: gave up waiting for the local LLM', expect.anything());
 	});
 	test('uses the same durable queue and note judge options', async () => {
 		const queue = { add: jest.fn(async (..._args: unknown[]) => undefined) };
@@ -653,7 +673,7 @@ json.dump({'status':'ok','judgements':[],'titles':[{'topicId':'unexpected','titl
 		process.env.HANAMI_TREND_TOPIC_JUDGE_SCRIPT = script;
 		const set = jest.fn(async (..._args: unknown[]) => 'OK');
 		const logger = { info: jest.fn(), warn: jest.fn() };
-		await topicBatch({ mget: async (...keys: string[]) => keys.map(() => null), set, eval: async () => 1 }).runTrendTopicJudgeJob({
+		await topicBatch({ mget: async (...keys: string[]) => keys.map(() => null), set, del: async () => 1, eval: async () => 1 }).runTrendTopicJudgeJob({
 			topics: [], dailyIds: [], pairs: [], titles: [{ topicId: 'a', posts: ['投稿甲', '投稿乙', '投稿丙'], noteIds: ['n1', 'n2', 'n3'] }],
 		}, logger as never);
 		expect(set).toHaveBeenCalledWith(trendTitleKey('a'), JSON.stringify({ title: '寒波', noteIds: ['n1', 'n2', 'n3'] }), 'EX', 48 * 60 * 60);

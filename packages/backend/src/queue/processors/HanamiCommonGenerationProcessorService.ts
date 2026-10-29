@@ -35,6 +35,8 @@ type HanamiNoteJudgeJob = Bull.Job<HanamiNoteJudgeJobData, unknown, 'hanamiNoteJ
 const NOTE_JUDGE_LOCK_CONTENTION_DELAY_MS = 60_000;
 // prepareTrendTopicJudgeJob sends the ranked top, extra content topics and title targets (the Python side has the same cap).
 const TREND_TOPIC_JUDGE_MAX_TOPICS = TREND_TITLE_TOP * 2 + TREND_CONTENT_JUDGE_EXTRA;
+const TREND_TOPIC_JUDGE_RETRY_DELAY_MS = 30_000;
+const TREND_TOPIC_JUDGE_MAX_WAIT_MS = 20 * 60 * 1000;
 
 function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
 	if (typeof value !== 'object' || value == null || Array.isArray(value)) return false;
@@ -160,7 +162,18 @@ export class HanamiCommonGenerationProcessorService {
 		if (titles !== undefined && (!Array.isArray(titles) || titles.length > TREND_TITLE_TOP || titles.some(title => !hasExactKeys(title, ['topicId', 'posts', 'noteIds']) || typeof title.topicId !== 'string' || !ids.has(title.topicId)
 			|| !Array.isArray(title.posts) || title.posts.length < 3 || title.posts.length > TREND_TITLE_SAMPLE_POSTS || title.posts.some(post => typeof post !== 'string')
 			|| !Array.isArray(title.noteIds) || title.noteIds.length > 50 || title.noteIds.some(id => typeof id !== 'string')))) malformedPayload(job.name);
-		await this.hanamiForYouBatchService?.runTrendTopicJudgeJob(job.data, this.logger);
+		try {
+			await this.hanamiForYouBatchService?.runTrendTopicJudgeJob(job.data, this.logger);
+		} catch (error) {
+			if (!(error instanceof HanamiNoteJudgeLockContentionError)) throw error;
+			// Wait for the shared local-LLM lock instead of skipping the generation, until the topics are stale.
+			if (Date.now() - job.timestamp > TREND_TOPIC_JUDGE_MAX_WAIT_MS) {
+				this.logger.warn('hanami trend topic judge: gave up waiting for the local LLM', { waitedMs: Date.now() - job.timestamp });
+				return;
+			}
+			await job.moveToDelayed(Date.now() + TREND_TOPIC_JUDGE_RETRY_DELAY_MS, job.token);
+			throw new Bull.DelayedError(error.message);
+		}
 		await job.updateProgress(100);
 	}
 

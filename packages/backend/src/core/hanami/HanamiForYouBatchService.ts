@@ -83,6 +83,9 @@ const COLD_CENTROID_PER_SOURCE = 3;
 const EMBEDDING_PROCESS_TIMEOUT_MS = 30 * 60 * 1000;
 const NOTE_JUDGE_LOCK_KEY = 'hanami:llm:exclusive:v1';
 const NOTE_JUDGE_LOCK_TTL_SEC = 35 * 60;
+// The topic judge is dispatched once per generation, so note judges step aside while it waits for the shared lock.
+const TREND_TOPIC_JUDGE_WAITING_KEY = 'hanami:llm:topic-judge-waiting:v1';
+const TREND_TOPIC_JUDGE_WAITING_TTL_SEC = 10 * 60;
 const NOTE_JUDGE_TIMEOUT_MS = 35 * 60 * 1000;
 const NOTE_JUDGE_WINDOW_MS = 72 * 60 * 60 * 1000;
 export const HANAMI_NOTE_JUDGE_LOCK_DELAY_MS = 60_000;
@@ -823,13 +826,17 @@ export class HanamiForYouBatchService {
 		})) };
 	}
 
-	/** A busy note/taste judge skips this round; verdicts apply on the next generation. */
+	/** While the shared local-LLM lock is busy this throws contention (the processor retries) and asks note judges to step aside. */
 	@bindThis
 	public async runTrendTopicJudgeJob(data: HanamiTrendTopicJudgeJobData, logger: Logger): Promise<void> {
 		const runtime = peekHanamiNoteJudgeRuntime() ?? await probeHanamiNoteJudgeRuntime();
 		if (!runtime.available || runtime.device !== 'cuda') return;
 		const token = await this.acquireNoteJudgeLock();
-		if (token == null) return;
+		if (token == null) {
+			await this.redisClient.set(TREND_TOPIC_JUDGE_WAITING_KEY, '1', 'EX', TREND_TOPIC_JUDGE_WAITING_TTL_SEC);
+			throw new HanamiNoteJudgeLockContentionError();
+		}
+		await this.redisClient.del(TREND_TOPIC_JUDGE_WAITING_KEY);
 		let dir: string | null = null;
 		try {
 			const daily = data.dailyIds.length === 0 ? [] : await this.redisClient.mget(...data.dailyIds.map(id => trendDailyKey(id)));
@@ -911,6 +918,7 @@ export class HanamiForYouBatchService {
 			await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, processedCount: 0, skippedReason: runtime.reason, backlog: data.noteIds.length }));
 			return { runId, status: 'ready', processedCount: 0 };
 		}
+		if (await this.redisClient.get(TREND_TOPIC_JUDGE_WAITING_KEY) != null) throw new HanamiNoteJudgeLockContentionError();
 		const lockToken = await this.acquireNoteJudgeLock();
 		if (lockToken == null) throw new HanamiNoteJudgeLockContentionError();
 		let runId: string | null = null;
