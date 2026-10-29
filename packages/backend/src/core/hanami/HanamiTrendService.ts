@@ -22,6 +22,8 @@ import { prepareHanamiPythonCommand, resolveHanamiTrendTopicsScript } from './Ha
 import { TASTE_EMBED_MODEL } from './HanamiTasteClusterBatchService.js';
 import { hanamiTrendAuthorGroups, hanamiTrendEffectiveAuthors, trendCleanText, trendPlayTag, trendShingles, trendSimilarText } from './HanamiTrendEffectiveAuthors.js';
 import { HanamiTokenizerService } from './tokenize/HanamiTokenizerService.js';
+import { centerTrendEmbeddings, nameTrendContentTopic, splitTrendTermTopics, trendTopicCenter } from './HanamiTrendTermSplit.js';
+import type { TrendCenteredVectors } from './HanamiTrendTermSplit.js';
 
 // トレンド窓: おすすめ(FeaturedService)と同じ 15分グリッド × 288枠(72時間)。
 // 現窓“単独”だと毎窓境界でトレンドが消える崖が出るため、スライディング窓にする。
@@ -117,6 +119,7 @@ export type HanamiTrendTopicFields = {
 };
 type TopicNote = { id: string; userId: string; replyId: string | null; renoteId: string | null; text: string | null; tags?: string[]; createdAt: number; terms: string[]; embeddingIndex: number | null; source?: 'seed' | 'link' | 'embedding'; embeddingCandidate?: boolean };
 type RawTopic = { origin?: 'term' | 'content'; terms: string[]; noteIds: string[]; authors6h: number; authors2h: number; center: number[] | null };
+type TrendTopicContext = { noteTerms: Map<string, string[]>; vectors: TrendCenteredVectors | null };
 type Topic = RawTopic & { topicId: string; startedAt: string; daily: boolean; dailyJudged?: boolean; dailyVerdict?: string | null; tagGame?: boolean };
 export type HanamiTrendPreviousTopics = { computedAt: number; topics: Omit<Topic, 'center'>[] };
 type TrendNoteCandidate = { noteId: string; term: string };
@@ -257,14 +260,9 @@ export class HanamiTrendService {
 	private notesKey(term: string): string { return `hanami:trend:notes:${term}`; }
 	private properKey(): string { return 'hanami:trend:proper'; } // 固有名詞と判定された用語の集合
 
-	/**
-	 * ノート本文を解析してトレンドインデックスに反映する（非同期ワーカーから fire-and-forget で呼ぶ）。
-	 * 対象は public/home の本文ありオリジナルノートのみ（呼び出し側で絞る）。
-	 */
-	@bindThis
-	public async indexNote(note: MiNote, at: number = Date.now()): Promise<void> {
-		if (note.text == null || note.text.length === 0) return;
-		const tokens = await this.hanamiTokenizerService.tokenizeWithKind(note.text);
+	/** indexNote と話題の生成で、語の順序・固有名詞フラグ・16語の上限を揃える。 */
+	private async trendNoteTerms(text: string): Promise<{ term: string; proper: boolean }[]> {
+		const tokens = await this.hanamiTokenizerService.tokenizeWithKind(text);
 
 		// 1ノート内では distinct 用語のみ（連呼で釣り上げない）。固有名詞フラグを保持。
 		const seen = new Set<string>();
@@ -276,6 +274,17 @@ export class HanamiTrendService {
 			terms.push(tk);
 			if (terms.length >= MAX_TERMS_PER_NOTE) break;
 		}
+		return terms;
+	}
+
+	/**
+	 * ノート本文を解析してトレンドインデックスに反映する（非同期ワーカーから fire-and-forget で呼ぶ）。
+	 * 対象は public/home の本文ありオリジナルノートのみ（呼び出し側で絞る）。
+	 */
+	@bindThis
+	public async indexNote(note: MiNote, at: number = Date.now()): Promise<void> {
+		if (note.text == null || note.text.length === 0) return;
+		const terms = await this.trendNoteTerms(note.text);
 		if (terms.length === 0) return;
 		// at: 通常は現在時刻。開発用の再生（hanami-seed-recent）では複製ノートの時刻で過去窓へ積む
 		const w = Math.floor((at - trendEpoch) / TREND_WINDOW_MS);
@@ -732,13 +741,21 @@ export class HanamiTrendService {
 		return { rows, embeddings, dim, baselineDays };
 	}
 
+	private async cacheTrendNoteTerms(topics: readonly RawTopic[], notes: readonly TopicNote[], cache: Map<string, string[]>): Promise<void> {
+		const ids = new Set(topics.flatMap(topic => topic.noteIds));
+		for (const note of notes) {
+			if (!ids.has(note.id) || cache.has(note.id)) continue;
+			cache.set(note.id, (await this.trendNoteTerms(note.text ?? '')).map(token => token.term));
+		}
+	}
+
 	private recountTopic<T extends RawTopic>(topic: T, notes: readonly TopicNote[], now: number): T {
 		const ids = new Set(topic.noteIds);
 		const members = notes.filter(note => ids.has(note.id));
 		return { ...topic, authors6h: hanamiTrendEffectiveAuthors(members), authors2h: hanamiTrendEffectiveAuthors(members.filter(note => note.createdAt >= now - TREND_RECENT_SPAN_MS)) };
 	}
 
-	private mergeContentTopics(raw: readonly RawTopic[], notes: readonly TopicNote[], now: number): RawTopic[] {
+	private mergeContentTopics(raw: readonly RawTopic[], notes: readonly TopicNote[], now: number, vectors: TrendCenteredVectors | null = null): RawTopic[] {
 		const terms = raw.filter(topic => topic.origin !== 'content').map(topic => ({ ...topic, origin: 'term' as const }));
 		const unmatched: RawTopic[] = [];
 		for (const content of raw.filter(topic => topic.origin === 'content')) {
@@ -748,12 +765,13 @@ export class HanamiTrendService {
 			keep.noteIds = [...new Set([...matches.flatMap(topic => topic.noteIds), ...content.noteIds])];
 			keep.terms = [...new Set(matches.flatMap(topic => topic.terms))];
 			Object.assign(keep, this.recountTopic(keep, notes, now));
+			if (vectors != null) keep.center = trendTopicCenter(keep.noteIds, vectors);
 			for (const other of matches.slice(1)) terms.splice(terms.indexOf(other), 1);
 		}
 		return [...terms, ...unmatched];
 	}
 
-	private async buildTopics(candidates: readonly TrendingTermCandidate[], notes: TopicNote[], parents: TopicNote[], now: number): Promise<RawTopic[]> {
+	private async buildTopics(candidates: readonly TrendingTermCandidate[], notes: TopicNote[], parents: TopicNote[], now: number, context: TrendTopicContext = { noteTerms: new Map(), vectors: null }): Promise<RawTopic[]> {
 		if (notes.length === 0) return [];
 		let dir: string | null = null;
 		try {
@@ -763,6 +781,7 @@ export class HanamiTrendService {
 			]);
 			const { rows, embeddings, dim, baselineDays } = cached;
 			const meanVec = state[0]?.meanVec ?? null;
+			if (meanVec == null) this.logger.warn('hanami trend term split', { meanVec: null });
 			if (dim > 0 && meanVec != null && (meanVec.length !== dim || !meanVec.every(Number.isFinite))) throw new Error('Invalid trend embedding mean');
 			const indices = new Map(rows.map((row, i) => [row.noteId, i]));
 			for (const note of notes) note.embeddingIndex = indices.get(note.id) ?? null;
@@ -783,21 +802,15 @@ export class HanamiTrendService {
 			const validTerms = new Set(candidates.map(term => term.term));
 			if (!Array.isArray(output.topics) || output.topics.some(topic => !Array.isArray(topic.terms) || (topic.origin !== 'content' && topic.terms.length === 0) || topic.terms.some(term => !validTerms.has(term)) || !Array.isArray(topic.noteIds) || topic.noteIds.some(id => !validIds.has(id)))) throw new Error('Invalid trend topics output');
 			const topics = output.topics.map(topic => this.recountTopic(topic, notes, now)).filter(topic => topic.authors6h >= MIN_DISTINCT_AUTHORS);
-			for (const topic of topics.filter(topic => topic.origin === 'content')) {
-				const members = notes.filter(note => topic.noteIds.includes(note.id));
-				const authors = new Set(members.map(note => note.userId));
-				const terms = new Map<string, Set<string>>();
-				for (const note of members) for (const token of await this.hanamiTokenizerService.tokenizeWithKind(note.text ?? '')) {
-					if (token.term.startsWith('#')) continue;
-					const users = terms.get(token.term) ?? new Set<string>(); users.add(note.userId); terms.set(token.term, users);
-				}
-				const scores = new Map(candidates.map(candidate => [candidate.term, candidate.score]));
-				const ordered = [...terms].filter(([, users]) => users.size >= 2)
-					.sort((a, b) => b[1].size - a[1].size || (scores.get(b[0]) ?? 0) - (scores.get(a[0]) ?? 0) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-				topic.terms = ordered.filter(([, users], i) => i === 0 || users.size / authors.size >= 0.2).slice(0, 6).map(([term]) => term);
-			}
+			context.vectors = meanVec == null ? null : centerTrendEmbeddings(rows, embeddings, dim, meanVec);
+			const content = topics.filter(topic => topic.origin === 'content');
+			await this.cacheTrendNoteTerms(content, notes, context.noteTerms);
+			const byId = new Map(notes.map(note => [note.id, note]));
+			const scores = new Map(candidates.map(candidate => [candidate.term, candidate.score]));
+			for (const topic of content) topic.terms = nameTrendContentTopic(topic.noteIds, byId, context.noteTerms, context.vectors, scores);
 			return topics;
 		} catch (error) {
+			context.vectors = null;
 			this.logger.warn('hanami trend topics: failed; continuing with one topic per term', { error: String(error) });
 			return candidates.map(candidate => {
 				const members = notes.filter(note => note.terms.includes(candidate.term));
@@ -887,7 +900,13 @@ export class HanamiTrendService {
 		const globalScores = featuredScores ?? await this.featuredService.getGlobalNotesScoresWithCache();
 		const candidates = await this.getTrendingTermCandidatesWithCache(globalScores);
 		const { notes, parents } = await this.collectTopicInput(candidates, now);
-		const raw = this.mergeContentTopics(await this.buildTopics(candidates, notes, parents, now), notes, now).filter(topic => topic.terms.length > 0);
+		const context: TrendTopicContext = { noteTerms: new Map(), vectors: null };
+		const built = await this.buildTopics(candidates, notes, parents, now, context);
+		const merged = this.mergeContentTopics(built, notes, now, context.vectors).filter(topic => topic.terms.length > 0);
+		if (context.vectors != null) await this.cacheTrendNoteTerms(merged.filter(topic => topic.origin === 'term' && topic.terms.length >= 2), notes, context.noteTerms);
+		const { topics: raw, splits } = splitTrendTermTopics(merged, new Map(notes.map(note => [note.id, note])), context.noteTerms,
+			context.vectors, topic => this.recountTopic(topic, notes, now), MIN_DISTINCT_AUTHORS);
+		if (splits.length > 0) this.logger.info('hanami trend term split', { topics: splits });
 		const previousJson = await this.redisClient.get(TREND_TOPIC_PREV_KEY);
 		const previous = previousJson == null ? [] : (JSON.parse(previousJson) as HanamiTrendPreviousTopics | Topic[]);
 		const unmerged = this.assignTopicIds(raw, Array.isArray(previous) ? previous : previous.topics, now);
