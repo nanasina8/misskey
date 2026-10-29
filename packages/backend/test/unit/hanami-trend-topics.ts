@@ -369,6 +369,42 @@ describe('GPU topic judge jobs (U-7)', () => {
 		await processor.processTrendTopicJudge({ ...job, name: 'hanamiTrendTopicJudge', data: jobData } as never);
 		expect(batch.runTrendTopicJudgeJob).toHaveBeenCalledWith(jobData, logger);
 	});
+	test('the processor accepts the job prepare actually builds (titles and more than ten topics)', async () => {
+		await withRuntime(true, async () => {
+			const phrases = ['駅前のパン屋が新しく開いた', '今日の夕焼けがとても綺麗だった', '新しいキーボードを組み立てた', '図書館で珍しい本を見つけた'];
+			const topics = Array.from({ length: 11 }, (_, i) => ({ topicId: String(i), terms: [`語${i}`], noteIds: phrases.map((_, j) => `${i}-${j}`) }));
+			const rows = topics.flatMap(topic => topic.noteIds.map((id, j) => ({ id, text: phrases[j], replyId: null })));
+			const get = async (key: string) => key === 'hanami:trend:topics:prev' ? JSON.stringify({ computedAt: now, topics }) : null;
+			const data = (await topicBatch({ get, mget: async (...keys: string[]) => Promise.all(keys.map(get)) }, jest.fn(async (..._args: unknown[]) => rows)).prepareTrendTopicJudgeJob())!;
+			expect(data.topics.length).toBeGreaterThan(10);
+			expect(data.titles).toHaveLength(11);
+			const batch = { runTrendTopicJudgeJob: jest.fn(async (..._args: unknown[]) => undefined) };
+			const processor = new HanamiCommonGenerationProcessorService({} as never, {} as never, { logger: { createSubLogger: () => ({}) } } as never, batch as never);
+			await processor.processTrendTopicJudge({ name: 'hanamiTrendTopicJudge', data, updateProgress: async () => undefined } as never);
+			expect(batch.runTrendTopicJudgeJob).toHaveBeenCalledWith(data, expect.anything());
+		});
+	});
+	test('the processor accepts legacy jobs and the largest title job, and rejects malformed titles', async () => {
+		const batch = { runTrendTopicJudgeJob: jest.fn(async (..._args: unknown[]) => undefined) };
+		const processor = new HanamiCommonGenerationProcessorService({} as never, {} as never, { logger: { createSubLogger: () => ({}) } } as never, batch as never);
+		const run = (data: unknown) => processor.processTrendTopicJudge({ name: 'hanamiTrendTopicJudge', data, updateProgress: async () => undefined } as never);
+		const topics = Array.from({ length: 40 }, (_, i) => ({ topicId: `t${i}`, text: 'T' }));
+		const title = { topicId: 't0', posts: Array.from({ length: 10 }, (_, i) => `投稿${i}`), noteIds: Array.from({ length: 50 }, (_, i) => `n${i}`) };
+		await run(jobData);
+		await run({ topics, dailyIds: [], pairs: [], titles: Array.from({ length: 15 }, (_, i) => ({ ...title, topicId: `t${i}` })) });
+		expect(batch.runTrendTopicJudgeJob).toHaveBeenCalledTimes(2);
+		for (const bad of [
+			{ topics: [...topics, { topicId: 't40', text: 'T' }], dailyIds: [], pairs: [], titles: [] },
+			{ topics, dailyIds: [], pairs: [], titles: Array.from({ length: 16 }, (_, i) => ({ ...title, topicId: `t${i}` })) },
+			{ topics, dailyIds: [], pairs: [], titles: [{ ...title, posts: ['一', '二'] }] },
+			{ topics, dailyIds: [], pairs: [], titles: [{ ...title, posts: [...title.posts, '十一'] }] },
+			{ topics, dailyIds: [], pairs: [], titles: [{ ...title, noteIds: [...title.noteIds, 'n50'] }] },
+			{ topics, dailyIds: [], pairs: [], titles: [{ ...title, topicId: 'missing' }] },
+			{ topics, dailyIds: [], pairs: [], titles: [{ ...title, extra: 1 }] },
+			{ topics, dailyIds: [], pairs: [], titles: [], extra: 1 },
+		]) await expect(run(bad)).rejects.toThrow('Invalid payload');
+		expect(batch.runTrendTopicJudgeJob).toHaveBeenCalledTimes(2);
+	});
 	test('uses the same durable queue and note judge options', async () => {
 		const queue = { add: jest.fn(async (..._args: unknown[]) => undefined) };
 		const service = Object.create(QueueService.prototype) as QueueService;
@@ -608,7 +644,6 @@ describe('V-19: topic expansion collection', () => {
 		expect(embeddingArgs.slice(5)).toEqual([10, 8000]);
 	});
 });
-
 
 test('R2: ignores an unrequested title and saves the following requested titles', async () => {
 	await withRuntime(true, async dir => {
