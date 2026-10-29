@@ -3929,7 +3929,6 @@ _hana:
     weightHide: "表示しない"
   _explore:
     tabTopics: "話題"
-    popularNotes: "人気の投稿"
     showAllTopicNotes: "この話題の投稿をすべて見る"
     mediaFilter: "みつけるの画像・動画の表示"
     mediaFilterDescription: "みつける（人気の投稿）に表示するメディアを選びます。この設定はみつけるにのみ適用されます。"

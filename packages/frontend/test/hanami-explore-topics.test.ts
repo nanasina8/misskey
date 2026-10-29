@@ -21,10 +21,10 @@ vi.mock('@/components/MkButton.vue', () => ({ default: { template: '<button><slo
 vi.mock('@/components/MkNote.vue', () => ({ default: { props: ['note'], template: '<article data-testid="post">{{ note.text }}</article>' } }));
 vi.mock('@/i18n.js', () => ({ i18n: {
 	ts: {
-		explore: 'みつける', featured: '人気', users: 'ユーザー', roles: 'ロール', showMore: 'もっと見る',
+		explore: 'みつける', featured: 'ハイライト', users: 'ユーザー', roles: 'ロール', showMore: 'もっと見る',
 		loadMore: 'もっと読む', retry: '再試行', somethingHappened: '問題が発生しました',
 		_hana: {
-			_explore: { tabTopics: '話題', popularNotes: '人気の投稿', showAllTopicNotes: 'この話題の投稿をすべて見る' },
+			_explore: { tabTopics: '話題', showAllTopicNotes: 'この話題の投稿をすべて見る' },
 			_trends: { title: 'いま話題', seeAll: 'もっと見る', empty: '話題なし', noTopicNotes: '投稿なし', kindNew: '新しい話題', kindRising: '上昇中', kindSteady: '継続中', sortPopular: '人気順', sortRecent: '新着順' },
 		},
 	},
@@ -54,7 +54,7 @@ const trend = (topicId: string, overrides: Partial<Trend> = {}): Trend => ({
 function mockTopics(items: Trend[] = [trend('first'), trend('second')], featured: Misskey.entities.Note[] = []): void {
 	api.mockImplementation(async (endpoint, params) => {
 		if (endpoint === 'notes/hanami-trends') return { items };
-		if (endpoint === 'notes/featured') return featured;
+		if (endpoint === 'notes/featured') return featured.slice(0, params.limit);
 		return Array.from({ length: params.limit }, (_, index) => post(`${params.topicId}-${params.sort}-${index}`));
 	});
 }
@@ -66,11 +66,11 @@ describe('explore tabs', () => {
 		mockTopics();
 		const view = render(Explore, { global });
 		const nav = within(view.getByRole('navigation'));
-		expect(nav.getAllByRole('tab').map(tab => tab.textContent)).toEqual(['話題', '人気', 'ユーザー', 'ロール']);
+		expect(nav.getAllByRole('tab').map(tab => tab.textContent)).toEqual(['話題', 'ハイライト', 'ユーザー', 'ロール']);
 		expect(nav.getByRole('tab', { name: '話題' }).getAttribute('aria-selected')).toBe('true');
 		expect(nav.getByRole('tab', { name: '話題' }).getAttribute('data-icon')).toBe('ti ti-trending-up');
 		await view.findByText('Post first-popular-0');
-		for (const [label, content] of [['人気', 'Featured tab'], ['ユーザー', 'Users tab'], ['ロール', 'Roles tab']]) {
+		for (const [label, content] of [['ハイライト', 'Featured tab'], ['ユーザー', 'Users tab'], ['ロール', 'Roles tab']]) {
 			await fireEvent.click(nav.getByRole('tab', { name: label }));
 			expect(view.getByText(content)).toBeTruthy();
 		}
@@ -78,7 +78,7 @@ describe('explore tabs', () => {
 
 	test('honors an initial featured tab without loading topics', () => {
 		const view = render(Explore, { props: { initialTab: 'featured' }, global });
-		expect(view.getByRole('tab', { name: '人気' }).getAttribute('aria-selected')).toBe('true');
+		expect(view.getByRole('tab', { name: 'ハイライト' }).getAttribute('aria-selected')).toBe('true');
 		expect(view.getByText('Featured tab')).toBeTruthy();
 		expect(api).not.toHaveBeenCalled();
 	});
@@ -86,8 +86,13 @@ describe('explore tabs', () => {
 	test('the popular-posts more button switches the parent to featured', async () => {
 		mockTopics([trend('first')], [post('featured')]);
 		const view = render(Explore, { global });
-		await fireEvent.click(await view.findByRole('button', { name: 'もっと見る' }));
-		expect(view.getByRole('tab', { name: '人気' }).getAttribute('aria-selected')).toBe('true');
+		const moreFeatured = await view.findByRole('button', { name: 'もっと見る', description: 'ハイライト' });
+		const moreTrends = view.getByRole('link', { name: 'もっと見る', description: 'いま話題' });
+		expect(moreFeatured.getAttribute('aria-describedby')).toBe(view.getByRole('heading', { level: 2, name: 'ハイライト' }).id);
+		expect(moreTrends.getAttribute('aria-describedby')).toBe(view.getByRole('heading', { level: 2, name: 'いま話題' }).id);
+		expect(moreTrends.getAttribute('href')).toBe('/hanami/trends');
+		await fireEvent.click(moreFeatured);
+		expect(view.getByRole('tab', { name: 'ハイライト' }).getAttribute('aria-selected')).toBe('true');
 		expect(view.getByText('Featured tab')).toBeTruthy();
 	});
 });
@@ -125,9 +130,11 @@ describe('topic cards', () => {
 		const panel = document.getElementById(first.getAttribute('aria-controls')!);
 		expect(panel?.contains(view.getByText('Post first-popular-0'))).toBe(true);
 		expect(second.getAttribute('aria-expanded')).toBe('false');
+		expect(first.querySelector('.ti-chevron-up')?.getAttribute('aria-hidden')).toBe('true');
+		expect(second.querySelector('.ti-chevron-down')?.getAttribute('aria-hidden')).toBe('true');
 		expect(view.getAllByTestId('post')).toHaveLength(3);
 		expect(api.mock.calls.filter(([endpoint]) => endpoint === 'notes/hanami-topic-notes')).toEqual([
-			['notes/hanami-topic-notes', { topicId: 'first', sort: 'popular', limit: 3, offset: 0 }],
+			['notes/hanami-topic-notes', { topicId: 'first', sort: 'popular', limit: 10, offset: 0 }],
 		]);
 		expect(view.queryByRole('button', { name: 'もっと読む' })).toBeNull();
 		expect(appears).toHaveLength(0);
@@ -136,11 +143,16 @@ describe('topic cards', () => {
 		await view.findByText('Post second/id-popular-0');
 		expect(first.getAttribute('aria-expanded')).toBe('false');
 		expect(second.getAttribute('aria-expanded')).toBe('true');
+		expect(first.querySelector('.ti-chevron-down')).toBeTruthy();
+		expect(first.querySelector('.ti-chevron-up')).toBeNull();
+		expect(second.querySelector('.ti-chevron-up')).toBeTruthy();
+		expect(second.querySelector('.ti-chevron-down')).toBeNull();
 		expect(view.queryByText('Post first-popular-0')).toBeNull();
 		expect(view.getAllByTestId('post')).toHaveLength(3);
 		expect(view.getByRole('link', { name: 'この話題の投稿をすべて見る' }).getAttribute('href')).toBe('/hanami/trends?topic=second%2Fid');
 		await fireEvent.click(second);
 		expect(second.getAttribute('aria-expanded')).toBe('false');
+		expect(second.querySelector('.ti-chevron-down')).toBeTruthy();
 		expect(view.queryByTestId('post')).toBeNull();
 		expect(api.mock.calls.filter(([endpoint]) => endpoint === 'notes/hanami-topic-notes')).toHaveLength(2);
 	});
@@ -215,12 +227,15 @@ describe('topic cards', () => {
 
 describe('popular posts', () => {
 	test('excludes representatives from every topic before taking the first five featured posts', async () => {
-		mockTopics([trend('first', { representativeNote: post('f0') }), trend('second', { representativeNote: post('f2') })], Array.from({ length: 10 }, (_, index) => post(`f${index}`)));
+		mockTopics(
+			Array.from({ length: 10 }, (_, index) => trend(`topic${index}`, { representativeNote: post(`f${index}`) })),
+			Array.from({ length: 20 }, (_, index) => post(`f${index}`)),
+		);
 		const view = render(Topics, { global });
-		const heading = await view.findByRole('heading', { name: '人気の投稿' });
+		const heading = await view.findByRole('heading', { name: 'ハイライト' });
 		const popular = within(heading.closest('section')!);
-		expect(popular.getAllByTestId('post').map(note => note.textContent)).toEqual(['Post f1', 'Post f3', 'Post f4', 'Post f5', 'Post f6']);
-		expect(api).toHaveBeenCalledWith('notes/featured', { limit: 10 });
+		expect(popular.getAllByTestId('post').map(note => note.textContent)).toEqual(['Post f10', 'Post f11', 'Post f12', 'Post f13', 'Post f14']);
+		expect(api).toHaveBeenCalledWith('notes/featured', { limit: 20 });
 	});
 
 	test.each(['failure', 'empty', 'duplicates'])('omits the entire featured section on %s while showing topics', async state => {
@@ -233,7 +248,7 @@ describe('popular posts', () => {
 		});
 		const view = render(Topics, { global });
 		await view.findByText('Post first-popular-0');
-		expect(view.queryByRole('heading', { name: '人気の投稿' })).toBeNull();
+		expect(view.queryByRole('heading', { name: 'ハイライト' })).toBeNull();
 		expect(view.queryByRole('button', { name: 'もっと見る' })).toBeNull();
 		expect(view.queryByRole('alert')).toBeNull();
 	});
@@ -246,7 +261,7 @@ describe('popular posts', () => {
 		});
 		const view = render(Topics, { global });
 		await new Promise<void>(done => queueMicrotask(done));
-		expect(view.queryByRole('heading', { name: '人気の投稿' })).toBeNull();
+		expect(view.queryByRole('heading', { name: 'ハイライト' })).toBeNull();
 		resolve({ items: [trend('first', { representativeNote: post('duplicate') })] });
 		await view.findByText('Post keep');
 		expect(view.queryByText('Post duplicate')).toBeNull();
@@ -254,11 +269,11 @@ describe('popular posts', () => {
 });
 
 describe('topic timeline preview', () => {
-	test('caps the preview, never mounts appear, and fetches once per sort', async () => {
-		api.mockResolvedValue(Array.from({ length: 4 }, (_, index) => post(String(index))));
+	test('requests ten posts, displays the first three, and fetches once per sort without appear', async () => {
+		api.mockImplementation(async (_endpoint, params) => Array.from({ length: params.limit }, (_, index) => post(String(index))));
 		const view = render(Timeline, { props: { topicId: 'topic', previewLimit: 3 }, global });
 		await view.findByText('Post 0');
-		expect(view.getAllByTestId('post')).toHaveLength(3);
+		expect(view.getAllByTestId('post').map(note => note.textContent)).toEqual(['Post 0', 'Post 1', 'Post 2']);
 		expect(view.queryByText('Post 3')).toBeNull();
 		expect(view.queryByRole('button', { name: 'もっと読む' })).toBeNull();
 		expect(appears).toHaveLength(0);
@@ -268,10 +283,33 @@ describe('topic timeline preview', () => {
 		await fireEvent.click(view.getByRole('tab', { name: '新着順' }));
 		await view.findByText('Post recent');
 		expect(api.mock.calls).toEqual([
-			['notes/hanami-topic-notes', { topicId: 'topic', sort: 'popular', limit: 3, offset: 0 }],
-			['notes/hanami-topic-notes', { topicId: 'topic', sort: 'recent', limit: 3, offset: 0 }],
+			['notes/hanami-topic-notes', { topicId: 'topic', sort: 'popular', limit: 10, offset: 0 }],
+			['notes/hanami-topic-notes', { topicId: 'topic', sort: 'recent', limit: 10, offset: 0 }],
 		]);
 		expect(appears).toHaveLength(0);
+	});
+
+	test('leaves only the full-topic link when filtering removes every preview post', async () => {
+		api.mockImplementation(async endpoint => endpoint === 'notes/hanami-trends' ? { items: [trend('first')] } : []);
+		const view = render(Topics, { global });
+		const allNotes = await view.findByRole('link', { name: 'この話題の投稿をすべて見る' });
+		await waitFor(() => expect(view.queryByTestId('loading')).toBeNull());
+		expect(api.mock.calls.filter(([endpoint]) => endpoint === 'notes/hanami-topic-notes')).toEqual([
+			['notes/hanami-topic-notes', { topicId: 'first', sort: 'popular', limit: 10, offset: 0 }],
+		]);
+		expect(view.queryByText('投稿なし')).toBeNull();
+		expect(view.queryByTestId('post')).toBeNull();
+		expect(view.queryByRole('button', { name: 'もっと読む' })).toBeNull();
+		expect(allNotes.getAttribute('href')).toBe('/hanami/trends?topic=first');
+		expect(Array.from(allNotes.parentElement!.children)).toEqual([allNotes]);
+		expect(appears).toHaveLength(0);
+	});
+
+	test('keeps the empty message on normal timelines', async () => {
+		api.mockResolvedValueOnce([]);
+		const view = render(Timeline, { props: { topicId: 'topic' }, global });
+		expect(await view.findByText('投稿なし')).toBeTruthy();
+		expect(api).toHaveBeenCalledWith('notes/hanami-topic-notes', { topicId: 'topic', sort: 'popular', limit: 20, offset: 0 });
 	});
 
 	test('keeps preview error retry at offset zero', async () => {

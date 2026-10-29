@@ -7,10 +7,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 <div class="_spacer _gaps" style="--MI_SPACER-w: 800px;">
 	<section class="_gaps">
 		<header :class="$style.sectionHeader">
-			<h2 :class="$style.sectionTitle">{{ i18n.ts._hana._trends.title }}</h2>
+			<h2 :id="`${id}-trends-heading`" :class="$style.sectionTitle">{{ i18n.ts._hana._trends.title }}</h2>
 			<div :class="$style.headerActions">
 				<small v-if="items[0]" :class="$style.snapshot">{{ i18n.tsx._hana._trends.snapshot({ time: timeFormat.format(new Date(items[0].snapshotGeneratedAt)) }) }}</small>
-				<MkA class="_link" to="/hanami/trends">{{ i18n.ts._hana._trends.seeAll }}</MkA>
+				<MkA class="_link" to="/hanami/trends" :aria-describedby="`${id}-trends-heading`">{{ i18n.ts._hana._trends.seeAll }}</MkA>
 			</div>
 		</header>
 		<MkLoading v-if="fetching"/>
@@ -27,6 +27,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 							<span :class="$style.rank">{{ index + 1 }}</span>
 							<span :class="$style.heading">{{ item.title || item.term }}</span>
 							<HanamiTopicBadge :kind="item.kind"/>
+							<i v-if="expandedTopicId === item.topicId" class="ti ti-chevron-up" aria-hidden="true"></i>
+							<i v-else class="ti ti-chevron-down" aria-hidden="true"></i>
 						</span>
 						<span v-if="item.sourceTerms" :id="`${id}-${item.topicId}-terms`" :class="$style.sourceTerms">{{ item.sourceTerms }}</span>
 						<span :id="`${id}-${item.topicId}-details`" :class="$style.details">
@@ -47,8 +49,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</section>
 	<section v-if="!fetching && popularNotes.length" class="_gaps">
 		<header :class="$style.sectionHeader">
-			<h2 :class="$style.sectionTitle">{{ i18n.ts._hana._explore.popularNotes }}</h2>
-			<button type="button" class="_button _textButton" @click="emit('showFeatured')">{{ i18n.ts.showMore }}</button>
+			<h2 :id="`${id}-featured-heading`" :class="$style.sectionTitle">{{ i18n.ts.featured }}</h2>
+			<button type="button" class="_button _textButton" :aria-describedby="`${id}-featured-heading`" @click="emit('showFeatured')">{{ i18n.ts.showMore }}</button>
 		</header>
 		<div class="_panel">
 			<MkNote v-for="note in popularNotes" :key="note.id" :note="note"/>
@@ -113,7 +115,7 @@ async function fetchTrends(): Promise<void> {
 
 async function fetchFeatured(): Promise<void> {
 	try {
-		const result = await misskeyApiGet('notes/featured', { limit: 10 });
+		const result = await misskeyApiGet('notes/featured', { limit: 20 });
 		if (!disposed) featuredNotes.value = result;
 	} catch {
 		// Featured posts are optional; topic loading and retry remain independent.

@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<section :class="$style.posts">
+<section v-if="previewLimit === undefined || fetching || failed || notes.length > 0" :class="$style.posts">
 	<div role="tablist" :class="$style.tabs">
 		<button class="_button" role="tab" :aria-selected="sort === 'popular'" :class="{ [$style.selected]: sort === 'popular' }" @click="changeSort('popular')">{{ i18n.ts._hana._trends.sortPopular }}</button>
 		<button class="_button" role="tab" :aria-selected="sort === 'recent'" :class="{ [$style.selected]: sort === 'recent' }" @click="changeSort('recent')">{{ i18n.ts._hana._trends.sortRecent }}</button>
@@ -49,14 +49,14 @@ useGlobalEvent('noteDeleted', id => {
 async function fetchNotes(): Promise<void> {
 	if (disposed || fetching.value || !hasMore.value) return;
 	const version = requestVersion;
-	const limit = props.previewLimit ?? 20;
+	const limit = props.previewLimit === undefined ? 20 : 10;
 	fetching.value = true;
 	failed.value = false;
 	try {
 		const result = await misskeyApiGet('notes/hanami-topic-notes', { topicId: props.topicId, sort: sort.value, limit, offset });
 		if (version !== requestVersion) return;
 		const seen = new Set(notes.value.map(note => note.id));
-		const visible = props.previewLimit === undefined ? result : result.slice(0, limit);
+		const visible = props.previewLimit === undefined ? result : result.slice(0, props.previewLimit);
 		notes.value.push(...visible.filter(note => !deletedIds.has(note.id) && !seen.has(note.id)));
 		// Offsets count the SQL window, including posts removed by the safety filter.
 		offset += limit;

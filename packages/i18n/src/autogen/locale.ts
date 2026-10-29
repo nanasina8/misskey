@@ -14711,10 +14711,6 @@ export interface Locale extends ILocale {
              */
             "tabTopics": string;
             /**
-             * 人気の投稿
-             */
-            "popularNotes": string;
-            /**
              * この話題の投稿をすべて見る
              */
             "showAllTopicNotes": string;
