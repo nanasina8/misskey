@@ -18,8 +18,9 @@ import { chartVLine } from '@/utility/chart-vline.js';
 import { themeManager } from '@/theme.js';
 import { i18n } from '@/i18n.js';
 import { finiteMetric, seriesValues } from '@/scripts/hanami-metrics.js';
+import { shortDay } from '@/scripts/hanami-admin-overview.js';
 
-const props = withDefaults(defineProps<{ days: string[]; values: Metric[]; label: string; percent?: boolean }>(), { percent: false });
+const props = withDefaults(defineProps<{ days: string[]; values: Metric[]; label: string; percent?: boolean; warn?: boolean }>(), { percent: false, warn: false });
 Chart.register(CategoryScale, LinearScale, LineController, LineElement, PointElement, Tooltip);
 const canvas = useTemplateRef('canvas');
 let chart: Chart<'line', Metric[], string> | undefined;
@@ -28,18 +29,19 @@ function draw() {
 	if (!canvas.value) return;
 	chart?.destroy();
 	const style = getComputedStyle(window.document.documentElement);
-	const accent = style.getPropertyValue('--MI_THEME-accent').trim();
+	const accent = style.getPropertyValue(props.warn ? '--MI_THEME-warn' : '--MI_THEME-accent').trim();
 	const fg = style.getPropertyValue('--MI_THEME-fg').trim();
 	const divider = style.getPropertyValue('--MI_THEME-divider').trim();
 	chart = new Chart<'line', Metric[], string>(canvas.value, {
 		type: 'line',
-		data: { labels: props.days, datasets: [{ label: props.label, data: seriesValues(props.days, props.values, props.percent), borderColor: accent, backgroundColor: accent, borderWidth: 2, pointRadius: 2, spanGaps: false, fill: false }] },
+		data: { labels: props.days.map(shortDay), datasets: [{ label: props.label, data: seriesValues(props.days, props.values, props.percent), borderColor: accent, backgroundColor: accent, borderWidth: 2, pointRadius: 2, spanGaps: false, fill: false }] },
 		options: {
 			responsive: true, maintainAspectRatio: false, animation: false,
 			interaction: { mode: 'index', intersect: false },
 			scales: {
-				x: { ticks: { color: fg, maxTicksLimit: 7 }, grid: { color: divider } },
-				y: { beginAtZero: true, ticks: { color: fg, callback: value => props.percent ? `${value}%` : value }, grid: { color: divider } },
+				// Short M/D labels stay horizontal instead of rotating.
+				x: { ticks: { color: fg, maxTicksLimit: 8, maxRotation: 0, autoSkip: true }, grid: { color: divider } },
+				y: { beginAtZero: true, ticks: { color: fg, precision: props.percent ? undefined : 0, callback: value => props.percent ? `${value}%` : value }, grid: { color: divider } },
 			},
 			plugins: { legend: { display: false }, tooltip: { callbacks: { label: context => `${props.label}: ${context.parsed.y}${props.percent ? '%' : ''}` } } },
 		},
@@ -47,7 +49,7 @@ function draw() {
 	});
 }
 
-watch(() => [props.days, props.values, props.label, props.percent], draw, { deep: true });
+watch(() => [props.days, props.values, props.label, props.percent, props.warn], draw, { deep: true });
 onMounted(() => { draw(); themeManager.on('themeChanged', draw); });
 onBeforeUnmount(() => { themeManager.off('themeChanged', draw); chart?.destroy(); });
 </script>

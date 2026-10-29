@@ -8,6 +8,7 @@ import { effectScope, nextTick, ref } from 'vue';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/vue';
 import type { ChartConfiguration } from 'chart.js';
+import type { entities } from 'misskey-js';
 import type { Metric, MetricsNotes, MetricsOpportunities } from '@/scripts/hanami-metrics.js';
 import { engagementTotal, finiteMetric, formatMetric, dimensionValueLabel, partialNotice, metricDifference, metricRatio, safeUserBucket, seriesValues, shareWidth, sourceLabel, sumMetrics, useMetricsResource } from '@/scripts/hanami-metrics.js';
 import MkHanamiShareBars from '@/components/MkHanamiShareBars.vue';
@@ -39,9 +40,21 @@ vi.mock('@/components/MkSelect.vue', () => ({ default: {
 } }));
 vi.mock('@/i18n.js', () => {
 	const keys = 'overview stats usage engagement engagementRate served seen reaction reply renote activeUsersDay activeUsersWeek generationErrors breakdown dimension filter period opportunities topReactedNotes partialData lift users source contentType relationshipClass media freshness authorLocality trendTerm cluster all days7 days14 days30 days90 tlShare manualRefresh rateLimited failed attempts message userBucket date allocation contentOpportunities supplyWalls demand hiddenCost tuningDrift current suggested under over balanced loading error retry perTypeEngagement judge'.split(' ');
-	return { i18n: { tsx: { _hana: { _admin: { partialNotice: ({ startedAt }: { startedAt: string }) => `計測は ${startedAt} から始まったため、それより前の期間は一部の値しかありません` } } }, ts: { _time: { day: 'Day(s)' }, dayOverDayChanges: 'Day over day', _timelines: { home: 'Home', local: 'Local', social: 'Social', global: 'Global' }, _hana: {
+	const overviewKeys = 'status gpuOk noteJudgeBacklog notRecorded personalFailures personalGeneration timesUnit peopleUnit numbers chartHint funnel engaged timings typical slow openJobs'.split(' ');
+	const overviewTsx = {
+		usersSub: ({ week, month }: { week: string; month: string }) => `week ${week} / month ${month}`,
+		engagementSub: ({ served, engaged }: { served: string; engaged: string }) => `served ${served} / engaged ${engaged}`,
+		failedOf: ({ total, rate }: { total: string; rate: string }) => `of ${total} (${rate})`,
+		countWithRate: ({ count, rate }: { count: string; rate: string }) => `${count} (${rate})`,
+		gpuOkWithDevice: ({ device }: { device: string }) => `OK (${device})`,
+		lockHeldBy: ({ job }: { job: string }) => `held by ${job}`,
+		judgeSub: ({ count, seconds }: { count: string; seconds: string }) => `failed ${count} / ${seconds}s`,
+		seconds: ({ seconds }: { seconds: string }) => `${seconds}s`,
+	};
+	const jobs = { gpu: 'GPU', gpuUnavailable: 'GPU unavailable', jobName: 'Job', lock: 'Lock', lockFree: 'Free', unknownOwner: 'Unknown', _job: { noteJudge: 'Note judge', topicJudge: 'Topic judge', generation: 'Common generation', tasteTick: 'Taste tick' }, _warning: { gpuUnavailable: 'GPU warning' } };
+	return { i18n: { tsx: { _hana: { _admin: { partialNotice: ({ startedAt }: { startedAt: string }) => `計測は ${startedAt} から始まったため、それより前の期間は一部の値しかありません`, _overview: overviewTsx, _jobs: { processed: ({ count }: { count: number }) => `${count} 件` } } } }, ts: { _time: { day: 'Day(s)' }, dayOverDayChanges: 'Day over day', _timelines: { home: 'Home', local: 'Local', social: 'Social', global: 'Global' }, _hana: {
 		hanamiTimeline: 'Hanami',
-		_admin: { ...Object.fromEntries(keys.map(key => [key, key])), share: 'Served share', engagementShare: 'Engagement share', unavailable: '—', noData: 'No data', noValueYet: 'まだ値がありません', partialNoticeNoDate: 'まだ計測が始まっていない、または一部の値しかありません', personal: '個人', common: '共通', _failureKind: { emptyResult: '候補が空', candidateLimit: '候補数の上限超過', lockTimeout: 'ロック待ちの時間切れ', exception: '例外', unknown: '不明' }, _dimensionValue: { unjudged: '未判定', ruleExcluded: 'ルールで除外', directFollow: 'フォロー中', known: '知り合い', unknownRelationship: 'つながりなし', within6h: '6時間以内', within24h: '6〜24時間', within3d: '1〜3日', older3d: '3日より前', unknown: '不明', image: '画像あり', text: '文字だけ', local: 'このサーバー', remote: 'ほかのサーバー', none: 'クラスタなし', clustered: 'クラスタあり', other: 'その他（少数の語）' } },
+		_admin: { ...Object.fromEntries(keys.map(key => [key, key])), _overview: Object.fromEntries(overviewKeys.map(key => [key, key])), _jobs: jobs, _trendTopicJudgeOutcome: { ok: 'Done', failed: 'Failed' }, sectionTune: 'Tune', axes: 'Axes', taste: 'Taste', share: 'Served share', engagementShare: 'Engagement share', unavailable: '—', noData: 'No data', noValueYet: 'まだ値がありません', partialNoticeNoDate: 'まだ計測が始まっていない、または一部の値しかありません', personal: '個人', common: '共通', _failureKind: { emptyResult: '候補が空', candidateLimit: '候補数の上限超過', lockTimeout: 'ロック待ちの時間切れ', exception: '例外', unknown: '不明' }, _dimensionValue: { unjudged: '未判定', ruleExcluded: 'ルールで除外', directFollow: 'フォロー中', known: '知り合い', unknownRelationship: 'つながりなし', within6h: '6時間以内', within24h: '6〜24時間', within3d: '1〜3日', older3d: '3日より前', unknown: '不明', image: '画像あり', text: '文字だけ', local: 'このサーバー', remote: 'ほかのサーバー', none: 'クラスタなし', clustered: 'クラスタあり', other: 'その他（少数の語）' } },
 		_recommendation: { _reason: { exploration: 'Explore' }, axisConfidenceHigh: 'High', axisConfidenceLow: 'Low', axisConfidenceNone: 'None' },
 	} } } };
 });
@@ -178,6 +191,8 @@ describe('MkHanamiSeriesChart', () => {
 		const config = chartMock.configs[0];
 		expect(config.data.datasets[0].data).toEqual([null, 200]);
 		expect(config.data.datasets[0].spanGaps).toBe(false);
+		expect(config.data.labels).toEqual(['9/19', '9/20']);
+		expect(config.options?.scales?.x?.ticks?.maxRotation).toBe(0);
 		expect(config.options?.scales?.y?.max).toBeUndefined();
 		expect(view.getByRole('img', { name: 'Engagement rate' })).toBeTruthy();
 		await view.rerender({ days: ['2026-09-20'], values: [0], label: 'Engagement rate', percent: true });
@@ -220,20 +235,68 @@ describe('metrics pages', () => {
 												series: { day: [range.to], hanamiUsers: [null], engagementRate: [2], failedBatches: [null] },
 			};
 		});
-		const view = render(HanamiOverview, { global: { directives: { tooltip: {} } } });
-		await waitFor(() => expect(view.container.textContent).toContain('Home: 50%'));
-		expect(view.container.textContent).toContain('manualRefresh / users / Day(s): —');
-		expect(view.container.textContent).toContain('Global: —');
+		const view = render(HanamiOverview, { props: { jobsStatus: null, narrow: false }, global: { directives: { tooltip: {} }, stubs: { MkTime: true } } });
+		const rowText = (label: string) => Array.from(view.container.querySelectorAll('tr')).find(row => row.querySelector('th')?.textContent?.includes(label))?.textContent;
+		await waitFor(() => expect(rowText('Home')).toBe('Home50%'));
+		expect(rowText('manualRefresh')).toBe('manualRefresh / users / Day(s)—');
+		expect(rowText('Global')).toBe('Global—');
 		expect(view.getAllByText('200%').length).toBeGreaterThan(0);
 		expect(view.getByText('u#a30f')).toBeTruthy();
-		expect(view.getByText('generationErrors', { selector: 'div' }).parentElement?.textContent).toBe('5generationErrors');
+		expect(view.container.textContent).toContain('of 5 (—)');
+		expect(view.getByRole('button', { name: /personalFailures/ }).textContent).toContain('2timesUnit');
 		expect(view.container.textContent).not.toContain('raw-user-id');
 		expect(view.container.textContent).not.toMatch(/\b(series|served|hiddenCost|usage|demand|snapshot)\./);
 		expect(view.container.textContent).not.toContain('利用者が少ないため非表示');
-		expect(view.container.textContent).toContain('候補が空: —');
-		expect(apiMock).toHaveBeenCalledWith('admin/hanami/metrics/breakdown', { range: { days: 30 }, dimension: 'source' }, undefined, expect.any(AbortSignal));
-		await fireEvent.update(view.getByRole('combobox'), '7');
+		expect(rowText('候補が空')).toBe('候補が空—');
+		// Identical coverage notices from the three panels are shown once.
+		expect(view.getAllByText('まだ計測が始まっていない、または一部の値しかありません')).toHaveLength(1);
+		expect(view.queryByText('Tune')).toBeNull();
+		expect(apiMock).toHaveBeenCalledWith('admin/hanami/metrics/breakdown', { range: { days: 14 }, dimension: 'source' }, undefined, expect.any(AbortSignal));
+		await fireEvent.click(view.getByRole('button', { name: 'days7' }));
 		await waitFor(() => expect(apiMock).toHaveBeenCalledWith('admin/hanami/metrics/summary', { range: { days: 7 } }, undefined, expect.any(AbortSignal)));
+	});
+	test('overview tiles switch the single chart and the status strip leads to the jobs section', async () => {
+		apiMock.mockReset();
+		chartMock.configs.length = 0;
+		const failedByKind = { emptyResult: 0, candidateLimit: 3, lockTimeout: 0, exception: 0, unknown: 0 };
+		apiMock.mockImplementation(async (endpoint: string) => {
+			if (endpoint.endsWith('/breakdown')) return breakdownResponse();
+			if (endpoint.endsWith('/errors')) return { range, coverage: { ...coverage, status: 'complete', unavailable: [] }, suppressed: [], personal: { byKind: failedByKind, byDay: [], recent: [] }, common: { recent: [] }, judge: { recent: [], backlog: 4 }, rateLimited: { byDay: [] } };
+			return { range, coverage: { ...coverage, status: 'complete', unavailable: [] }, denominator: 'visible', suppressed: [],
+				usage: { hanamiUsers: { day: 2, week: 5, month: 18 }, tlShare: { home: .5, local: 0, social: 0, global: 0, hanami: .5 }, manualRefreshPerUserDay: 1, rateLimited429: 0 },
+				engagement: { users: 5, served: 2000, seen: 1000, reaction: 80, reply: 0, renote: 0, engagementRate: .04, seenRate: .5, normalBaseline: { reaction: null, reply: null, renote: null } },
+				generation: { personal: { batches: 100, failed: 3, failedRate: .03, p50Ms: 3300, p95Ms: 5300, failedByKind }, common: { generations: 10, failed: 0, p50Ms: 2800, p95Ms: 4000 }, judge: { runs: 4556, failed: 5, p50Ms: 6300, p95Ms: 10800, backlog: 40, secPerNote: .62, runtime: 'cuda' } },
+				series: { day: ['2026-10-28', '2026-10-29'], hanamiUsers: [1, 2], engagementRate: [.03, .05], failedBatches: [3, 0] },
+			};
+		});
+		const navigate = vi.fn();
+		const at = '2026-10-29T12:00:00.000Z';
+		const jobsStatus = {
+			gpu: { available: false, device: null, deviceName: null, reason: 'no cuda', probedAt: at }, lock: { held: true, kind: 'noteJudge', acquiredAt: at, expiresInMs: 60000 }, topicJudgeWaiting: false,
+			queue: { truncated: false, jobs: [] }, runs: [], noteJudge: { backlog: 4000, secPerNote: .62 },
+			topicJudge: { at, outcome: 'ok', requested: { daily: 1, pairs: 1, titles: 1 }, saved: { daily: 1, same: 1, titles: 1 }, rejectedTitles: 0, lastSuccessAt: at },
+			recentFailures: [], warnings: ['gpuUnavailable'], events: [],
+		} satisfies entities.AdminHanamiJobsStatusResponse;
+		const view = render(HanamiOverview, { props: { jobsStatus, narrow: true, onNavigate: navigate }, global: { directives: { tooltip: {} }, stubs: { MkTime: true } } });
+		await waitFor(() => expect(view.getByRole('button', { name: /activeUsersDay/ }).getAttribute('aria-pressed')).toBe('true'));
+		expect(chartMock.configs.at(-1)?.data.labels).toEqual(['10/28', '10/29']);
+		await fireEvent.click(view.getByRole('button', { name: /engagementRate/ }));
+		await waitFor(() => expect(chartMock.configs.at(-1)?.data.datasets[0].data).toEqual([3, 5]));
+		expect(view.getByRole('button', { name: /engagementRate/ }).getAttribute('aria-pressed')).toBe('true');
+		expect(view.getByText('served 2,000 / engaged 80')).toBeTruthy();
+		expect(view.container.textContent).toContain('1,000 (50%)');
+		expect(view.container.textContent).toContain('4,000 件');
+		expect(view.getByRole('button', { name: /Lock/ }).textContent).toContain('held by Note judge');
+		expect(view.getByRole('button', { name: 'days14' }).getAttribute('aria-pressed')).toBe('true');
+		expect(view.container.textContent).toContain('failed 5 / 0.62s');
+		expect(view.getByRole('row', { name: /personalGeneration/ }).textContent).toBe('personalGeneration3.3s5.3s');
+		expect(view.getByText('GPU warning')).toBeTruthy();
+		await fireEvent.click(view.getByRole('button', { name: /GPU unavailable/ }));
+		expect(navigate).toHaveBeenLastCalledWith('jobs');
+		await fireEvent.click(view.getByRole('button', { name: /personalFailures/ }));
+		await waitFor(() => expect(chartMock.configs.at(-1)?.data.datasets[0].data).toEqual([3, 0]));
+		await fireEvent.click(view.getByRole('button', { name: 'Taste' }));
+		expect(navigate).toHaveBeenLastCalledWith('taste');
 	});
 	test('stats uses other-dimension filters; a P3 failure does not hide the breakdown', async () => {
 		apiMock.mockReset();

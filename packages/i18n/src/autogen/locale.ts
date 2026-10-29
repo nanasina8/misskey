@@ -15022,6 +15022,120 @@ export interface Locale extends ILocale {
              * ジョブ
              */
             "jobs": string;
+            /**
+             * 見る
+             */
+            "sectionView": string;
+            /**
+             * 調整する
+             */
+            "sectionTune": string;
+            /**
+             * 調整
+             */
+            "tune": string;
+            /**
+             * 注意があります
+             */
+            "attention": string;
+            "_overview": {
+                /**
+                 * いまの状態
+                 */
+                "status": string;
+                /**
+                 * 正常
+                 */
+                "gpuOk": string;
+                /**
+                 * 正常（{device}）
+                 */
+                "gpuOkWithDevice": ParameterizedString<"device">;
+                /**
+                 * 使用中（{job}）
+                 */
+                "lockHeldBy": ParameterizedString<"job">;
+                /**
+                 * 投稿の判定のたまり
+                 */
+                "noteJudgeBacklog": string;
+                /**
+                 * 記録なし
+                 */
+                "notRecorded": string;
+                /**
+                 * 個人の生成の失敗
+                 */
+                "personalFailures": string;
+                /**
+                 * 個人の生成
+                 */
+                "personalGeneration": string;
+                /**
+                 * 回
+                 */
+                "timesUnit": string;
+                /**
+                 * 人
+                 */
+                "peopleUnit": string;
+                /**
+                 * 主な数字
+                 */
+                "numbers": string;
+                /**
+                 * 週 {week} 人・月 {month} 人
+                 */
+                "usersSub": ParameterizedString<"week" | "month">;
+                /**
+                 * 配信 {served} のうち反応 {engaged}
+                 */
+                "engagementSub": ParameterizedString<"served" | "engaged">;
+                /**
+                 * {total} 回のうち（{rate}）
+                 */
+                "failedOf": ParameterizedString<"total" | "rate">;
+                /**
+                 * {count}（{rate}）
+                 */
+                "countWithRate": ParameterizedString<"count" | "rate">;
+                /**
+                 * 失敗 {count} 回・1件 {seconds} 秒
+                 */
+                "judgeSub": ParameterizedString<"count" | "seconds">;
+                /**
+                 * 数字のタイルを押すと、グラフが切り替わります
+                 */
+                "chartHint": string;
+                /**
+                 * 配信から反応まで
+                 */
+                "funnel": string;
+                /**
+                 * 反応した
+                 */
+                "engaged": string;
+                /**
+                 * かかった時間
+                 */
+                "timings": string;
+                /**
+                 * ふつう
+                 */
+                "typical": string;
+                /**
+                 * 遅い時
+                 */
+                "slow": string;
+                /**
+                 * {seconds} 秒
+                 */
+                "seconds": ParameterizedString<"seconds">;
+                /**
+                 * ジョブを見る
+                 */
+                "openJobs": string;
+            };
             "_jobs": {
                 /**
                  * 問題は見つかっていません

@@ -90,17 +90,27 @@ describe('Hanami jobs tab', () => {
 	});
 	test('polls every 15 seconds, refreshes manually, then stops and aborts when leaving the tab', async () => {
 		const view = render(Hanami, { global });
-		const tabs = Array.from(view.container.querySelectorAll('nav button')).map(el => el.textContent);
-		expect(tabs.indexOf('ジョブ')).toBe(tabs.indexOf('判定器') + 1);
-		await fireEvent.click(view.getByRole('button', { name: 'ジョブ' })); await settle(); expect(api).toHaveBeenCalledTimes(1);
-		await vi.advanceTimersByTimeAsync(14999); expect(api).toHaveBeenCalledTimes(1);
-		await vi.advanceTimersByTimeAsync(1); await settle(); expect(api).toHaveBeenCalledTimes(2);
+		// The shell polls a one-event status for its attention dot; only the jobs tab asks for 30 events.
+		const tabCalls = () => api.mock.calls.filter(call => (call[1] as { eventsLimit?: number }).eventsLimit === 30);
+		const tabs = Array.from(view.container.querySelectorAll('nav button')).map(el => el.textContent?.trim());
+		expect(tabs.slice(0, 4)).toEqual(['概要', '統計', 'ジョブ', 'トレンド']);
+		await fireEvent.click(view.getByRole('button', { name: 'ジョブ' })); await settle(); expect(tabCalls()).toHaveLength(1);
+		expect(view.getByRole('button', { name: 'ジョブ' }).getAttribute('aria-current')).toBe('page');
+		await vi.advanceTimersByTimeAsync(14999); expect(tabCalls()).toHaveLength(1);
+		await vi.advanceTimersByTimeAsync(1); await settle(); expect(tabCalls()).toHaveLength(2);
 		expect(view.container.textContent).toContain(j.lastFetched);
 		api.mockImplementationOnce(() => new Promise(() => undefined));
-		await fireEvent.click(view.getByRole('button', { name: '更新' })); await settle(); expect(api).toHaveBeenCalledTimes(3);
-		const signal = api.mock.calls[2][3] as AbortSignal;
+		await fireEvent.click(view.getByRole('button', { name: '更新' })); await settle(); expect(tabCalls()).toHaveLength(3);
+		const signal = tabCalls()[2][3] as AbortSignal;
 		await fireEvent.click(view.getByRole('button', { name: '概要' })); expect(signal.aborted).toBe(true);
-		await vi.advanceTimersByTimeAsync(60000); expect(api).toHaveBeenCalledTimes(3);
+		await vi.advanceTimersByTimeAsync(60000); expect(tabCalls()).toHaveLength(3);
+	});
+	test('marks the jobs section when the shell status has warnings', async () => {
+		api.mockResolvedValue({ ...snapshot(), warnings: ['gpuUnavailable'] });
+		const view = render(Hanami, { global }); await settle();
+		expect(api).toHaveBeenCalledWith('admin/hanami/jobs-status', { eventsLimit: 1 }, undefined, expect.any(AbortSignal));
+		expect(view.getByRole('button', { name: `ジョブ ${i18n.ts._hana._admin.attention}` })).toBeTruthy();
+		expect(view.getByRole('button', { name: '概要' }).textContent).not.toContain(i18n.ts._hana._admin.attention);
 	});
 	test('does not overlap slow requests and drops late completion after unmount', async () => {
 		let resolve!: (value: entities.AdminHanamiJobsStatusResponse) => void;
