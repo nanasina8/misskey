@@ -34,16 +34,22 @@ describe('Hanami tuning API PostgreSQL contracts', () => {
 			expect(await query('SELECT "hanamiTuning", "hanamiRecommendationAxes" FROM user_profile')).toEqual([{ hanamiTuning: {}, hanamiRecommendationAxes: { globalPopular: 'high' } }]);
 			expect(await query('SELECT reason FROM hanami_user_feed_refresh')).toEqual([{ reason: 'normal' }]);
 			await query(`INSERT INTO hanami_recommendation_event SELECT 'me', 'n' || i, 'globalPopular', 'seen', 'personal', now() FROM generate_series(1,200) i;
-				INSERT INTO hanami_recommendation_event SELECT 'me', 'n' || i, 'globalPopular', e, 'personal', now() FROM generate_series(1,10) i CROSS JOIN unnest(ARRAY['reaction','reply','renote']) e;
+				INSERT INTO hanami_recommendation_event SELECT 'me', 'n' || i, 'globalPopular', 'served', 'personal', now() FROM generate_series(1,200) i;
+				INSERT INTO hanami_recommendation_event SELECT 'me', 'n' || i, 'globalPopular', e, NULL, now() FROM generate_series(1,10) i CROSS JOIN unnest(ARRAY['reaction','reply','renote']) e;
+				INSERT INTO hanami_recommendation_event VALUES ('me','common-only','globalPopular','served','common',now()), ('me','common-only','globalPopular','reaction',NULL,now()),
+					('me','n150','trending','reaction',NULL,now());
 				INSERT INTO hanami_recommendation_event VALUES ('me','n1','globalPopular','seen','personal',now()), ('me','old','globalPopular','seen','personal',now()-interval '15 days'), ('me','common','globalPopular','seen','common',now()), ('me','normal','normal','seen','personal',now());
 				INSERT INTO hanami_recommendation_event SELECT 'someone-else', 'n' || i, 'globalPopular', 'seen', 'personal', now() FROM generate_series(1,100) i;
-				INSERT INTO hanami_recommendation_event SELECT 'someone-else', 'n' || i, 'globalPopular', 'reaction', 'personal', now() FROM generate_series(1,20) i`);
+				INSERT INTO hanami_recommendation_event SELECT 'someone-else', 'n' || i, 'globalPopular', 'served', 'personal', now() FROM generate_series(1,100) i;
+				INSERT INTO hanami_recommendation_event SELECT 'someone-else', 'n' || i, 'globalPopular', 'reaction', NULL, now() FROM generate_series(1,20) i`);
 			// Null occurredAt must fall back for both personal and server counts.
 			await query(`UPDATE hanami_recommendation_event SET "occurredAt" = NULL WHERE "noteId" = 'n1';
 				INSERT INTO hanami_recommendation_event VALUES
 					('me','old-null','globalPopular','seen','personal',NULL,now()-interval '15 days'),
-					('me','future-null','globalPopular','reaction','personal',NULL,now()+interval '1 day'),
-					('someone-else','old-null','globalPopular','reaction','personal',NULL,now()-interval '15 days')`);
+					('me','future-null','globalPopular','served','personal',NULL,now()+interval '1 day'),
+					('me','future-null','globalPopular','reaction',NULL,NULL,now()+interval '1 day'),
+					('someone-else','old-null','globalPopular','served','personal',NULL,now()-interval '15 days'),
+					('someone-else','old-null','globalPopular','reaction',NULL,NULL,now()-interval '15 days')`);
 			// A manually enabled default-off axis remains eligible for aggregation.
 			const endpoint = new SuggestionEndpoint({ query } as never, { hanamiRecommendationAxisConfig: { globalPopular: { default: false } } } as never, { userProfileCache: { fetch: async (userId: string) => { expect(userId).toBe('me'); return { hanamiRecommendationAxes: { globalPopular: 'normal' } }; } } } as never);
 			const result = await endpoint.exec({}, { id: 'me' } as never, null);

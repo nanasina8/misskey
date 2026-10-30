@@ -11,18 +11,27 @@ export const HANAMI_TUNING_MIN_REACTIONS = 10;
 export const HANAMI_TUNING_PRIOR_SEEN = 30;
 export type HanamiTuningCounts = { axis: HanamiAxis; seen: number; reactions: number; serverSeen: number; serverReactions: number };
 
-/** Only aggregates leave the database; distinct (user, note) counts preserve each viewer's reaction rate. */
+/**
+ * Only aggregates leave the database; distinct (user, note) counts preserve each viewer's reaction rate.
+ * Engagement rows are written without feedKind (recordEngagement), so a NULL-feedKind engagement counts
+ * when the same viewer was served that note on the personal feed under the same axis.
+ */
 export const HANAMI_TUNING_COUNTS_SQL = `
-	SELECT source AS axis,
-		COUNT(DISTINCT "noteId") FILTER (WHERE "userId" = $1 AND "eventType" = 'seen')::int AS seen,
-		COUNT(DISTINCT "noteId") FILTER (WHERE "userId" = $1 AND "eventType" IN ('reaction', 'reply', 'renote'))::int AS reactions,
-		COUNT(DISTINCT ("userId", "noteId")) FILTER (WHERE "eventType" = 'seen')::int AS "serverSeen",
-		COUNT(DISTINCT ("userId", "noteId")) FILTER (WHERE "eventType" IN ('reaction', 'reply', 'renote'))::int AS "serverReactions"
-	FROM hanami_recommendation_event
-	WHERE "feedKind" = 'personal' AND source = ANY($2::varchar[])
-		AND COALESCE("occurredAt", "createdAt") >= clock_timestamp() - INTERVAL '14 days' AND COALESCE("occurredAt", "createdAt") <= clock_timestamp()
-		AND "eventType" IN ('seen', 'reaction', 'reply', 'renote')
-	GROUP BY source
+	SELECT e.source AS axis,
+		COUNT(DISTINCT e."noteId") FILTER (WHERE e."userId" = $1 AND e."eventType" = 'seen')::int AS seen,
+		COUNT(DISTINCT e."noteId") FILTER (WHERE e."userId" = $1 AND e."eventType" IN ('reaction', 'reply', 'renote'))::int AS reactions,
+		COUNT(DISTINCT (e."userId", e."noteId")) FILTER (WHERE e."eventType" = 'seen')::int AS "serverSeen",
+		COUNT(DISTINCT (e."userId", e."noteId")) FILTER (WHERE e."eventType" IN ('reaction', 'reply', 'renote'))::int AS "serverReactions"
+	FROM hanami_recommendation_event e
+	WHERE e.source = ANY($2::varchar[])
+		AND COALESCE(e."occurredAt", e."createdAt") >= clock_timestamp() - INTERVAL '14 days' AND COALESCE(e."occurredAt", e."createdAt") <= clock_timestamp()
+		AND ((e."eventType" = 'seen' AND e."feedKind" = 'personal')
+			OR (e."eventType" IN ('reaction', 'reply', 'renote') AND (e."feedKind" = 'personal' OR (e."feedKind" IS NULL AND EXISTS (
+				SELECT 1 FROM hanami_recommendation_event s
+				WHERE s."userId" = e."userId" AND s."noteId" = e."noteId" AND s."eventType" = 'served'
+					AND s."feedKind" = 'personal' AND s.source = e.source
+			)))))
+	GROUP BY e.source
 `;
 
 export function suggestHanamiTuning(rows: readonly HanamiTuningCounts[], tuning: ResolvedHanamiTuning) {
