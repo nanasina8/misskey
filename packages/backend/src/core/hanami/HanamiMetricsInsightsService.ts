@@ -5,7 +5,7 @@
 
 import { Inject, Injectable } from '@nestjs/common';
 import { DI } from '@/di-symbols.js';
-import { HANAMI_FOR_YOU_AXES } from './HanamiForYouInterleave.js';
+import { AXIS_MAX_SHARE, EXPLORATION_SHARE, HANAMI_FOR_YOU_AXES } from './HanamiForYouInterleave.js';
 import { HANAMI_METRICS_DIMENSIONS, METRICS_COHORT_CTE, METRICS_COLLECTION_GAP_SQL, jstDay, shiftMetricsDay, metricRatio, rangeDays, rangeParameters, resolveRange } from './HanamiMetricsContracts.js';
 import { HanamiMetricsQueryService } from './HanamiMetricsQueryService.js';
 import { HANAMI_DIAGNOSTIC_REASONS, HanamiMetricsDiagnosticsService } from './HanamiMetricsDiagnosticsService.js';
@@ -17,16 +17,10 @@ import type { DataSource } from 'typeorm';
 
 export type { HanamiMetricsOpportunities, HanamiMetricsWhatIf, HanamiMetricsNotes } from './HanamiMetricsInsightsContracts.js';
 
+const baseCap = (axis: HanamiAxis, confidence: keyof HanamiMetricsCaps): number => axis === 'exploration' ? EXPLORATION_SHARE[confidence] : AXIS_MAX_SHARE[confidence][axis] ?? 0;
 /** Base caps at normal axis levels, NOT personalized caps. Parity-tested against interleave. */
-export const HANAMI_INSIGHTS_CAPS: Readonly<Record<HanamiAxis, Readonly<HanamiMetricsCaps>>> = Object.freeze({
-	globalPopular: Object.freeze({ high: 0.30, low: 0.55, none: 0.75 }),
-	neighborTrending: Object.freeze({ high: 0.25, low: 0.12, none: 0 }),
-	reactionSimilar: Object.freeze({ high: 0.15, low: 0.08, none: 0 }),
-	catchup: Object.freeze({ high: 0.07, low: 0.03, none: 0 }),
-	trending: Object.freeze({ high: 0.12, low: 0.12, none: 0.12 }),
-	fof: Object.freeze({ high: 0.03, low: 0.02, none: 0.03 }),
-	exploration: Object.freeze({ high: 0.08, low: 0.08, none: 0.10 }),
-});
+export const HANAMI_INSIGHTS_CAPS: Readonly<Record<HanamiAxis, Readonly<HanamiMetricsCaps>>> = Object.freeze(Object.fromEntries(HANAMI_FOR_YOU_AXES.map(axis =>
+	[axis, Object.freeze({ high: baseCap(axis, 'high'), low: baseCap(axis, 'low'), none: baseCap(axis, 'none') })])) as Record<HanamiAxis, Readonly<HanamiMetricsCaps>>);
 
 export function allocationVerdict(ratio: number): 'under' | 'over' | 'balanced' {
 	return ratio >= 1.3 ? 'under' : ratio <= 0.7 ? 'over' : 'balanced';

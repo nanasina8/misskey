@@ -90,7 +90,7 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		});
 	});
 
-	it('confidence=none で AXIS_MAX_SHARE の cap を尊重（limit=10 → gp8/trending2/fof1/exploration1）', () => {
+	it('confidence=none で AXIS_MAX_SHARE の cap を尊重（limit=10 → gp8/trending1/fof1/exploration1）', () => {
 		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>([
 			['globalPopular', uniqueCands('gp', 20)],
 			['trending', uniqueCands('tr', 20)],
@@ -101,12 +101,12 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		]);
 		const out = hanamiInterleave({ confidence: 'none', limit: 10, axisCandidates });
 		const c = countBySource(out);
-		expect(c.globalPopular).toBe(8); // ceil(10*0.75)
-		expect(c.trending).toBe(2); // ceil(10*0.12)
-		expect(c.fof).toBe(1); // ceil(10*0.03)
+		expect(c.globalPopular).toBe(8); // ceil(10*0.74)
+		expect(c.trending).toBe(1); // ceil(10*0.10)
+		expect(c.fof).toBe(1); // ceil(10*0.06)
 		expect(c.exploration).toBe(1); // ceil(10*0.10)
 		expect(c.neighborTrending).toBeUndefined(); // 軸順に無い
-		expect(out.length).toBe(12);
+		expect(out.length).toBe(11);
 	});
 
 	it('Q1: 有効軸で比率再配分する（OFFは0、量「多」は実際に増える）', () => {
@@ -126,10 +126,10 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		const c = countBySource(out);
 		expect(c.globalPopular).toBeUndefined(); // OFF=0
 		expect(c.exploration).toBeUndefined(); // OFF=0
-		// 有効なのは trending(高=0.12*1.6=0.192) と fof(普通=0.03)。budget(=limit*1.0=10) を比率配分:
-		//   trending=ceil(10*0.192/0.222)=9 / fof=ceil(10*0.03/0.222)=2。固定cap時代(trending2/fof1)より増える。
-		expect(c.trending).toBe(9);
-		expect(c.fof).toBe(2);
+		// 有効なのは trending(高=0.10*1.6=0.16) と fof(普通=0.06)。budget(=limit*1.0=10) を比率配分:
+		//   trending=ceil(10*0.16/0.22)=8 / fof=ceil(10*0.06/0.22)=3。固定cap時代(trending1/fof1)より増える。
+		expect(c.trending).toBe(8);
+		expect(c.fof).toBe(3);
 		expect(out.length).toBe(11);
 	});
 
@@ -140,7 +140,7 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		]);
 		const amounts = new Map<HanamiAxis, number>([['trending', 1]]);
 		const out = hanamiInterleave({ confidence: 'none', limit: 10, axisCandidates, amounts });
-		// OFF軸(globalPopular)は一切出ない。単独有効軸がページを埋める（固定cap=ceil(10*0.12)=2件ではない）。
+		// OFF軸(globalPopular)は一切出ない。単独有効軸がページを埋める（固定cap=ceil(10*0.10)=1件ではない）。
 		expect(out.every(o => o.source === 'trending')).toBe(true);
 		expect(out.length).toBeGreaterThanOrEqual(10);
 	});
@@ -238,7 +238,7 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		// former per-window slice/recount quadratic implementation, not p95 timing.
 		expect(Date.now() - startedAt).toBeLessThan(5000);
 		expect(out.length).toBeGreaterThanOrEqual(210);
-		expect(out.length).toBeLessThanOrEqual(212); // none-confidence cap headroom
+		expect(out.length).toBeLessThanOrEqual(213); // none-confidence cap headroom (ceil may add one per axis)
 	});
 
 	it('checks every final visible window against old-head seed and earlier selected segments', () => {
@@ -303,7 +303,7 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 	});
 
 	it('全体が limit 未満なら有効軸から fallback overflow（§6.1-6）', () => {
-		// high は gp cap=ceil(10*0.30)=3。gp のみ候補→ normal で3件→ limit 未満なので残りを overflow で埋める。
+		// high は gp cap=ceil(10*0.22)=3。gp のみ候補→ normal で3件→ limit 未満なので残りを overflow で埋める。
 		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>([
 			['globalPopular', uniqueCands('gp', 10)],
 		]);
@@ -375,15 +375,15 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		]);
 		const out = hanamiInterleave({ confidence: 'high', limit: 20, axisCandidates, amounts });
 		expect(countBySource(out)).toEqual({
-			neighborTrending: 13,
-			reactionSimilar: 5,
-			catchup: 4,
+			neighborTrending: 16,
+			reactionSimilar: 2,
+			catchup: 3,
 			fof: 2,
 		});
 	});
 
 	it('FoF だけ候補が残る実データでも fallback overflow でページを埋める', () => {
-		// high は fof cap=ceil(10*0.03)=1。FoF だけ候補がある場合でも1件で止めない。
+		// high は fof cap=ceil(10*0.04)=1。FoF だけ候補がある場合でも1件で止めない。
 		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>([
 			['fof', uniqueCands('fof', 10)],
 		]);
@@ -452,8 +452,8 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 			hanamiAxisOrder('high').map(axis => [axis, uniqueCands(axis, 30)] as [HanamiAxis, ForYouCandidate[]]),
 		);
 		const out = hanamiInterleave({ confidence: 'high', limit: 10, axisCandidates });
-		// cap 合計（high）= ceil(10*0.30)+ceil(0.25)+ceil(0.15)+ceil(0.12)+ceil(0.07)+ceil(0.03)+ceil(0.08[exp])
-		//             = 3+3+2+2+1+1+1 = 13（>limit）だが、これは pre-safety の上限。limit ページ取得は呼び出し側。
+		// cap 合計（high）= ceil(10*0.22)+ceil(0.38)+ceil(0.09)+ceil(0.07)+ceil(0.12)+ceil(0.04)+ceil(0.08[exp])
+		//             = 3+4+1+1+2+1+1 = 13（>limit）だが、これは pre-safety の上限。limit ページ取得は呼び出し側。
 		expect(out.length).toBe(13);
 		// fallback overflow は発生しない（通常capだけで limit 以上）。
 		expect(out.some(o => o.fallbackOverflow)).toBe(false);

@@ -59,13 +59,13 @@ describe('Hanami tuning v3', () => {
 		}
 		expect(resolveHanamiTuning({}, { popular: { default: false }, globalPopular: { default: true } }).amounts.get('globalPopular')).toBe(1);
 	});
-	test('all-one caps preserve the old defaults and discovery shares are 61/53/42/34/24 within one point', () => {
+	test('all-one caps preserve the base defaults and discovery shares are 44/39/29/24/16 within one point', () => {
 		const order = hanamiAxisOrder('high');
 		expect(computeCaps('high', 210, order, resolveHanamiTuning({}).amounts)).toEqual(computeCaps('high', 210, order));
 		for (let d = 0; d < 5; d++) {
 			const caps = computeCaps('high', 210, order, resolveHanamiTuning(profile(2, 2, d)).amounts);
 			const share = 100 * ((caps.get('globalPopular') ?? 0) + (caps.get('trending') ?? 0)) / [...caps.values()].reduce((a, b) => a + b, 0);
-			expect(Math.abs(share - [61, 53, 42, 34, 24][d])).toBeLessThanOrEqual(1);
+			expect(Math.abs(share - [44, 39, 29, 24, 16][d])).toBeLessThanOrEqual(1);
 		}
 	});
 	test('four axes multiply and re-sort by relationship and note age; excluded axes keep their scores', () => {

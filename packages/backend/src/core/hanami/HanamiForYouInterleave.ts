@@ -61,10 +61,13 @@ const AXIS_ORDER: Record<HanamiConfidence, HanamiAxis[]> = {
 };
 
 // AXIS_MAX_SHARE（§10）。cap は上限であり予約枠ではない（§6.1-3/-10。ceil と候補不足で実表示は揺れる）。
+// 2026-10-31 本番30日（10/02〜10/31、18人・見た1,999件・反応153件）の「見た投稿あたりの反応率」で直した。
+// 式は「あなたの反応から」と同じ: 倍率 = √(軸の率 / 全体の率) を 0.5〜2 倍に収め、発見（exploration）は減らさない。
+// 各 confidence で発見以外の合計は据え置き。旧値 high: gp .30 / nt .25 / rs .15 / cu .07 / tr .12 / fof .03。
 export const AXIS_MAX_SHARE: Record<HanamiConfidence, Partial<Record<HanamiAxis, number>>> = {
-	high: { globalPopular: 0.30, neighborTrending: 0.25, reactionSimilar: 0.15, catchup: 0.07, trending: 0.12, fof: 0.03 },
-	low: { globalPopular: 0.55, neighborTrending: 0.12, reactionSimilar: 0.08, catchup: 0.03, trending: 0.12, fof: 0.02 },
-	none: { globalPopular: 0.75, neighborTrending: 0.00, reactionSimilar: 0.00, catchup: 0.00, trending: 0.12, fof: 0.03 },
+	high: { globalPopular: 0.22, neighborTrending: 0.38, reactionSimilar: 0.09, catchup: 0.12, trending: 0.07, fof: 0.04 },
+	low: { globalPopular: 0.47, neighborTrending: 0.22, reactionSimilar: 0.05, catchup: 0.06, trending: 0.09, fof: 0.03 },
+	none: { globalPopular: 0.74, neighborTrending: 0.00, reactionSimilar: 0.00, catchup: 0.00, trending: 0.10, fof: 0.06 },
 };
 
 // exploration の専用 quota（§10/§14-D1。score には混ぜない独立枠）。

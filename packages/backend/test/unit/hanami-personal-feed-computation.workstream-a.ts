@@ -306,8 +306,9 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		});
 		const overflowResult = await overflow.service.computePersonalFeed(input());
 		const firstOverflowSegment = overflowResult.items.slice(0, overflowResult.segmentLengths[0]);
-		expect(firstOverflowSegment.slice(0, 3).every(item => item.reasonMetadata.fallbackOverflow === undefined)).toBe(true);
-		expect(firstOverflowSegment.slice(3).every(item => item.reasonMetadata.fallbackOverflow === true)).toBe(true);
+		// catchup cap in a 30-item segment = ceil(30 × 0.12) = 4; the rest is overflow.
+		expect(firstOverflowSegment.slice(0, 4).every(item => item.reasonMetadata.fallbackOverflow === undefined)).toBe(true);
+		expect(firstOverflowSegment.slice(4).every(item => item.reasonMetadata.fallbackOverflow === true)).toBe(true);
 	});
 
 	test('restarts quota and cursor state for seven 30-item segments and keeps discarded headroom available', async () => {

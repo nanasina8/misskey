@@ -116,7 +116,7 @@ export function suggestHanamiAmount(current: number, base: number, factor: numbe
 
 // Kept in sync with high-confidence backend shares by hanami-tuning.contract.ts.
 export const HANAMI_TUNING_ORDER: readonly HanamiAxis[] = ['globalPopular', 'neighborTrending', 'reactionSimilar', 'trending', 'catchup', 'fof', 'exploration'];
-export const HANAMI_BASE_SHARE: Record<HanamiAxis, number> = { globalPopular: 0.30, neighborTrending: 0.25, reactionSimilar: 0.15, catchup: 0.07, trending: 0.12, fof: 0.03, exploration: 0.08 };
+export const HANAMI_BASE_SHARE: Record<HanamiAxis, number> = { globalPopular: 0.22, neighborTrending: 0.38, reactionSimilar: 0.09, catchup: 0.12, trending: 0.07, fof: 0.04, exploration: 0.08 };
 export function computeHanamiCaps(amounts: ReadonlyMap<HanamiAxis, number>, limit = 210): Map<HanamiAxis, number> {
 	const natural = HANAMI_TUNING_ORDER.reduce((sum, axis) => sum + HANAMI_BASE_SHARE[axis], 0);
 	const total = HANAMI_TUNING_ORDER.reduce((sum, axis) => sum + HANAMI_BASE_SHARE[axis] * (amounts.get(axis) ?? 0), 0);
