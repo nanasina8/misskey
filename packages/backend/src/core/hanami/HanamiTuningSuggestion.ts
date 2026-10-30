@@ -4,7 +4,7 @@
  */
 
 import { HANAMI_FOR_YOU_AXES, type HanamiAxis } from './HanamiForYouInterleave.js';
-import { roundHanamiWeight, type ResolvedHanamiTuning } from './HanamiTuning.js';
+import { suggestHanamiAmount, type ResolvedHanamiTuning } from './HanamiTuning.js';
 
 export const HANAMI_TUNING_MIN_SEEN = 200;
 export const HANAMI_TUNING_MIN_REACTIONS = 10;
@@ -34,7 +34,7 @@ export const HANAMI_TUNING_COUNTS_SQL = `
 	GROUP BY e.source
 `;
 
-export function suggestHanamiTuning(rows: readonly HanamiTuningCounts[], tuning: ResolvedHanamiTuning) {
+export function suggestHanamiTuning(rows: readonly HanamiTuningCounts[], tuning: ResolvedHanamiTuning, base: ReadonlyMap<HanamiAxis, number>) {
 	const byAxis = new Map(rows.map(row => [row.axis, row]));
 	const axes = HANAMI_FOR_YOU_AXES.map(axis => {
 		const row = byAxis.get(axis);
@@ -50,7 +50,7 @@ export function suggestHanamiTuning(rows: readonly HanamiTuningCounts[], tuning:
 	for (const axis of axes) {
 		let factor = mean > 0 ? Math.max(0.5, Math.min(2, Math.sqrt(axis.rate / mean))) : 1;
 		if (axis.axis === 'exploration') factor = Math.max(1, factor);
-		axis.suggested = roundHanamiWeight(axis.current * factor);
+		axis.suggested = suggestHanamiAmount(axis.current, base.get(axis.axis) ?? 0, factor);
 	}
 	return { eligible: totalSeen >= HANAMI_TUNING_MIN_SEEN && totalReactions >= HANAMI_TUNING_MIN_REACTIONS,
 		minSeen: HANAMI_TUNING_MIN_SEEN, minReactions: HANAMI_TUNING_MIN_REACTIONS, totalSeen, totalReactions, axes };

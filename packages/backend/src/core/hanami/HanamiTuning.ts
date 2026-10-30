@@ -102,6 +102,16 @@ export function resolveHanamiTuning(profile: HanamiTuningProfile, serverAxisConf
 	};
 }
 
+/** Suggestions scale the auto amounts, not the current ones, so re-applying the same suggestion is idempotent. */
+export function resolveHanamiSuggestionBase(tuning: HanamiTuning, serverAxisConfig: HanamiAxisServerConfig = {}): Map<HanamiAxis, number> {
+	return resolveHanamiTuning({ hanamiTuning: { ...tuning, mode: 'auto' } }, serverAxisConfig).amounts;
+}
+
+/** An axis the user turned off stays off; a manually enabled default-off axis scales from the normal amount. */
+export function suggestHanamiAmount(current: number, base: number, factor: number): number {
+	return current <= 0 ? 0 : roundHanamiWeight((base > 0 ? base : 1) * factor);
+}
+
 export function hanamiTuningScore(axis: HanamiAxis, candidate: Pick<ForYouCandidate, 'score' | 'relationshipClass'>, createdAt: number, now: number, tuning: ResolvedHanamiTuning): number {
 	if (!(['globalPopular', 'trending', 'neighborTrending', 'reactionSimilar'] as HanamiAxis[]).includes(axis)) return candidate.score;
 	const age = now - createdAt;

@@ -10,7 +10,7 @@ import { Endpoint } from '@/server/api/endpoint-base.js';
 import type { MiMeta } from '@/models/Meta.js';
 import { CacheService } from '@/core/CacheService.js';
 import { HANAMI_FOR_YOU_AXES } from '@/core/hanami/HanamiForYouInterleave.js';
-import { resolveHanamiTuning, getAvailableHanamiAxes } from '@/core/hanami/HanamiTuning.js';
+import { normalizeHanamiTuning, resolveHanamiTuning, resolveHanamiSuggestionBase, getAvailableHanamiAxes } from '@/core/hanami/HanamiTuning.js';
 import { HANAMI_TUNING_COUNTS_SQL, suggestHanamiTuning, type HanamiTuningCounts } from '@/core/hanami/HanamiTuningSuggestion.js';
 
 export const meta = {
@@ -49,10 +49,13 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private cacheService: CacheService,
 	) {
 		super(meta, paramDef, async (_ps, me) => {
-			const tuning = resolveHanamiTuning(await this.cacheService.userProfileCache.fetch(me.id), this.serverMeta.hanamiRecommendationAxisConfig);
+			const profile = await this.cacheService.userProfileCache.fetch(me.id);
+			const axisConfig = this.serverMeta.hanamiRecommendationAxisConfig;
+			const tuning = resolveHanamiTuning(profile, axisConfig);
+			const base = resolveHanamiSuggestionBase(normalizeHanamiTuning(profile, axisConfig), axisConfig);
 			const available = getAvailableHanamiAxes(this.serverMeta.hanamiRecommendationAxisConfig);
 			const rows = await this.db.query(HANAMI_TUNING_COUNTS_SQL, [me.id, available]) as HanamiTuningCounts[];
-			return suggestHanamiTuning(rows, tuning);
+			return suggestHanamiTuning(rows, tuning, base);
 		});
 	}
 }

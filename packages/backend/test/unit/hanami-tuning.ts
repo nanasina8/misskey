@@ -6,7 +6,7 @@
 import { describe, expect, test } from 'vitest';
 import { Ajv } from 'ajv';
 import { HANAMI_FOR_YOU_AXES, computeCaps, hanamiAxisOrder, hanamiInterleave, type ForYouCandidate, type HanamiAxis } from '@/core/hanami/HanamiForYouInterleave.js';
-import { normalizeHanamiTuning, resolveHanamiTuning, hanamiTuningScore, getAvailableHanamiAxes } from '@/core/hanami/HanamiTuning.js';
+import { normalizeHanamiTuning, resolveHanamiTuning, resolveHanamiSuggestionBase, suggestHanamiAmount, hanamiTuningScore, getAvailableHanamiAxes } from '@/core/hanami/HanamiTuning.js';
 import { hanamiTuningParamDef } from '@/models/json-schema/hanami-tuning.js';
 import { suggestHanamiTuning } from '@/core/hanami/HanamiTuningSuggestion.js';
 
@@ -103,7 +103,7 @@ describe('Hanami tuning v3', () => {
 	});
 	test('suggestion shrinkage, square root, clamps, exploration, eligibility and aggregate-only response', () => {
 		const rows = [{ axis: 'globalPopular' as const, seen: 200, reactions: 10, serverSeen: 1000, serverReactions: 100 }, { axis: 'trending' as const, seen: 10, reactions: 30, serverSeen: 100, serverReactions: 100 }, { axis: 'exploration' as const, seen: 20, reactions: 0, serverSeen: 100, serverReactions: 0 }];
-		const result = suggestHanamiTuning(rows, resolveHanamiTuning({}));
+		const result = suggestHanamiTuning(rows, resolveHanamiTuning({}), resolveHanamiTuning({}).amounts);
 		expect(result.eligible).toBe(true); expect(result.axes[0].rate).toBeCloseTo(13 / 230);
 		expect(result.axes.find(a => a.axis === 'trending')?.suggested).toBe(2);
 		expect(result.axes.find(a => a.axis === 'exploration')?.suggested).toBe(1);
@@ -111,10 +111,25 @@ describe('Hanami tuning v3', () => {
 		const mean = result.axes.reduce((sum, a) => sum + a.seen / result.totalSeen * a.rate, 0);
 		expect(result.axes[0].suggested).toBe(Math.round(Math.sqrt((13 / 230) / mean) * 20) / 20);
 		expect(JSON.stringify(result)).not.toMatch(/serverSeen|serverReactions|serverRate|userId|noteId/);
-		expect(suggestHanamiTuning([], resolveHanamiTuning({})).eligible).toBe(false);
-		expect(suggestHanamiTuning([{ ...rows[0], seen: 199 }], resolveHanamiTuning({})).eligible).toBe(false);
-		expect(suggestHanamiTuning([{ ...rows[0], reactions: 9 }], resolveHanamiTuning({})).eligible).toBe(false);
-		expect(suggestHanamiTuning(rows, resolveHanamiTuning({}, { globalPopular: { available: false } })).axes[0].suggested).toBe(0);
+		expect(suggestHanamiTuning([], resolveHanamiTuning({}), resolveHanamiTuning({}).amounts).eligible).toBe(false);
+		expect(suggestHanamiTuning([{ ...rows[0], seen: 199 }], resolveHanamiTuning({}), resolveHanamiTuning({}).amounts).eligible).toBe(false);
+		expect(suggestHanamiTuning([{ ...rows[0], reactions: 9 }], resolveHanamiTuning({}), resolveHanamiTuning({}).amounts).eligible).toBe(false);
+		expect(suggestHanamiTuning(rows, resolveHanamiTuning({}, { globalPopular: { available: false } }), resolveHanamiTuning({}, { globalPopular: { available: false } }).amounts).axes[0].suggested).toBe(0);
+	});
+	test('suggestion scales the auto amounts so re-applying is idempotent; turned-off axes stay off', () => {
+		const rows = [{ axis: 'globalPopular' as const, seen: 200, reactions: 2, serverSeen: 1000, serverReactions: 100 }, { axis: 'trending' as const, seen: 100, reactions: 30, serverSeen: 100, serverReactions: 30 }];
+		const auto = normalizeHanamiTuning({});
+		const base = resolveHanamiSuggestionBase(auto);
+		const first = suggestHanamiTuning(rows, resolveHanamiTuning({ hanamiTuning: auto }), base);
+		const amounts = Object.fromEntries(first.axes.map(a => [a.axis, a.suggested]));
+		const applied = { ...auto, mode: 'manual' as const, manual: { amounts, freshWeights: [1, 1, 1], closeWeights: [1, 1, 1], authorCap: 2 } };
+		const second = suggestHanamiTuning(rows, resolveHanamiTuning({ hanamiTuning: applied }), resolveHanamiSuggestionBase(applied));
+		expect(second.axes.map(a => a.suggested)).toEqual(first.axes.map(a => a.suggested));
+		expect(second.axes.every(a => a.suggested === a.current)).toBe(true);
+		const off = { ...applied, manual: { ...applied.manual, amounts: { ...amounts, trending: 0 } } };
+		expect(suggestHanamiTuning(rows, resolveHanamiTuning({ hanamiTuning: off }), resolveHanamiSuggestionBase(off)).axes.find(a => a.axis === 'trending')?.suggested).toBe(0);
+		// A manually enabled default-off axis scales from the normal amount instead of collapsing to zero.
+		expect(suggestHanamiAmount(1.4, 0, 1.2)).toBe(1.2);
 	});
 });
 

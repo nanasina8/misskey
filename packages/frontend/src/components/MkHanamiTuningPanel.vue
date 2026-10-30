@@ -69,7 +69,7 @@ import MkHanamiTuningRange from '@/components/MkHanamiTuningRange.vue';
 import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { useHanamiTuning } from '@/utility/hanami-tuning-client.js';
-import { HANAMI_TUNING_ORDER, hanamiComposition, resetHanamiTuning, resolveHanamiTuning, switchHanamiMode, roundHanamiWeight, getAvailableHanamiAxes } from '@/utility/hanami-tuning.js';
+import { HANAMI_TUNING_ORDER, hanamiComposition, resetHanamiTuning, resolveHanamiTuning, switchHanamiMode, resolveHanamiSuggestionBase, suggestHanamiAmount, getAvailableHanamiAxes } from '@/utility/hanami-tuning.js';
 import type { HanamiAxis, HanamiTuning, HanamiTuningUpdate } from '@/utility/hanami-tuning.js';
 
 const props = withDefaults(defineProps<{
@@ -126,11 +126,12 @@ async function loadSuggestion(): Promise<void> {
 const suggestionAxes = computed(() => {
 	if (!suggestion.value) return [];
 	const mean = suggestion.value.axes.reduce((sum, axis) => sum + axis.seen / (suggestion.value!.totalSeen || 1) * axis.rate, 0);
+	const base = resolveHanamiSuggestionBase(tuning.value, config);
 	return suggestion.value.axes.map(axis => {
 		const current = resolved.value.amounts.get(axis.axis) ?? 0;
 		let factor = mean > 0 ? Math.max(0.5, Math.min(2, Math.sqrt(axis.rate / mean))) : 1;
 		if (axis.axis === 'exploration') factor = Math.max(1, factor);
-		return { ...axis, current, suggested: roundHanamiWeight(current * factor) };
+		return { ...axis, current, suggested: suggestHanamiAmount(current, base.get(axis.axis) ?? 0, factor) };
 	});
 });
 // Weights have 0.05 steps; allow for floating-point subtraction at that boundary.
