@@ -288,7 +288,10 @@ export class AiModerationService {
 	 */
 	@bindThis
 	public async processPending(): Promise<void> {
-		const items = await this.redis.zpopmin(AI_MODERATION_PENDING_KEY, AI_MODERATION_MAX_BATCH);
+		// ioredis の zpopmin は [member, score, member, score, ...] の平らな配列を返すので、組に直す
+		const popped = await this.redis.zpopmin(AI_MODERATION_PENDING_KEY, AI_MODERATION_MAX_BATCH);
+		const items: Array<[string, string]> = [];
+		for (let i = 0; i + 1 < popped.length; i += 2) items.push([popped[i], popped[i + 1]]);
 		if (items.length === 0) return;
 
 		const noteIds = items.map(([member]) => member);

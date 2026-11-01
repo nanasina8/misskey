@@ -62,7 +62,7 @@ function makeService() {
 	const redis = {
 		zadd: vi.fn(async (..._args: any[]) => 1),
 		zrem: vi.fn(async (..._args: any[]) => 1),
-		zpopmin: vi.fn(async (..._args: any[]) => ([] as [string, string][])),
+		zpopmin: vi.fn(async (..._args: any[]) => ([] as string[])),
 		incr: vi.fn(async (..._args: any[]) => 1),
 		expire: vi.fn(async (..._args: any[]) => 1),
 		hset: vi.fn(async (..._args: any[]) => 1),
@@ -232,7 +232,7 @@ describe('AiModerationService.processPending', () => {
 
 	test('runSpamJudge が例外でも全件が localLabel=unavailable で保存される', async () => {
 		const m = makeService();
-		m.redis.zpopmin.mockResolvedValue([['note1', '100']]);
+		m.redis.zpopmin.mockResolvedValue(['note1', '100']); // ioredis と同じ平らな配列
 		m.redis.hmget.mockResolvedValue([JSON.stringify(['unsolicitedContact'])]);
 		m.notesRepository.findBy.mockResolvedValue([makeNote({ text: 'セール中 shop.example/sale ormh' })]);
 		vi.spyOn(m.service, 'runSpamJudge').mockRejectedValue(new Error('boom'));
@@ -248,7 +248,7 @@ describe('AiModerationService.processPending', () => {
 
 	test('保存時に links / textFingerprint / contactUserIds / contactKind が埋まる', async () => {
 		const m = makeService();
-		m.redis.zpopmin.mockResolvedValue([['note1', '100']]);
+		m.redis.zpopmin.mockResolvedValue(['note1', '100']); // ioredis と同じ平らな配列
 		m.redis.hmget.mockResolvedValue([JSON.stringify({
 			triggers: ['newAuthorLink'],
 			contactUserIds: ['local1', 'local2'],
@@ -268,7 +268,7 @@ describe('AiModerationService.processPending', () => {
 
 	test('古い形式（配列）の Redis 値も triggers として読める', async () => {
 		const m = makeService();
-		m.redis.zpopmin.mockResolvedValue([['note1', '100']]);
+		m.redis.zpopmin.mockResolvedValue(['note1', '100']); // ioredis と同じ平らな配列
 		m.redis.hmget.mockResolvedValue([JSON.stringify(['unsolicitedContact'])]);
 		m.notesRepository.findBy.mockResolvedValue([makeNote({ text: 'セール中 shop.example/sale ormh' })]);
 		vi.spyOn(m.service, 'runSpamJudge').mockResolvedValue(new Map());
@@ -282,11 +282,26 @@ describe('AiModerationService.processPending', () => {
 	});
 });
 
+describe('AiModerationService.processPending の取り出し', () => {
+	test('複数件を正しい投稿 ID で扱う（zpopmin は平らな配列）', async () => {
+		const m = makeService();
+		m.redis.zpopmin.mockResolvedValue(['noteA', '100', 'noteB', '101']);
+		m.redis.hmget.mockResolvedValue([null, null]);
+		m.notesRepository.findBy.mockResolvedValue([makeNote({ id: 'noteA' }), makeNote({ id: 'noteB' })]);
+		vi.spyOn(m.service, 'runSpamJudge').mockResolvedValue(new Map());
+
+		await m.service.processPending();
+
+		expect(m.redis.hmget).toHaveBeenCalledWith('aiModeration:triggers', 'noteA', 'noteB');
+		expect(m.aiModerationQueueRepository.insertOne).toHaveBeenCalledTimes(2);
+	});
+});
+
 describe('AiModerationService 自動で隠す', () => {
 	function flaggedSetup(mode: 'off' | 'trial' | 'on') {
 		const m = makeService();
 		(m.meta as any).aiModerationAutoHideMode = mode;
-		m.redis.zpopmin.mockResolvedValue([['note1', '100']]);
+		m.redis.zpopmin.mockResolvedValue(['note1', '100']); // ioredis と同じ平らな配列
 		m.redis.hmget.mockResolvedValue([JSON.stringify({ triggers: ['unsolicitedContact'], contactUserIds: ['local1'], contactKind: 'dm' })]);
 		m.notesRepository.findBy.mockResolvedValue([makeNote({ text: 'セール中 shop.example/sale ormh' })]);
 		vi.spyOn(m.service, 'runSpamJudge').mockResolvedValue(new Map([['note1', { normal: 0.01, spam: 0.9, scam: 0.08, abuse: 0.01 }]]));
@@ -340,7 +355,7 @@ describe('AiModerationService 自動で隠す', () => {
 describe('AiModerationService 実行環境の記録', () => {
 	test('判定のたびに確かめた実行環境を Redis に残す（API のプロセスから読めるように）', async () => {
 		const m = makeService();
-		m.redis.zpopmin.mockResolvedValue([['note1', '100']]);
+		m.redis.zpopmin.mockResolvedValue(['note1', '100']); // ioredis と同じ平らな配列
 		m.redis.hmget.mockResolvedValue([JSON.stringify({ triggers: ['unsolicitedContact'], contactUserIds: [], contactKind: null })]);
 		vi.spyOn(m.service, 'runSpamJudge').mockResolvedValue(new Map());
 		await m.service.processPending();
