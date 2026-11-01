@@ -12,7 +12,6 @@ export const meta = {
 
 	requireCredential: true,
 	requireModerator: true,
-	secure: true,
 	kind: 'read:admin:ai-moderation',
 
 	description: '全体スキャンを始める前の見積もり（対象の投稿数・判定に回る件数・かかる時間）。',

@@ -16,7 +16,6 @@ export const meta = {
 
 	requireCredential: true,
 	requireModerator: true,
-	secure: true,
 	kind: 'read:admin:ai-moderation',
 
 	description: '判定で引っかけたアカウントを、いまの状態（凍結・相手のサーバーで消えた・隠している・隠すのをやめた・何もしていない）付きで新しい順に返す。',

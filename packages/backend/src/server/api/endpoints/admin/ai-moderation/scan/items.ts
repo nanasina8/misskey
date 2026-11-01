@@ -17,7 +17,6 @@ export const meta = {
 
 	requireCredential: true,
 	requireModerator: true,
-	secure: true,
 	kind: 'read:admin:ai-moderation',
 
 	description: '全体スキャンで判定した投稿を新しい順に返す（既定は引っかけたものだけ）。',

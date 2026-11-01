@@ -26,7 +26,6 @@ export const meta = {
 
 	requireCredential: true,
 	requireAdmin: true,
-	secure: true,
 	kind: 'read:admin:queue',
 
 	description: 'はなみ GPU 判定キューの様子（判定係・GPU の取り合い・種類ごとの待ち・次にやる順・最近の判定と出来事）と、いつも成り立っているはずのことの見張り（checks）を返す。不具合を見つけるための調べもの用。',

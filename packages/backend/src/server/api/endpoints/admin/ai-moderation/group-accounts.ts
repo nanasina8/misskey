@@ -25,7 +25,6 @@ export const meta = {
 
 	requireCredential: true,
 	requireModerator: true,
-	secure: true,
 	kind: 'read:admin:ai-moderation',
 
 	res: {

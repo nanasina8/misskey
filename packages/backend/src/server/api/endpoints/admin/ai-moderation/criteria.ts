@@ -14,7 +14,6 @@ export const meta = {
 
 	requireCredential: true,
 	requireModerator: true,
-	secure: true,
 	kind: 'read:admin:ai-moderation',
 
 	description: 'AI 投稿チェックの判定条件の版（モデル・判定スクリプトのハッシュ・閾値・目印の点数）を新しい順に返す。current はいまの版。',

@@ -31,7 +31,6 @@ export const meta = {
 
 	requireCredential: true,
 	requireModerator: true,
-	secure: true,
 	kind: 'read:admin:ai-moderation',
 
 	description: '全体スキャンの進み具合と集計（判定の内訳・サーバー・リンク・目印・判定条件の版）。scanId を省くといちばん新しいもの。',

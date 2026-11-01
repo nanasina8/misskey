@@ -17,7 +17,6 @@ export const meta = {
 
 	requireCredential: true,
 	requireModerator: true,
-	secure: true,
 	kind: 'read:admin:ai-moderation',
 
 	description: '全体スキャンの結果を、判定条件（使った版すべての中身）と一緒に書き出す。項目は古い順に最大 5000 件ずつ（sinceId で続き）。',

@@ -21,7 +21,6 @@ export const meta = {
 
 	requireCredential: true,
 	requireModerator: true,
-	secure: true,
 	kind: 'read:admin:ai-moderation',
 
 	description: '判定で引っかけたアカウントのその後（このサーバーで凍結・相手のサーバーで消えた・隠している・隠すのをやめた）を集計する。',
