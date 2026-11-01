@@ -253,6 +253,7 @@ export const paramDef = {
 		aiModerationExternalApiKey: { type: 'string', nullable: true },
 		aiModerationExternalModel: { type: 'string', nullable: true },
 		aiModerationExternalVisibilities: { type: 'array', nullable: true, uniqueItems: true, items: { type: 'string', enum: ['public', 'home', 'followers', 'specified'] } },
+		aiModerationExternalIncludeRemote: { type: 'boolean' },
 		aiModerationAutoHideMode: { type: 'string', enum: ['off', 'trial', 'on'] },
 		aiModerationAutoHideThreshold: { type: 'number', minimum: 0, maximum: 1 },
 		aiModerationAutoHideDailyLimit: { type: 'integer', minimum: 0, maximum: 10000 },
@@ -867,6 +868,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			if (ps.aiModerationExternalModel !== undefined) {
 				set.aiModerationExternalModel = ps.aiModerationExternalModel === '' ? null : ps.aiModerationExternalModel;
+			}
+
+			if (ps.aiModerationExternalIncludeRemote !== undefined) {
+				set.aiModerationExternalIncludeRemote = ps.aiModerationExternalIncludeRemote;
 			}
 
 			if (Array.isArray(ps.aiModerationExternalVisibilities)) {

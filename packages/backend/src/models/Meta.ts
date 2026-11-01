@@ -818,6 +818,12 @@ export class MiMeta {
 	})
 	public aiModerationExternalVisibilities: string[];
 
+	/** 外部 API にリモートの投稿も送るか（既定はこのサーバーの投稿だけ） */
+	@Column('boolean', {
+		default: false,
+	})
+	public aiModerationExternalIncludeRemote: boolean;
+
 	/** 自動で隠す: off / trial（記録だけ） / on（既定） */
 	@Column('varchar', {
 		length: 16,

@@ -64,6 +64,7 @@ function makeService() {
 		zrem: vi.fn(async (..._args: any[]) => 1),
 		zpopmin: vi.fn(async (..._args: any[]) => ([] as string[])),
 		incr: vi.fn(async (..._args: any[]) => 1),
+		hincrby: vi.fn(async (..._args: any[]) => 1),
 		expire: vi.fn(async (..._args: any[]) => 1),
 		hset: vi.fn(async (..._args: any[]) => 1),
 		hmget: vi.fn(async (..._args: any[]) => ([] as (string | null)[])),
@@ -125,8 +126,18 @@ function makeService() {
 		isModerator: vi.fn(async (..._args: any[]) => false),
 	};
 
+	// 本物と同じく meta を見て、送るかどうかを決める（送った結果は check を差し替えて変える）
 	const aiModerationExternalService = {
 		moderate: vi.fn(async (..._args: any[]) => null),
+		isConfigured: vi.fn(() => (meta as any).aiModerationExternalEnabled === true),
+		skipReason: vi.fn((input: { visibility: string; isRemote: boolean }) => {
+			const m = meta as any;
+			if (!m.aiModerationExternalEnabled) return 'off';
+			if (!m.aiModerationExternalVisibilities.includes(input.visibility)) return 'visibility';
+			if (input.isRemote && !m.aiModerationExternalIncludeRemote) return 'remote';
+			return null;
+		}),
+		check: vi.fn(async (..._args: any[]): Promise<any> => ({ status: 'ok', result: { flagged: false, categories: [], scores: {}, model: 'omni-moderation-latest' } })),
 	};
 
 	const systemWebhookService = {
@@ -422,5 +433,105 @@ describe('AiModerationService 実行環境の記録', () => {
 		const m = makeService();
 		m.redis.get.mockResolvedValue(JSON.stringify({ available: false, device: null, deviceName: null, reason: 'no gpu', probedAt: '2026-11-01T00:00:00.000Z' }));
 		expect(await m.service.loadRuntime()).toMatchObject({ available: false, reason: 'no gpu' });
+	});
+});
+
+describe('AiModerationService 外部 API（misskey-tempura と同じく、絞り込みに当たらない投稿も送る）', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	function withExternal(includeRemote = false) {
+		const m = makeService();
+		Object.assign(m.meta, { aiModerationExternalEnabled: true, aiModerationExternalIncludeRemote: includeRemote });
+		return m;
+	}
+
+	test('絞り込みに当たらないこのサーバーの投稿は、外部だけで確かめる分（externalCheck）として待ち行列に入る', async () => {
+		const m = withExternal();
+		await m.service.considerNote(makeNote(), baseInput({ user: { id: 'author1', host: null }, pollChoices: ['はい', 'いいえ'] }));
+
+		const hsetCall = m.redis.hset.mock.calls.find(c => c[0] === AI_MODERATION_TRIGGERS_KEY);
+		expect(hsetCall).toBeDefined();
+		const saved = JSON.parse(hsetCall![2]);
+		expect(saved.triggers).toEqual(['externalCheck']);
+		expect(saved.pollChoices).toEqual(['はい', 'いいえ']);
+		// Qwen の分の1日の上限とは別に数える
+		expect(m.redis.incr).toHaveBeenCalledWith(expect.stringMatching(/^aiModeration:externalOnly:daily:/));
+		// 宛先もリンクも無いので DB には触れない
+		expect(m.usersRepository.findOneBy).not.toHaveBeenCalled();
+	});
+
+	test('リモートの投稿は、リモートも送る設定のときだけ入れる', async () => {
+		const off = withExternal(false);
+		await off.service.considerNote(makeNote(), baseInput());
+		expect(off.redis.zadd).not.toHaveBeenCalled();
+
+		const on = withExternal(true);
+		await on.service.considerNote(makeNote(), baseInput());
+		expect(on.redis.zadd).toHaveBeenCalled();
+	});
+
+	test('外部だけの分は GPU に回さず、引っかからなければ保存しない', async () => {
+		const m = withExternal();
+		m.redis.zpopmin.mockResolvedValue(['note1', String(Date.now())]);
+		m.redis.hmget.mockResolvedValue([JSON.stringify({ triggers: ['externalCheck'], contactUserIds: [], contactKind: null, pollChoices: null })]);
+		m.notesRepository.findBy.mockResolvedValue([makeNote({ userHost: null })]);
+
+		await m.service.processPending();
+
+		expect(m.hanamiGpuQueueService.enqueue).not.toHaveBeenCalled();
+		expect(m.aiModerationExternalService.check).toHaveBeenCalledTimes(1);
+		expect(m.aiModerationQueueRepository.insertOne).not.toHaveBeenCalled();
+		expect(m.redis.hincrby).toHaveBeenCalledWith(expect.stringMatching(/^aiModeration:external:/), 'ok', 1);
+	});
+
+	test('外部だけの分が引っかかったら確認待ちとして保存し、自動では隠さない', async () => {
+		const m = withExternal();
+		Object.assign(m.meta, { aiModerationAutoHideMode: 'on' });
+		m.aiModerationExternalService.check.mockResolvedValue({ status: 'ok', result: { flagged: true, categories: ['harassment'], scores: { harassment: 0.9 }, model: 'omni-moderation-latest' } });
+		m.redis.zpopmin.mockResolvedValue(['note1', String(Date.now())]);
+		m.redis.hmget.mockResolvedValue([JSON.stringify({ triggers: ['externalCheck'], contactUserIds: [], contactKind: null, pollChoices: null })]);
+		m.notesRepository.findBy.mockResolvedValue([makeNote({ userHost: null })]);
+
+		await m.service.processPending();
+
+		expect(m.aiModerationQueueRepository.insertOne).toHaveBeenCalledTimes(1);
+		const row = m.aiModerationQueueRepository.insertOne.mock.calls[0][0] as any;
+		expect(row.flagged).toBe(true);
+		expect(row.externalCategories).toEqual(['harassment']);
+		expect(row.triggers).toEqual(['externalCheck']);
+		expect(m.aiModerationHiddenService.hide).not.toHaveBeenCalled();
+	});
+
+	test('回数制限で送れなかった外部だけの分は待ち行列に戻し、その回は残りを送らない', async () => {
+		const m = withExternal();
+		m.aiModerationExternalService.check.mockResolvedValue({ status: 'error', httpStatus: 429, retryable: true, message: '429 Too Many Requests' });
+		const now = Date.now();
+		m.redis.zpopmin.mockResolvedValue(['note1', String(now), 'note2', String(now)]);
+		const meta = JSON.stringify({ triggers: ['externalCheck'], contactUserIds: [], contactKind: null, pollChoices: null });
+		m.redis.hmget.mockResolvedValue([meta, meta]);
+		m.notesRepository.findBy.mockResolvedValue([makeNote({ id: 'note1', userHost: null }), makeNote({ id: 'note2', userHost: null })]);
+
+		await m.service.processPending();
+
+		expect(m.aiModerationExternalService.check).toHaveBeenCalledTimes(1);
+		expect(m.redis.zadd).toHaveBeenCalledWith(AI_MODERATION_PENDING_KEY, 'NX', now, 'note1');
+		expect(m.redis.zadd).toHaveBeenCalledWith(AI_MODERATION_PENDING_KEY, 'NX', now, 'note2');
+		expect(m.redis.set).toHaveBeenCalledWith('aiModeration:external:lastError', expect.stringContaining('429'), 'EX', expect.any(Number));
+		expect(m.aiModerationQueueRepository.insertOne).not.toHaveBeenCalled();
+	});
+
+	test('1時間以上送れなかった外部だけの分は捨てる', async () => {
+		const m = withExternal();
+		m.aiModerationExternalService.check.mockResolvedValue({ status: 'error', httpStatus: 429, retryable: true, message: '429' });
+		m.redis.zpopmin.mockResolvedValue(['note1', String(Date.now() - 2 * 60 * 60 * 1000)]);
+		m.redis.hmget.mockResolvedValue([JSON.stringify({ triggers: ['externalCheck'], contactUserIds: [], contactKind: null, pollChoices: null })]);
+		m.notesRepository.findBy.mockResolvedValue([makeNote({ userHost: null })]);
+
+		await m.service.processPending();
+
+		expect(m.redis.zadd).not.toHaveBeenCalled();
+		expect(m.redis.hincrby).toHaveBeenCalledWith(expect.stringMatching(/^aiModeration:external:/), 'expired', 1);
 	});
 });

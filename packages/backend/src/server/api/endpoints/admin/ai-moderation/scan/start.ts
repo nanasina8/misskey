@@ -37,6 +37,7 @@ export const paramDef = {
 		target: { type: 'string', enum: ['all', 'local', 'remote'], default: 'all' },
 		days: { type: 'integer', minimum: 1, maximum: 3650, nullable: true, default: null },
 		maxJudged: { type: 'integer', minimum: 1, maximum: 10000000, nullable: true, default: 5000, description: '判定する上限。null なら上限なし（終わりまで）' },
+		useExternal: { type: 'boolean', default: false, description: '判定した投稿を外部 API（OpenAI 互換の moderations）にも送る。DM は送らない。リモートの投稿も送る' },
 	},
 	required: [],
 } as const;
@@ -53,6 +54,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					target: ps.target,
 					days: ps.days ?? null,
 					maxJudged: ps.maxJudged ?? null,
+					useExternal: ps.useExternal,
 				}, me);
 				return await this.aiModerationScanService.packScan(scan);
 			} catch (err) {

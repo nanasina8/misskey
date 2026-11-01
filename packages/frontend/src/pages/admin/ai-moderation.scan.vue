@@ -27,6 +27,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<template #label>{{ i18n.ts._aiModeration.scanUnlimited }}</template>
 				</MkSwitch>
 			</div>
+			<MkSwitch v-model="useExternal" :disabled="!externalConfigured">
+				<template #label>{{ i18n.ts._aiModeration.scanUseExternal }}</template>
+				<template #caption>{{ externalConfigured ? i18n.ts._aiModeration.scanUseExternalCaption : i18n.ts._aiModeration.scanUseExternalUnavailable }}</template>
+			</MkSwitch>
 		</div>
 		<div class="_buttons">
 			<MkButton :disabled="estimating" @click="runEstimate"><i class="ti ti-calculator"></i> {{ i18n.ts._aiModeration.scanEstimate }}</MkButton>
@@ -75,12 +79,17 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<template #key>{{ i18n.ts._aiModeration.scanCounts }}</template>
 					<template #value>{{ i18n.tsx._aiModeration.scanCountsValue({ scanned: show.scan.scannedCount, judged: show.scan.judgedCount, flagged: show.scan.flaggedCount, wouldHide: show.scan.wouldHideCount }) }}</template>
 				</MkKeyValue>
+				<MkKeyValue v-if="show.external">
+					<template #key>{{ i18n.ts._aiModeration.scanExternal }}</template>
+					<template #value>{{ i18n.tsx._aiModeration.scanExternalProgress({ done: show.external.done, total: show.external.done + show.external.pending + show.external.skipped + show.external.failed, flagged: show.external.flagged }) }}<span :class="$style.sub"><template v-if="show.external.pending > 0"> ・ {{ i18n.tsx._aiModeration.scanExternalPending({ count: show.external.pending }) }}</template><template v-if="show.external.skipped > 0"> ・ {{ i18n.tsx._aiModeration.scanExternalSkipped({ count: show.external.skipped }) }}</template><template v-if="show.external.failed > 0"> ・ {{ i18n.tsx._aiModeration.scanExternalFailed({ count: show.external.failed }) }}</template></span></template>
+				</MkKeyValue>
 				<MkKeyValue>
 					<template #key>{{ i18n.ts._aiModeration.scanStartedBy }}</template>
 					<template #value>{{ show.scan.startedBy ?? '—' }}<span :class="$style.sub"> ・ <MkTime :time="show.scan.createdAt"/><template v-if="show.scan.finishedAt"> 〜 <MkTime :time="show.scan.finishedAt"/></template></span></template>
 				</MkKeyValue>
 			</div>
 			<MkInfo v-if="show.scan.lastError" warn>{{ show.scan.lastError }}</MkInfo>
+			<MkInfo v-if="show.scan.externalLastError" warn>{{ i18n.ts._aiModeration.scanExternalError }} {{ show.scan.externalLastError }}</MkInfo>
 			<MkInfo v-if="show.scan.status === 'running' && tickStale" warn>{{ i18n.ts._aiModeration.scanTickStale }}</MkInfo>
 		</div>
 
@@ -117,6 +126,49 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</tbody>
 				</table>
 			</div>
+			<div v-if="show.external" class="_panel" :class="$style.panel">
+				<div :class="$style.cardLabel">{{ i18n.ts._aiModeration.scanExternalCompare }}</div>
+				<table :class="$style.table">
+					<thead>
+						<tr>
+							<th scope="col"></th>
+							<th scope="col">{{ i18n.ts._aiModeration.scanExternalColFlagged }}</th>
+							<th scope="col">{{ i18n.ts._aiModeration.scanExternalColNotFlagged }}</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr>
+							<th scope="row">{{ i18n.ts._aiModeration.scanExternalRowQwenFlagged }}</th>
+							<td>{{ show.external.both }}</td>
+							<td>{{ show.external.localOnly }}</td>
+						</tr>
+						<tr>
+							<th scope="row">{{ i18n.ts._aiModeration.scanExternalRowQwenNotFlagged }}</th>
+							<td>{{ show.external.externalOnly }}</td>
+							<td>{{ show.external.neither }}</td>
+						</tr>
+					</tbody>
+				</table>
+				<template v-if="show.external.categories.length > 0">
+					<div :class="$style.cardLabel">{{ i18n.ts._aiModeration.scanExternalCategories }}</div>
+					<table :class="$style.table">
+						<thead>
+							<tr>
+								<th scope="col"></th>
+								<th scope="col">{{ i18n.ts._aiModeration.scanColItems }}</th>
+								<th scope="col">{{ i18n.ts._aiModeration.scanExternalColQwenToo }}</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr v-for="row in show.external.categories" :key="row.category">
+								<td :class="$style.nameCell">{{ row.category }}</td>
+								<td>{{ row.items }}</td>
+								<td>{{ row.localFlagged }}</td>
+							</tr>
+						</tbody>
+					</table>
+				</template>
+			</div>
 			<div v-for="block in summaryBlocks" :key="block.title" class="_panel" :class="$style.panel">
 				<div :class="$style.cardLabel">{{ block.title }}</div>
 				<div v-if="block.rows.length === 0" :class="$style.sub">—</div>
@@ -142,19 +194,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</div>
 
 		<!-- 一覧 -->
-		<MkTabs
-			v-model:tab="itemFilter"
-			:tabs="[{
-				key: 'flagged',
-				title: i18n.ts._aiModeration.scanFilterFlagged,
-			}, {
-				key: 'wouldHide',
-				title: i18n.ts._aiModeration.scanFilterWouldHide,
-			}, {
-				key: 'notFlagged',
-				title: i18n.ts._aiModeration.scanFilterNotFlagged,
-			}]"
-		/>
+		<MkTabs v-model:tab="itemFilter" :tabs="itemTabs"/>
 		<MkPagination v-slot="{ items }" :key="`${show.scan.id}:${itemFilter}`" :paginator="itemsPaginator">
 			<div class="_panel" :class="$style.tableScroll">
 				<table :class="[$style.table, $style.items]">
@@ -164,6 +204,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							<th scope="col">{{ i18n.ts._aiModeration.accountCol }}</th>
 							<th scope="col">{{ i18n.ts._aiModeration.noteBody }}</th>
 							<th scope="col">{{ i18n.ts._aiModeration.aiJudgementCol }}</th>
+							<th v-if="show.scan.useExternal" scope="col">{{ i18n.ts._aiModeration.scanExternal }}</th>
 							<th scope="col">{{ i18n.ts._aiModeration.evidenceTitle }}</th>
 							<th scope="col">{{ i18n.ts._aiModeration.scanColWouldHide }}</th>
 						</tr>
@@ -177,6 +218,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 								<span v-else>{{ item.noteText }} <span :class="$style.sub">（{{ i18n.ts._aiModeration.noteDeleted }}）</span></span>
 							</td>
 							<td>{{ itemScore(item) }}</td>
+							<td v-if="show.scan.useExternal">{{ externalText(item) }}</td>
 							<td :class="$style.signalCell">{{ item.spamSignals.length > 0 ? item.spamSignals.map(spamSignalLabel).join('・') : '—' }}</td>
 							<td>{{ item.wouldHide ? i18n.ts._aiModeration.scanYes : '' }}</td>
 						</tr>
@@ -246,6 +288,9 @@ const { model: period, def: periodDef } = useMkSelect({
 });
 const maxJudged = ref<number | null>(5000);
 const unlimited = ref(false);
+const useExternal = ref(false);
+// 外部 API が使える設定か（状態 API から）。使えなければスキャンで外部も使うスイッチを押せない
+const externalConfigured = ref(false);
 // 見積もりで判定する件数（上限なしなら判定に回る見込みの件数ぜんぶ）
 const plannedJudged = computed(() => {
 	const candidates = estimate.value?.candidates ?? 0;
@@ -261,7 +306,18 @@ const estimating = ref(false);
 const starting = ref(false);
 const exporting = ref(false);
 const selectedScanId = ref<string | null>(null);
-const itemFilter = ref<'flagged' | 'wouldHide' | 'notFlagged'>('flagged');
+type ItemFilter = 'flagged' | 'wouldHide' | 'notFlagged' | 'externalFlagged' | 'externalOnly';
+const itemFilter = ref<ItemFilter>('flagged');
+
+const itemTabs = computed(() => [
+	{ key: 'flagged', title: t.scanFilterFlagged },
+	{ key: 'wouldHide', title: t.scanFilterWouldHide },
+	{ key: 'notFlagged', title: t.scanFilterNotFlagged },
+	...(show.value?.scan?.useExternal ? [
+		{ key: 'externalFlagged', title: t.scanFilterExternalFlagged },
+		{ key: 'externalOnly', title: t.scanFilterExternalOnly },
+	] : []),
+]);
 
 // 定期実行が10分以上動いていなければ、スキャンは進まない
 const lastTickAt = ref<string | null>(null);
@@ -287,6 +343,8 @@ async function reload(): Promise<void> {
 		]);
 		show.value = res;
 		lastTickAt.value = status.lastTickAt;
+		externalConfigured.value = status.external.configured;
+		if (!res.scan?.useExternal && (itemFilter.value === 'externalFlagged' || itemFilter.value === 'externalOnly')) itemFilter.value = 'flagged';
 		if (selectedScanId.value == null && res.scan != null) selectedScanId.value = res.scan.id;
 	} catch (err) {
 		error.value = errorText(err);
@@ -299,9 +357,9 @@ watch(selectedScanId, (id, old) => {
 	if (old != null && id !== old) void reload();
 });
 
-// 実行中は 30 秒ごとに読み直す
+// 実行中（外部 API の残りがあるときも）は 30 秒ごとに読み直す
 useInterval(() => {
-	if (show.value?.scan?.status === 'running') void reload();
+	if (show.value?.scan?.status === 'running' || (show.value?.external?.pending ?? 0) > 0) void reload();
 }, 30 * 1000, { immediate: false, afterMounted: true });
 
 async function runEstimate(): Promise<void> {
@@ -323,7 +381,7 @@ async function start(): Promise<void> {
 	if (canceled) return;
 	starting.value = true;
 	try {
-		const scan = await misskeyApi('admin/ai-moderation/scan/start', { mode: mode.value, target: target.value, days: days.value, maxJudged: unlimited.value ? null : (maxJudged.value ?? 5000) });
+		const scan = await misskeyApi('admin/ai-moderation/scan/start', { mode: mode.value, target: target.value, days: days.value, maxJudged: unlimited.value ? null : (maxJudged.value ?? 5000), useExternal: externalConfigured.value && useExternal.value });
 		selectedScanId.value = scan.id;
 		await reload();
 		os.success();
@@ -346,12 +404,22 @@ const itemsPaginator = markRaw(new Paginator('admin/ai-moderation/scan/items', {
 	limit: 30,
 	computedParams: computed(() => ({
 		scanId: show.value?.scan?.id ?? '',
-		flagged: itemFilter.value === 'notFlagged' ? false : true,
-		...(itemFilter.value === 'wouldHide' ? { wouldHide: true } : {}),
+		...itemFilterParams(itemFilter.value),
 	})),
 }));
 
-const csvColumns = ['noteId', 'noteCreatedAt', 'username', 'noteUserHost', 'noteVisibility', 'localLabel', 'spam', 'scam', 'abuse', 'normal', 'flagged', 'wouldHide', 'spamSignals', 'triggers', 'links', 'criteriaVersion', 'noteExists', 'noteText'] as const;
+function itemFilterParams(filter: ItemFilter): { flagged: boolean | null; wouldHide?: boolean; externalFlagged?: boolean } {
+	switch (filter) {
+		case 'flagged': return { flagged: true };
+		case 'wouldHide': return { flagged: true, wouldHide: true };
+		case 'notFlagged': return { flagged: false };
+		// 外部が引っかけたもの（Qwen の結果は問わない）と、外部だけが引っかけたもの
+		case 'externalFlagged': return { flagged: null, externalFlagged: true };
+		case 'externalOnly': return { flagged: false, externalFlagged: true };
+	}
+}
+
+const csvColumns = ['noteId', 'noteCreatedAt', 'username', 'noteUserHost', 'noteVisibility', 'localLabel', 'spam', 'scam', 'abuse', 'normal', 'flagged', 'wouldHide', 'spamSignals', 'externalStatus', 'externalFlagged', 'externalCategories', 'triggers', 'links', 'criteriaVersion', 'noteExists', 'noteText'] as const;
 
 function csvCell(value: unknown): string {
 	const s = value == null ? '' : Array.isArray(value) ? value.join(' ') : String(value);
@@ -453,6 +521,16 @@ function itemScore(item: ScanItem): string {
 	const top = item.localLabel ?? 'normal';
 	const value = top === 'normal' ? item.localScores.normal : top === 'spam' ? item.localScores.spam : top === 'scam' ? item.localScores.scam : item.localScores.abuse;
 	return `${scoreLabelText(top)} ${Math.round(value * 100)}%`;
+}
+
+function externalText(item: ScanItem): string {
+	switch (item.externalStatus) {
+		case 'done': return item.externalFlagged ? item.externalCategories.join('・') || t.scanExternalFlaggedPlain : t.scanExternalNotFlagged;
+		case 'pending': return t.scanExternalPendingShort;
+		case 'skipped': return t.scanExternalSkippedShort;
+		case 'failed': return t.scanExternalFailedShort;
+		default: return '—';
+	}
 }
 
 const summaryBlocks = computed(() => {

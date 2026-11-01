@@ -7328,6 +7328,98 @@ export interface Locale extends ILocale {
          */
         "scanFilterNotFlagged": string;
         /**
+         * 外部が引っかけた
+         */
+        "scanFilterExternalFlagged": string;
+        /**
+         * 外部だけが引っかけた
+         */
+        "scanFilterExternalOnly": string;
+        /**
+         * 外部 API にも送る
+         */
+        "scanUseExternal": string;
+        /**
+         * 判定した投稿を OpenAI 互換の moderations にも送り、Qwen と比べます。GPU とは別に定期実行ごとに少しずつ送るので、スキャンが終わったあとも続きます。DM は送りません。リモートの投稿も送ります
+         */
+        "scanUseExternalCaption": string;
+        /**
+         * 設定タブで外部 API をオンにし、API キーを入れると使えます
+         */
+        "scanUseExternalUnavailable": string;
+        /**
+         * 外部 API
+         */
+        "scanExternal": string;
+        /**
+         * {done}/{total} 件 ・ 引っかけ {flagged} 件
+         */
+        "scanExternalProgress": ParameterizedString<"done" | "total" | "flagged">;
+        /**
+         * 残り {count} 件
+         */
+        "scanExternalPending": ParameterizedString<"count">;
+        /**
+         * 送らなかった {count} 件
+         */
+        "scanExternalSkipped": ParameterizedString<"count">;
+        /**
+         * 失敗 {count} 件
+         */
+        "scanExternalFailed": ParameterizedString<"count">;
+        /**
+         * 外部 API が止まっています（次の定期実行でやり直します）:
+         */
+        "scanExternalError": string;
+        /**
+         * Qwen と外部 API の比べ（外部に送り終えた投稿）
+         */
+        "scanExternalCompare": string;
+        /**
+         * 外部: 引っかけ
+         */
+        "scanExternalColFlagged": string;
+        /**
+         * 外部: なし
+         */
+        "scanExternalColNotFlagged": string;
+        /**
+         * Qwen: 引っかけ
+         */
+        "scanExternalRowQwenFlagged": string;
+        /**
+         * Qwen: なし
+         */
+        "scanExternalRowQwenNotFlagged": string;
+        /**
+         * 外部 API のカテゴリ
+         */
+        "scanExternalCategories": string;
+        /**
+         * うち Qwen も
+         */
+        "scanExternalColQwenToo": string;
+        /**
+         * 引っかけ
+         */
+        "scanExternalFlaggedPlain": string;
+        /**
+         * なし
+         */
+        "scanExternalNotFlagged": string;
+        /**
+         * まだ
+         */
+        "scanExternalPendingShort": string;
+        /**
+         * 送っていない
+         */
+        "scanExternalSkippedShort": string;
+        /**
+         * 失敗
+         */
+        "scanExternalFailedShort": string;
+        /**
          * 隠す
          */
         "scanYes": string;
@@ -7556,6 +7648,42 @@ export interface Locale extends ILocale {
          */
         "triggerNewLocalContact": string;
         /**
+         * 外部 API だけで確認
+         */
+        "triggerExternalCheck": string;
+        /**
+         * 外部 API（今日）
+         */
+        "externalStatusLabel": string;
+        /**
+         * 使っていない
+         */
+        "externalStatusOff": string;
+        /**
+         * オンですが API キーがありません
+         */
+        "externalStatusNoKey": string;
+        /**
+         * 送った {sent} 件 ・ 引っかけ {flagged} 件 ・ 失敗 {error} 件
+         */
+        "externalStatusToday": ParameterizedString<"sent" | "flagged" | "error">;
+        /**
+         * このサーバーの投稿だけ
+         */
+        "externalStatusLocalOnly": string;
+        /**
+         * リモートも送る
+         */
+        "externalStatusWithRemote": string;
+        /**
+         * 送れずに捨てた {count} 件
+         */
+        "externalStatusDropped": ParameterizedString<"count">;
+        /**
+         * 最後の失敗
+         */
+        "externalStatusLastError": string;
+        /**
          * 同じリンクを他に {count} 人が投稿
          */
         "relatedSameLink": ParameterizedString<"count">;
@@ -7660,9 +7788,17 @@ export interface Locale extends ILocale {
          */
         "settingsExternal": string;
         /**
-         * OpenAI 互換の moderations API。既定はオフ
+         * OpenAI 互換の moderations API。オンにすると、絞り込みに当たった投稿だけでなく、このサーバーの投稿をすべて送ります（CW・本文・アンケートの選択肢）。絞り込みに当たらず外部だけが引っかけたものは確認待ちに入るだけで、自動では隠しません
          */
         "settingsExternalCaption": string;
+        /**
+         * リモートの投稿も送る
+         */
+        "settingsExternalIncludeRemote": string;
+        /**
+         * オフのときは、絞り込みに当たったリモートの投稿も送りません。全体スキャンで外部も使うときは、この設定にかかわらず送ります
+         */
+        "settingsExternalIncludeRemoteCaption": string;
         /**
          * URL（空なら OpenAI）
          */

@@ -8489,6 +8489,8 @@ export interface operations {
                             finishedAt: string | null;
                             lastError: string | null;
                             criteriaVersion: string;
+                            useExternal: boolean;
+                            externalLastError: string | null;
                         };
                         criteria: {
                             version: string;
@@ -8522,6 +8524,11 @@ export interface operations {
                             spamSignals: string[];
                             wouldHide: boolean;
                             criteriaVersion: string | null;
+                            /** @enum {string|null} */
+                            externalStatus: 'pending' | 'done' | 'skipped' | 'failed' | null;
+                            externalFlagged: boolean | null;
+                            externalCategories: string[];
+                            externalScores: Record<string, never> | null;
                             username: string | null;
                         }[];
                         next: string | null;
@@ -8588,6 +8595,9 @@ export interface operations {
                     label?: 'normal' | 'spam' | 'scam' | 'abuse';
                     host?: string | null;
                     signal?: string;
+                    /** @description 外部 API が引っかけたか（送り終えた項目だけ）。flagged: null と組み合わせると Qwen の結果を問わない */
+                    externalFlagged?: boolean;
+                    externalCategory?: string;
                     /** @default 30 */
                     limit?: number;
                     /** Format: misskey:id */
@@ -8630,6 +8640,11 @@ export interface operations {
                         spamSignals: string[];
                         wouldHide: boolean;
                         criteriaVersion: string | null;
+                        /** @enum {string|null} */
+                        externalStatus: 'pending' | 'done' | 'skipped' | 'failed' | null;
+                        externalFlagged: boolean | null;
+                        externalCategories: string[];
+                        externalScores: Record<string, never> | null;
                         user: components['schemas']['UserLite'] | null;
                     }[];
                 };
@@ -8726,6 +8741,8 @@ export interface operations {
                             finishedAt: string | null;
                             lastError: string | null;
                             criteriaVersion: string;
+                            useExternal: boolean;
+                            externalLastError: string | null;
                         } | null;
                         scans: {
                             /** Format: misskey:id */
@@ -8755,6 +8772,8 @@ export interface operations {
                             finishedAt: string | null;
                             lastError: string | null;
                             criteriaVersion: string;
+                            useExternal: boolean;
+                            externalLastError: string | null;
                         }[];
                         progress: number | null;
                         etaSeconds: number | null;
@@ -8788,6 +8807,23 @@ export interface operations {
                             accounts: number;
                             wouldHideAccounts: number;
                         }[];
+                        /** @description 外部 API の分（useExternal のスキャンだけ）。both 等は送り終えた項目での Qwen と外部の食い違い */
+                        external: {
+                            pending: number;
+                            done: number;
+                            skipped: number;
+                            failed: number;
+                            flagged: number;
+                            both: number;
+                            localOnly: number;
+                            externalOnly: number;
+                            neither: number;
+                            categories: {
+                                category: string;
+                                items: number;
+                                localFlagged: number;
+                            }[];
+                        } | null;
                     };
                 };
             };
@@ -8859,6 +8895,11 @@ export interface operations {
                      * @default 5000
                      */
                     maxJudged?: number | null;
+                    /**
+                     * @description 判定した投稿を外部 API（OpenAI 互換の moderations）にも送る。DM は送らない。リモートの投稿も送る
+                     * @default false
+                     */
+                    useExternal?: boolean;
                 };
             };
         };
@@ -8897,6 +8938,8 @@ export interface operations {
                         finishedAt: string | null;
                         lastError: string | null;
                         criteriaVersion: string;
+                        useExternal: boolean;
+                        externalLastError: string | null;
                     };
                 };
             };
@@ -8991,6 +9034,23 @@ export interface operations {
                         /** Format: date-time */
                         lastTickAt: string | null;
                         gpuHolder: string | null;
+                        /** @description 外部 API（今日、JST）。ok=引っかからなかった、skipped は送らなかった理由ごと、expired は回数制限などで1時間送れず捨てた外部だけの分 */
+                        external: {
+                            enabled: boolean;
+                            configured: boolean;
+                            includeRemote: boolean;
+                            today: {
+                                [key: string]: number;
+                            };
+                            externalOnlyEnqueuedToday: number;
+                            externalOnlyDroppedToday: number;
+                            lastError: {
+                                /** Format: date-time */
+                                at: string;
+                                httpStatus: number | null;
+                                message: string;
+                            } | null;
+                        };
                         /** Format: date-time */
                         lastJudgedAt: string | null;
                         runtime: {
@@ -14141,6 +14201,7 @@ export interface operations {
                         aiModerationExternalApiKey: string | null;
                         aiModerationExternalModel: string | null;
                         aiModerationExternalVisibilities: string[];
+                        aiModerationExternalIncludeRemote: boolean;
                         /** @enum {string} */
                         aiModerationAutoHideMode: 'off' | 'trial' | 'on';
                         aiModerationAutoHideThreshold: number;
@@ -17712,6 +17773,7 @@ export interface operations {
                     aiModerationExternalApiKey?: string | null;
                     aiModerationExternalModel?: string | null;
                     aiModerationExternalVisibilities?: ('public' | 'home' | 'followers' | 'specified')[] | null;
+                    aiModerationExternalIncludeRemote?: boolean;
                     /** @enum {string} */
                     aiModerationAutoHideMode?: 'off' | 'trial' | 'on';
                     aiModerationAutoHideThreshold?: number;

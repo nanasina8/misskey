@@ -99,4 +99,15 @@ export class MiAiModerationScan {
 		length: 32,
 	})
 	public criteriaVersion: string;
+
+	/** 判定した投稿を外部 API（OpenAI 互換の moderations）にも送るか */
+	@Column('boolean', { default: false })
+	public useExternal: boolean;
+
+	/** 外部 API が進まない理由（回数制限・キーの誤り等）。進めば消す */
+	@Column('varchar', {
+		length: 1024,
+		nullable: true,
+	})
+	public externalLastError: string | null;
 }

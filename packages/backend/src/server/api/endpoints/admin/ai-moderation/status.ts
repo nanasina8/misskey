@@ -11,7 +11,7 @@ import { DI } from '@/di-symbols.js';
 import { HANAMI_LOCAL_LLM_LOCK_KEY } from '@/core/hanami/HanamiLocalLlmLock.js';
 import { HanamiGpuQueueService } from '@/core/hanami/HanamiGpuQueueService.js';
 import { HanamiGpuDispatcherService } from '@/core/hanami/HanamiGpuDispatcherService.js';
-import { AI_MODERATION_LAST_TICK_KEY, AI_MODERATION_PENDING_KEY, AiModerationService, aiModerationJstDayKey } from '@/core/AiModerationService.js';
+import { AI_MODERATION_EXTERNAL_LAST_ERROR_KEY, AI_MODERATION_LAST_TICK_KEY, AI_MODERATION_PENDING_KEY, AiModerationService, aiModerationExternalDailyKey, aiModerationJstDayKey } from '@/core/AiModerationService.js';
 
 export const meta = {
 	tags: ['admin'],
@@ -105,6 +105,28 @@ export const meta = {
 			gpuHolder: {
 				type: 'string',
 				optional: false, nullable: true,
+			},
+			external: {
+				type: 'object',
+				optional: false, nullable: false,
+				description: '外部 API（今日、JST）。ok=引っかからなかった、skipped は送らなかった理由ごと、expired は回数制限などで1時間送れず捨てた外部だけの分',
+				properties: {
+					enabled: { type: 'boolean', optional: false, nullable: false },
+					configured: { type: 'boolean', optional: false, nullable: false },
+					includeRemote: { type: 'boolean', optional: false, nullable: false },
+					today: { type: 'object', optional: false, nullable: false, additionalProperties: { type: 'number' } },
+					externalOnlyEnqueuedToday: { type: 'number', optional: false, nullable: false },
+					externalOnlyDroppedToday: { type: 'number', optional: false, nullable: false },
+					lastError: {
+						type: 'object',
+						optional: false, nullable: true,
+						properties: {
+							at: { type: 'string', format: 'date-time', optional: false, nullable: false },
+							httpStatus: { type: 'number', optional: false, nullable: true },
+							message: { type: 'string', optional: false, nullable: false },
+						},
+					},
+				},
 			},
 			lastJudgedAt: {
 				type: 'string',
@@ -223,7 +245,32 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				gpuQueue,
 				lastTickAt,
 				gpuHolder: lockToken?.split(':')[0] ?? null,
+				external: await this.externalStatus(day),
 			};
 		});
+	}
+
+	private async externalStatus(day: string) {
+		const [today, enqueued, dropped, lastErrorRaw] = await Promise.all([
+			this.redis.hgetall(aiModerationExternalDailyKey(day)),
+			this.redis.get(`aiModeration:externalOnly:daily:${day}`),
+			this.redis.get(`aiModeration:externalOnly:dropped:${day}`),
+			this.redis.get(AI_MODERATION_EXTERNAL_LAST_ERROR_KEY),
+		]);
+		let lastError: { at: string; httpStatus: number | null; message: string } | null = null;
+		try {
+			lastError = lastErrorRaw != null ? JSON.parse(lastErrorRaw) : null;
+		} catch {
+			lastError = null;
+		}
+		return {
+			enabled: this.serverSettings.aiModerationExternalEnabled,
+			configured: this.serverSettings.aiModerationExternalEnabled && (this.serverSettings.aiModerationExternalApiKey ?? '') !== '',
+			includeRemote: this.serverSettings.aiModerationExternalIncludeRemote,
+			today: Object.fromEntries(Object.entries(today).map(([k, v]) => [k, Number(v)])),
+			externalOnlyEnqueuedToday: Number(enqueued ?? 0),
+			externalOnlyDroppedToday: Number(dropped ?? 0),
+			lastError,
+		};
 	}
 }

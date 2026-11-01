@@ -43,6 +43,8 @@ export const paramDef = {
 		label: { type: 'string', enum: ['normal', 'spam', 'scam', 'abuse'] },
 		host: { type: 'string', nullable: true },
 		signal: { type: 'string', maxLength: 32 },
+		externalFlagged: { type: 'boolean', description: '外部 API が引っかけたか（送り終えた項目だけ）。flagged: null と組み合わせると Qwen の結果を問わない' },
+		externalCategory: { type: 'string', maxLength: 128 },
 		limit: { type: 'integer', minimum: 1, maximum: 100, default: 30 },
 		sinceId: { type: 'string', format: 'misskey:id' },
 		untilId: { type: 'string', format: 'misskey:id' },
@@ -73,6 +75,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (ps.host === null) query.andWhere('item.noteUserHost IS NULL');
 			else if (ps.host != null) query.andWhere('item.noteUserHost = :host', { host: ps.host });
 			if (ps.signal != null) query.andWhere(':signal = ANY(item.spamSignals)', { signal: ps.signal });
+			if (ps.externalFlagged != null) query.andWhere('item.externalFlagged = :externalFlagged', { externalFlagged: ps.externalFlagged });
+			if (ps.externalCategory != null) query.andWhere(':externalCategory = ANY(item.externalCategories)', { externalCategory: ps.externalCategory });
 			if (ps.sinceId != null) query.andWhere('item.id > :sinceId', { sinceId: ps.sinceId });
 			if (ps.untilId != null) query.andWhere('item.id < :untilId', { untilId: ps.untilId });
 			const items = await query.getMany();

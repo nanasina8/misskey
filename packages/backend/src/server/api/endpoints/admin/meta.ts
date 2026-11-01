@@ -709,6 +709,10 @@ export const meta = {
 					optional: false, nullable: false,
 				},
 			},
+			aiModerationExternalIncludeRemote: {
+				type: 'boolean',
+				optional: false, nullable: false,
+			},
 			aiModerationAutoHideMode: {
 				type: 'string',
 				optional: false, nullable: false,
@@ -902,6 +906,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				aiModerationExternalApiKey: instance.aiModerationExternalApiKey,
 				aiModerationExternalModel: instance.aiModerationExternalModel,
 				aiModerationExternalVisibilities: instance.aiModerationExternalVisibilities,
+				aiModerationExternalIncludeRemote: instance.aiModerationExternalIncludeRemote,
 				aiModerationAutoHideMode: instance.aiModerationAutoHideMode,
 				aiModerationAutoHideThreshold: instance.aiModerationAutoHideThreshold,
 				aiModerationAutoHideDailyLimit: instance.aiModerationAutoHideDailyLimit,

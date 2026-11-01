@@ -61,6 +61,35 @@ export const meta = {
 			links: countList('link'),
 			signals: countList('signal'),
 			criteriaVersions: countList('version'),
+			external: {
+				type: 'object',
+				optional: false, nullable: true,
+				description: '外部 API の分（useExternal のスキャンだけ）。both 等は送り終えた項目での Qwen と外部の食い違い',
+				properties: {
+					pending: { type: 'number', optional: false, nullable: false },
+					done: { type: 'number', optional: false, nullable: false },
+					skipped: { type: 'number', optional: false, nullable: false },
+					failed: { type: 'number', optional: false, nullable: false },
+					flagged: { type: 'number', optional: false, nullable: false },
+					both: { type: 'number', optional: false, nullable: false },
+					localOnly: { type: 'number', optional: false, nullable: false },
+					externalOnly: { type: 'number', optional: false, nullable: false },
+					neither: { type: 'number', optional: false, nullable: false },
+					categories: {
+						type: 'array',
+						optional: false, nullable: false,
+						items: {
+							type: 'object',
+							optional: false, nullable: false,
+							properties: {
+								category: { type: 'string', optional: false, nullable: false },
+								items: { type: 'number', optional: false, nullable: false },
+								localFlagged: { type: 'number', optional: false, nullable: false },
+							},
+						},
+					},
+				},
+			},
 		},
 	},
 } as const;
@@ -100,7 +129,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				? await this.aiModerationScanRepository.findOneBy({ id: ps.scanId })
 				: recent[0] ?? null;
 			if (scan == null) {
-				return { scan: null, scans, progress: null, etaSeconds: null, criteria: null, byLabel: [], hosts: [], links: [], signals: [], criteriaVersions: [] };
+				return { scan: null, scans, progress: null, etaSeconds: null, criteria: null, byLabel: [], hosts: [], links: [], signals: [], criteriaVersions: [], external: null };
 			}
 
 			// 進み具合は「どの時期の投稿まで見たか」で測る
@@ -154,6 +183,42 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			const signals = await counts('k.signal');
 			const versions = await counts('item."criteriaVersion"');
 
+			let external = null;
+			if (scan.useExternal) {
+				const row = await this.aiModerationScanItemRepository.createQueryBuilder('item')
+					.select('COUNT(*) FILTER (WHERE item.externalStatus = \'pending\')', 'pending')
+					.addSelect('COUNT(*) FILTER (WHERE item.externalStatus = \'done\')', 'done')
+					.addSelect('COUNT(*) FILTER (WHERE item.externalStatus = \'skipped\')', 'skipped')
+					.addSelect('COUNT(*) FILTER (WHERE item.externalStatus = \'failed\')', 'failed')
+					.addSelect('COUNT(*) FILTER (WHERE item.externalFlagged = true)', 'flagged')
+					.addSelect('COUNT(*) FILTER (WHERE item.externalFlagged = true AND item.flagged = true)', 'both')
+					.addSelect('COUNT(*) FILTER (WHERE item.externalFlagged = false AND item.flagged = true)', 'localOnly')
+					.addSelect('COUNT(*) FILTER (WHERE item.externalFlagged = true AND item.flagged = false)', 'externalOnly')
+					.addSelect('COUNT(*) FILTER (WHERE item.externalFlagged = false AND item.flagged = false)', 'neither')
+					.where('item.scanId = :scanId', { scanId: scan.id })
+					.getRawOne<Record<string, string>>();
+				const categories: Array<{ category: string; items: string; localFlagged: string }> = await this.aiModerationScanItemRepository.query(
+					`SELECT k.category AS "category", COUNT(*) AS "items", COUNT(*) FILTER (WHERE item."flagged" = true) AS "localFlagged"
+					FROM "ai_moderation_scan_item" item CROSS JOIN LATERAL unnest(item."externalCategories") AS k(category)
+					WHERE item."scanId" = $1
+					GROUP BY 1 ORDER BY 2 DESC LIMIT 20`,
+					[scan.id],
+				);
+				const n = (key: string) => Number(row?.[key] ?? 0);
+				external = {
+					pending: n('pending'),
+					done: n('done'),
+					skipped: n('skipped'),
+					failed: n('failed'),
+					flagged: n('flagged'),
+					both: n('both'),
+					localOnly: n('localOnly'),
+					externalOnly: n('externalOnly'),
+					neither: n('neither'),
+					categories: categories.map(c => ({ category: c.category, items: Number(c.items), localFlagged: Number(c.localFlagged) })),
+				};
+			}
+
 			return {
 				scan: await this.aiModerationScanService.packScan(scan),
 				scans,
@@ -165,6 +230,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				links: links.map(({ key, ...r }) => ({ link: key, ...r })),
 				signals: signals.map(({ key, ...r }) => ({ signal: key, ...r })),
 				criteriaVersions: versions.map(({ key, ...r }) => ({ version: key, ...r })),
+				external,
 			};
 		});
 	}

@@ -28,5 +28,7 @@ export class AiModerationCheckProcessorService {
 		// いつもの判定を GPU キューに入れ、全体スキャンの分も足しておく（配り役が止まっていても列は保つ）
 		await this.aiModerationService.processPending();
 		await this.aiModerationScanService.refill();
+		// 全体スキャンの外部 API の分（GPU とは別に、持ち時間の中で送る）
+		await this.aiModerationScanService.processExternal();
 	}
 }

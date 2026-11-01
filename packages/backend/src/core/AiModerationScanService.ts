@@ -18,6 +18,7 @@ import type {
 	MiNote,
 	MiUser,
 	NotesRepository,
+	PollsRepository,
 	UsersRepository,
 } from '@/models/_.js';
 import { IdService } from '@/core/IdService.js';
@@ -28,6 +29,7 @@ import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import { AiModerationService } from '@/core/AiModerationService.js';
 import { AiModerationCriteriaService } from '@/core/AiModerationCriteriaService.js';
+import { AiModerationExternalService } from '@/core/AiModerationExternalService.js';
 import { HanamiGpuQueueService, type HanamiGpuQueueTakenItem } from '@/core/hanami/HanamiGpuQueueService.js';
 import { HanamiGpuDispatcherService } from '@/core/hanami/HanamiGpuDispatcherService.js';
 import {
@@ -76,6 +78,11 @@ type ScanQueuePayload = {
 
 const exhaustedKey = (scanId: string) => `aiModeration:scan:exhausted:${scanId}`;
 const REFILL_LOCK_KEY = 'aiModeration:scan:refillLock';
+const EXTERNAL_LOCK_KEY = 'aiModeration:scan:externalLock';
+/** 外部 API に送る1回（定期実行1回）の持ち時間と、同時に送る数・1度に読む項目数 */
+const EXTERNAL_BUDGET_MS = 90 * 1000;
+const EXTERNAL_CONCURRENCY = 4;
+const EXTERNAL_PAGE_SIZE = 20;
 
 type Candidate = {
 	note: MiNote;
@@ -128,11 +135,15 @@ export class AiModerationScanService implements OnModuleInit {
 		@Inject(DI.followingsRepository)
 		private followingsRepository: FollowingsRepository,
 
+		@Inject(DI.pollsRepository)
+		private pollsRepository: PollsRepository,
+
 		private idService: IdService,
 		private roleService: RoleService,
 		private moderationLogService: ModerationLogService,
 		private aiModerationService: AiModerationService,
 		private aiModerationCriteriaService: AiModerationCriteriaService,
+		private aiModerationExternalService: AiModerationExternalService,
 		private loggerService: LoggerService,
 		private hanamiGpuQueueService: HanamiGpuQueueService,
 		private hanamiGpuDispatcherService: HanamiGpuDispatcherService,
@@ -183,6 +194,8 @@ export class AiModerationScanService implements OnModuleInit {
 		days: number | null;
 		/** null なら上限なし */
 		maxJudged: number | null;
+		/** 判定した投稿を外部 API にも送る */
+		useExternal?: boolean;
 	}, moderator: { id: MiUser['id'] }): Promise<MiAiModerationScan> {
 		if (await this.findRunning() != null) throw new AiModerationScanAlreadyRunningError();
 
@@ -207,6 +220,8 @@ export class AiModerationScanService implements OnModuleInit {
 			finishedAt: null,
 			lastError: null,
 			criteriaVersion: version,
+			useExternal: params.useExternal ?? false,
+			externalLastError: null,
 		});
 
 		// 古いスキャンは消す（項目は CASCADE で消える）
@@ -219,6 +234,7 @@ export class AiModerationScanService implements OnModuleInit {
 			target: params.target,
 			days: params.days,
 			maxJudged: params.maxJudged,
+			useExternal: params.useExternal ?? false,
 			criteriaVersion: version,
 		});
 		return scan;
@@ -470,6 +486,112 @@ export class AiModerationScanService implements OnModuleInit {
 		}
 	}
 
+	/**
+	 * 外部 API の分。Qwen で判定し終えた項目（externalStatus = pending）を、定期実行ごとに持ち時間の中で送る。
+	 * GPU の判定とは別に進むので、スキャンが終わった（done）あとも残りを送る。中止したスキャンは送らない。
+	 * 回数制限・キーの誤り・通信の失敗が出たら、その回はやめて次の回にやり直す（理由は externalLastError に残す）。
+	 */
+	@bindThis
+	public async processExternal(): Promise<void> {
+		const got = await this.redis.set(EXTERNAL_LOCK_KEY, String(process.pid), 'EX', 300, 'NX');
+		if (got == null) return;
+		try {
+			const deadline = Date.now() + EXTERNAL_BUDGET_MS;
+			const scans = await this.aiModerationScanRepository.find({
+				where: { useExternal: true, status: Not('canceled') },
+				order: { id: 'DESC' },
+				take: KEEP_SCANS,
+			});
+			for (const scan of scans) {
+				if (Date.now() >= deadline) return;
+				const exists = await this.aiModerationScanItemRepository.exists({ where: { scanId: scan.id, externalStatus: 'pending' } });
+				if (!exists) continue;
+				if (!this.aiModerationExternalService.isConfigured()) {
+					await this.setExternalError(scan, '外部 API がオフか、API キーが入っていません');
+					continue;
+				}
+				const stopped = await this.sendExternalPages(scan, deadline);
+				if (stopped != null) {
+					await this.setExternalError(scan, stopped);
+					return;
+				}
+				if (scan.externalLastError != null) await this.setExternalError(scan, null);
+			}
+		} catch (err) {
+			this.logger.error('AI moderation scan external failed', { err });
+		} finally {
+			await this.redis.del(EXTERNAL_LOCK_KEY);
+		}
+	}
+
+	/** 持ち時間まで送る。やめた理由（やり直すべき失敗）があれば返す */
+	private async sendExternalPages(scan: MiAiModerationScan, deadline: number): Promise<string | null> {
+		while (Date.now() < deadline) {
+			const items = await this.aiModerationScanItemRepository.find({
+				where: { scanId: scan.id, externalStatus: 'pending' },
+				order: { id: 'ASC' },
+				take: EXTERNAL_PAGE_SIZE,
+			});
+			if (items.length === 0) return null;
+
+			// 送る文は保存した抜粋ではなく、投稿そのもの（CW・本文・アンケートの選択肢）
+			const notes = await this.notesRepository.find({
+				where: { id: In(items.map(item => item.noteId)) },
+				select: { id: true, text: true, cw: true, visibility: true, userHost: true, hasPoll: true },
+			});
+			const noteById = new Map(notes.map(note => [note.id, note]));
+			const pollNoteIds = notes.filter(note => note.hasPoll).map(note => note.id);
+			const polls = pollNoteIds.length === 0 ? [] : await this.pollsRepository.find({ where: { noteId: In(pollNoteIds) }, select: { noteId: true, choices: true } });
+			const choicesByNote = new Map(polls.map(poll => [poll.noteId, poll.choices]));
+
+			for (let i = 0; i < items.length; i += EXTERNAL_CONCURRENCY) {
+				const group = items.slice(i, i + EXTERNAL_CONCURRENCY);
+				const outcomes = await Promise.all(group.map(async item => {
+					const note = noteById.get(item.noteId);
+					if (note == null) return { item, outcome: null };
+					return {
+						item,
+						outcome: await this.aiModerationExternalService.check({
+							visibility: note.visibility,
+							isRemote: note.userHost != null,
+							text: note.text,
+							cw: note.cw,
+							pollChoices: choicesByNote.get(note.id) ?? null,
+						}, { includeRemote: true }),
+					};
+				}));
+				let stopped: string | null = null;
+				for (const { item, outcome } of outcomes) {
+					if (outcome == null) {
+						// 投稿が消えた
+						await this.aiModerationScanItemRepository.update(item.id, { externalStatus: 'skipped' });
+					} else if (outcome.status === 'ok') {
+						await this.aiModerationScanItemRepository.update(item.id, {
+							externalStatus: 'done',
+							externalFlagged: outcome.result.flagged,
+							externalCategories: outcome.result.categories,
+							externalScores: outcome.result.scores,
+							externalModel: outcome.result.model,
+						});
+					} else if (outcome.status === 'skipped') {
+						await this.aiModerationScanItemRepository.update(item.id, { externalStatus: 'skipped' });
+					} else if (outcome.retryable) {
+						stopped = outcome.message;
+					} else {
+						await this.aiModerationScanItemRepository.update(item.id, { externalStatus: 'failed' });
+					}
+				}
+				if (stopped != null) return stopped;
+			}
+		}
+		return null;
+	}
+
+	private async setExternalError(scan: MiAiModerationScan, message: string | null): Promise<void> {
+		scan.externalLastError = message;
+		await this.aiModerationScanRepository.update(scan.id, { externalLastError: message?.slice(0, 1024) ?? null });
+	}
+
 	private baseQuery(mode: 'filtered' | 'all', target: 'all' | 'local' | 'remote', sinceNoteId: string | null, untilNoteId: string, cursor: string | null) {
 		const query = this.notesRepository.createQueryBuilder('note')
 			.where('note.id < :untilNoteId', { untilNoteId })
@@ -596,6 +718,11 @@ export class AiModerationScanService implements OnModuleInit {
 				spamSignals: [],
 				wouldHide: false,
 				criteriaVersion: version,
+				externalStatus: scan.useExternal ? 'pending' : null,
+				externalFlagged: null,
+				externalCategories: [],
+				externalScores: null,
+				externalModel: null,
 			});
 		}
 		if (rows.length > 0) {
@@ -733,6 +860,8 @@ export class AiModerationScanService implements OnModuleInit {
 			finishedAt: scan.finishedAt?.toISOString() ?? null,
 			lastError: scan.lastError,
 			criteriaVersion: scan.criteriaVersion,
+			useExternal: scan.useExternal,
+			externalLastError: scan.externalLastError,
 		};
 	}
 
@@ -759,6 +888,10 @@ export class AiModerationScanService implements OnModuleInit {
 			spamSignals: item.spamSignals,
 			wouldHide: item.wouldHide,
 			criteriaVersion: item.criteriaVersion,
+			externalStatus: item.externalStatus,
+			externalFlagged: item.externalFlagged,
+			externalCategories: item.externalCategories,
+			externalScores: item.externalScores,
 		}));
 	}
 }

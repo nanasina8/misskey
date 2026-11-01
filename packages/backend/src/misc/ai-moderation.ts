@@ -9,7 +9,8 @@ import { createHash } from 'node:crypto';
  * AI 投稿チェックで使う純粋関数（DB や Redis に触らない）。テストしやすくするため独立させている。
  */
 
-export const AI_MODERATION_TRIGGERS = ['unsolicitedContact', 'newAuthorLink', 'newLocalContact'] as const;
+/** externalCheck は絞り込みに当たらず、外部 API だけで確かめる投稿 */
+export const AI_MODERATION_TRIGGERS = ['unsolicitedContact', 'newAuthorLink', 'newLocalContact', 'externalCheck'] as const;
 export type AiModerationTrigger = typeof AI_MODERATION_TRIGGERS[number];
 
 export const AI_MODERATION_LABELS = ['normal', 'spam', 'scam', 'abuse'] as const;

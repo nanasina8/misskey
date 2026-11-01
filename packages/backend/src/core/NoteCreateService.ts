@@ -666,6 +666,7 @@ export class NoteCreateService implements OnApplicationShutdown {
 			mentions: mentionedUsers,
 			visibleUsers: data.visibleUsers ?? null,
 			reply: data.reply != null ? { userId: data.reply.userId, userHost: data.reply.userHost } : null,
+			pollChoices: data.poll?.choices ?? null,
 		}).catch(err => this.logger.warn('ai-moderation considerNote failed', { err }));
 
 		setImmediate('post created', { signal: this.#shutdownController.signal }).then(

@@ -26,6 +26,8 @@ export const packedAiModerationScanSchema = {
 		finishedAt: { type: 'string', format: 'date-time', optional: false, nullable: true },
 		lastError: { type: 'string', optional: false, nullable: true },
 		criteriaVersion: { type: 'string', optional: false, nullable: false },
+		useExternal: { type: 'boolean', optional: false, nullable: false },
+		externalLastError: { type: 'string', optional: false, nullable: true },
 	},
 } as const;
 
@@ -58,5 +60,9 @@ export const packedAiModerationScanItemSchema = {
 		spamSignals: { type: 'array', optional: false, nullable: false, items: { type: 'string', optional: false, nullable: false } },
 		wouldHide: { type: 'boolean', optional: false, nullable: false },
 		criteriaVersion: { type: 'string', optional: false, nullable: true },
+		externalStatus: { type: 'string', optional: false, nullable: true, enum: ['pending', 'done', 'skipped', 'failed'] },
+		externalFlagged: { type: 'boolean', optional: false, nullable: true },
+		externalCategories: { type: 'array', optional: false, nullable: false, items: { type: 'string', optional: false, nullable: false } },
+		externalScores: { type: 'object', optional: false, nullable: true },
 	},
 } as const;

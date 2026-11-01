@@ -46,6 +46,17 @@ SPDX-License-Identifier: AGPL-3.0-only
 							<div v-if="status.gpuQueue.lastError" :class="$style.sub">{{ status.gpuQueue.lastError }}</div>
 						</template>
 					</MkKeyValue>
+					<MkKeyValue v-if="status">
+						<template #key>{{ i18n.ts._aiModeration.externalStatusLabel }}</template>
+						<template #value>
+							<template v-if="!status.external.configured">{{ status.external.enabled ? i18n.ts._aiModeration.externalStatusNoKey : i18n.ts._aiModeration.externalStatusOff }}</template>
+							<template v-else>
+								{{ i18n.tsx._aiModeration.externalStatusToday({ sent: (status.external.today.ok ?? 0) + (status.external.today.flagged ?? 0), flagged: status.external.today.flagged ?? 0, error: status.external.today.error ?? 0 }) }}
+								<span :class="$style.sub"> ・ {{ status.external.includeRemote ? i18n.ts._aiModeration.externalStatusWithRemote : i18n.ts._aiModeration.externalStatusLocalOnly }}<template v-if="(status.external.today.expired ?? 0) + status.external.externalOnlyDroppedToday > 0"> ・ {{ i18n.tsx._aiModeration.externalStatusDropped({ count: (status.external.today.expired ?? 0) + status.external.externalOnlyDroppedToday }) }}</template></span>
+							</template>
+							<div v-if="status.external.lastError" :class="$style.sub">{{ i18n.ts._aiModeration.externalStatusLastError }} <MkTime :time="status.external.lastError.at"/> ・ {{ status.external.lastError.message }}</div>
+						</template>
+					</MkKeyValue>
 					<MkKeyValue>
 						<template #key>{{ i18n.ts._aiModeration.autoHideLabel }}</template>
 						<template #value>
@@ -414,6 +425,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 							<template #label>{{ i18n.ts._aiModeration.settingsExternalModel }}</template>
 						</MkInput>
 					</div>
+					<MkSwitch v-model="settingsForm.state.aiModerationExternalIncludeRemote">
+						<template #label>{{ i18n.ts._aiModeration.settingsExternalIncludeRemote }}</template>
+						<template #caption>{{ i18n.ts._aiModeration.settingsExternalIncludeRemoteCaption }}</template>
+					</MkSwitch>
 					<fieldset :class="$style.visibilities">
 						<legend>{{ i18n.ts._aiModeration.settingsExternalVisibilities }}</legend>
 						<div :class="$style.visibilityItems">
@@ -679,6 +694,7 @@ type AiModerationSettings = {
 	aiModerationExternalApiKey: string;
 	aiModerationExternalModel: string;
 	aiModerationExternalVisibilities: ('public' | 'home' | 'followers' | 'specified')[];
+	aiModerationExternalIncludeRemote: boolean;
 	aiModerationAutoHideMode: 'off' | 'trial' | 'on';
 	aiModerationAutoHideThreshold: number;
 	aiModerationAutoHideDailyLimit: number;
@@ -697,6 +713,7 @@ function metaToForm(m: entities.AdminMetaResponse): AiModerationSettings {
 		aiModerationExternalApiKey: m.aiModerationExternalApiKey ?? '',
 		aiModerationExternalModel: m.aiModerationExternalModel ?? '',
 		aiModerationExternalVisibilities: [...(m.aiModerationExternalVisibilities ?? [])] as AiModerationSettings['aiModerationExternalVisibilities'],
+		aiModerationExternalIncludeRemote: m.aiModerationExternalIncludeRemote,
 		aiModerationAutoHideMode: m.aiModerationAutoHideMode,
 		aiModerationAutoHideThreshold: m.aiModerationAutoHideThreshold,
 		aiModerationAutoHideDailyLimit: m.aiModerationAutoHideDailyLimit,
@@ -716,6 +733,7 @@ function formToMetaParams(state: AiModerationSettings): Record<string, unknown> 
 		aiModerationExternalApiKey: state.aiModerationExternalApiKey === '' ? null : state.aiModerationExternalApiKey,
 		aiModerationExternalModel: state.aiModerationExternalModel === '' ? null : state.aiModerationExternalModel,
 		aiModerationExternalVisibilities: [...new Set(state.aiModerationExternalVisibilities.filter(Boolean))],
+		aiModerationExternalIncludeRemote: state.aiModerationExternalIncludeRemote,
 		aiModerationAutoHideMode: state.aiModerationAutoHideMode,
 		aiModerationAutoHideThreshold: state.aiModerationAutoHideThreshold,
 		aiModerationAutoHideDailyLimit: state.aiModerationAutoHideDailyLimit,
@@ -984,6 +1002,7 @@ function triggerLabel(trigger: string, item: QueueItem): string {
 		case 'unsolicitedContact': return t.triggerUnsolicitedContact;
 		case 'newAuthorLink': return item.links.length > 0 ? `${t.triggerNewAuthorLink} ${item.links[0]}` : t.triggerNewAuthorLink;
 		case 'newLocalContact': return t.triggerNewLocalContact;
+		case 'externalCheck': return t.triggerExternalCheck;
 		default: return trigger;
 	}
 }

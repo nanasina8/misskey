@@ -16,7 +16,7 @@ import { LoggerService } from '@/core/LoggerService.js';
 import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import { SystemWebhookService } from '@/core/SystemWebhookService.js';
-import { AiModerationExternalService } from '@/core/AiModerationExternalService.js';
+import { AiModerationExternalService, type AiModerationExternalOutcome, type AiModerationExternalResult } from '@/core/AiModerationExternalService.js';
 import { AiModerationHiddenService } from '@/core/AiModerationHiddenService.js';
 import { AI_MODERATION_LOCAL_MODEL, AiModerationCriteriaService } from '@/core/AiModerationCriteriaService.js';
 import {
@@ -49,6 +49,12 @@ export const AI_MODERATION_RUNTIME_KEY = 'aiModeration:runtime';
 export const AI_MODERATION_LAST_TICK_KEY = 'aiModeration:lastTickAt';
 export { AI_MODERATION_LOCAL_MODEL };
 const NOTE_TEXT_MAX_LENGTH = 1024;
+/** 外部 API の日ごとの件数（ok・flagged・error・skipped）。管理画面の状態に出す */
+export const aiModerationExternalDailyKey = (day: string) => `aiModeration:external:${day}`;
+/** 外部 API の最後の失敗（{ at, httpStatus, message }） */
+export const AI_MODERATION_EXTERNAL_LAST_ERROR_KEY = 'aiModeration:external:lastError';
+/** 外部だけで確かめる投稿（externalCheck）が回数制限などで送れないまま待てる時間。過ぎたら捨てる */
+const EXTERNAL_ONLY_MAX_AGE_MS = 60 * 60 * 1000;
 /** 試す（judgeTrial）の結果を置いておく時間 */
 const TRIAL_RESULT_TTL_SECONDS = 120;
 
@@ -75,14 +81,21 @@ type PendingMeta = {
 	triggers: AiModerationTrigger[];
 	contactUserIds: string[];
 	contactKind: 'dm' | 'mention' | 'reply' | null;
+	/** 外部 API に送るアンケートの選択肢 */
+	pollChoices: string[] | null;
 };
+
+/** 外部 API だけで確かめる投稿か（Qwen には回さない・引っかからなければ保存しない・自動で隠さない） */
+function isExternalOnly(triggers: readonly string[]): boolean {
+	return triggers.length === 1 && triggers[0] === 'externalCheck';
+}
 
 /**
  * Redis に保存した待ち行列メタを解釈する。新しい形式は
  * `{ triggers, contactUserIds, contactKind }`、古い形式は triggers の配列だけ。
  */
 function parsePendingMeta(raw: string | null): PendingMeta {
-	const empty: PendingMeta = { triggers: [], contactUserIds: [], contactKind: null };
+	const empty: PendingMeta = { triggers: [], contactUserIds: [], contactKind: null, pollChoices: null };
 	if (raw == null) return empty;
 	try {
 		const parsed = JSON.parse(raw) as unknown;
@@ -91,10 +104,11 @@ function parsePendingMeta(raw: string | null): PendingMeta {
 				triggers: parsed.filter((t): t is AiModerationTrigger => typeof t === 'string'),
 				contactUserIds: [],
 				contactKind: null,
+				pollChoices: null,
 			};
 		}
 		if (parsed != null && typeof parsed === 'object') {
-			const obj = parsed as { triggers?: unknown; contactUserIds?: unknown; contactKind?: unknown };
+			const obj = parsed as { triggers?: unknown; contactUserIds?: unknown; contactKind?: unknown; pollChoices?: unknown };
 			const triggers = Array.isArray(obj.triggers)
 				? obj.triggers.filter((t): t is AiModerationTrigger => typeof t === 'string')
 				: [];
@@ -104,7 +118,10 @@ function parsePendingMeta(raw: string | null): PendingMeta {
 			const contactKind = obj.contactKind === 'dm' || obj.contactKind === 'mention' || obj.contactKind === 'reply'
 				? obj.contactKind
 				: null;
-			return { triggers, contactUserIds, contactKind };
+			const pollChoices = Array.isArray(obj.pollChoices)
+				? obj.pollChoices.filter((c): c is string => typeof c === 'string')
+				: null;
+			return { triggers, contactUserIds, contactKind, pollChoices };
 		}
 	} catch {
 		// 壊れた値は空として扱う
@@ -219,12 +236,20 @@ export class AiModerationService implements OnModuleInit {
 		mentions: readonly MentionCandidate[];
 		visibleUsers: readonly MentionCandidate[] | null;
 		reply: { userId: MiUser['id']; userHost: MiUser['host']; } | null;
+		pollChoices?: readonly string[] | null;
 	}): Promise<void> {
 		if (!this.meta.aiModerationEnabled) return;
 
 		const text = input.text?.trim() ?? '';
 		const cw = input.cw?.trim() ?? '';
-		if (text.length === 0 && cw.length === 0) return;
+		const pollChoices = input.pollChoices != null && input.pollChoices.length > 0 ? [...input.pollChoices] : null;
+		if (text.length === 0 && cw.length === 0 && pollChoices == null) return;
+
+		// 外部 API はいつもの絞り込みに当たらない投稿も確かめる（misskey-tempura と同じく、このサーバーの投稿すべて。設定でリモートも）
+		const externalWanted = this.aiModerationExternalService.skipReason({ visibility: note.visibility, isRemote: input.user.host != null }) == null;
+		const enqueueExternalOnly = async () => {
+			if (externalWanted) await this.enqueuePending(note.id, ['externalCheck'], [], null, pollChoices);
+		};
 
 		// このサーバーの宛先（投稿者本人を除く）を集める。ここまでは DB / Redis に触らない。
 		const contacts: Array<{ userId: string; host: string | null }> = [];
@@ -243,6 +268,7 @@ export class AiModerationService implements OnModuleInit {
 
 		// 宛先が無く、本文・CW のいずれにもリンクが無ければ対象外（DB / Redis に触れずに return）
 		if (contacts.length === 0 && extractAiModerationLinksFromNote(text, cw, this.config.hostname).length === 0) {
+			await enqueueExternalOnly();
 			return;
 		}
 
@@ -275,7 +301,10 @@ export class AiModerationService implements OnModuleInit {
 			localHost: this.config.hostname,
 		});
 
-		if (triggers.length === 0) return;
+		if (triggers.length === 0) {
+			await enqueueExternalOnly();
+			return;
+		}
 
 		const contactKind: 'dm' | 'mention' | 'reply' | null = (() => {
 			if (note.visibility === 'specified') return 'dm';
@@ -284,7 +313,7 @@ export class AiModerationService implements OnModuleInit {
 			return null;
 		})();
 
-		await this.enqueuePending(note.id, triggers, contacts.map(contact => contact.userId), contactKind);
+		await this.enqueuePending(note.id, triggers, contacts.map(contact => contact.userId), contactKind, pollChoices);
 	}
 
 	private async enqueuePending(
@@ -292,20 +321,23 @@ export class AiModerationService implements OnModuleInit {
 		triggers: readonly AiModerationTrigger[],
 		contactUserIds: readonly string[],
 		contactKind: 'dm' | 'mention' | 'reply' | null,
+		pollChoices: readonly string[] | null = null,
 	): Promise<void> {
 		// 同じ noteId は二重に入れない
 		const added = await this.redis.zadd(AI_MODERATION_PENDING_KEY, 'NX', Date.now(), noteId);
 		if (added === 0) return;
 
+		// 外部だけで確かめる分は、Qwen の分の1日の上限を食わないよう別に数える（上限の値は同じ）
 		const day = jstDayKey();
-		const dailyKey = `aiModeration:daily:${day}`;
+		const prefix = isExternalOnly(triggers) ? 'aiModeration:externalOnly' : 'aiModeration';
+		const dailyKey = `${prefix}:daily:${day}`;
 		const count = await this.redis.incr(dailyKey);
 		if (count === 1) {
 			// 2日で失効
 			await this.redis.expire(dailyKey, 2 * 24 * 60 * 60);
 		}
 		if (count > this.meta.aiModerationDailyLimit) {
-			await this.redis.incr(`aiModeration:dropped:${day}`);
+			await this.redis.incr(`${prefix}:dropped:${day}`);
 			await this.redis.zrem(AI_MODERATION_PENDING_KEY, noteId);
 			return;
 		}
@@ -314,6 +346,7 @@ export class AiModerationService implements OnModuleInit {
 			triggers,
 			contactUserIds,
 			contactKind,
+			pollChoices,
 		}));
 	}
 
@@ -326,12 +359,26 @@ export class AiModerationService implements OnModuleInit {
 	public async processPending(): Promise<void> {
 		// ioredis の zpopmin は [member, score, member, score, ...] の平らな配列を返す
 		const popped = await this.redis.zpopmin(AI_MODERATION_PENDING_KEY, AI_MODERATION_MAX_PENDING);
-		const noteIds = popped.filter((_, i) => i % 2 === 0);
-		if (noteIds.length === 0) return;
+		const allNoteIds = popped.filter((_, i) => i % 2 === 0);
+		if (allNoteIds.length === 0) return;
+		const enqueuedAt = new Map(allNoteIds.map((noteId, i) => [noteId, Number(popped[i * 2 + 1])]));
 
-		const triggersByNote = await this.redis.hmget(AI_MODERATION_TRIGGERS_KEY, ...noteIds);
-		if (noteIds.length > 0) await this.redis.hdel(AI_MODERATION_TRIGGERS_KEY, ...noteIds);
-		const metaByNote = new Map(noteIds.map((noteId, i) => [noteId, triggersByNote[i] ?? null]));
+		const triggersByNote = await this.redis.hmget(AI_MODERATION_TRIGGERS_KEY, ...allNoteIds);
+		await this.redis.hdel(AI_MODERATION_TRIGGERS_KEY, ...allNoteIds);
+		const metaByNote = new Map(allNoteIds.map((noteId, i) => [noteId, triggersByNote[i] ?? null]));
+
+		// 外部 API だけで確かめる分は GPU に回さず、ここで外部に送る
+		const externalOnlyIds = allNoteIds.filter(noteId => isExternalOnly(parsePendingMeta(metaByNote.get(noteId) ?? null).triggers));
+		const externalOnlySet = new Set(externalOnlyIds);
+		const noteIds = allNoteIds.filter(noteId => !externalOnlySet.has(noteId));
+		if (externalOnlyIds.length > 0) {
+			try {
+				await this.finalizeJudged(externalOnlyIds, metaByNote, new Map(), 'skipped', enqueuedAt);
+			} catch (err) {
+				this.logger.error('AI moderation external-only processing failed', { err });
+			}
+		}
+		if (noteIds.length === 0) return;
 
 		const localEnabled = this.meta.aiModerationLocalEnabled;
 		let runtime: HanamiNoteJudgeRuntimeStatus | null = null;
@@ -375,6 +422,8 @@ export class AiModerationService implements OnModuleInit {
 		metaByNote: ReadonlyMap<string, string | null>,
 		scores: ReadonlyMap<string, AiModerationScores>,
 		missingLabel: 'unavailable' | 'skipped',
+		/** 外部だけで確かめる分の待ち行列に入った時刻（送れなかったときに戻す・古すぎれば捨てる） */
+		enqueuedAt: ReadonlyMap<string, number> = new Map(),
 	): Promise<void> {
 		const notes = await this.notesRepository.findBy({ id: In(noteIds) });
 		const noteById = new Map(notes.map(note => [note.id, note]));
@@ -388,6 +437,9 @@ export class AiModerationService implements OnModuleInit {
 
 		const flaggedItems: Array<{ noteId: string; userHost: string | null; label: string | null }> = [];
 		const autoHideCandidates: AutoHideCandidate[] = [];
+		// 回数制限・キーの誤り・通信の失敗が出たら、この回は外部に送るのをやめる（1件30秒の待ちを重ねない）
+		let externalBlocked = false;
+		const day = jstDayKey();
 
 		for (const note of existingNotes) {
 			try {
@@ -396,10 +448,34 @@ export class AiModerationService implements OnModuleInit {
 				const pending = parsePendingMeta(rawMeta);
 				const triggers = pending.triggers;
 
+				const externalOnly = isExternalOnly(triggers);
+
 				// 外部 API（1件ずつ送る。送らない/失敗は null のまま）
-				let externalResult = null;
-				if (this.meta.aiModerationExternalEnabled) {
-					externalResult = await this.aiModerationExternalService.moderate(note.visibility, noteText);
+				let externalResult: AiModerationExternalResult | null = null;
+				if (this.aiModerationExternalService.isConfigured() && !externalBlocked) {
+					const outcome = await this.aiModerationExternalService.check({
+						visibility: note.visibility,
+						isRemote: note.userHost != null,
+						text: note.text,
+						cw: note.cw,
+						pollChoices: pending.pollChoices,
+					});
+					await this.recordExternalOutcome(day, outcome);
+					if (outcome.status === 'ok') {
+						externalResult = outcome.result;
+					} else if (outcome.status === 'error' && outcome.retryable) {
+						externalBlocked = true;
+					}
+				}
+
+				if (externalOnly) {
+					// 送れなかった分は、古すぎなければ待ち行列に戻して次の回に送る
+					if (externalResult == null && externalBlocked) {
+						await this.requeueExternalOnly(note.id, rawMeta, enqueuedAt.get(note.id) ?? Date.now());
+						continue;
+					}
+					// 外部だけの分は、引っかかったときだけ残す（すべての投稿の行を作らない）
+					if (externalResult?.flagged !== true) continue;
 				}
 
 				// Qwen の結果が無い（Qwen を使わない・判定に失敗した）ときは missingLabel で保存する
@@ -432,7 +508,8 @@ export class AiModerationService implements OnModuleInit {
 
 				if (flagged) {
 					flaggedItems.push({ noteId: note.id, userHost: note.userHost, label: localLabel });
-					autoHideCandidates.push({ queueId, note, triggers, localScores, externalFlagged: externalResult?.flagged ?? null, signals: [] });
+					// 外部だけの分は確認待ちにするだけで、自動では隠さない（misskey-tempura と同じ）
+					if (!externalOnly) autoHideCandidates.push({ queueId, note, triggers, localScores, externalFlagged: externalResult?.flagged ?? null, signals: [] });
 				}
 			} catch (err) {
 				// 1件の保存失敗で残りが失われないよう、個別に握りつぶす
@@ -462,6 +539,30 @@ export class AiModerationService implements OnModuleInit {
 				items: flaggedItems.slice(0, 5),
 			});
 		}
+	}
+
+	/** 外部 API の結果を日ごとに数え、失敗は最後の1件を残す（管理画面の状態に出す） */
+	private async recordExternalOutcome(day: string, outcome: AiModerationExternalOutcome): Promise<void> {
+		const key = aiModerationExternalDailyKey(day);
+		const field = outcome.status === 'ok' ? (outcome.result.flagged ? 'flagged' : 'ok') : outcome.status === 'error' ? 'error' : `skipped:${outcome.reason}`;
+		await this.redis.hincrby(key, field, 1);
+		await this.redis.expire(key, 3 * 24 * 60 * 60);
+		if (outcome.status === 'error') {
+			await this.redis.set(AI_MODERATION_EXTERNAL_LAST_ERROR_KEY, JSON.stringify({
+				at: new Date().toISOString(),
+				httpStatus: outcome.httpStatus,
+				message: outcome.message,
+			}), 'EX', 7 * 24 * 60 * 60);
+		}
+	}
+
+	private async requeueExternalOnly(noteId: string, rawMeta: string | null, enqueuedAt: number): Promise<void> {
+		if (Date.now() - enqueuedAt > EXTERNAL_ONLY_MAX_AGE_MS) {
+			await this.redis.hincrby(aiModerationExternalDailyKey(jstDayKey()), 'expired', 1);
+			return;
+		}
+		await this.redis.zadd(AI_MODERATION_PENDING_KEY, 'NX', enqueuedAt, noteId);
+		if (rawMeta != null) await this.redis.hset(AI_MODERATION_TRIGGERS_KEY, noteId, rawMeta);
 	}
 
 	/** 確かめた実行環境を Redis に残す（API と定期実行は別のプロセスで動くことがあるため） */

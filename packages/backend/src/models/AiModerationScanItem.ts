@@ -12,6 +12,7 @@ import { MiAiModerationScan } from './AiModerationScan.js';
  */
 @Entity('ai_moderation_scan_item')
 @Index('IDX_ai_moderation_scan_item_scan_flagged', ['scanId', 'flagged'])
+@Index('IDX_ai_moderation_scan_item_externalStatus', ['scanId', 'externalStatus'])
 export class MiAiModerationScanItem {
 	@PrimaryColumn(id())
 	public id: string;
@@ -103,4 +104,34 @@ export class MiAiModerationScanItem {
 		nullable: true,
 	})
 	public criteriaVersion: string | null;
+
+	/** 外部 API の判定: null=使わないスキャン / pending=まだ / done / skipped=送らない（DM・投稿が消えた） / failed */
+	@Column('varchar', {
+		length: 16,
+		nullable: true,
+	})
+	public externalStatus: 'pending' | 'done' | 'skipped' | 'failed' | null;
+
+	@Column('boolean', {
+		nullable: true,
+	})
+	public externalFlagged: boolean | null;
+
+	@Column('varchar', {
+		length: 128,
+		array: true,
+		default: '{}',
+	})
+	public externalCategories: string[];
+
+	@Column('jsonb', {
+		nullable: true,
+	})
+	public externalScores: Record<string, number> | null;
+
+	@Column('varchar', {
+		length: 128,
+		nullable: true,
+	})
+	public externalModel: string | null;
 }

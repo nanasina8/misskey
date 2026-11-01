@@ -584,6 +584,7 @@ export type ModerationLogPayloads = {
 		target: 'all' | 'local' | 'remote';
 		days: number | null;
 		maxJudged: number | null;
+		useExternal: boolean;
 		criteriaVersion: string;
 	};
 	cancelAiModerationScan: {
