@@ -38,6 +38,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 							<span :class="$style.sub"><template v-if="status?.lastJudgedAt"> ・ {{ i18n.ts._aiModeration.lastJudged }} <MkTime :time="status.lastJudgedAt"/></template><template v-if="status?.gpuHolder"> ・ {{ i18n.tsx._aiModeration.gpuHolder({ job: status.gpuHolder }) }}</template></span>
 						</template>
 					</MkKeyValue>
+					<MkKeyValue v-if="status">
+						<template #key>{{ i18n.ts._aiModeration.gpuWorkerLabel }}</template>
+						<template #value>
+							{{ gpuWorkerStateLabel(status.gpuQueue.state) }}
+							<span :class="$style.sub"> ・ {{ i18n.tsx._aiModeration.gpuQueueWaiting({ count: status.gpuQueue.lengths.judgeTrial + status.gpuQueue.lengths.spamJudge + status.gpuQueue.lengths.spamScan }) }}<template v-if="status.gpuQueue.lastBatch"> ・ {{ i18n.tsx._aiModeration.gpuLastBatch({ kind: gpuKindLabel(status.gpuQueue.lastBatch.kind), size: status.gpuQueue.lastBatch.size, seconds: (status.gpuQueue.lastBatch.durationMs / 1000).toFixed(1) }) }}</template><template v-if="status.gpuQueue.vramGiB != null"> ・ GPU {{ status.gpuQueue.vramGiB.toFixed(1) }}GB</template></span>
+							<div v-if="status.gpuQueue.lastError" :class="$style.sub">{{ status.gpuQueue.lastError }}</div>
+						</template>
+					</MkKeyValue>
 					<MkKeyValue>
 						<template #key>{{ i18n.ts._aiModeration.autoHideLabel }}</template>
 						<template #value>
@@ -1147,6 +1155,27 @@ async function editMemo(item: QueueItem): Promise<void> {
 	});
 	if (canceled) return;
 	await saveMemo(item, result ?? '');
+}
+
+const gpuWorkerStateLabels: Record<string, string> = {
+	idle: t.gpuStateIdle,
+	unloaded: t.gpuStateUnloaded,
+	running: t.gpuStateRunning,
+	loading: t.gpuStateLoading,
+	yielded: t.gpuStateYielded,
+	waitingGpu: t.gpuStateWaitingGpu,
+	noGpu: t.gpuStateNoGpu,
+	failed: t.gpuStateFailed,
+	stopped: t.gpuStateStopped,
+	unknown: t.gpuStateUnknown,
+};
+
+function gpuWorkerStateLabel(state: string): string {
+	return gpuWorkerStateLabels[state] ?? state;
+}
+
+function gpuKindLabel(kind: string): string {
+	return ({ judgeTrial: t.gpuKindTrial, spamJudge: t.gpuKindJudge, spamScan: t.gpuKindScan } as Record<string, string>)[kind] ?? kind;
 }
 
 function reloadAll(): void {

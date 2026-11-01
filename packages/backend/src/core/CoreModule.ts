@@ -11,6 +11,8 @@ import { AiModerationOutcomeService } from './AiModerationOutcomeService.js';
 import { AiModerationCriteriaService } from './AiModerationCriteriaService.js';
 import { AiModerationScanService } from './AiModerationScanService.js';
 import { AiModerationExternalService } from './AiModerationExternalService.js';
+import { HanamiGpuQueueService } from './hanami/HanamiGpuQueueService.js';
+import { HanamiGpuDispatcherService } from './hanami/HanamiGpuDispatcherService.js';
 import { AiModerationQueueEntityService } from './entities/AiModerationQueueEntityService.js';
 import { FanoutTimelineEndpointService } from '@/core/FanoutTimelineEndpointService.js';
 import { AbuseReportService } from '@/core/AbuseReportService.js';
@@ -397,6 +399,8 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		AiModerationCriteriaService,
 		AiModerationScanService,
 		AiModerationExternalService,
+		HanamiGpuQueueService,
+		HanamiGpuDispatcherService,
 		LoggerService,
 		AbuseReportService,
 		AbuseReportNotificationService,
@@ -765,6 +769,8 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		AiModerationCriteriaService,
 		AiModerationScanService,
 		AiModerationExternalService,
+		HanamiGpuQueueService,
+		HanamiGpuDispatcherService,
 		QueueModule,
 		LoggerService,
 		AbuseReportService,

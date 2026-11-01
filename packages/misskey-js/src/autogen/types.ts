@@ -8968,6 +8968,27 @@ export interface operations {
                         wouldHideLast24h: number;
                         /** @enum {string} */
                         autoHideMode: 'off' | 'trial' | 'on';
+                        gpuQueue: {
+                            /** @enum {string} */
+                            state: 'idle' | 'unloaded' | 'running' | 'loading' | 'yielded' | 'waitingGpu' | 'noGpu' | 'failed' | 'stopped' | 'unknown';
+                            lengths: {
+                                judgeTrial: number;
+                                spamJudge: number;
+                                spamScan: number;
+                            };
+                            oldestWaitSec: number | null;
+                            processed: number;
+                            vramGiB: number | null;
+                            lastBatch: {
+                                kind: string;
+                                size: number;
+                                durationMs: number;
+                                at: number;
+                            } | null;
+                            lastError: string | null;
+                            dropped: number;
+                            failed: number;
+                        };
                         /** Format: date-time */
                         lastTickAt: string | null;
                         gpuHolder: string | null;
@@ -11951,7 +11972,7 @@ export interface operations {
                      */
                     eventsLimit?: number;
                     /** @description Restrict events to these job families; omitted means all families. */
-                    eventJobs?: ('noteJudge' | 'topicJudge' | 'als' | 'tasteTick' | 'judgeTrial' | 'spamJudge' | 'spamScan' | 'generation')[];
+                    eventJobs?: ('noteJudge' | 'topicJudge' | 'als' | 'tasteTick' | 'judgeTrial' | 'spamJudge' | 'spamScan' | 'gpuWorker' | 'generation')[];
                 };
             };
         };
@@ -12157,7 +12178,7 @@ export interface operations {
                              * @description Job family that emitted the event.
                              * @enum {string}
                              */
-                            job: 'noteJudge' | 'topicJudge' | 'als' | 'tasteTick' | 'judgeTrial' | 'spamJudge' | 'spamScan' | 'generation';
+                            job: 'noteJudge' | 'topicJudge' | 'als' | 'tasteTick' | 'judgeTrial' | 'spamJudge' | 'spamScan' | 'gpuWorker' | 'generation';
                             /**
                              * @description Stable event code; successful lock renewals are not recorded.
                              * @enum {string}

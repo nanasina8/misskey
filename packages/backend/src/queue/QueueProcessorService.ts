@@ -59,6 +59,7 @@ import { HanamiRecommendationEventCacheRepairProcessorService } from './processo
 import { HibernationSweepProcessorService } from './processors/HibernationSweepProcessorService.js';
 import { EmojiImageFingerprintProcessorService } from './processors/EmojiImageFingerprintProcessorService.js';
 import { AiModerationCheckProcessorService } from './processors/AiModerationCheckProcessorService.js';
+import { HanamiGpuDispatcherService } from '@/core/hanami/HanamiGpuDispatcherService.js';
 import { QueueLoggerService } from './QueueLoggerService.js';
 import { QUEUE, baseWorkerOptions } from './const.js';
 import { ImportNotesProcessorService } from './processors/ImportNotesProcessorService.js';
@@ -177,6 +178,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 		private hanamiRecommendationEventCacheRepairProcessorService: HanamiRecommendationEventCacheRepairProcessorService,
 		private hanamiMetricsRollupProcessorService: HanamiMetricsRollupProcessorService,
 		private aiModerationCheckProcessorService: AiModerationCheckProcessorService,
+		private hanamiGpuDispatcherService: HanamiGpuDispatcherService,
 	) {
 		this.logger = this.queueLoggerService.logger;
 
@@ -672,6 +674,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 
 	@bindThis
 	public async start(): Promise<void> {
+		this.hanamiGpuDispatcherService.start();
 		await Promise.all([
 			this.systemQueueWorker.run(),
 			this.dbQueueWorker.run(),
@@ -690,6 +693,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 
 	@bindThis
 	public async stop(): Promise<void> {
+		await this.hanamiGpuDispatcherService.stop();
 		await Promise.all([
 			this.systemQueueWorker.close(),
 			this.dbQueueWorker.close(),

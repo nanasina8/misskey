@@ -20,7 +20,6 @@ import {
 	scoreAiModerationSpamSignals,
 	summarizeAiModerationOutcomes,
 	buildAiModerationCriteria,
-	aiModerationScanPostsPerTick,
 	aiModerationScanWallSeconds,
 	aiModerationCriteriaVersion,
 	aiModerationAccountState,
@@ -549,22 +548,12 @@ describe('computeAiModerationTriggers の基準時刻', () => {
 });
 
 describe('全体スキャンの見積もり', () => {
-	test('CPU（6件・1件10秒）は1回分が予算90秒に収まるので、2分に6件', () => {
-		expect(aiModerationScanPostsPerTick(10, 6)).toBe(6);
-		// 600件なら100回 × 2分 = 200分
-		expect(aiModerationScanWallSeconds(600, 10, 6)).toBe(100 * 120);
-	});
-
-	test('1回分が予算を超えても、1回分は進む（1件20秒・6件 = 120秒）', () => {
-		expect(aiModerationScanPostsPerTick(20, 6)).toBe(6);
-	});
-
-	test('GPU（96件・1件0.4秒 = 38秒）は1回の定期実行で2回分', () => {
-		expect(aiModerationScanPostsPerTick(0.4, 96)).toBe(192);
-		expect(aiModerationScanWallSeconds(1000, 0.4, 96)).toBe(6 * 120);
+	test('件数 × 1件あたりの秒数（GPU が空いているとき）', () => {
+		expect(aiModerationScanWallSeconds(1000, 0.15)).toBe(150);
+		expect(aiModerationScanWallSeconds(7, 10)).toBe(70);
 	});
 
 	test('0件なら0秒', () => {
-		expect(aiModerationScanWallSeconds(0, 0.4, 96)).toBe(0);
+		expect(aiModerationScanWallSeconds(0, 0.15)).toBe(0);
 	});
 });

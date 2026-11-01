@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, type OnModuleInit } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { Brackets, In, IsNull, Not } from 'typeorm';
 import { DI } from '@/di-symbols.js';
@@ -28,8 +28,8 @@ import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import { AiModerationService } from '@/core/AiModerationService.js';
 import { AiModerationCriteriaService } from '@/core/AiModerationCriteriaService.js';
-import { probeHanamiNoteJudgeRuntime } from '@/core/hanami/HanamiPythonRuntime.js';
-import { acquireHanamiLocalLlmLock, findHanamiLlmWaiters, HANAMI_LOCAL_LLM_LOCK_KEY } from '@/core/hanami/HanamiLocalLlmLock.js';
+import { HanamiGpuQueueService, type HanamiGpuQueueTakenItem } from '@/core/hanami/HanamiGpuQueueService.js';
+import { HanamiGpuDispatcherService } from '@/core/hanami/HanamiGpuDispatcherService.js';
 import {
 	collectAiModerationSpamSignals,
 	computeAiModerationTextFingerprint,
@@ -37,19 +37,15 @@ import {
 	decideAiModerationAutoHide,
 	decideAiModerationFlag,
 	extractAiModerationLinksFromNote,
-	AI_MODERATION_SCAN_TICK_BUDGET_SECONDS,
-	AI_MODERATION_SCAN_TICK_INTERVAL_SECONDS,
 	AI_MODERATION_SCAN_UNLIMITED,
-	aiModerationScanPostsPerTick,
 	aiModerationScanWallSeconds,
 	type AiModerationScores,
 } from '@/misc/ai-moderation.js';
 
 /** 1回の判定（Python 起動1回）に入れる件数。モデルの読み込みが毎回かかるので GPU では大きめにする */
-const BATCH_GPU = 96;
-const BATCH_CPU = 6;
-/** 1回の定期実行で使ってよい時間。ほかの GPU ジョブを待たせすぎない */
-const TICK_BUDGET_MS = AI_MODERATION_SCAN_TICK_BUDGET_SECONDS * 1000;
+/** スキャンの分の待ちがこれを下回ったら補充する。1回に足すのは REFILL_SIZE 件まで */
+const REFILL_LOW_WATER = 64;
+const REFILL_SIZE = 128;
 /** 見積もりのために投稿を調べる箇所と、1箇所あたりの件数（期間の中で均等に散らす） */
 const SAMPLE_SLICES = 5;
 const SAMPLE_PER_SLICE = 600;
@@ -58,10 +54,28 @@ const MAX_PAGES_PER_BATCH = 20;
 const NOTE_TEXT_MAX_LENGTH = 1024;
 /** 残しておくスキャンの数（新しく始めたとき、これより古いものは消す） */
 const KEEP_SCANS = 5;
-const DEFAULT_SECONDS_PER_POST = { cuda: 0.4, cpu: 10 } as const;
+const DEFAULT_SECONDS_PER_POST = { cuda: 0.15, cpu: 10 } as const;
 /** いつもの絞り込みに当たりうる投稿だけを DB で先に絞る（リンク・メンション・リプライ・DM） */
 const LINK_LIKE_SQL = `'https?://|[a-z0-9-]+\\.[a-z]{2,}/'`;
 const LINK_LIKE_RE = /https?:\/\/|[a-z0-9-]+\.[a-z]{2,}\//i;
+
+/** GPU キュー（spamScan）に入れる1件。受け取り係はこれだけで保存できる（投稿を読み直さない） */
+type ScanQueuePayload = {
+	scanId: string;
+	noteId: string;
+	userId: string;
+	userHost: string | null;
+	visibility: string;
+	noteText: string | null;
+	cw: string | null;
+	/** 判定係に渡す文（CW＋本文） */
+	text: string;
+	triggers: string[];
+	avatarId: string | null;
+};
+
+const exhaustedKey = (scanId: string) => `aiModeration:scan:exhausted:${scanId}`;
+const REFILL_LOCK_KEY = 'aiModeration:scan:refillLock';
 
 type Candidate = {
 	note: MiNote;
@@ -86,7 +100,7 @@ export class AiModerationScanAlreadyRunningError extends Error {}
  * いつもの判定（processPending）のあと、同じ定期実行で GPU のロックを取れたときだけ進める。
  */
 @Injectable()
-export class AiModerationScanService {
+export class AiModerationScanService implements OnModuleInit {
 	private logger: Logger;
 
 	constructor(
@@ -120,8 +134,33 @@ export class AiModerationScanService {
 		private aiModerationService: AiModerationService,
 		private aiModerationCriteriaService: AiModerationCriteriaService,
 		private loggerService: LoggerService,
+		private hanamiGpuQueueService: HanamiGpuQueueService,
+		private hanamiGpuDispatcherService: HanamiGpuDispatcherService,
 	) {
 		this.logger = this.loggerService.getLogger('ai-moderation-scan');
+	}
+
+	/** 配り役に受け取り係と補充係を登録する */
+	@bindThis
+	public onModuleInit(): void {
+		this.hanamiGpuDispatcherService.registerHandler('spamScan', async (items, results, _errors, durationMs) => {
+			await this.handleJudged(items, results, durationMs);
+		});
+		this.hanamiGpuDispatcherService.registerRefill('spamScan', async () => {
+			await this.refill();
+		});
+	}
+
+	/** 補充は配り役と定期実行の両方から呼ばれるので、同時に走らないようにする（同じ投稿を二重に数えない） */
+	@bindThis
+	public async refill(): Promise<void> {
+		const got = await this.redis.set(REFILL_LOCK_KEY, String(process.pid), 'EX', 120, 'NX');
+		if (got == null) return;
+		try {
+			await this.processScan();
+		} finally {
+			await this.redis.del(REFILL_LOCK_KEY);
+		}
 	}
 
 	@bindThis
@@ -182,6 +221,7 @@ export class AiModerationScanService {
 		const scan = await this.aiModerationScanRepository.findOneBy({ id: scanId, status: 'running' });
 		if (scan == null) return false;
 		await this.aiModerationScanRepository.update(scan.id, { status: 'canceled', finishedAt: new Date() });
+		await this.hanamiGpuQueueService.removeWhere('spamScan', payload => (payload as ScanQueuePayload | null)?.scanId === scan.id);
 		await this.moderationLogService.log(moderator, 'cancelAiModerationScan', {
 			scanId: scan.id,
 			judgedCount: scan.judgedCount,
@@ -224,8 +264,8 @@ export class AiModerationScanService {
 			candidates,
 			secondsPerPost,
 			batchSize,
-			postsPerHour: Math.round(aiModerationScanPostsPerTick(secondsPerPost, batchSize) * 3600 / AI_MODERATION_SCAN_TICK_INTERVAL_SECONDS),
-			estimatedSeconds: aiModerationScanWallSeconds(candidates, secondsPerPost, batchSize),
+			postsPerHour: Math.round(3600 / Math.max(secondsPerPost, 0.001)),
+			estimatedSeconds: aiModerationScanWallSeconds(candidates, secondsPerPost),
 		};
 	}
 
@@ -278,8 +318,8 @@ export class AiModerationScanService {
 
 	/** 残りの件数を判定し終えるまでの実時間 */
 	@bindThis
-	public wallSeconds(posts: number, secondsPerPost: number, batchSize: number): number {
-		return aiModerationScanWallSeconds(posts, secondsPerPost, batchSize);
+	public wallSeconds(posts: number, secondsPerPost: number): number {
+		return aiModerationScanWallSeconds(posts, secondsPerPost);
 	}
 
 	@bindThis
@@ -289,74 +329,31 @@ export class AiModerationScanService {
 		const last = await this.aiModerationScanRepository.findOne({ where: { judgedCount: Not(0) }, order: { id: 'DESC' } });
 		const measured = last != null && last.judgedCount > 0 ? last.judgeSeconds / last.judgedCount : null;
 		const secondsPerPost = measured ?? (device === 'cpu' ? DEFAULT_SECONDS_PER_POST.cpu : DEFAULT_SECONDS_PER_POST.cuda);
-		return { secondsPerPost, batchSize: device === 'cpu' ? BATCH_CPU : BATCH_GPU, device };
+		return { secondsPerPost, batchSize: 32, device };
 	}
 
-	/** 定期実行から呼ばれる。実行中のスキャンがあれば、時間の許す範囲で進める */
+	/**
+	 * 補充係。実行中のスキャンがあり、GPU キューのスキャン分が少なくなったら、次の候補を足す。
+	 * 配り役（キューが空いたとき）と2分ごとの定期実行の両方から呼ばれる。判定と保存は受け取り係（handleJudged）。
+	 */
 	@bindThis
 	public async processScan(): Promise<void> {
 		const scan = await this.findRunning();
 		if (scan == null) return;
 
-		if (!this.meta.aiModerationLocalEnabled) {
-			await this.aiModerationScanRepository.update(scan.id, { lastError: 'Qwen での判定がオフになっています' });
+		// 列に残っている分＋判定中の分（判定中は列から外れているが、まだ judgedCount に数えていない）
+		const queued = await this.hanamiGpuQueueService.pending('spamScan');
+		if (queued >= REFILL_LOW_WATER) return;
+
+		// 上限まで残りが無ければ、もう足さない（届いた分を受け取り係が数え終えたら終わる）
+		const room = Math.min(REFILL_SIZE, scan.maxJudged - scan.judgedCount - queued);
+		if (room <= 0) {
+			if (queued === 0) await this.finish(scan);
 			return;
 		}
-		const runtime = await probeHanamiNoteJudgeRuntime();
-		await this.aiModerationService.saveRuntime(runtime);
-		if (!runtime.available) {
-			await this.aiModerationScanRepository.update(scan.id, { lastError: `判定の実行環境が使えません: ${runtime.reason ?? 'unknown'}` });
+		if (await this.redis.exists(exhaustedKey(scan.id)) === 1) {
+			if (queued === 0) await this.finish(scan);
 			return;
-		}
-
-		// 全体スキャンは急がないので、GPU を待っているジョブ（いつもの判定・投稿の判定・話題の判定など）があれば譲る
-		const waiters = await findHanamiLlmWaiters(this.redis, 'spamScan');
-		if (waiters.length > 0) {
-			await this.aiModerationScanRepository.update(scan.id, { lastError: `ほかの判定（${waiters.join('・')}）が GPU を待っているので、先に譲っています` });
-			return;
-		}
-
-		const lock = await acquireHanamiLocalLlmLock(this.redis, 'spamScan');
-		if (lock == null) {
-			// 黙って待つと画面から理由が分からないので、誰が GPU を使っているかを残す
-			const holder = (await this.redis.get(HANAMI_LOCAL_LLM_LOCK_KEY))?.split(':')[0] ?? null;
-			await this.aiModerationScanRepository.update(scan.id, { lastError: `GPU がほかの判定（${holder ?? '不明'}）に使われているため、次の回（2分後）に回します` });
-			return;
-		}
-
-		const startedAt = Date.now();
-		try {
-			let current: MiAiModerationScan = scan;
-			let lastBatchMs = 0;
-			// 次の1回分が予算に収まる間だけ続ける（見積もりの aiModerationScanPostsPerTick と同じ考え方）
-			while (Date.now() - startedAt + lastBatchMs <= TICK_BUDGET_MS) {
-				const batchStartedAt = Date.now();
-				// 途中で中止されていたら止める
-				const fresh = await this.aiModerationScanRepository.findOneBy({ id: current.id });
-				if (fresh == null || fresh.status !== 'running') return;
-				current = fresh;
-
-				// 1回分ごとに、待っているジョブがいないか見る。いればここで GPU を手放す
-				if (lastBatchMs > 0 && (await findHanamiLlmWaiters(this.redis, 'spamScan')).length > 0) return;
-
-				const finished = await this.processBatch(current, runtime.device === 'cpu' ? BATCH_CPU : BATCH_GPU);
-				if (finished) return;
-				lastBatchMs = Date.now() - batchStartedAt;
-			}
-		} catch (err) {
-			this.logger.error('AI moderation scan failed', { err });
-			await this.aiModerationScanRepository.update(scan.id, { lastError: String(err).slice(0, 1000) });
-		} finally {
-			await lock.release();
-		}
-	}
-
-	/** 1回分（最大 batchSize 件）を判定する。終わりまで来たら true */
-	private async processBatch(scan: MiAiModerationScan, batchSize: number): Promise<boolean> {
-		const size = Math.min(batchSize, scan.maxJudged - scan.judgedCount);
-		if (size <= 0) {
-			await this.finish(scan);
-			return true;
 		}
 
 		let cursor = scan.cursor;
@@ -364,7 +361,7 @@ export class AiModerationScanService {
 		let exhausted = false;
 		const candidates: Candidate[] = [];
 
-		for (let page = 0; page < MAX_PAGES_PER_BATCH && candidates.length < size; page++) {
+		for (let page = 0; page < MAX_PAGES_PER_BATCH && candidates.length < room; page++) {
 			const notes = await this.baseQuery(scan.mode, scan.target, scan.sinceNoteId, scan.untilNoteId, cursor)
 				.orderBy('note.id', 'ASC')
 				.limit(PAGE_SIZE)
@@ -379,40 +376,89 @@ export class AiModerationScanService {
 				cursor = note.id;
 				const candidate = selected.get(note.id);
 				if (candidate != null) candidates.push(candidate);
-				if (candidates.length >= size) break;
+				if (candidates.length >= room) break;
 			}
 		}
 
-		let judgeSeconds = 0;
-		let saved: MiAiModerationScanItem[] = [];
-		if (candidates.length > 0) {
-			const t0 = Date.now();
-			const scores = await this.aiModerationService.runSpamJudge(candidates.map(c => ({
+		for (const c of candidates) {
+			await this.hanamiGpuQueueService.enqueue('spamScan', `${scan.id}:${c.note.id}`, {
+				scanId: scan.id,
 				noteId: c.note.id,
+				userId: c.note.userId,
+				userHost: c.note.userHost,
+				visibility: c.note.visibility,
+				noteText: c.note.text,
+				cw: c.note.cw,
 				text: buildNoteText(c.note.cw, c.note.text),
-			})));
-			judgeSeconds = (Date.now() - t0) / 1000;
-			saved = await this.saveItems(scan, candidates, scores);
+				triggers: c.triggers,
+				avatarId: c.author.avatarId,
+			} satisfies ScanQueuePayload);
 		}
-
-		const flaggedItems = saved.filter(item => item.flagged);
-		const wouldHide = await this.annotate(flaggedItems, candidates);
 
 		await this.aiModerationScanRepository.update(scan.id, {
 			cursor,
 			scannedCount: scan.scannedCount + scanned,
-			judgedCount: scan.judgedCount + saved.length,
-			flaggedCount: scan.flaggedCount + flaggedItems.length,
-			wouldHideCount: scan.wouldHideCount + wouldHide,
-			judgeSeconds: scan.judgeSeconds + judgeSeconds,
 			lastError: null,
 		});
 
-		if (exhausted || scan.judgedCount + saved.length >= scan.maxJudged) {
-			await this.finish(scan);
-			return true;
+		if (exhausted) {
+			await this.redis.set(exhaustedKey(scan.id), '1', 'EX', 30 * 24 * 60 * 60);
+			if (queued + candidates.length === 0) await this.finish(scan);
 		}
-		return false;
+	}
+
+	/** 受け取り係（spamScan）。判定係の結果を保存し、件数を進める */
+	@bindThis
+	public async handleJudged(items: readonly HanamiGpuQueueTakenItem[], results: ReadonlyMap<string, AiModerationScores>, durationMs: number | null): Promise<void> {
+		const byScan = new Map<string, Array<{ itemId: string; payload: ScanQueuePayload }>>();
+		for (const item of items) {
+			const payload = item.payload as ScanQueuePayload;
+			const list = byScan.get(payload.scanId) ?? [];
+			list.push({ itemId: item.itemId, payload });
+			byScan.set(payload.scanId, list);
+		}
+
+		for (const [scanId, entries] of byScan) {
+			const scan = await this.aiModerationScanRepository.findOneBy({ id: scanId });
+			if (scan == null || scan.status !== 'running') continue; // 中止・終わったスキャンの残りは捨てる
+
+			const candidates: Candidate[] = entries.map(({ payload }) => ({
+				note: {
+					id: payload.noteId,
+					userId: payload.userId,
+					userHost: payload.userHost,
+					visibility: payload.visibility,
+					text: payload.noteText,
+					cw: payload.cw,
+				} as MiNote,
+				triggers: payload.triggers,
+				author: { id: payload.userId, host: payload.userHost, avatarId: payload.avatarId },
+			}));
+			// 判定係の結果は itemId（scanId:noteId）で届くので noteId に直す
+			const scores = new Map<string, AiModerationScores>();
+			for (const { itemId, payload } of entries) {
+				const score = results.get(itemId);
+				if (score != null) scores.set(payload.noteId, score);
+			}
+
+			const saved = await this.saveItems(scan, candidates, scores);
+			const flaggedItems = saved.filter(item => item.flagged);
+			const wouldHide = await this.annotate(flaggedItems, candidates);
+			const judgeSeconds = durationMs != null ? durationMs / 1000 * (entries.length / items.length) : 0;
+
+			await this.aiModerationScanRepository.increment({ id: scan.id }, 'judgedCount', saved.length);
+			await this.aiModerationScanRepository.increment({ id: scan.id }, 'flaggedCount', flaggedItems.length);
+			await this.aiModerationScanRepository.increment({ id: scan.id }, 'wouldHideCount', wouldHide);
+			await this.aiModerationScanRepository.increment({ id: scan.id }, 'judgeSeconds', judgeSeconds);
+
+			const fresh = await this.aiModerationScanRepository.findOneByOrFail({ id: scan.id });
+			// この回の分は列から外れている（判定中の数にだけ入っている）ので、列の残りだけを見る
+			const queued = await this.hanamiGpuQueueService.length('spamScan');
+			const exhausted = await this.redis.exists(exhaustedKey(scan.id)) === 1;
+			if (fresh.judgedCount >= fresh.maxJudged || (exhausted && queued === 0)) {
+				await this.finish(fresh);
+			}
+		}
 	}
 
 	private baseQuery(mode: 'filtered' | 'all', target: 'all' | 'local' | 'remote', sinceNoteId: string | null, untilNoteId: string, cursor: string | null) {
@@ -649,6 +695,9 @@ export class AiModerationScanService {
 			finishedAt: new Date(),
 			wouldHideCount: wouldHide,
 		});
+		// 上限に届いて終わったときに列へ残っている、このスキャンの分は片付ける
+		await this.hanamiGpuQueueService.removeWhere('spamScan', payload => (payload as ScanQueuePayload | null)?.scanId === scan.id);
+		await this.redis.del(exhaustedKey(scan.id));
 	}
 
 	@bindThis

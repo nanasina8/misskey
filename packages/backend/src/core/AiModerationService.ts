@@ -3,12 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { cpus, tmpdir } from 'node:os';
-import * as Path from 'node:path';
-import { promisify } from 'node:util';
-import { Inject, Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { Inject, Injectable, type OnModuleInit } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { In, IsNull } from 'typeorm';
 import { DI } from '@/di-symbols.js';
@@ -36,38 +32,36 @@ import {
 	type AiModerationTrigger,
 } from '@/misc/ai-moderation.js';
 import {
-	HANAMI_PYTHON_THREAD_ENV,
-	prepareHanamiPythonCommand,
 	probeHanamiNoteJudgeRuntime,
-	resolveHanamiSpamJudgeScript,
 	type HanamiNoteJudgeRuntimeStatus,
 } from '@/core/hanami/HanamiPythonRuntime.js';
-import { acquireHanamiLocalLlmLock, type HanamiLocalLlmLock } from '@/core/hanami/HanamiLocalLlmLock.js';
-
-const execFileAsync = promisify(execFile);
+import { HANAMI_GPU_QUEUE_RESULT_PREFIX, HanamiGpuQueueService, type HanamiGpuQueueTakenItem } from '@/core/hanami/HanamiGpuQueueService.js';
+import { HanamiGpuDispatcherService } from '@/core/hanami/HanamiGpuDispatcherService.js';
+import type { HanamiGpuSpamScores } from '@/misc/hanami-gpu-queue.js';
 
 export const AI_MODERATION_PENDING_KEY = 'aiModeration:pending';
 export const AI_MODERATION_TRIGGERS_KEY = 'aiModeration:triggers';
-export const AI_MODERATION_MAX_BATCH = 32;
+/** 1回の定期実行で待ち行列から取り出す上限（GPU キューに積むだけなので大きくしてよい） */
+export const AI_MODERATION_MAX_PENDING = 200;
 /** 判定の実行環境（定期実行のプロセスで確かめた結果）。API のプロセスはここから読む */
 export const AI_MODERATION_RUNTIME_KEY = 'aiModeration:runtime';
 /** 定期実行（aiModerationCheck）が最後に動いた時刻 */
 export const AI_MODERATION_LAST_TICK_KEY = 'aiModeration:lastTickAt';
 export { AI_MODERATION_LOCAL_MODEL };
-const SPAM_JUDGE_TIMEOUT_MS = 35 * 60 * 1000;
 const NOTE_TEXT_MAX_LENGTH = 1024;
+/** 試す（judgeTrial）の結果を置いておく時間 */
+const TRIAL_RESULT_TTL_SECONDS = 120;
 
 type MentionCandidate = {
 	id: MiUser['id'];
 	host: MiUser['host'];
 };
 
-type SpamJudgeOutput = {
-	status?: string;
-	error?: string;
-	runtime?: { device?: string; dtype?: string; deviceName?: string } | null;
-	judgements?: Array<{ noteId: string; scores: { normal: number; spam: number; scam: number; abuse: number } }>;
-	errors?: Array<{ noteId?: string; error?: string }>;
+/** GPU キュー（spamJudge）に入れる1件。meta は待ち行列に保存していた triggers 等の生の JSON */
+type SpamJudgeQueuePayload = {
+	noteId: string;
+	meta: string | null;
+	text: string;
 };
 
 function buildNoteText(cw: string | null, text: string | null): string {
@@ -138,7 +132,7 @@ function jstDayKey(now: Date = new Date()): string {
 export { jstDayKey as aiModerationJstDayKey };
 
 @Injectable()
-export class AiModerationService {
+export class AiModerationService implements OnModuleInit {
 	private logger: Logger;
 
 	constructor(
@@ -170,8 +164,48 @@ export class AiModerationService {
 		private aiModerationCriteriaService: AiModerationCriteriaService,
 		private systemWebhookService: SystemWebhookService,
 		private loggerService: LoggerService,
+		private hanamiGpuQueueService: HanamiGpuQueueService,
+		private hanamiGpuDispatcherService: HanamiGpuDispatcherService,
 	) {
 		this.logger = this.loggerService.getLogger('ai-moderation');
+	}
+
+	/** 配り役に受け取り係を登録する（いつもの判定と、管理者の「試す」） */
+	@bindThis
+	public onModuleInit(): void {
+		this.hanamiGpuDispatcherService.registerHandler('spamJudge', async (items, results) => {
+			await this.handleJudged(items, results);
+		});
+		this.hanamiGpuDispatcherService.registerHandler('judgeTrial', async (items, results, errors) => {
+			for (const item of items) {
+				await this.redis.set(`${HANAMI_GPU_QUEUE_RESULT_PREFIX}${item.itemId}`, JSON.stringify({
+					scores: results.get(item.itemId) ?? null,
+					error: errors.get(item.itemId) ?? null,
+				}), 'EX', TRIAL_RESULT_TTL_SECONDS);
+			}
+		});
+	}
+
+	/**
+	 * 管理者の「試す」。GPU キューにいちばん高い優先度で入れ、結果が届くまで最大 timeoutMs 待つ。
+	 * 届かなければ null（GPU が使えない・混んでいる）。
+	 */
+	@bindThis
+	public async judgeTrialText(text: string, timeoutMs = 60_000): Promise<AiModerationScores | null> {
+		const itemId = randomUUID();
+		await this.hanamiGpuQueueService.enqueue('judgeTrial', itemId, { text: text.slice(0, NOTE_TEXT_MAX_LENGTH) });
+		const key = `${HANAMI_GPU_QUEUE_RESULT_PREFIX}${itemId}`;
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			const raw = await this.redis.get(key);
+			if (raw != null) {
+				await this.redis.del(key);
+				const parsed = JSON.parse(raw) as { scores: AiModerationScores | null };
+				return parsed.scores;
+			}
+			await new Promise(resolve => setTimeout(resolve, 250));
+		}
+		return null;
 	}
 
 	/**
@@ -284,29 +318,20 @@ export class AiModerationService {
 	}
 
 	/**
-	 * 待ち行列から古い順に最大32件を取り出して判定し、`ai_moderation_queue` に保存する。
+	 * 2分ごと。待ち行列から古い順に取り出し、Qwen を使えるなら GPU キュー（spamJudge）に1件ずつ入れる。
+	 * 判定と保存は、配り役が判定係の結果を持ってきたときに受け取り係（handleJudged）で行う。
+	 * Qwen を使わない・使えないときは、その場で Qwen 無しとして保存まで進める。
 	 */
 	@bindThis
 	public async processPending(): Promise<void> {
-		// ioredis の zpopmin は [member, score, member, score, ...] の平らな配列を返すので、組に直す
-		const popped = await this.redis.zpopmin(AI_MODERATION_PENDING_KEY, AI_MODERATION_MAX_BATCH);
-		const items: Array<[string, string]> = [];
-		for (let i = 0; i + 1 < popped.length; i += 2) items.push([popped[i], popped[i + 1]]);
-		if (items.length === 0) return;
+		// ioredis の zpopmin は [member, score, member, score, ...] の平らな配列を返す
+		const popped = await this.redis.zpopmin(AI_MODERATION_PENDING_KEY, AI_MODERATION_MAX_PENDING);
+		const noteIds = popped.filter((_, i) => i % 2 === 0);
+		if (noteIds.length === 0) return;
 
-		const noteIds = items.map(([member]) => member);
 		const triggersByNote = await this.redis.hmget(AI_MODERATION_TRIGGERS_KEY, ...noteIds);
 		if (noteIds.length > 0) await this.redis.hdel(AI_MODERATION_TRIGGERS_KEY, ...noteIds);
-
-		const requeueAll = async (): Promise<void> => {
-			const pipeline = this.redis.multi();
-			for (let i = 0; i < items.length; i++) {
-				pipeline.zadd(AI_MODERATION_PENDING_KEY, items[i][1], items[i][0]);
-				const rawTriggers = triggersByNote[i];
-				if (rawTriggers != null) pipeline.hset(AI_MODERATION_TRIGGERS_KEY, items[i][0], rawTriggers);
-			}
-			await pipeline.exec();
-		};
+		const metaByNote = new Map(noteIds.map((noteId, i) => [noteId, triggersByNote[i] ?? null]));
 
 		const localEnabled = this.meta.aiModerationLocalEnabled;
 		let runtime: HanamiNoteJudgeRuntimeStatus | null = null;
@@ -314,133 +339,128 @@ export class AiModerationService {
 			runtime = await probeHanamiNoteJudgeRuntime();
 			await this.saveRuntime(runtime);
 		}
-		const runLocal = localEnabled && (runtime?.available ?? false);
 
-		let lock: HanamiLocalLlmLock | null = null;
-		if (runLocal) {
-			lock = await acquireHanamiLocalLlmLock(this.redis, 'spamJudge');
-			if (lock == null) {
-				// ロックが取れなければ元の score で待ち行列に戻して次回に回す
-				this.logger.warn('AI moderation skipped: Hanami local LLM lock is busy');
-				await requeueAll();
+		try {
+			if (localEnabled && (runtime?.available ?? false)) {
+				const notes = await this.notesRepository.findBy({ id: In(noteIds) });
+				for (const note of notes) {
+					await this.hanamiGpuQueueService.enqueue('spamJudge', note.id, {
+						noteId: note.id,
+						meta: metaByNote.get(note.id) ?? null,
+						text: buildNoteText(note.cw, note.text),
+					} satisfies SpamJudgeQueuePayload);
+				}
 				return;
+			}
+			await this.finalizeJudged(noteIds, metaByNote, new Map(), localEnabled ? 'unavailable' : 'skipped');
+		} catch (err) {
+			this.logger.error('AI moderation processing failed', { err });
+		}
+	}
+
+	/** 受け取り係（spamJudge）。判定係の結果を受け取り、いつもどおり保存・自動で隠す・Webhook まで行う */
+	@bindThis
+	public async handleJudged(items: readonly HanamiGpuQueueTakenItem[], results: ReadonlyMap<string, HanamiGpuSpamScores>): Promise<void> {
+		const payloads = items.map(item => item.payload as SpamJudgeQueuePayload);
+		const metaByNote = new Map(payloads.map(p => [p.noteId, p.meta]));
+		await this.finalizeJudged(payloads.map(p => p.noteId), metaByNote, results, 'unavailable');
+	}
+
+	/**
+	 * 判定の結果（Qwen の点数。無いものは missingLabel）から、外部 API → 引っかけるか → 保存 →
+	 * 行動の目印 → 自動で隠す → Webhook までを行う。投稿が消えていれば捨てる。
+	 */
+	private async finalizeJudged(
+		noteIds: readonly string[],
+		metaByNote: ReadonlyMap<string, string | null>,
+		scores: ReadonlyMap<string, AiModerationScores>,
+		missingLabel: 'unavailable' | 'skipped',
+	): Promise<void> {
+		const notes = await this.notesRepository.findBy({ id: In(noteIds) });
+		const noteById = new Map(notes.map(note => [note.id, note]));
+
+		// 投稿が消えたものを捨てる
+		const existingNotes = noteIds
+			.map(noteId => noteById.get(noteId))
+			.filter((note): note is MiNote => note != null);
+
+		const { version: criteriaVersion } = await this.aiModerationCriteriaService.current();
+
+		const flaggedItems: Array<{ noteId: string; userHost: string | null; label: string | null }> = [];
+		const autoHideCandidates: AutoHideCandidate[] = [];
+
+		for (const note of existingNotes) {
+			try {
+				const noteText = buildNoteText(note.cw, note.text);
+				const rawMeta = metaByNote.get(note.id) ?? null;
+				const pending = parsePendingMeta(rawMeta);
+				const triggers = pending.triggers;
+
+				// 外部 API（1件ずつ送る。送らない/失敗は null のまま）
+				let externalResult = null;
+				if (this.meta.aiModerationExternalEnabled) {
+					externalResult = await this.aiModerationExternalService.moderate(note.visibility, noteText);
+				}
+
+				// Qwen の結果が無い（Qwen を使わない・判定に失敗した）ときは missingLabel で保存する
+				const localScores: AiModerationScores | null = scores.get(note.id) ?? null;
+				let localLabel: string | null = localScores == null ? missingLabel : null;
+
+				const { flagged, localLabel: decidedLabel } = decideAiModerationFlag(
+					localScores,
+					externalResult?.flagged ?? null,
+					this.meta.aiModerationLocalThreshold,
+				);
+				if (decidedLabel != null) localLabel = decidedLabel;
+
+				const queueId = await this.saveQueueRow({
+					note,
+					noteText,
+					triggers,
+					contactUserIds: pending.contactUserIds,
+					contactKind: pending.contactKind,
+					localLabel: localLabel as AiModerationLocalLabel | 'unavailable' | 'skipped' | null,
+					localScores,
+					localModel: localScores != null ? AI_MODERATION_LOCAL_MODEL : null,
+					externalFlagged: externalResult?.flagged ?? null,
+					externalCategories: externalResult?.categories ?? [],
+					externalScores: externalResult?.scores ?? null,
+					externalModel: externalResult?.model ?? null,
+					flagged,
+					criteriaVersion,
+				});
+
+				if (flagged) {
+					flaggedItems.push({ noteId: note.id, userHost: note.userHost, label: localLabel });
+					autoHideCandidates.push({ queueId, note, triggers, localScores, externalFlagged: externalResult?.flagged ?? null, signals: [] });
+				}
+			} catch (err) {
+				// 1件の保存失敗で残りが失われないよう、個別に握りつぶす
+				this.logger.error('AI moderation failed to process a note', { noteId: note.id, err });
 			}
 		}
 
-		try {
-			const notes = await this.notesRepository.findBy({ id: In(noteIds) });
-			const noteById = new Map(notes.map(note => [note.id, note]));
-
-			// 投稿が消えたものを捨てる
-			const existingNotes = noteIds
-				.map(noteId => noteById.get(noteId))
-				.filter((note): note is MiNote => note != null);
-
-			// Qwen（1回の入力でまとめて判定）。失敗してもその回だけ Qwen 無しとして保存を続ける。
-			let spamScores: ReadonlyMap<string, AiModerationScores> = new Map();
-			if (runLocal && existingNotes.length > 0) {
-				try {
-					spamScores = await this.runSpamJudge(existingNotes.map(note => ({
-						noteId: note.id,
-						text: buildNoteText(note.cw, note.text),
-					})));
-				} catch (err) {
-					this.logger.error('AI moderation spam judge failed; saving without local scores', { err });
-				}
+		if (autoHideCandidates.length > 0) {
+			try {
+				await this.annotateSpamSignals(autoHideCandidates);
+			} catch (err) {
+				this.logger.error('AI moderation failed to collect spam signals', { err });
 			}
+		}
 
-			const { version: criteriaVersion } = await this.aiModerationCriteriaService.current();
-
-			const flaggedItems: Array<{ noteId: string; userHost: string | null; label: string | null }> = [];
-			const autoHideCandidates: AutoHideCandidate[] = [];
-
-			for (const note of existingNotes) {
-				try {
-					const noteText = buildNoteText(note.cw, note.text);
-					const rawMeta = (() => {
-						const index = noteIds.indexOf(note.id);
-						return index >= 0 ? triggersByNote[index] : null;
-					})();
-					const pending = parsePendingMeta(rawMeta);
-					const triggers = pending.triggers;
-
-					// 外部 API（1件ずつ送る。送らない/失敗は null のまま）
-					let externalResult = null;
-					if (this.meta.aiModerationExternalEnabled) {
-						externalResult = await this.aiModerationExternalService.moderate(note.visibility, noteText);
-					}
-
-					let localScores: AiModerationScores | null = null;
-					let localLabel: string | null;
-					if (!localEnabled) {
-						localLabel = 'skipped';
-					} else if (!runLocal) {
-						localLabel = 'unavailable';
-					} else {
-						localScores = spamScores.get(note.id) ?? null;
-						localLabel = localScores == null ? 'unavailable' : null;
-					}
-
-					const { flagged, localLabel: decidedLabel } = decideAiModerationFlag(
-						localScores,
-						externalResult?.flagged ?? null,
-						this.meta.aiModerationLocalThreshold,
-					);
-					if (decidedLabel != null) localLabel = decidedLabel;
-
-					const queueId = await this.saveQueueRow({
-						note,
-						noteText,
-						triggers,
-						contactUserIds: pending.contactUserIds,
-						contactKind: pending.contactKind,
-						localLabel: localLabel as AiModerationLocalLabel | 'unavailable' | 'skipped' | null,
-						localScores,
-						localModel: localScores != null ? AI_MODERATION_LOCAL_MODEL : null,
-						externalFlagged: externalResult?.flagged ?? null,
-						externalCategories: externalResult?.categories ?? [],
-						externalScores: externalResult?.scores ?? null,
-						externalModel: externalResult?.model ?? null,
-						flagged,
-						criteriaVersion,
-					});
-
-					if (flagged) {
-						flaggedItems.push({ noteId: note.id, userHost: note.userHost, label: localLabel });
-						autoHideCandidates.push({ queueId, note, triggers, localScores, externalFlagged: externalResult?.flagged ?? null, signals: [] });
-					}
-				} catch (err) {
-					// 1件の保存失敗で残りが失われないよう、個別に握りつぶす
-					this.logger.error('AI moderation failed to process a note', { noteId: note.id, err });
-				}
+		if (autoHideCandidates.length > 0 && this.meta.aiModerationAutoHideMode !== 'off') {
+			try {
+				await this.applyAutoHide(autoHideCandidates);
+			} catch (err) {
+				this.logger.error('AI moderation auto hide failed', { err });
 			}
+		}
 
-			if (autoHideCandidates.length > 0) {
-				try {
-					await this.annotateSpamSignals(autoHideCandidates);
-				} catch (err) {
-					this.logger.error('AI moderation failed to collect spam signals', { err });
-				}
-			}
-
-			if (autoHideCandidates.length > 0 && this.meta.aiModerationAutoHideMode !== 'off') {
-				try {
-					await this.applyAutoHide(autoHideCandidates);
-				} catch (err) {
-					this.logger.error('AI moderation auto hide failed', { err });
-				}
-			}
-
-			if (flaggedItems.length > 0) {
-				await this.systemWebhookService.enqueueSystemWebhook('aiModerationFlagged', {
-					count: flaggedItems.length,
-					items: flaggedItems.slice(0, 5),
-				});
-			}
-		} catch (err) {
-			this.logger.error('AI moderation processing failed', { err });
-		} finally {
-			if (lock != null) await lock.release();
+		if (flaggedItems.length > 0) {
+			await this.systemWebhookService.enqueueSystemWebhook('aiModerationFlagged', {
+				count: flaggedItems.length,
+				items: flaggedItems.slice(0, 5),
+			});
 		}
 	}
 
@@ -465,38 +485,6 @@ export class AiModerationService {
 		const runtime = await probeHanamiNoteJudgeRuntime();
 		await this.saveRuntime(runtime);
 		return runtime;
-	}
-
-	public async runSpamJudge(notes: Array<{ noteId: string; text: string }>): Promise<ReadonlyMap<string, AiModerationScores>> {
-		let dir: string | null = null;
-		try {
-			dir = await mkdtemp(Path.join(tmpdir(), 'hanami-spam-judge-'));
-			const inputPath = Path.join(dir, 'input.json');
-			const outputPath = Path.join(dir, 'output.json');
-			await writeFile(inputPath, JSON.stringify({ notes }), 'utf8');
-			const command = prepareHanamiPythonCommand([resolveHanamiSpamJudgeScript(), inputPath, outputPath], { env: this.spamJudgePythonEnv() });
-			await execFileAsync(command.file, command.args, { env: command.env, timeout: SPAM_JUDGE_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
-			const output = JSON.parse(await readFile(outputPath, 'utf8')) as SpamJudgeOutput;
-			if (output.status === 'unavailable') throw new Error(`Hanami spam judge unavailable: ${output.error ?? 'unknown error'}`);
-			if (output.status !== 'ok' && output.status !== 'partial') throw new Error(`Hanami spam judge returned invalid status: ${String(output.status)}`);
-
-			const requested = new Set(notes.map(note => note.noteId));
-			const result = new Map<string, AiModerationScores>();
-			for (const judgement of output.judgements ?? []) {
-				if (!requested.has(judgement.noteId)) continue;
-				if (!Number.isFinite(judgement.scores.normal) || !Number.isFinite(judgement.scores.spam) || !Number.isFinite(judgement.scores.scam) || !Number.isFinite(judgement.scores.abuse)) continue;
-				result.set(judgement.noteId, judgement.scores);
-			}
-			return result;
-		} finally {
-			if (dir != null) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-		}
-	}
-
-	private spamJudgePythonEnv(): NodeJS.ProcessEnv {
-		const configured = Number(process.env.HANAMI_LLM_MAX_THREADS);
-		const maximum = Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : Math.max(1, Math.floor(cpus().length / 2));
-		return { ...process.env, ...HANAMI_PYTHON_THREAD_ENV, HANAMI_LLM_MAX_THREADS: String(maximum) };
 	}
 
 	private async saveQueueRow(input: {

@@ -9,6 +9,8 @@ import { Endpoint } from '@/server/api/endpoint-base.js';
 import type { AiModerationQueueRepository, MiMeta } from '@/models/_.js';
 import { DI } from '@/di-symbols.js';
 import { HANAMI_LOCAL_LLM_LOCK_KEY } from '@/core/hanami/HanamiLocalLlmLock.js';
+import { HanamiGpuQueueService } from '@/core/hanami/HanamiGpuQueueService.js';
+import { HanamiGpuDispatcherService } from '@/core/hanami/HanamiGpuDispatcherService.js';
 import { AI_MODERATION_LAST_TICK_KEY, AI_MODERATION_PENDING_KEY, AiModerationService, aiModerationJstDayKey } from '@/core/AiModerationService.js';
 
 export const meta = {
@@ -55,6 +57,38 @@ export const meta = {
 				type: 'string',
 				optional: false, nullable: false,
 				enum: ['off', 'trial', 'on'],
+			},
+			gpuQueue: {
+				type: 'object',
+				optional: false, nullable: false,
+				properties: {
+					state: { type: 'string', optional: false, nullable: false, enum: ['idle', 'unloaded', 'running', 'loading', 'yielded', 'waitingGpu', 'noGpu', 'failed', 'stopped', 'unknown'] },
+					lengths: {
+						type: 'object',
+						optional: false, nullable: false,
+						properties: {
+							judgeTrial: { type: 'number', optional: false, nullable: false },
+							spamJudge: { type: 'number', optional: false, nullable: false },
+							spamScan: { type: 'number', optional: false, nullable: false },
+						},
+					},
+					oldestWaitSec: { type: 'number', optional: false, nullable: true },
+					processed: { type: 'number', optional: false, nullable: false },
+					vramGiB: { type: 'number', optional: false, nullable: true },
+					lastBatch: {
+						type: 'object',
+						optional: false, nullable: true,
+						properties: {
+							kind: { type: 'string', optional: false, nullable: false },
+							size: { type: 'number', optional: false, nullable: false },
+							durationMs: { type: 'number', optional: false, nullable: false },
+							at: { type: 'number', optional: false, nullable: false },
+						},
+					},
+					lastError: { type: 'string', optional: false, nullable: true },
+					dropped: { type: 'number', optional: false, nullable: false },
+					failed: { type: 'number', optional: false, nullable: false },
+				},
 			},
 			lastTickAt: {
 				type: 'string',
@@ -120,6 +154,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private serverSettings: MiMeta,
 
 		private aiModerationService: AiModerationService,
+		private hanamiGpuQueueService: HanamiGpuQueueService,
+		private hanamiGpuDispatcherService: HanamiGpuDispatcherService,
 	) {
 		super(meta, paramDef, async () => {
 			const day = aiModerationJstDayKey();
@@ -140,11 +176,29 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					.getRawOne<{ judged: string; flagged: string; autoHidden: string; wouldHide: string }>(),
 			]);
 
-			const [runtime, lastTickAt, lockToken] = await Promise.all([
+			const [runtime, lastTickAt, lockToken, gpuStatus, queueStats] = await Promise.all([
 				this.aiModerationService.loadRuntime(),
 				this.redis.get(AI_MODERATION_LAST_TICK_KEY),
 				this.redis.get(HANAMI_LOCAL_LLM_LOCK_KEY),
+				this.hanamiGpuDispatcherService.getStatus(),
+				this.hanamiGpuQueueService.stats(),
 			]);
+			const waits = Object.values(queueStats).map(q => q.oldestWaitSec).filter((v): v is number => v != null);
+			const gpuQueue = {
+				state: gpuStatus?.state ?? 'unknown' as const,
+				lengths: {
+					judgeTrial: queueStats.judgeTrial.length,
+					spamJudge: queueStats.spamJudge.length,
+					spamScan: queueStats.spamScan.length,
+				},
+				oldestWaitSec: waits.length > 0 ? Math.max(...waits) : null,
+				processed: gpuStatus?.processed ?? 0,
+				vramGiB: gpuStatus?.vramGiB ?? null,
+				lastBatch: gpuStatus?.lastBatch ?? null,
+				lastError: gpuStatus?.lastError ?? null,
+				dropped: Object.values(queueStats).reduce((sum, q) => sum + q.dropped, 0),
+				failed: Object.values(queueStats).reduce((sum, q) => sum + q.failed, 0),
+			};
 
 			return {
 				pending,
@@ -157,6 +211,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				autoHideMode: this.serverSettings.aiModerationAutoHideMode,
 				lastJudgedAt: lastJudgedRow?.lastJudgedAt != null ? new Date(lastJudgedRow.lastJudgedAt).toISOString() : null,
 				runtime,
+				gpuQueue,
 				lastTickAt,
 				gpuHolder: lockToken?.split(':')[0] ?? null,
 			};

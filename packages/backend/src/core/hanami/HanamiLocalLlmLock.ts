@@ -20,7 +20,7 @@ const lastThrottledEventAt = new Map<string, number>();
 export function clearHanamiLlmEventThrottle(): void {
 	lastThrottledEventAt.clear();
 }
-export const HANAMI_GPU_JOBS = ['noteJudge', 'topicJudge', 'als', 'tasteTick', 'judgeTrial', 'spamJudge', 'spamScan'] as const;
+export const HANAMI_GPU_JOBS = ['noteJudge', 'topicJudge', 'als', 'tasteTick', 'judgeTrial', 'spamJudge', 'spamScan', 'gpuWorker'] as const;
 /**
  * 「GPU が空くのを待っている」目印。ロックを取れなかったジョブが種類ごとに立て、取れたら消す。
  * 急がないジョブ（全体スキャン）は、これが1つでも立っていれば GPU を使わずに譲る。

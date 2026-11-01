@@ -13,7 +13,6 @@ import { AiModerationService } from '@/core/AiModerationService.js';
 import { AiModerationExternalService } from '@/core/AiModerationExternalService.js';
 import { decideAiModerationFlag, type AiModerationScores } from '@/misc/ai-moderation.js';
 import { probeHanamiNoteJudgeRuntime } from '@/core/hanami/HanamiPythonRuntime.js';
-import { acquireHanamiLocalLlmLock } from '@/core/hanami/HanamiLocalLlmLock.js';
 
 export const meta = {
 	tags: ['admin'],
@@ -115,17 +114,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.runtimeUnavailable);
 			}
 
-			const lockToken = await acquireHanamiLocalLlmLock(this.redis, 'spamJudge');
-			if (lockToken == null) {
+			// 常駐の判定係の順番待ちに、いちばん高い優先度で入れて結果を待つ（最大60秒）
+			const scores: AiModerationScores | null = await this.aiModerationService.judgeTrialText(ps.text);
+			if (scores == null) {
 				throw new ApiError(meta.errors.llmBusy);
-			}
-
-			let scores: AiModerationScores | null = null;
-			try {
-				const judged = await this.aiModerationService.runSpamJudge([{ noteId: 'trial', text: ps.text }]);
-				scores = judged.get('trial') ?? null;
-			} finally {
-				await lockToken.release();
 			}
 
 			// 試行は公開投稿相当として外部 API の公開範囲設定を尊重する。

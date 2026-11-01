@@ -69,6 +69,7 @@ function makeService() {
 		hmget: vi.fn(async (..._args: any[]) => ([] as (string | null)[])),
 		hdel: vi.fn(async (..._args: any[]) => 1),
 		set: vi.fn(async (..._args: any[]) => 'OK'),
+		del: vi.fn(async (..._args: any[]) => 1),
 		get: vi.fn(async (..._args: any[]) => null as string | null),
 		multi: vi.fn(() => ({ zadd: vi.fn(), hset: vi.fn(), exec: vi.fn(async () => []) })),
 	};
@@ -146,15 +147,26 @@ function makeService() {
 		getLogger: vi.fn(() => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), succ: vi.fn() })),
 	};
 
+	const hanamiGpuQueueService = {
+		enqueue: vi.fn(async (..._args: any[]) => true),
+	};
+
+	const hanamiGpuDispatcherService = {
+		registerHandler: vi.fn(),
+		registerRefill: vi.fn(),
+	};
+
 	const service = new AiModerationService(
 		meta, config, redis as any,
 		usersRepository as any, followingsRepository as any, notesRepository as any, aiModerationQueueRepository as any,
 		idService as any, roleService as any, aiModerationExternalService as any, aiModerationHiddenService as any, aiModerationCriteriaService as any, systemWebhookService as any, loggerService as any,
+		hanamiGpuQueueService as any, hanamiGpuDispatcherService as any,
 	);
 
 	return {
 		service, meta, config, redis, usersRepository, followingsRepository, notesRepository,
 		aiModerationQueueRepository, idService, roleService, aiModerationExternalService, aiModerationHiddenService, systemWebhookService,
+		hanamiGpuQueueService, hanamiGpuDispatcherService,
 	};
 }
 
@@ -225,92 +237,123 @@ describe('AiModerationService.considerNote', () => {
 	});
 });
 
+/** 配り役が判定係の結果を持ってきたときと同じ形で、受け取り係を呼ぶ */
+async function judged(m: ReturnType<typeof makeService>, meta: unknown, scores: { normal: number; spam: number; scam: number; abuse: number } | null) {
+	await m.service.handleJudged(
+		[{ itemId: 'note1', payload: { noteId: 'note1', meta: meta == null ? null : JSON.stringify(meta), text: '' }, enqueuedAt: 0, attempts: 0 }],
+		new Map(scores != null ? [['note1', scores]] : []),
+	);
+}
+
 describe('AiModerationService.processPending', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 	});
 
-	test('runSpamJudge が例外でも全件が localLabel=unavailable で保存される', async () => {
+	test('Qwen を使えるときは GPU キュー（spamJudge）に1件ずつ入れ、ここでは保存しない', async () => {
 		const m = makeService();
 		m.redis.zpopmin.mockResolvedValue(['note1', '100']); // ioredis と同じ平らな配列
-		m.redis.hmget.mockResolvedValue([JSON.stringify(['unsolicitedContact'])]);
+		m.redis.hmget.mockResolvedValue([JSON.stringify({ triggers: ['unsolicitedContact'], contactUserIds: ['local1'], contactKind: 'dm' })]);
 		m.notesRepository.findBy.mockResolvedValue([makeNote({ text: 'セール中 shop.example/sale ormh' })]);
-		vi.spyOn(m.service, 'runSpamJudge').mockRejectedValue(new Error('boom'));
 
 		await m.service.processPending();
 
-		expect(m.aiModerationQueueRepository.insertOne).toHaveBeenCalledTimes(1);
+		expect(m.hanamiGpuQueueService.enqueue).toHaveBeenCalledWith('spamJudge', 'note1', {
+			noteId: 'note1',
+			meta: JSON.stringify({ triggers: ['unsolicitedContact'], contactUserIds: ['local1'], contactKind: 'dm' }),
+			text: 'セール中 shop.example/sale ormh',
+		});
+		expect(m.aiModerationQueueRepository.insertOne).not.toHaveBeenCalled();
+	});
+
+	test('待ち行列から取り出した複数件を、正しい投稿 ID で扱う（zpopmin は平らな配列）', async () => {
+		const m = makeService();
+		m.redis.zpopmin.mockResolvedValue(['noteA', '100', 'noteB', '101']);
+		m.redis.hmget.mockResolvedValue([null, null]);
+		m.notesRepository.findBy.mockResolvedValue([makeNote({ id: 'noteA' }), makeNote({ id: 'noteB' })]);
+
+		await m.service.processPending();
+
+		expect(m.redis.hmget).toHaveBeenCalledWith('aiModeration:triggers', 'noteA', 'noteB');
+		expect(m.hanamiGpuQueueService.enqueue).toHaveBeenCalledWith('spamJudge', 'noteA', expect.objectContaining({ noteId: 'noteA' }));
+		expect(m.hanamiGpuQueueService.enqueue).toHaveBeenCalledWith('spamJudge', 'noteB', expect.objectContaining({ noteId: 'noteB' }));
+	});
+
+	test('Qwen がオフならキューに入れず、その場で localLabel=skipped で保存する', async () => {
+		const m = makeService();
+		(m.meta as any).aiModerationLocalEnabled = false;
+		m.redis.zpopmin.mockResolvedValue(['note1', '100']); // ioredis と同じ平らな配列
+		m.redis.hmget.mockResolvedValue([JSON.stringify(['unsolicitedContact'])]);
+		m.notesRepository.findBy.mockResolvedValue([makeNote({ text: 'セール中 shop.example/sale ormh' })]);
+
+		await m.service.processPending();
+
+		expect(m.hanamiGpuQueueService.enqueue).not.toHaveBeenCalled();
+		const saved = m.aiModerationQueueRepository.insertOne.mock.calls[0][0] as any;
+		expect(saved.localLabel).toBe('skipped');
+	});
+});
+
+describe('AiModerationService.handleJudged（受け取り係）', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	test('判定係の結果が無い投稿は localLabel=unavailable で保存される', async () => {
+		const m = makeService();
+		m.notesRepository.findBy.mockResolvedValue([makeNote({ text: 'セール中 shop.example/sale ormh' })]);
+		await judged(m, ['unsolicitedContact'], null);
 		const saved = m.aiModerationQueueRepository.insertOne.mock.calls[0][0] as any;
 		expect(saved.noteId).toBe('note1');
 		expect(saved.localLabel).toBe('unavailable');
 		expect(saved.localScores).toBeNull();
 	});
 
-	test('保存時に links / textFingerprint / contactUserIds / contactKind が埋まる', async () => {
+	test('保存時に links / textFingerprint / contactUserIds / contactKind / 判定条件の版が埋まる', async () => {
 		const m = makeService();
-		m.redis.zpopmin.mockResolvedValue(['note1', '100']); // ioredis と同じ平らな配列
-		m.redis.hmget.mockResolvedValue([JSON.stringify({
-			triggers: ['newAuthorLink'],
-			contactUserIds: ['local1', 'local2'],
-			contactKind: 'dm',
-		})]);
 		m.notesRepository.findBy.mockResolvedValue([makeNote({ text: 'jmty.io/shop/ 見て ormh' })]);
-		vi.spyOn(m.service, 'runSpamJudge').mockResolvedValue(new Map());
-
-		await m.service.processPending();
-
+		await judged(m, { triggers: ['newAuthorLink'], contactUserIds: ['local1', 'local2'], contactKind: 'dm' }, { normal: 0.9, spam: 0.05, scam: 0.03, abuse: 0.02 });
 		const saved = m.aiModerationQueueRepository.insertOne.mock.calls[0][0] as any;
 		expect(saved.links).toEqual(['jmty.io/shop']);
 		expect(saved.textFingerprint).toBe(computeAiModerationTextFingerprint('jmty.io/shop/ 見て ormh', 'misskey.example.com'));
 		expect(saved.contactUserIds).toEqual(['local1', 'local2']);
 		expect(saved.contactKind).toBe('dm');
+		expect(saved.criteriaVersion).toBe('crit1');
+		expect(saved.localLabel).toBe('normal');
 	});
 
 	test('古い形式（配列）の Redis 値も triggers として読める', async () => {
 		const m = makeService();
-		m.redis.zpopmin.mockResolvedValue(['note1', '100']); // ioredis と同じ平らな配列
-		m.redis.hmget.mockResolvedValue([JSON.stringify(['unsolicitedContact'])]);
 		m.notesRepository.findBy.mockResolvedValue([makeNote({ text: 'セール中 shop.example/sale ormh' })]);
-		vi.spyOn(m.service, 'runSpamJudge').mockResolvedValue(new Map());
-
-		await m.service.processPending();
-
+		await judged(m, ['unsolicitedContact'], null);
 		const saved = m.aiModerationQueueRepository.insertOne.mock.calls[0][0] as any;
 		expect(saved.triggers).toEqual(['unsolicitedContact']);
 		expect(saved.contactUserIds).toEqual([]);
 		expect(saved.contactKind).toBeNull();
 	});
-});
 
-describe('AiModerationService.processPending の取り出し', () => {
-	test('複数件を正しい投稿 ID で扱う（zpopmin は平らな配列）', async () => {
+	test('起動時に、いつもの判定と「試す」の受け取り係を配り役に登録する', () => {
 		const m = makeService();
-		m.redis.zpopmin.mockResolvedValue(['noteA', '100', 'noteB', '101']);
-		m.redis.hmget.mockResolvedValue([null, null]);
-		m.notesRepository.findBy.mockResolvedValue([makeNote({ id: 'noteA' }), makeNote({ id: 'noteB' })]);
-		vi.spyOn(m.service, 'runSpamJudge').mockResolvedValue(new Map());
-
-		await m.service.processPending();
-
-		expect(m.redis.hmget).toHaveBeenCalledWith('aiModeration:triggers', 'noteA', 'noteB');
-		expect(m.aiModerationQueueRepository.insertOne).toHaveBeenCalledTimes(2);
+		m.service.onModuleInit();
+		expect(m.hanamiGpuDispatcherService.registerHandler).toHaveBeenCalledWith('spamJudge', expect.any(Function));
+		expect(m.hanamiGpuDispatcherService.registerHandler).toHaveBeenCalledWith('judgeTrial', expect.any(Function));
 	});
 });
 
 describe('AiModerationService 自動で隠す', () => {
+	const scores = { normal: 0.01, spam: 0.9, scam: 0.08, abuse: 0.01 };
+	const strangerDm = { triggers: ['unsolicitedContact'], contactUserIds: ['local1'], contactKind: 'dm' };
+
 	function flaggedSetup(mode: 'off' | 'trial' | 'on') {
 		const m = makeService();
 		(m.meta as any).aiModerationAutoHideMode = mode;
-		m.redis.zpopmin.mockResolvedValue(['note1', '100']); // ioredis と同じ平らな配列
-		m.redis.hmget.mockResolvedValue([JSON.stringify({ triggers: ['unsolicitedContact'], contactUserIds: ['local1'], contactKind: 'dm' })]);
 		m.notesRepository.findBy.mockResolvedValue([makeNote({ text: 'セール中 shop.example/sale ormh' })]);
-		vi.spyOn(m.service, 'runSpamJudge').mockResolvedValue(new Map([['note1', { normal: 0.01, spam: 0.9, scam: 0.08, abuse: 0.01 }]]));
 		return m;
 	}
 
 	test('off では隠さないが、根拠は記録する', async () => {
 		const m = flaggedSetup('off');
-		await m.service.processPending();
+		await judged(m, strangerDm, scores);
 		expect(m.aiModerationHiddenService.hide).not.toHaveBeenCalled();
 		expect(m.aiModerationQueueRepository.update).toHaveBeenCalledWith('queue1', { spamSignals: ['strangerContact', 'noAvatar', 'trailingNoise'] });
 		expect(m.aiModerationQueueRepository.update).not.toHaveBeenCalledWith('queue1', expect.objectContaining({ autoAction: expect.anything() }));
@@ -318,21 +361,20 @@ describe('AiModerationService 自動で隠す', () => {
 
 	test('リンクだけの投稿（知らない人へ送っていない）は on でも隠さない', async () => {
 		const m = flaggedSetup('on');
-		m.redis.hmget.mockResolvedValue([JSON.stringify({ triggers: ['newAuthorLink'], contactUserIds: [], contactKind: null })]);
-		await m.service.processPending();
+		await judged(m, { triggers: ['newAuthorLink'], contactUserIds: [], contactKind: null }, scores);
 		expect(m.aiModerationHiddenService.hide).not.toHaveBeenCalled();
 	});
 
 	test('trial では隠さず wouldHide と記録する', async () => {
 		const m = flaggedSetup('trial');
-		await m.service.processPending();
+		await judged(m, strangerDm, scores);
 		expect(m.aiModerationHiddenService.hide).not.toHaveBeenCalled();
 		expect(m.aiModerationQueueRepository.update).toHaveBeenCalledWith('queue1', { autoAction: 'wouldHide' });
 	});
 
 	test('on ではアカウントを自動で隠し hidden と記録する', async () => {
 		const m = flaggedSetup('on');
-		await m.service.processPending();
+		await judged(m, strangerDm, scores);
 		expect(m.aiModerationHiddenService.hide).toHaveBeenCalledWith({ targetType: 'user', userId: 'author1' }, { moderator: null, sourceQueueId: 'queue1' });
 		expect(m.aiModerationQueueRepository.update).toHaveBeenCalledWith('queue1', { autoAction: 'hidden' });
 	});
@@ -340,15 +382,30 @@ describe('AiModerationService 自動で隠す', () => {
 	test('1日の上限を超えたら隠さない', async () => {
 		const m = flaggedSetup('on');
 		(m.meta as any).aiModerationAutoHideDailyLimit = 0;
-		await m.service.processPending();
+		await judged(m, strangerDm, scores);
 		expect(m.aiModerationHiddenService.hide).not.toHaveBeenCalled();
 	});
 
 	test('すでに隠している相手には何もしない', async () => {
 		const m = flaggedSetup('on');
 		m.aiModerationHiddenService.isHiddenAuthor.mockReturnValue(true);
-		await m.service.processPending();
+		await judged(m, strangerDm, scores);
 		expect(m.aiModerationHiddenService.hide).not.toHaveBeenCalled();
+	});
+});
+
+describe('AiModerationService 試す（judgeTrial）', () => {
+	test('GPU キューに入れ、受け取り係が置いた結果を返す', async () => {
+		const m = makeService();
+		const result = { normal: 0.1, spam: 0.8, scam: 0.05, abuse: 0.05 };
+		m.redis.get.mockResolvedValueOnce(JSON.stringify({ scores: result, error: null }));
+		expect(await m.service.judgeTrialText('テスト', 2000)).toEqual(result);
+		expect(m.hanamiGpuQueueService.enqueue).toHaveBeenCalledWith('judgeTrial', expect.any(String), { text: 'テスト' });
+	});
+
+	test('時間内に結果が来なければ null', async () => {
+		const m = makeService();
+		expect(await m.service.judgeTrialText('テスト', 300)).toBeNull();
 	});
 });
 
@@ -357,7 +414,6 @@ describe('AiModerationService 実行環境の記録', () => {
 		const m = makeService();
 		m.redis.zpopmin.mockResolvedValue(['note1', '100']); // ioredis と同じ平らな配列
 		m.redis.hmget.mockResolvedValue([JSON.stringify({ triggers: ['unsolicitedContact'], contactUserIds: [], contactKind: null })]);
-		vi.spyOn(m.service, 'runSpamJudge').mockResolvedValue(new Map());
 		await m.service.processPending();
 		expect(m.redis.set).toHaveBeenCalledWith('aiModeration:runtime', expect.stringContaining('"available":true'), 'EX', 86400);
 	});

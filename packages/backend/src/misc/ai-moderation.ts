@@ -747,23 +747,14 @@ export function aiModerationCriteriaVersion(criteria: AiModerationCriteria): str
 	return createHash('sha256').update(stableStringify(criteria)).digest('hex').slice(0, 12);
 }
 
-/** 全体スキャン: 定期実行1回で使ってよい秒数と、定期実行の間隔 */
-export const AI_MODERATION_SCAN_TICK_BUDGET_SECONDS = 90;
-export const AI_MODERATION_SCAN_TICK_INTERVAL_SECONDS = 120;
 /** 「上限なし」を表す判定上限（integer 列の最大値） */
 export const AI_MODERATION_SCAN_UNLIMITED = 2147483647;
 
 /**
- * 全体スキャンが定期実行1回で判定できる件数。
- * 1回分（batchSize 件）の判定が予算に収まる回数だけ続ける。収まらなくても1回分は必ずやる。
+ * posts 件を判定し終えるまでの見込み（秒）。常駐の判定係が GPU の空いている時間に1件ずつ進める前提で、
+ * 1件あたりの実測（secondsPerPost）を掛けるだけ。ほかの判定が多いと、そのぶん遅くなる。
  */
-export function aiModerationScanPostsPerTick(secondsPerPost: number, batchSize: number): number {
-	const batchSeconds = Math.max(batchSize * secondsPerPost, 0.001);
-	return batchSize * Math.max(1, Math.floor(AI_MODERATION_SCAN_TICK_BUDGET_SECONDS / batchSeconds));
-}
-
-/** posts 件を判定し終えるまでの実時間（秒）。定期実行の間隔ごとに aiModerationScanPostsPerTick 件ずつ進む */
-export function aiModerationScanWallSeconds(posts: number, secondsPerPost: number, batchSize: number): number {
+export function aiModerationScanWallSeconds(posts: number, secondsPerPost: number): number {
 	if (posts <= 0) return 0;
-	return Math.ceil(posts / aiModerationScanPostsPerTick(secondsPerPost, batchSize)) * AI_MODERATION_SCAN_TICK_INTERVAL_SECONDS;
+	return Math.ceil(posts * secondsPerPost);
 }

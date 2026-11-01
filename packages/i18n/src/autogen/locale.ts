@@ -7068,6 +7068,70 @@ export interface Locale extends ILocale {
          */
         "signalTrailingNoise": string;
         /**
+         * 常駐の判定係
+         */
+        "gpuWorkerLabel": string;
+        /**
+         * 待ち {count} 件
+         */
+        "gpuQueueWaiting": ParameterizedString<"count">;
+        /**
+         * 最後の1回: {kind} {size} 件 {seconds} 秒
+         */
+        "gpuLastBatch": ParameterizedString<"kind" | "size" | "seconds">;
+        /**
+         * 待機中（GPU に載せたまま）
+         */
+        "gpuStateIdle": string;
+        /**
+         * 待機中（仕事が来たら読み込みます）
+         */
+        "gpuStateUnloaded": string;
+        /**
+         * 判定中
+         */
+        "gpuStateRunning": string;
+        /**
+         * モデルを読み込み中
+         */
+        "gpuStateLoading": string;
+        /**
+         * ほかの判定に譲っています
+         */
+        "gpuStateYielded": string;
+        /**
+         * GPU の空き待ち
+         */
+        "gpuStateWaitingGpu": string;
+        /**
+         * GPU なし
+         */
+        "gpuStateNoGpu": string;
+        /**
+         * 止まっています
+         */
+        "gpuStateFailed": string;
+        /**
+         * 止まっています
+         */
+        "gpuStateStopped": string;
+        /**
+         * まだ動いていません
+         */
+        "gpuStateUnknown": string;
+        /**
+         * 試す
+         */
+        "gpuKindTrial": string;
+        /**
+         * いつもの判定
+         */
+        "gpuKindJudge": string;
+        /**
+         * 全体スキャン
+         */
+        "gpuKindScan": string;
+        /**
          * 定期実行（2分ごと）
          */
         "tickLabel": string;
@@ -7092,7 +7156,7 @@ export interface Locale extends ILocale {
          */
         "scanTab": string;
         /**
-         * すでにある投稿を古い順に判定して、何が引っかかるかを見ます。いちばん後回しの仕事なので、ほかの判定（いつもの判定・投稿の判定・話題の判定など）が GPU を待っているときは譲り、空いているときだけ2分ごとに少しずつ進みます。結果は参考用で、隠す・通知は一切しません（自動で隠すモードなら隠していたか、だけ記録します）。外部 API には送りません。「絞り込みに当たる投稿だけ」は、いつもの判定と同じ条件（新しいアカウントのリンク・知らない人への接触）で選びます。
+         * すでにある投稿を古い順に判定して、何が引っかかるかを見ます。常駐の判定係の順番待ちでいちばん後回しの仕事なので、ほかの判定（いつもの判定・投稿の判定・話題の判定など）が先に進み、空いているときだけ進みます。結果は参考用で、隠す・通知は一切しません（自動で隠すモードなら隠していたか、だけ記録します）。外部 API には送りません。「絞り込みに当たる投稿だけ」は、いつもの判定と同じ条件（新しいアカウントのリンク・知らない人への接触）で選びます。
          */
         "scanCaption": string;
         /**
@@ -7152,7 +7216,7 @@ export interface Locale extends ILocale {
          */
         "scanCancel": string;
         /**
-         * 対象の投稿は約 {notes} 件、そのうち判定に回るのはおよそ {candidates} 件（無作為に抜き出した {sampled} 件のうち {sampledCandidates} 件）。1時間に約 {perHour} 件進むので、{judged} 件を判定し終えるまで およそ {time}
+         * 対象の投稿は約 {notes} 件、そのうち判定に回るのはおよそ {candidates} 件（無作為に抜き出した {sampled} 件のうち {sampledCandidates} 件）。GPU が空いていれば1時間に約 {perHour} 件進むので、{judged} 件を判定し終えるまで およそ {time}（ほかの判定が多いとそのぶん延びます）
          */
         "scanEstimateResult": ParameterizedString<"notes" | "candidates" | "sampled" | "sampledCandidates" | "perHour" | "judged" | "time">;
         /**
@@ -7164,7 +7228,7 @@ export interface Locale extends ILocale {
          */
         "scanMaxValue": ParameterizedString<"n">;
         /**
-         * 全体スキャンを始めますか？ GPU が空いているときだけ使い（2分ごとに最大90秒）、ほかの判定が待っていれば譲ります。中止はいつでもできます。
+         * 全体スキャンを始めますか？ GPU が空いているときだけ進み、ほかの判定が先に進みます。中止はいつでもできます。
          */
         "scanConfirmStart": string;
         /**
@@ -16496,6 +16560,10 @@ export interface Locale extends ILocale {
                      * AI投稿チェックの全体スキャン
                      */
                     "spamScan": string;
+                    /**
+                     * 常駐の判定係
+                     */
+                    "gpuWorker": string;
                     /**
                      * 共通の生成
                      */

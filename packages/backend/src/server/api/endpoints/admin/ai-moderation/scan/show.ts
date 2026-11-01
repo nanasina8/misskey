@@ -122,8 +122,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (scan.status === 'running' && progress != null && progress >= 0.01) {
 				const elapsedSeconds = (Date.now() - this.idService.parse(scan.id).date.getTime()) / 1000;
 				etaSeconds = Math.round(elapsedSeconds * (1 - progress) / progress);
-				const { secondsPerPost, batchSize } = await this.aiModerationScanService.speed();
-				etaSeconds = Math.min(etaSeconds, this.aiModerationScanService.wallSeconds(scan.maxJudged - scan.judgedCount, secondsPerPost, batchSize));
+				const { secondsPerPost } = await this.aiModerationScanService.speed();
+				etaSeconds = Math.min(etaSeconds, this.aiModerationScanService.wallSeconds(scan.maxJudged - scan.judgedCount, secondsPerPost));
 			}
 
 			const criteria = await this.aiModerationCriteriaRepository.findOneBy({ id: scan.criteriaVersion });
