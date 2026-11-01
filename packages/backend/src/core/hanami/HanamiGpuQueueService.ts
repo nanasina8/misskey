@@ -34,6 +34,42 @@ export type HanamiGpuQueueTakenItem = {
 	attempts: number;
 };
 
+/** 出来事の記録（調べもの用）。新しい順に最大 EVENTS_MAX 件 */
+export type HanamiGpuQueueEvent = {
+	at: number;
+	type:
+		| 'leaderAcquired' | 'leaderLost'
+		| 'lockAcquired' | 'lockBusy' | 'lockReleased'
+		| 'workerSpawn' | 'workerReady' | 'workerExit' | 'workerFailed'
+		| 'batch' | 'batchFailed' | 'handlerFailed'
+		| 'retry' | 'giveUp' | 'drop'
+		| 'yield' | 'refill';
+	kind?: HanamiGpuQueueKind;
+	count?: number;
+	durationMs?: number;
+	detail?: string;
+};
+
+/** 判定1回分の記録（まとめる件数・速さの調整用）。新しい順に最大 BATCHES_MAX 件 */
+export type HanamiGpuQueueBatchRecord = {
+	at: number;
+	kind: HanamiGpuQueueKind;
+	size: number;
+	ok: number;
+	errors: number;
+	durationMs: number;
+	/** 取り出したときの、いちばん長く待っていた項目の待ち時間 */
+	maxWaitMs: number;
+	maxAttempts: number;
+};
+
+export type HanamiGpuQueuePeekItem = {
+	itemId: string;
+	enqueuedAt: number;
+	deadlineAt: number | null;
+	attempts: number;
+};
+
 export type HanamiGpuQueueStats = {
 	length: number;
 	oldestWaitSec: number | null;
@@ -46,6 +82,11 @@ const itemKey = (kind: HanamiGpuQueueKind) => `${PREFIX}item:${kind}`;
 const droppedKey = (kind: HanamiGpuQueueKind) => `${PREFIX}stats:dropped:${kind}`;
 const failedKey = (kind: HanamiGpuQueueKind) => `${PREFIX}stats:failed:${kind}`;
 const inflightKey = (kind: HanamiGpuQueueKind) => `${PREFIX}inflight:${kind}`;
+const EVENTS_KEY = `${PREFIX}events`;
+const BATCHES_KEY = `${PREFIX}batches`;
+const EVENTS_MAX = 500;
+const BATCHES_MAX = 200;
+const HISTORY_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 function parseBody(raw: string | null): HanamiGpuQueueBody | null {
 	if (raw == null) return null;
@@ -118,6 +159,7 @@ export class HanamiGpuQueueService {
 			if (body.deadlineAt != null && body.deadlineAt <= now) {
 				await this.redis.hdel(itemKey(kind), itemId);
 				await this.redis.incr(droppedKey(kind));
+				await this.recordEvent({ type: 'drop', kind, count: 1, durationMs: now - body.enqueuedAt, detail: itemId });
 				i--;
 				continue;
 			}
@@ -141,6 +183,7 @@ export class HanamiGpuQueueService {
 			if (attempts >= 3) {
 				await this.redis.hdel(itemKey(kind), item.itemId);
 				await this.redis.incr(failedKey(kind));
+				await this.recordEvent({ type: 'giveUp', kind, count: 1, detail: item.itemId });
 				continue;
 			}
 			const next: HanamiGpuQueueBody = {
@@ -197,6 +240,85 @@ export class HanamiGpuQueueService {
 			};
 		}
 		return result;
+	}
+
+	/** 出来事を残す。記録の失敗で判定を止めない */
+	public async recordEvent(event: Omit<HanamiGpuQueueEvent, 'at'>): Promise<void> {
+		try {
+			await this.redis.multi()
+				.lpush(EVENTS_KEY, JSON.stringify({ at: Date.now(), ...event }))
+				.ltrim(EVENTS_KEY, 0, EVENTS_MAX - 1)
+				.expire(EVENTS_KEY, HISTORY_TTL_SECONDS)
+				.exec();
+		} catch {
+			// 記録は調べもの用なので、失敗しても続ける
+		}
+	}
+
+	public async recordBatch(record: HanamiGpuQueueBatchRecord): Promise<void> {
+		try {
+			await this.redis.multi()
+				.lpush(BATCHES_KEY, JSON.stringify(record))
+				.ltrim(BATCHES_KEY, 0, BATCHES_MAX - 1)
+				.expire(BATCHES_KEY, HISTORY_TTL_SECONDS)
+				.exec();
+		} catch {
+			// 同上
+		}
+	}
+
+	public async recentEvents(limit: number): Promise<HanamiGpuQueueEvent[]> {
+		return (await this.redis.lrange(EVENTS_KEY, 0, limit - 1)).flatMap(raw => {
+			try {
+				return [JSON.parse(raw) as HanamiGpuQueueEvent];
+			} catch {
+				return [];
+			}
+		});
+	}
+
+	public async recentBatches(limit: number): Promise<HanamiGpuQueueBatchRecord[]> {
+		return (await this.redis.lrange(BATCHES_KEY, 0, limit - 1)).flatMap(raw => {
+			try {
+				return [JSON.parse(raw) as HanamiGpuQueueBatchRecord];
+			} catch {
+				return [];
+			}
+		});
+	}
+
+	/** 列の先頭から最大 n 件を、取り出さずに見る（本体が無い列の項目は itemId だけ・enqueuedAt=-1 で返す） */
+	public async peek(kind: HanamiGpuQueueKind, n: number): Promise<HanamiGpuQueuePeekItem[]> {
+		const itemIds = await this.redis.lrange(listKey(kind), 0, n - 1);
+		const result: HanamiGpuQueuePeekItem[] = [];
+		for (const itemId of itemIds) {
+			const body = parseBody(await this.redis.hget(itemKey(kind), itemId));
+			result.push(body == null
+				? { itemId, enqueuedAt: -1, deadlineAt: null, attempts: 0 }
+				: { itemId, enqueuedAt: body.enqueuedAt, deadlineAt: body.deadlineAt, attempts: body.attempts });
+		}
+		return result;
+	}
+
+	/**
+	 * 列と本体の食い違い（調べもの用）。列にあるのに本体が無い（取り出すとき捨てられる）、
+	 * 本体があるのに列に無い（判定中の分を除くと、永遠に取り出されない＝迷子）。
+	 */
+	public async consistency(kind: HanamiGpuQueueKind): Promise<{ listOnly: number; bodyOnly: number; inflight: number }> {
+		const [listIds, bodyIds, inflightRaw] = await Promise.all([
+			this.redis.lrange(listKey(kind), 0, -1),
+			this.redis.hkeys(itemKey(kind)),
+			this.redis.get(inflightKey(kind)),
+		]);
+		const inList = new Set(listIds);
+		const inBody = new Set(bodyIds);
+		const inflight = inflightRaw != null ? Number(inflightRaw) : 0;
+		return {
+			listOnly: listIds.filter(id => !inBody.has(id)).length,
+			// 判定中の分は列から外れて本体だけ残っているので、その数を引く
+			bodyOnly: Math.max(0, bodyIds.filter(id => !inList.has(id)).length - inflight),
+			inflight,
+		};
 	}
 
 	/** 列と本体の両方から、predicate に当たる項目を消す（全体スキャンの中止に使う）。 */

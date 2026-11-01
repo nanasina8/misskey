@@ -823,6 +823,18 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
+     * はなみ GPU 判定キューの様子（判定係・GPU の取り合い・種類ごとの待ち・次にやる順・最近の判定と出来事）と、いつも成り立っているはずのことの見張り（checks）を返す。不具合を見つけるための調べもの用。
+     * 
+     * **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+     * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+     */
+    request<E extends 'admin/hanami/gpu-queue', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
      * Inspect Hanami GPU jobs, bounded queue counts, model runs and recent diagnostic events without accessing logs or the database.
      * 
      * **Credential required**: *Yes* / **Permission**: *read:admin:queue*

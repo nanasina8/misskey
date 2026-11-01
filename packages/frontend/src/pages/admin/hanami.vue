@@ -35,6 +35,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							<XAxes v-else-if="tab === 'axes'"/>
 							<XJudge v-else-if="tab === 'judge'"/>
 							<XJobs v-else-if="tab === 'jobs'"/>
+							<XGpuQueue v-else-if="tab === 'gpuQueue'"/>
 							<XTrends v-else-if="tab === 'trends'"/>
 							<XTaste v-else-if="tab === 'taste'"/>
 						</div>
@@ -56,6 +57,7 @@ import XStats from './hanami.stats.vue';
 import XAxes from './hanami.axes.vue';
 import XJudge from './hanami.judge.vue';
 import XJobs from './hanami.jobs.vue';
+import XGpuQueue from './hanami.gpu-queue.vue';
 import XTrends from './hanami.trends.vue';
 import XTaste from './hanami.taste.vue';
 import type { HanamiAdminTab } from '@/scripts/hanami-admin-overview.js';
@@ -73,12 +75,13 @@ const rootEl = useTemplateRef('rootEl');
 const jobsStatus = ref<entities.AdminHanamiJobsStatusResponse | null>(null);
 const tuneMenuOpen = ref(false);
 // Dashboards use the full width; settings forms stay at a readable line length.
-const wideTabs = new Set<HanamiAdminTab>(['overview', 'jobs', 'stats']);
+const wideTabs = new Set<HanamiAdminTab>(['overview', 'jobs', 'gpuQueue', 'stats']);
 
 const viewItems = computed(() => [
 	{ key: 'overview' as const, title: t.overview, icon: 'ti ti-layout-dashboard', attention: false },
 	{ key: 'stats' as const, title: t.stats, icon: 'ti ti-chart-bar', attention: false },
 	{ key: 'jobs' as const, title: t.jobs, icon: 'ti ti-cpu', attention: (jobsStatus.value?.warnings.length ?? 0) > 0 },
+	{ key: 'gpuQueue' as const, title: t.gpuQueue, icon: 'ti ti-list-numbers', attention: false },
 	{ key: 'trends' as const, title: t.trends, icon: 'ti ti-trending-up', attention: false },
 ]);
 const tuneItems = computed(() => [

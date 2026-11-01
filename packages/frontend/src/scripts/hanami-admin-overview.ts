@@ -7,7 +7,7 @@ import type { entities } from 'misskey-js';
 import type { Metric } from '@/scripts/hanami-metrics.js';
 import { finiteMetric } from '@/scripts/hanami-metrics.js';
 
-export type HanamiAdminTab = 'overview' | 'stats' | 'axes' | 'judge' | 'jobs' | 'trends' | 'taste';
+export type HanamiAdminTab = 'overview' | 'stats' | 'axes' | 'judge' | 'jobs' | 'gpuQueue' | 'trends' | 'taste';
 export type StatusTone = 'ok' | 'warn' | 'neutral';
 type TopicJudgeOutcome = NonNullable<entities.AdminHanamiJobsStatusResponse['topicJudge']>['outcome'];
 

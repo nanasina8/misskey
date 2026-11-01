@@ -163,6 +163,14 @@ export class AiModerationScanService implements OnModuleInit {
 		}
 	}
 
+	/** 見張り用: 実行中のスキャンがあるか、期間の終わりまで足し終えたか */
+	@bindThis
+	public async queueInfo(): Promise<{ running: boolean; exhausted: boolean; scanId: string | null }> {
+		const scan = await this.findRunning();
+		if (scan == null) return { running: false, exhausted: false, scanId: null };
+		return { running: true, exhausted: await this.redis.exists(exhaustedKey(scan.id)) === 1, scanId: scan.id };
+	}
+
 	@bindThis
 	public async findRunning(): Promise<MiAiModerationScan | null> {
 		return await this.aiModerationScanRepository.findOne({ where: { status: 'running' }, order: { id: 'DESC' } });
@@ -400,6 +408,7 @@ export class AiModerationScanService implements OnModuleInit {
 			scannedCount: scan.scannedCount + scanned,
 			lastError: null,
 		});
+		await this.hanamiGpuQueueService.recordEvent({ type: 'refill', kind: 'spamScan', count: candidates.length, detail: `scan=${scan.id} scanned=${scanned}${exhausted ? ' exhausted' : ''}` });
 
 		if (exhausted) {
 			await this.redis.set(exhaustedKey(scan.id), '1', 'EX', 30 * 24 * 60 * 60);

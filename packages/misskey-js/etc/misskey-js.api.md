@@ -368,6 +368,12 @@ type AdminGetUserIpsRequest = operations['admin___get-user-ips']['requestBody'][
 type AdminGetUserIpsResponse = operations['admin___get-user-ips']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type AdminHanamiGpuQueueRequest = operations['admin___hanami___gpu-queue']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiGpuQueueResponse = operations['admin___hanami___gpu-queue']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type AdminHanamiJobsStatusRequest = operations['admin___hanami___jobs-status']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -1865,6 +1871,8 @@ declare namespace entities {
         AdminGetTableStatsResponse,
         AdminGetUserIpsRequest,
         AdminGetUserIpsResponse,
+        AdminHanamiGpuQueueRequest,
+        AdminHanamiGpuQueueResponse,
         AdminHanamiJobsStatusRequest,
         AdminHanamiJobsStatusResponse,
         AdminHanamiJudgeAggregateRequest,

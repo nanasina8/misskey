@@ -16233,6 +16233,264 @@ export interface Locale extends ILocale {
              */
             "jobs": string;
             /**
+             * GPU の順番待ち
+             */
+            "gpuQueue": string;
+            "_gpuQueue": {
+                /**
+                 * 常駐の判定係（Qwen）の順番待ちの中身と、いつも成り立っているはずのことの見張りです。おかしな所があれば、上の「見張り」に理由つきで出ます。「JSON をコピー」で、この画面の中身をまるごと渡せます。
+                 */
+                "caption": string;
+                /**
+                 * 5秒ごとに読み直す
+                 */
+                "autoReload": string;
+                /**
+                 * 読み直す
+                 */
+                "reload": string;
+                /**
+                 * JSON をコピー
+                 */
+                "copyJson": string;
+                /**
+                 * 見張り
+                 */
+                "checks": string;
+                /**
+                 * 問題ないものも表示
+                 */
+                "showOk": string;
+                /**
+                 * 問題は見つかっていません
+                 */
+                "allOk": string;
+                /**
+                 * 判定係
+                 */
+                "worker": string;
+                /**
+                 * 状態
+                 */
+                "state": string;
+                /**
+                 * 状態を書いた時刻
+                 */
+                "updatedAt": string;
+                /**
+                 * プロセス
+                 */
+                "pids": string;
+                /**
+                 * リーダー
+                 */
+                "leader": string;
+                /**
+                 * 判定係
+                 */
+                "workerPid": string;
+                /**
+                 * 判定した件数
+                 */
+                "processed": string;
+                /**
+                 * 起動から
+                 */
+                "uptime": string;
+                /**
+                 * 判定中の1回
+                 */
+                "inflight": string;
+                /**
+                 * 最後のエラー
+                 */
+                "lastError": string;
+                /**
+                 * 配り役の状態がありません（ジョブキューのプロセスが動いていないか、まだ一度も動いていません）
+                 */
+                "noDispatcher": string;
+                /**
+                 * GPU の取り合い
+                 */
+                "contention": string;
+                /**
+                 * GPU を使っている判定
+                 */
+                "lockHolder": string;
+                /**
+                 * ロックの残り
+                 */
+                "ttl": string;
+                /**
+                 * 実行環境
+                 */
+                "runtime": string;
+                /**
+                 * GPU なし
+                 */
+                "noGpu": string;
+                /**
+                 * 全体スキャン
+                 */
+                "scan": string;
+                /**
+                 * 実行中
+                 */
+                "scanRunning": string;
+                /**
+                 * 期間の終わりまで足し終えた
+                 */
+                "scanExhausted": string;
+                /**
+                 * なし
+                 */
+                "none": string;
+                /**
+                 * GPU を待っている判定（まだ常駐に載せ替えていないもの）
+                 */
+                "waiter": string;
+                /**
+                 * 重要度
+                 */
+                "priority": string;
+                /**
+                 * 待ち始め
+                 */
+                "waitingSince": string;
+                /**
+                 * GPU を待っている判定はありません
+                 */
+                "noWaiters": string;
+                /**
+                 * 種類ごと
+                 */
+                "kinds": string;
+                /**
+                 * 種類
+                 */
+                "kind": string;
+                /**
+                 * 基本の重要度
+                 */
+                "base": string;
+                /**
+                 * 待ち
+                 */
+                "length": string;
+                /**
+                 * 判定中
+                 */
+                "inflightCol": string;
+                /**
+                 * いちばん古い待ち
+                 */
+                "oldest": string;
+                /**
+                 * 直近1時間の件数
+                 */
+                "hourItems": string;
+                /**
+                 * 回
+                 */
+                "times": string;
+                /**
+                 * 1件あたり秒
+                 */
+                "secPerItem": string;
+                /**
+                 * 締め切り切れ
+                 */
+                "dropped": string;
+                /**
+                 * あきらめ
+                 */
+                "failed": string;
+                /**
+                 * 食い違い（列/本体）
+                 */
+                "mismatch": string;
+                /**
+                 * 1回
+                 */
+                "batchOf": string;
+                /**
+                 * 締め切り
+                 */
+                "deadline": string;
+                /**
+                 * 次にやる順
+                 */
+                "next": string;
+                /**
+                 * いまの列から、実際に処理される順をなぞったものです。重要度は「基本＋待ち時間の加点＋締め切りの加点」。同じ回の項目はまとめて判定係に渡されます。
+                 */
+                "nextCaption": string;
+                /**
+                 * 回
+                 */
+                "round": string;
+                /**
+                 * 項目
+                 */
+                "item": string;
+                /**
+                 * 待った時間
+                 */
+                "waited": string;
+                /**
+                 * 重要度（内訳）
+                 */
+                "priorityBreakdown": string;
+                /**
+                 * 失敗回数
+                 */
+                "attempts": string;
+                /**
+                 * なし
+                 */
+                "empty": string;
+                /**
+                 * 最近の判定
+                 */
+                "batches": string;
+                /**
+                 * 時刻
+                 */
+                "at": string;
+                /**
+                 * 件数
+                 */
+                "size": string;
+                /**
+                 * 秒
+                 */
+                "seconds": string;
+                /**
+                 * 最長の待ち
+                 */
+                "maxWait": string;
+                /**
+                 * エラー
+                 */
+                "errors": string;
+                /**
+                 * 出来事
+                 */
+                "events": string;
+                /**
+                 * 出来事
+                 */
+                "event": string;
+                /**
+                 * 詳しく
+                 */
+                "detail": string;
+                /**
+                 * 前
+                 */
+                "ago": string;
+            };
+            /**
              * 見る
              */
             "sectionView": string;

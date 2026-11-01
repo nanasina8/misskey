@@ -13,7 +13,7 @@ import type Logger from '@/logger.js';
 import { LoggerService } from '@/core/LoggerService.js';
 import { bindThis } from '@/decorators.js';
 import { HanamiGpuQueueService, type HanamiGpuQueueTakenItem } from '@/core/hanami/HanamiGpuQueueService.js';
-import { acquireHanamiLocalLlmLock, findHanamiLlmWaiters, type HanamiLocalLlmLock } from '@/core/hanami/HanamiLocalLlmLock.js';
+import { acquireHanamiLocalLlmLock, findHanamiLlmWaiters, HANAMI_LOCAL_LLM_LOCK_KEY, type HanamiLocalLlmLock } from '@/core/hanami/HanamiLocalLlmLock.js';
 import { cpus } from 'node:os';
 import { HANAMI_PYTHON_THREAD_ENV, prepareHanamiPythonCommand, probeHanamiNoteJudgeRuntime, resolveHanamiGpuWorkerScript } from '@/core/hanami/HanamiPythonRuntime.js';
 import {
@@ -50,6 +50,12 @@ export type HanamiGpuDispatcherStatus = {
 	vramGiB: number | null;
 	lastBatch: { kind: HanamiGpuQueueKind; size: number; durationMs: number; at: number } | null;
 	lastError: string | null;
+	/** この状態を書いた時刻（古ければ配り役が止まっている） */
+	updatedAt: number;
+	/** いま判定係に渡している1回分 */
+	inflight: { kind: HanamiGpuQueueKind; count: number; startedAt: number } | null;
+	/** 判定係の Python のプロセス ID（載っていなければ null） */
+	workerPid: number | null;
 };
 
 export type HanamiGpuQueueHandler = (
@@ -103,6 +109,9 @@ export class HanamiGpuDispatcherService {
 	private lock: HanamiLocalLlmLock | null = null;
 	private leaderTimer: NodeJS.Timeout | null = null;
 	private lastPingAt = 0;
+	private inflight: HanamiGpuDispatcherStatus['inflight'] = null;
+	private statusTimer: NodeJS.Timeout | null = null;
+	private spawnedAt = 0;
 
 	constructor(
 		@Inject(DI.redis)
@@ -140,6 +149,11 @@ export class HanamiGpuDispatcherService {
 		if (this.running) return;
 		this.running = true;
 		this.setState('idle');
+		// 読み込みや長い判定の間も状態を書き続ける（書かれなくなったら止まっている、と見分けられるように）
+		this.statusTimer = setInterval(() => {
+			void this.persistStatus();
+		}, 15_000);
+		this.statusTimer.unref();
 		this.loopPromise = this.loop().catch(err => {
 			this.logger.error('dispatcher loop crashed', { err });
 		});
@@ -148,14 +162,18 @@ export class HanamiGpuDispatcherService {
 	@bindThis
 	public async stop(): Promise<void> {
 		this.running = false;
+		if (this.statusTimer != null) clearInterval(this.statusTimer);
+		this.statusTimer = null;
+		const wasLeader = this.isLeader;
 		if (this.loopPromise != null) {
 			await Promise.race([this.loopPromise, new Promise<void>(resolve => setTimeout(resolve, EXIT_GRACE_MS))]);
 			this.loopPromise = null;
 		}
 		await this.teardownWorker();
-		await this.releaseLeader();
 		this.setState('stopped');
-		await this.persistStatus();
+		// リーダーだったときだけ「止まった」と書く（リーダーでないプロセスが書くと、動いているリーダーの状態を上書きしてしまう）
+		if (wasLeader) await this.persistStatus(true);
+		await this.releaseLeader();
 	}
 
 	@bindThis
@@ -172,6 +190,7 @@ export class HanamiGpuDispatcherService {
 		this.leaderToken = token;
 		this.isLeader = true;
 		this.lastLeaderRenewAt = Date.now();
+		await this.hanamiGpuQueueService.recordEvent({ type: 'leaderAcquired', detail: `pid=${process.pid}` });
 		// モデルの読み込みや長い判定の間もリーダーを失わないよう、ループとは別に延長する
 		// （失うと別のプロセスが判定係を起動し、GPU にモデルが2つ載ってしまう）
 		this.leaderTimer = setInterval(() => {
@@ -191,6 +210,7 @@ export class HanamiGpuDispatcherService {
 		this.lastLeaderRenewAt = Date.now();
 		if (renewed !== 1) {
 			this.logger.warn('hanami GPU dispatcher leadership lost');
+			await this.hanamiGpuQueueService.recordEvent({ type: 'leaderLost', detail: `pid=${process.pid}` });
 			this.isLeader = false;
 			this.leaderToken = null;
 			this.clearLeaderTimer();
@@ -231,6 +251,8 @@ export class HanamiGpuDispatcherService {
 		});
 		this.workerStdin = this.worker.stdin;
 		this.workerReady = false;
+		this.spawnedAt = Date.now();
+		await this.hanamiGpuQueueService.recordEvent({ type: 'workerSpawn', detail: `pid=${this.worker.pid ?? '?'}` });
 
 		this.worker.stderr?.on('data', (chunk: Buffer) => {
 			const text = chunk.toString();
@@ -239,6 +261,7 @@ export class HanamiGpuDispatcherService {
 
 		this.worker.on('exit', (code, signal) => {
 			this.logger.warn('gpu worker exited', { code, signal });
+			void this.hanamiGpuQueueService.recordEvent({ type: 'workerExit', durationMs: Date.now() - this.spawnedAt, detail: `code=${code} signal=${signal}` });
 			this.workerReady = false;
 			this.rejectAllPending(new Error(`gpu worker exited (code=${code} signal=${signal})`));
 		});
@@ -262,11 +285,13 @@ export class HanamiGpuDispatcherService {
 			case 'ready': {
 				this.workerReady = true;
 				this.setState('running');
+				void this.hanamiGpuQueueService.recordEvent({ type: 'workerReady', durationMs: Date.now() - this.spawnedAt, detail: JSON.stringify((message as { runtime?: unknown }).runtime ?? null).slice(0, 300) });
 				break;
 			}
 			case 'failed': {
 				this.workerReady = false;
 				this.lastError = msg.error ?? 'gpu worker failed to start';
+				void this.hanamiGpuQueueService.recordEvent({ type: 'workerFailed', detail: this.lastError.slice(0, 500) });
 				this.rejectAllPending(new Error(this.lastError));
 				break;
 			}
@@ -371,6 +396,7 @@ export class HanamiGpuDispatcherService {
 		if (this.lock != null) {
 			await this.lock.release();
 			this.lock = null;
+			await this.hanamiGpuQueueService.recordEvent({ type: 'lockReleased' });
 		}
 	}
 
@@ -421,6 +447,9 @@ export class HanamiGpuDispatcherService {
 		if (shouldYieldHanamiGpu(waiters, bestPriority)) {
 			if (this.worker != null || this.lock != null) await this.teardownWorker();
 			// 仕事が無くても判定係は降りているので「譲っている」と出す（「載せたまま待機」は判定係が載っているときだけ）
+			if (this.state !== 'yielded') {
+				await this.hanamiGpuQueueService.recordEvent({ type: 'yield', kind: kind ?? undefined, detail: `waiters=${waiters.join(',')} next=${bestPriority ?? 'none'}` });
+			}
 			this.setState('yielded');
 			this.lastError = `ほかの判定（${waiters.join('・')}）が GPU を待っているので、先に譲っています`;
 			return IDLE_SLEEP_MS;
@@ -449,7 +478,14 @@ export class HanamiGpuDispatcherService {
 		if (this.worker == null) {
 			if (this.lock == null) {
 				this.lock = await acquireHanamiLocalLlmLock(this.redis, 'gpuWorker');
+				if (this.lock != null) {
+					await this.hanamiGpuQueueService.recordEvent({ type: 'lockAcquired', kind });
+				}
 				if (this.lock == null) {
+					if (this.state !== 'waitingGpu') {
+						const holder = (await this.redis.get(HANAMI_LOCAL_LLM_LOCK_KEY))?.split(':')[0] ?? null;
+						await this.hanamiGpuQueueService.recordEvent({ type: 'lockBusy', kind, detail: `holder=${holder ?? 'unknown'}` });
+					}
 					this.setState('waitingGpu');
 					this.lastError = 'GPU がほかの判定に使われています';
 					return IDLE_SLEEP_MS;
@@ -481,9 +517,12 @@ export class HanamiGpuDispatcherService {
 			return IDLE_SLEEP_MS;
 		}
 		await this.hanamiGpuQueueService.setInflight(kind, items.length);
+		this.inflight = { kind, count: items.length, startedAt: Date.now() };
+		await this.persistStatus();
 		try {
 			return await this.judgeTaken(kind, items);
 		} finally {
+			this.inflight = null;
 			await this.hanamiGpuQueueService.setInflight(kind, 0);
 		}
 	}
@@ -516,8 +555,10 @@ export class HanamiGpuDispatcherService {
 
 		if (judgeFailed) {
 			// 判定係が落ちた → kill して items を戻す
+			await this.hanamiGpuQueueService.recordEvent({ type: 'batchFailed', kind, count: items.length, detail: (this.lastError ?? '').slice(0, 500) });
 			await this.teardownWorker();
 			await this.hanamiGpuQueueService.retry(kind, items);
+			await this.hanamiGpuQueueService.recordEvent({ type: 'retry', kind, count: items.length });
 			this.setState('failed');
 			const wait = this.backoffMs;
 			this.backoffMs = Math.min(this.backoffMs * 2, 5 * 60 * 1000);
@@ -536,12 +577,26 @@ export class HanamiGpuDispatcherService {
 				await this.hanamiGpuQueueService.complete(kind, items.map(item => item.itemId));
 			} catch (err) {
 				this.logger.error('hanami GPU queue handler failed', { kind, err });
+				await this.hanamiGpuQueueService.recordEvent({ type: 'handlerFailed', kind, count: items.length, detail: String(err).slice(0, 500) });
 				await this.hanamiGpuQueueService.retry(kind, items);
+				await this.hanamiGpuQueueService.recordEvent({ type: 'retry', kind, count: items.length });
 			}
 		}
 
 		this.processed += scores.size;
 		this.lastBatch = { kind, size: items.length, durationMs: durationMs ?? 0, at: Date.now() };
+		const takenAt = this.inflight?.startedAt ?? Date.now();
+		await this.hanamiGpuQueueService.recordBatch({
+			at: Date.now(),
+			kind,
+			size: items.length,
+			ok: scores.size,
+			errors: errors.size,
+			durationMs: durationMs ?? 0,
+			maxWaitMs: Math.max(0, ...items.map(item => takenAt - item.enqueuedAt)),
+			maxAttempts: Math.max(0, ...items.map(item => item.attempts)),
+		});
+		await this.hanamiGpuQueueService.recordEvent({ type: 'batch', kind, count: items.length, durationMs: durationMs ?? 0, detail: errors.size > 0 ? `errors=${errors.size}` : undefined });
 		this.lastError = null;
 		this.setState('running');
 
@@ -568,7 +623,8 @@ export class HanamiGpuDispatcherService {
 		this.state = state;
 	}
 
-	private async persistStatus(): Promise<void> {
+	private async persistStatus(force = false): Promise<void> {
+		if (!this.isLeader && !force) return;
 		const status: HanamiGpuDispatcherStatus = {
 			state: this.state,
 			since: this.stateSince,
@@ -578,6 +634,9 @@ export class HanamiGpuDispatcherService {
 			vramGiB: this.vramGiB,
 			lastBatch: this.lastBatch,
 			lastError: this.lastError,
+			updatedAt: Date.now(),
+			inflight: this.inflight,
+			workerPid: this.worker?.pid ?? null,
 		};
 		await this.redis.set(STATUS_KEY, JSON.stringify(status), 'EX', 300).catch(() => 'OK');
 	}

@@ -677,6 +677,16 @@ export type paths = {
          */
         post: operations['admin___get-user-ips'];
     };
+    '/admin/hanami/gpu-queue': {
+        /**
+         * admin/hanami/gpu-queue
+         * @description はなみ GPU 判定キューの様子（判定係・GPU の取り合い・種類ごとの待ち・次にやる順・最近の判定と出来事）と、いつも成り立っているはずのことの見張り（checks）を返す。不具合を見つけるための調べもの用。
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['admin___hanami___gpu-queue'];
+    };
     '/admin/hanami/jobs-status': {
         /**
          * admin/hanami/jobs-status
@@ -11913,6 +11923,166 @@ export interface operations {
                         /** Format: date-time */
                         createdAt: string;
                     }[];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___hanami___gpu-queue': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @default 200 */
+                    events?: number;
+                    /** @default 50 */
+                    batches?: number;
+                    /** @default 20 */
+                    next?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        now: number;
+                        checks: {
+                            id: string;
+                            /** @enum {string} */
+                            level: 'ok' | 'info' | 'warn' | 'error';
+                            title: string;
+                            detail: string | null;
+                        }[];
+                        dispatcher: {
+                            state: string;
+                            since: number;
+                            updatedAt: number;
+                            pid: number;
+                            workerPid: number | null;
+                            processed: number;
+                            workerUptimeSec: number | null;
+                            vramGiB: number | null;
+                            lastError: string | null;
+                            inflight: {
+                                kind: string;
+                                count: number;
+                                startedAt: number;
+                            } | null;
+                        } | null;
+                        leaderPid: string | null;
+                        lock: {
+                            holder: string | null;
+                            acquiredAt: number | null;
+                            ttlSec: number | null;
+                        };
+                        waiters: {
+                            kind: string;
+                            priority: number;
+                            since: number | null;
+                        }[];
+                        kinds: {
+                            /** @enum {string} */
+                            kind: 'judgeTrial' | 'spamJudge' | 'spamScan';
+                            base: number;
+                            maxBatch: number;
+                            deadlineSec: number | null;
+                            length: number;
+                            inflight: number;
+                            oldestWaitSec: number | null;
+                            dropped: number;
+                            failed: number;
+                            listOnly: number;
+                            bodyOnly: number;
+                            batchesLastHour: number;
+                            itemsLastHour: number;
+                            secPerItem: number | null;
+                        }[];
+                        next: {
+                            /** @enum {string} */
+                            kind: 'judgeTrial' | 'spamJudge' | 'spamScan';
+                            itemId: string;
+                            waitSec: number;
+                            base: number;
+                            aging: number;
+                            deadline: number;
+                            total: number;
+                            deadlineInSec: number | null;
+                            attempts: number;
+                            round: number;
+                        }[];
+                        scan: {
+                            running: boolean;
+                            exhausted: boolean;
+                            scanId: string | null;
+                        };
+                        runtimeAvailable: boolean | null;
+                        batches: {
+                            at: number;
+                            kind: string;
+                            size: number;
+                            ok: number;
+                            errors: number;
+                            durationMs: number;
+                            maxWaitMs: number;
+                            maxAttempts: number;
+                        }[];
+                        events: {
+                            at: number;
+                            type: string;
+                            kind: string | null;
+                            count: number | null;
+                            durationMs: number | null;
+                            detail: string | null;
+                        }[];
+                    };
                 };
             };
             /** @description Client error */
