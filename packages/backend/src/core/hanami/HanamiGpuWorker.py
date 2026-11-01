@@ -77,11 +77,16 @@ def judge_one_chunk(torch, model, device, choice_ids, pad_token_id, chunk):
     attention_mask = torch.tensor(masks, dtype=torch.long, device=device)
     # 位置はパディングを数えずに 0 から振る（1件ずつ判定したときと同じ位置にする）
     position_ids = (attention_mask.cumsum(dim=1) - 1).clamp(min=0)
+    # 語彙全体の logits を全位置ぶん出すと 16件×1000トークン×15万語で約5GB になり OOM する。
+    # 本体の隠れ状態だけ出し、回答の位置1つだけを lm_head に通す（結果は同じ）。
+    answer_positions = torch.tensor([pad_lens[i] + entry["answer_index"] - 1 for i, entry in enumerate(chunk)], dtype=torch.long, device=device)
     with torch.no_grad():
-        logits = model(input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids).logits
+        hidden = model.model(input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids).last_hidden_state
+        answer_hidden = hidden[torch.arange(len(chunk), device=device), answer_positions]
+        logits = model.lm_head(answer_hidden)
     for i, entry in enumerate(chunk):
         try:
-            answer_logits = logits[i][pad_lens[i] + entry["answer_index"] - 1]
+            answer_logits = logits[i]
             selected = answer_logits[choice_ids].float()
             probabilities = torch.softmax(selected, dim=0).tolist()
             results[entry["itemId"]] = {

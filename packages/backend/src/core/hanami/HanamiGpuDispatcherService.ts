@@ -596,7 +596,7 @@ export class HanamiGpuDispatcherService {
 			maxWaitMs: Math.max(0, ...items.map(item => takenAt - item.enqueuedAt)),
 			maxAttempts: Math.max(0, ...items.map(item => item.attempts)),
 		});
-		await this.hanamiGpuQueueService.recordEvent({ type: 'batch', kind, count: items.length, durationMs: durationMs ?? 0, detail: errors.size > 0 ? `errors=${errors.size}` : undefined });
+		await this.hanamiGpuQueueService.recordEvent({ type: 'batch', kind, count: items.length, durationMs: durationMs ?? 0, detail: errors.size > 0 ? `errors=${errors.size} ${[...errors.values()][0].slice(0, 200)}` : undefined });
 		this.lastError = null;
 		this.setState('running');
 
