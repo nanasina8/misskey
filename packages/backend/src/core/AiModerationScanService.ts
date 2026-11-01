@@ -29,7 +29,7 @@ import { bindThis } from '@/decorators.js';
 import { AiModerationService } from '@/core/AiModerationService.js';
 import { AiModerationCriteriaService } from '@/core/AiModerationCriteriaService.js';
 import { probeHanamiNoteJudgeRuntime } from '@/core/hanami/HanamiPythonRuntime.js';
-import { acquireHanamiLocalLlmLock, HANAMI_LOCAL_LLM_LOCK_KEY } from '@/core/hanami/HanamiLocalLlmLock.js';
+import { acquireHanamiLocalLlmLock, findHanamiLlmWaiters, HANAMI_LOCAL_LLM_LOCK_KEY } from '@/core/hanami/HanamiLocalLlmLock.js';
 import {
 	collectAiModerationSpamSignals,
 	computeAiModerationTextFingerprint,
@@ -309,7 +309,14 @@ export class AiModerationScanService {
 			return;
 		}
 
-		const lock = await acquireHanamiLocalLlmLock(this.redis, 'spamJudge');
+		// 全体スキャンは急がないので、GPU を待っているジョブ（いつもの判定・投稿の判定・話題の判定など）があれば譲る
+		const waiters = await findHanamiLlmWaiters(this.redis, 'spamScan');
+		if (waiters.length > 0) {
+			await this.aiModerationScanRepository.update(scan.id, { lastError: `ほかの判定（${waiters.join('・')}）が GPU を待っているので、先に譲っています` });
+			return;
+		}
+
+		const lock = await acquireHanamiLocalLlmLock(this.redis, 'spamScan');
 		if (lock == null) {
 			// 黙って待つと画面から理由が分からないので、誰が GPU を使っているかを残す
 			const holder = (await this.redis.get(HANAMI_LOCAL_LLM_LOCK_KEY))?.split(':')[0] ?? null;
@@ -328,6 +335,9 @@ export class AiModerationScanService {
 				const fresh = await this.aiModerationScanRepository.findOneBy({ id: current.id });
 				if (fresh == null || fresh.status !== 'running') return;
 				current = fresh;
+
+				// 1回分ごとに、待っているジョブがいないか見る。いればここで GPU を手放す
+				if (lastBatchMs > 0 && (await findHanamiLlmWaiters(this.redis, 'spamScan')).length > 0) return;
 
 				const finished = await this.processBatch(current, runtime.device === 'cpu' ? BATCH_CPU : BATCH_GPU);
 				if (finished) return;

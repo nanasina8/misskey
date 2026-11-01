@@ -11951,7 +11951,7 @@ export interface operations {
                      */
                     eventsLimit?: number;
                     /** @description Restrict events to these job families; omitted means all families. */
-                    eventJobs?: ('noteJudge' | 'topicJudge' | 'als' | 'tasteTick' | 'judgeTrial' | 'spamJudge' | 'generation')[];
+                    eventJobs?: ('noteJudge' | 'topicJudge' | 'als' | 'tasteTick' | 'judgeTrial' | 'spamJudge' | 'spamScan' | 'generation')[];
                 };
             };
         };
@@ -12157,7 +12157,7 @@ export interface operations {
                              * @description Job family that emitted the event.
                              * @enum {string}
                              */
-                            job: 'noteJudge' | 'topicJudge' | 'als' | 'tasteTick' | 'judgeTrial' | 'spamJudge' | 'generation';
+                            job: 'noteJudge' | 'topicJudge' | 'als' | 'tasteTick' | 'judgeTrial' | 'spamJudge' | 'spamScan' | 'generation';
                             /**
                              * @description Stable event code; successful lock renewals are not recorded.
                              * @enum {string}

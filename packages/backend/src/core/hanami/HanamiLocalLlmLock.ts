@@ -20,7 +20,16 @@ const lastThrottledEventAt = new Map<string, number>();
 export function clearHanamiLlmEventThrottle(): void {
 	lastThrottledEventAt.clear();
 }
-export const HANAMI_GPU_JOBS = ['noteJudge', 'topicJudge', 'als', 'tasteTick', 'judgeTrial', 'spamJudge'] as const;
+export const HANAMI_GPU_JOBS = ['noteJudge', 'topicJudge', 'als', 'tasteTick', 'judgeTrial', 'spamJudge', 'spamScan'] as const;
+/**
+ * 「GPU が空くのを待っている」目印。ロックを取れなかったジョブが種類ごとに立て、取れたら消す。
+ * 急がないジョブ（全体スキャン）は、これが1つでも立っていれば GPU を使わずに譲る。
+ */
+export const HANAMI_LLM_WANTED_PREFIX = 'hanami:llm:wanted:';
+/** 待っているジョブの再試行（30〜60秒）と定期実行（2分）をまたいで残るくらいの長さ */
+const WANTED_TTL_SECONDS = 150;
+/** 譲る側（ほかが待っていれば使わない）のジョブ */
+const BACKGROUND_GPU_JOBS: ReadonlySet<string> = new Set(['spamScan']);
 export const HANAMI_EVENT_JOBS = [...HANAMI_GPU_JOBS, 'generation'] as const;
 export const HANAMI_LLM_EVENTS = ['dispatched', 'dispatchFailed', 'rejected', 'lockAcquired', 'lockBusy', 'lockRenewFailed', 'lockReleased', 'waiting', 'gaveUp', 'started', 'finished', 'empty', 'failed', 'interrupted', 'noGpu'] as const;
 export type HanamiGpuJob = typeof HANAMI_GPU_JOBS[number];
@@ -119,15 +128,24 @@ export async function acquireHanamiLocalLlmLock(
 			if (await redis.set(key, token, 'EX', LOCK_TTL_MS / 1000, 'NX') == null) {
 				await release();
 				await event('lockBusy', undefined, HANAMI_LLM_EVENT_THROTTLE_MS);
+				if (!BACKGROUND_GPU_JOBS.has(kind)) await redis.set(`${HANAMI_LLM_WANTED_PREFIX}${kind}`, String(Date.now()), 'EX', WANTED_TTL_SECONDS).catch(() => {});
 				return null;
 			}
 			acquired.push(key);
 		}
 		complete = true;
+		if (!BACKGROUND_GPU_JOBS.has(kind)) await redis.del(`${HANAMI_LLM_WANTED_PREFIX}${kind}`).catch(() => {});
 		await event('lockAcquired');
 		return { token, release };
 	} catch (error) {
 		await release();
 		throw error;
 	}
+}
+
+/** GPU が空くのを待っているジョブの種類（exceptKind 以外）。急がないジョブが譲るかを決めるのに使う */
+export async function findHanamiLlmWaiters(redis: Redis.Redis, exceptKind?: HanamiGpuJob): Promise<HanamiGpuJob[]> {
+	const kinds = HANAMI_GPU_JOBS.filter(kind => kind !== exceptKind && !BACKGROUND_GPU_JOBS.has(kind));
+	const values = await redis.mget(...kinds.map(kind => `${HANAMI_LLM_WANTED_PREFIX}${kind}`));
+	return kinds.filter((_, i) => values[i] != null);
 }
