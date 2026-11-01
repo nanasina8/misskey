@@ -154,7 +154,6 @@ declare module '../api.js' {
     /**
      * 判定で引っかけたアカウントを、いまの状態（凍結・相手のサーバーで消えた・隠している・隠すのをやめた・何もしていない）付きで新しい順に返す。
      * 
-     * **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
      * **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
      */
     request<E extends 'admin/ai-moderation/accounts', P extends Endpoints[E]['req']>(
@@ -190,7 +189,6 @@ declare module '../api.js' {
     /**
      * AI 投稿チェックの判定条件の版（モデル・判定スクリプトのハッシュ・閾値・目印の点数）を新しい順に返す。current はいまの版。
      * 
-     * **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
      * **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
      */
     request<E extends 'admin/ai-moderation/criteria', P extends Endpoints[E]['req']>(
@@ -202,7 +200,6 @@ declare module '../api.js' {
     /**
      * No description provided.
      * 
-     * **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
      * **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
      */
     request<E extends 'admin/ai-moderation/group-accounts', P extends Endpoints[E]['req']>(
@@ -214,7 +211,6 @@ declare module '../api.js' {
     /**
      * No description provided.
      * 
-     * **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
      * **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
      */
     request<E extends 'admin/ai-moderation/groups', P extends Endpoints[E]['req']>(
@@ -226,7 +222,6 @@ declare module '../api.js' {
     /**
      * No description provided.
      * 
-     * **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
      * **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
      */
     request<E extends 'admin/ai-moderation/hidden', P extends Endpoints[E]['req']>(
@@ -250,7 +245,6 @@ declare module '../api.js' {
     /**
      * 判定で引っかけたアカウントのその後（このサーバーで凍結・相手のサーバーで消えた・隠している・隠すのをやめた）を集計する。
      * 
-     * **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
      * **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
      */
     request<E extends 'admin/ai-moderation/outcomes', P extends Endpoints[E]['req']>(
@@ -262,7 +256,6 @@ declare module '../api.js' {
     /**
      * No description provided.
      * 
-     * **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
      * **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
      */
     request<E extends 'admin/ai-moderation/queue', P extends Endpoints[E]['req']>(
@@ -298,7 +291,6 @@ declare module '../api.js' {
     /**
      * 全体スキャンを始める前の見積もり（対象の投稿数・判定に回る件数・かかる時間）。
      * 
-     * **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
      * **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
      */
     request<E extends 'admin/ai-moderation/scan/estimate', P extends Endpoints[E]['req']>(
@@ -310,7 +302,6 @@ declare module '../api.js' {
     /**
      * 全体スキャンの結果を、判定条件（使った版すべての中身）と一緒に書き出す。項目は古い順に最大 5000 件ずつ（sinceId で続き）。
      * 
-     * **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
      * **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
      */
     request<E extends 'admin/ai-moderation/scan/export', P extends Endpoints[E]['req']>(
@@ -322,7 +313,6 @@ declare module '../api.js' {
     /**
      * 全体スキャンで判定した投稿を新しい順に返す（既定は引っかけたものだけ）。
      * 
-     * **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
      * **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
      */
     request<E extends 'admin/ai-moderation/scan/items', P extends Endpoints[E]['req']>(
@@ -334,7 +324,6 @@ declare module '../api.js' {
     /**
      * 全体スキャンの進み具合と集計（判定の内訳・サーバー・リンク・目印・判定条件の版）。scanId を省くといちばん新しいもの。
      * 
-     * **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
      * **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
      */
     request<E extends 'admin/ai-moderation/scan/show', P extends Endpoints[E]['req']>(
@@ -358,7 +347,6 @@ declare module '../api.js' {
     /**
      * No description provided.
      * 
-     * **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
      * **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
      */
     request<E extends 'admin/ai-moderation/status', P extends Endpoints[E]['req']>(
@@ -825,7 +813,6 @@ declare module '../api.js' {
     /**
      * はなみ GPU 判定キューの様子（判定係・GPU の取り合い・種類ごとの待ち・次にやる順・最近の判定と出来事）と、いつも成り立っているはずのことの見張り（checks）を返す。不具合を見つけるための調べもの用。
      * 
-     * **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
      * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
      */
     request<E extends 'admin/hanami/gpu-queue', P extends Endpoints[E]['req']>(

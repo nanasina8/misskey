@@ -52,6 +52,14 @@ export const meta = {
 				type: 'number',
 				optional: false, nullable: false,
 			},
+			enabled: {
+				type: 'boolean',
+				optional: false, nullable: false,
+			},
+			localEnabled: {
+				type: 'boolean',
+				optional: false, nullable: false,
+			},
 			autoHideMode: {
 				type: 'string',
 				optional: false, nullable: false,
@@ -207,6 +215,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				flaggedLast24h: stats24h != null ? Number(stats24h.flagged) : 0,
 				autoHiddenLast24h: stats24h != null ? Number(stats24h.autoHidden) : 0,
 				wouldHideLast24h: stats24h != null ? Number(stats24h.wouldHide) : 0,
+				enabled: this.serverSettings.aiModerationEnabled,
+				localEnabled: this.serverSettings.aiModerationLocalEnabled,
 				autoHideMode: this.serverSettings.aiModerationAutoHideMode,
 				lastJudgedAt: lastJudgedRow?.lastJudgedAt != null ? new Date(lastJudgedRow.lastJudgedAt).toISOString() : null,
 				runtime,
