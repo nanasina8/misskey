@@ -75,6 +75,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				</MkKeyValue>
 			</div>
 			<MkInfo v-if="show.scan.lastError" warn>{{ show.scan.lastError }}</MkInfo>
+			<MkInfo v-if="show.scan.status === 'running' && tickStale" warn>{{ i18n.ts._aiModeration.scanTickStale }}</MkInfo>
 		</div>
 
 		<!-- 判定条件 -->
@@ -249,6 +250,10 @@ const exporting = ref(false);
 const selectedScanId = ref<string | null>(null);
 const itemFilter = ref<'flagged' | 'wouldHide' | 'notFlagged'>('flagged');
 
+// 定期実行が10分以上動いていなければ、スキャンは進まない
+const lastTickAt = ref<string | null>(null);
+const tickStale = computed(() => lastTickAt.value == null || Date.now() - new Date(lastTickAt.value).getTime() > 10 * 60 * 1000);
+
 const running = computed(() => show.value?.scans.find(s => s.status === 'running') ?? null);
 
 const scanDef = computed(() => (show.value?.scans ?? []).map(s => ({ label: scanLabel(s), value: s.id })));
@@ -263,8 +268,12 @@ async function reload(): Promise<void> {
 	loading.value = true;
 	error.value = '';
 	try {
-		const res = await misskeyApi('admin/ai-moderation/scan/show', selectedScanId.value != null ? { scanId: selectedScanId.value } : {});
+		const [res, status] = await Promise.all([
+			misskeyApi('admin/ai-moderation/scan/show', selectedScanId.value != null ? { scanId: selectedScanId.value } : {}),
+			misskeyApi('admin/ai-moderation/status'),
+		]);
 		show.value = res;
+		lastTickAt.value = status.lastTickAt;
 		if (selectedScanId.value == null && res.scan != null) selectedScanId.value = res.scan.id;
 	} catch (err) {
 		error.value = errorText(err);

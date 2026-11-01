@@ -27,7 +27,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 						<template #key>{{ i18n.ts._aiModeration.runtimeLabel }}</template>
 						<template #value>
 							{{ status?.runtime?.available === false ? i18n.ts._aiModeration.gpuUnavailable : (status?.runtime ? i18n.ts._aiModeration.gpuAvailable : i18n.ts._aiModeration.gpuUnknown) }}
-							<span :class="$style.sub"><template v-if="status?.runtime?.deviceName"> ・ {{ status.runtime.deviceName }}</template><template v-if="status?.lastJudgedAt"> ・ <MkTime :time="status.lastJudgedAt"/></template></span>
+							<span :class="$style.sub"><template v-if="status?.runtime?.deviceName"> ・ {{ status.runtime.deviceName }}</template><template v-if="status?.runtime?.available === false && status.runtime.reason"> ・ {{ status.runtime.reason }}</template></span>
+						</template>
+					</MkKeyValue>
+					<MkKeyValue>
+						<template #key>{{ i18n.ts._aiModeration.tickLabel }}</template>
+						<template #value>
+							<template v-if="status?.lastTickAt"><MkTime :time="status.lastTickAt"/></template>
+							<template v-else>{{ i18n.ts._aiModeration.tickNever }}</template>
+							<span :class="$style.sub"><template v-if="status?.lastJudgedAt"> ・ {{ i18n.ts._aiModeration.lastJudged }} <MkTime :time="status.lastJudgedAt"/></template><template v-if="status?.gpuHolder"> ・ {{ i18n.tsx._aiModeration.gpuHolder({ job: status.gpuHolder }) }}</template></span>
 						</template>
 					</MkKeyValue>
 					<MkKeyValue>

@@ -8965,6 +8965,9 @@ export interface operations {
                         /** @enum {string} */
                         autoHideMode: 'off' | 'trial' | 'on';
                         /** Format: date-time */
+                        lastTickAt: string | null;
+                        gpuHolder: string | null;
+                        /** Format: date-time */
                         lastJudgedAt: string | null;
                         runtime: {
                             available: boolean;

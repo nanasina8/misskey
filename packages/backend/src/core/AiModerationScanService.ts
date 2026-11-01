@@ -28,8 +28,8 @@ import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import { AiModerationService } from '@/core/AiModerationService.js';
 import { AiModerationCriteriaService } from '@/core/AiModerationCriteriaService.js';
-import { probeHanamiNoteJudgeRuntime, peekHanamiNoteJudgeRuntime } from '@/core/hanami/HanamiPythonRuntime.js';
-import { acquireHanamiLocalLlmLock } from '@/core/hanami/HanamiLocalLlmLock.js';
+import { probeHanamiNoteJudgeRuntime } from '@/core/hanami/HanamiPythonRuntime.js';
+import { acquireHanamiLocalLlmLock, HANAMI_LOCAL_LLM_LOCK_KEY } from '@/core/hanami/HanamiLocalLlmLock.js';
 import {
 	collectAiModerationSpamSignals,
 	computeAiModerationTextFingerprint,
@@ -227,7 +227,7 @@ export class AiModerationScanService {
 
 	@bindThis
 	public async speed(): Promise<{ secondsPerPost: number; batchSize: number; device: 'cuda' | 'cpu' | null }> {
-		const runtime = peekHanamiNoteJudgeRuntime();
+		const runtime = await this.aiModerationService.loadRuntime();
 		const device = runtime?.device ?? null;
 		const last = await this.aiModerationScanRepository.findOne({ where: { judgedCount: Not(0) }, order: { id: 'DESC' } });
 		const measured = last != null && last.judgedCount > 0 ? last.judgeSeconds / last.judgedCount : null;
@@ -246,13 +246,19 @@ export class AiModerationScanService {
 			return;
 		}
 		const runtime = await probeHanamiNoteJudgeRuntime();
+		await this.aiModerationService.saveRuntime(runtime);
 		if (!runtime.available) {
 			await this.aiModerationScanRepository.update(scan.id, { lastError: `判定の実行環境が使えません: ${runtime.reason ?? 'unknown'}` });
 			return;
 		}
 
 		const lock = await acquireHanamiLocalLlmLock(this.redis, 'spamJudge');
-		if (lock == null) return;
+		if (lock == null) {
+			// 黙って待つと画面から理由が分からないので、誰が GPU を使っているかを残す
+			const holder = (await this.redis.get(HANAMI_LOCAL_LLM_LOCK_KEY))?.split(':')[0] ?? null;
+			await this.aiModerationScanRepository.update(scan.id, { lastError: `GPU がほかの判定（${holder ?? '不明'}）に使われているため、次の回（2分後）に回します` });
+			return;
+		}
 
 		const startedAt = Date.now();
 		try {

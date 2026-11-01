@@ -8,8 +8,8 @@ import * as Redis from 'ioredis';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import type { AiModerationQueueRepository, MiMeta } from '@/models/_.js';
 import { DI } from '@/di-symbols.js';
-import { peekHanamiNoteJudgeRuntime } from '@/core/hanami/HanamiPythonRuntime.js';
-import { AI_MODERATION_PENDING_KEY, aiModerationJstDayKey } from '@/core/AiModerationService.js';
+import { HANAMI_LOCAL_LLM_LOCK_KEY } from '@/core/hanami/HanamiLocalLlmLock.js';
+import { AI_MODERATION_LAST_TICK_KEY, AI_MODERATION_PENDING_KEY, AiModerationService, aiModerationJstDayKey } from '@/core/AiModerationService.js';
 
 export const meta = {
 	tags: ['admin'],
@@ -55,6 +55,15 @@ export const meta = {
 				type: 'string',
 				optional: false, nullable: false,
 				enum: ['off', 'trial', 'on'],
+			},
+			lastTickAt: {
+				type: 'string',
+				format: 'date-time',
+				optional: false, nullable: true,
+			},
+			gpuHolder: {
+				type: 'string',
+				optional: false, nullable: true,
 			},
 			lastJudgedAt: {
 				type: 'string',
@@ -109,6 +118,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 		@Inject(DI.meta)
 		private serverSettings: MiMeta,
+
+		private aiModerationService: AiModerationService,
 	) {
 		super(meta, paramDef, async () => {
 			const day = aiModerationJstDayKey();
@@ -129,7 +140,11 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					.getRawOne<{ judged: string; flagged: string; autoHidden: string; wouldHide: string }>(),
 			]);
 
-			const runtime = peekHanamiNoteJudgeRuntime();
+			const [runtime, lastTickAt, lockToken] = await Promise.all([
+				this.aiModerationService.loadRuntime(),
+				this.redis.get(AI_MODERATION_LAST_TICK_KEY),
+				this.redis.get(HANAMI_LOCAL_LLM_LOCK_KEY),
+			]);
 
 			return {
 				pending,
@@ -142,6 +157,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				autoHideMode: this.serverSettings.aiModerationAutoHideMode,
 				lastJudgedAt: lastJudgedRow?.lastJudgedAt != null ? new Date(lastJudgedRow.lastJudgedAt).toISOString() : null,
 				runtime,
+				lastTickAt,
+				gpuHolder: lockToken?.split(':')[0] ?? null,
 			};
 		});
 	}

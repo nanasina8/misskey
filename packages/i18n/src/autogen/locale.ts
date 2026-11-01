@@ -7068,6 +7068,26 @@ export interface Locale extends ILocale {
          */
         "signalTrailingNoise": string;
         /**
+         * 定期実行（2分ごと）
+         */
+        "tickLabel": string;
+        /**
+         * まだ一度も動いていません
+         */
+        "tickNever": string;
+        /**
+         * 最後の判定
+         */
+        "lastJudged": string;
+        /**
+         * いま GPU を使っている判定: {job}
+         */
+        "gpuHolder": ParameterizedString<"job">;
+        /**
+         * 定期実行（2分ごと）が10分以上動いていないため、スキャンが進みません。サーバー（ジョブキュー）が動いているか確かめてください。
+         */
+        "scanTickStale": string;
+        /**
          * 全体を調べる
          */
         "scanTab": string;

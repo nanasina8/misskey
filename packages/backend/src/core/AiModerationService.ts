@@ -49,6 +49,10 @@ const execFileAsync = promisify(execFile);
 export const AI_MODERATION_PENDING_KEY = 'aiModeration:pending';
 export const AI_MODERATION_TRIGGERS_KEY = 'aiModeration:triggers';
 export const AI_MODERATION_MAX_BATCH = 32;
+/** 判定の実行環境（定期実行のプロセスで確かめた結果）。API のプロセスはここから読む */
+export const AI_MODERATION_RUNTIME_KEY = 'aiModeration:runtime';
+/** 定期実行（aiModerationCheck）が最後に動いた時刻 */
+export const AI_MODERATION_LAST_TICK_KEY = 'aiModeration:lastTickAt';
 export { AI_MODERATION_LOCAL_MODEL };
 const SPAM_JUDGE_TIMEOUT_MS = 35 * 60 * 1000;
 const NOTE_TEXT_MAX_LENGTH = 1024;
@@ -305,6 +309,7 @@ export class AiModerationService {
 		let runtime: HanamiNoteJudgeRuntimeStatus | null = null;
 		if (localEnabled) {
 			runtime = await probeHanamiNoteJudgeRuntime();
+			await this.saveRuntime(runtime);
 		}
 		const runLocal = localEnabled && (runtime?.available ?? false);
 
@@ -434,6 +439,29 @@ export class AiModerationService {
 		} finally {
 			if (lock != null) await lock.release();
 		}
+	}
+
+	/** 確かめた実行環境を Redis に残す（API と定期実行は別のプロセスで動くことがあるため） */
+	@bindThis
+	public async saveRuntime(runtime: HanamiNoteJudgeRuntimeStatus): Promise<void> {
+		await this.redis.set(AI_MODERATION_RUNTIME_KEY, JSON.stringify(runtime), 'EX', 24 * 60 * 60);
+	}
+
+	/** 管理画面用。定期実行が残した結果を優先し、無ければこのプロセスで確かめる（10分キャッシュ） */
+	@bindThis
+	public async loadRuntime(): Promise<HanamiNoteJudgeRuntimeStatus | null> {
+		const raw = await this.redis.get(AI_MODERATION_RUNTIME_KEY);
+		if (raw != null) {
+			try {
+				return JSON.parse(raw) as HanamiNoteJudgeRuntimeStatus;
+			} catch {
+				// 壊れていれば確かめ直す
+			}
+		}
+		if (!this.meta.aiModerationLocalEnabled) return null;
+		const runtime = await probeHanamiNoteJudgeRuntime();
+		await this.saveRuntime(runtime);
+		return runtime;
 	}
 
 	public async runSpamJudge(notes: Array<{ noteId: string; text: string }>): Promise<ReadonlyMap<string, AiModerationScores>> {

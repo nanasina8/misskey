@@ -68,6 +68,8 @@ function makeService() {
 		hset: vi.fn(async (..._args: any[]) => 1),
 		hmget: vi.fn(async (..._args: any[]) => ([] as (string | null)[])),
 		hdel: vi.fn(async (..._args: any[]) => 1),
+		set: vi.fn(async (..._args: any[]) => 'OK'),
+		get: vi.fn(async (..._args: any[]) => null as string | null),
 		multi: vi.fn(() => ({ zadd: vi.fn(), hset: vi.fn(), exec: vi.fn(async () => []) })),
 	};
 
@@ -332,5 +334,22 @@ describe('AiModerationService 自動で隠す', () => {
 		m.aiModerationHiddenService.isHiddenAuthor.mockReturnValue(true);
 		await m.service.processPending();
 		expect(m.aiModerationHiddenService.hide).not.toHaveBeenCalled();
+	});
+});
+
+describe('AiModerationService 実行環境の記録', () => {
+	test('判定のたびに確かめた実行環境を Redis に残す（API のプロセスから読めるように）', async () => {
+		const m = makeService();
+		m.redis.zpopmin.mockResolvedValue([['note1', '100']]);
+		m.redis.hmget.mockResolvedValue([JSON.stringify({ triggers: ['unsolicitedContact'], contactUserIds: [], contactKind: null })]);
+		vi.spyOn(m.service, 'runSpamJudge').mockResolvedValue(new Map());
+		await m.service.processPending();
+		expect(m.redis.set).toHaveBeenCalledWith('aiModeration:runtime', expect.stringContaining('"available":true'), 'EX', 86400);
+	});
+
+	test('loadRuntime は Redis に残った結果を優先する', async () => {
+		const m = makeService();
+		m.redis.get.mockResolvedValue(JSON.stringify({ available: false, device: null, deviceName: null, reason: 'no gpu', probedAt: '2026-11-01T00:00:00.000Z' }));
+		expect(await m.service.loadRuntime()).toMatchObject({ available: false, reason: 'no gpu' });
 	});
 });
