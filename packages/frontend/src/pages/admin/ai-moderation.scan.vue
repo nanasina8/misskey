@@ -19,9 +19,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<MkSelect v-model="period" :items="periodDef">
 				<template #label>{{ i18n.ts._aiModeration.scanPeriod }}</template>
 			</MkSelect>
-			<MkInput v-model="maxJudged" type="number" :min="1" :max="200000">
-				<template #label>{{ i18n.ts._aiModeration.scanMaxJudged }}</template>
-			</MkInput>
+			<div class="_gaps_s">
+				<MkInput v-model="maxJudged" type="number" :min="1" :max="10000000" :disabled="unlimited">
+					<template #label>{{ i18n.ts._aiModeration.scanMaxJudged }}</template>
+				</MkInput>
+				<MkSwitch v-model="unlimited">
+					<template #label>{{ i18n.ts._aiModeration.scanUnlimited }}</template>
+				</MkSwitch>
+			</div>
 		</div>
 		<div class="_buttons">
 			<MkButton :disabled="estimating" @click="runEstimate"><i class="ti ti-calculator"></i> {{ i18n.ts._aiModeration.scanEstimate }}</MkButton>
@@ -33,8 +38,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 				candidates: estimate.candidates,
 				sampled: estimate.sampled,
 				sampledCandidates: estimate.sampledCandidates,
-				seconds: estimate.secondsPerPost.toFixed(1),
-				time: durationText(Math.min(estimate.candidates, maxJudged ?? 5000) / Math.max(estimate.candidates, 1) * estimate.estimatedSeconds),
+				perHour: estimate.postsPerHour,
+				judged: plannedJudged,
+				time: durationText(plannedJudged / Math.max(estimate.postsPerHour, 1) * 3600),
 			}) }}
 		</div>
 	</div>
@@ -63,7 +69,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				</MkKeyValue>
 				<MkKeyValue>
 					<template #key>{{ i18n.ts._aiModeration.scanConditions }}</template>
-					<template #value>{{ modeLabel(show.scan.mode) }} ・ {{ targetLabel(show.scan.target) }}<span :class="$style.sub"> ・ <MkTime v-if="show.scan.since" :time="show.scan.since" mode="absolute"/><template v-else>{{ i18n.ts._aiModeration.scanFromBeginning }}</template> 〜 <MkTime :time="show.scan.until" mode="absolute"/></span></template>
+					<template #value>{{ modeLabel(show.scan.mode) }} ・ {{ targetLabel(show.scan.target) }} ・ {{ show.scan.maxJudged == null ? i18n.ts._aiModeration.scanUnlimited : i18n.tsx._aiModeration.scanMaxValue({ n: show.scan.maxJudged }) }}<span :class="$style.sub"> ・ <MkTime v-if="show.scan.since" :time="show.scan.since" mode="absolute"/><template v-else>{{ i18n.ts._aiModeration.scanFromBeginning }}</template> 〜 <MkTime :time="show.scan.until" mode="absolute"/></span></template>
 				</MkKeyValue>
 				<MkKeyValue>
 					<template #key>{{ i18n.ts._aiModeration.scanCounts }}</template>
@@ -194,6 +200,7 @@ import MkInput from '@/components/MkInput.vue';
 import MkKeyValue from '@/components/MkKeyValue.vue';
 import MkPagination from '@/components/MkPagination.vue';
 import MkSelect from '@/components/MkSelect.vue';
+import MkSwitch from '@/components/MkSwitch.vue';
 import MkTabs from '@/components/MkTabs.vue';
 import { useMkSelect } from '@/composables/use-mkselect.js';
 import { i18n } from '@/i18n.js';
@@ -238,6 +245,12 @@ const { model: period, def: periodDef } = useMkSelect({
 	initialValue: '30',
 });
 const maxJudged = ref<number | null>(5000);
+const unlimited = ref(false);
+// 見積もりで判定する件数（上限なしなら判定に回る見込みの件数ぜんぶ）
+const plannedJudged = computed(() => {
+	const candidates = estimate.value?.candidates ?? 0;
+	return unlimited.value ? candidates : Math.min(candidates, maxJudged.value ?? 5000);
+});
 const days = computed(() => period.value === 'all' ? null : Number(period.value));
 
 const show = ref<ShowResponse | null>(null);
@@ -310,7 +323,7 @@ async function start(): Promise<void> {
 	if (canceled) return;
 	starting.value = true;
 	try {
-		const scan = await misskeyApi('admin/ai-moderation/scan/start', { mode: mode.value, target: target.value, days: days.value, maxJudged: maxJudged.value ?? 5000 });
+		const scan = await misskeyApi('admin/ai-moderation/scan/start', { mode: mode.value, target: target.value, days: days.value, maxJudged: unlimited.value ? null : (maxJudged.value ?? 5000) });
 		selectedScanId.value = scan.id;
 		await reload();
 		os.success();

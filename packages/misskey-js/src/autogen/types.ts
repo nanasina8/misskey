@@ -8389,6 +8389,7 @@ export interface operations {
                         candidates: number;
                         secondsPerPost: number;
                         batchSize: number;
+                        postsPerHour: number;
                         estimatedSeconds: number;
                     };
                 };
@@ -8480,7 +8481,7 @@ export interface operations {
                             until: string;
                             /** Format: date-time */
                             cursorAt: string | null;
-                            maxJudged: number;
+                            maxJudged: number | null;
                             scannedCount: number;
                             judgedCount: number;
                             flaggedCount: number;
@@ -8717,7 +8718,7 @@ export interface operations {
                             until: string;
                             /** Format: date-time */
                             cursorAt: string | null;
-                            maxJudged: number;
+                            maxJudged: number | null;
                             scannedCount: number;
                             judgedCount: number;
                             flaggedCount: number;
@@ -8746,7 +8747,7 @@ export interface operations {
                             until: string;
                             /** Format: date-time */
                             cursorAt: string | null;
-                            maxJudged: number;
+                            maxJudged: number | null;
                             scannedCount: number;
                             judgedCount: number;
                             flaggedCount: number;
@@ -8856,8 +8857,11 @@ export interface operations {
                     target?: 'all' | 'local' | 'remote';
                     /** @default null */
                     days?: number | null;
-                    /** @default 5000 */
-                    maxJudged?: number;
+                    /**
+                     * @description 判定する上限。null なら上限なし（終わりまで）
+                     * @default 5000
+                     */
+                    maxJudged?: number | null;
                 };
             };
         };
@@ -8885,7 +8889,7 @@ export interface operations {
                         until: string;
                         /** Format: date-time */
                         cursorAt: string | null;
-                        maxJudged: number;
+                        maxJudged: number | null;
                         scannedCount: number;
                         judgedCount: number;
                         flaggedCount: number;

@@ -16,7 +16,7 @@ export const packedAiModerationScanSchema = {
 		since: { type: 'string', format: 'date-time', optional: false, nullable: true },
 		until: { type: 'string', format: 'date-time', optional: false, nullable: false },
 		cursorAt: { type: 'string', format: 'date-time', optional: false, nullable: true },
-		maxJudged: { type: 'number', optional: false, nullable: false },
+		maxJudged: { type: 'number', optional: false, nullable: true },
 		scannedCount: { type: 'number', optional: false, nullable: false },
 		judgedCount: { type: 'number', optional: false, nullable: false },
 		flaggedCount: { type: 'number', optional: false, nullable: false },

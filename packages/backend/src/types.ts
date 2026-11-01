@@ -439,7 +439,7 @@ export type ModerationLogPayloads = {
 		mode: 'filtered' | 'all';
 		target: 'all' | 'local' | 'remote';
 		days: number | null;
-		maxJudged: number;
+		maxJudged: number | null;
 		criteriaVersion: string;
 	};
 	cancelAiModerationScan: {

@@ -27,6 +27,7 @@ export const meta = {
 			candidates: { type: 'number', optional: false, nullable: false },
 			secondsPerPost: { type: 'number', optional: false, nullable: false },
 			batchSize: { type: 'number', optional: false, nullable: false },
+			postsPerHour: { type: 'number', optional: false, nullable: false },
 			estimatedSeconds: { type: 'number', optional: false, nullable: false },
 		},
 	},

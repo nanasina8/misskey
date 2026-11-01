@@ -37,6 +37,11 @@ import {
 	decideAiModerationAutoHide,
 	decideAiModerationFlag,
 	extractAiModerationLinksFromNote,
+	AI_MODERATION_SCAN_TICK_BUDGET_SECONDS,
+	AI_MODERATION_SCAN_TICK_INTERVAL_SECONDS,
+	AI_MODERATION_SCAN_UNLIMITED,
+	aiModerationScanPostsPerTick,
+	aiModerationScanWallSeconds,
 	type AiModerationScores,
 } from '@/misc/ai-moderation.js';
 
@@ -44,9 +49,10 @@ import {
 const BATCH_GPU = 96;
 const BATCH_CPU = 6;
 /** 1回の定期実行で使ってよい時間。ほかの GPU ジョブを待たせすぎない */
-const TICK_BUDGET_MS = 90 * 1000;
-/** 定期実行の間隔（QueueService の aiModerationCheck と同じ） */
-const TICK_INTERVAL_SECONDS = 120;
+const TICK_BUDGET_MS = AI_MODERATION_SCAN_TICK_BUDGET_SECONDS * 1000;
+/** 見積もりのために投稿を調べる箇所と、1箇所あたりの件数（期間の中で均等に散らす） */
+const SAMPLE_SLICES = 5;
+const SAMPLE_PER_SLICE = 600;
 const PAGE_SIZE = 500;
 const MAX_PAGES_PER_BATCH = 20;
 const NOTE_TEXT_MAX_LENGTH = 1024;
@@ -55,6 +61,7 @@ const KEEP_SCANS = 5;
 const DEFAULT_SECONDS_PER_POST = { cuda: 0.4, cpu: 10 } as const;
 /** いつもの絞り込みに当たりうる投稿だけを DB で先に絞る（リンク・メンション・リプライ・DM） */
 const LINK_LIKE_SQL = `'https?://|[a-z0-9-]+\\.[a-z]{2,}/'`;
+const LINK_LIKE_RE = /https?:\/\/|[a-z0-9-]+\.[a-z]{2,}\//i;
 
 type Candidate = {
 	note: MiNote;
@@ -127,7 +134,8 @@ export class AiModerationScanService {
 		mode: 'filtered' | 'all';
 		target: 'all' | 'local' | 'remote';
 		days: number | null;
-		maxJudged: number;
+		/** null なら上限なし */
+		maxJudged: number | null;
 	}, moderator: { id: MiUser['id'] }): Promise<MiAiModerationScan> {
 		if (await this.findRunning() != null) throw new AiModerationScanAlreadyRunningError();
 
@@ -142,7 +150,7 @@ export class AiModerationScanService {
 			sinceNoteId,
 			untilNoteId: this.idService.gen(now),
 			cursor: null,
-			maxJudged: params.maxJudged,
+			maxJudged: params.maxJudged ?? AI_MODERATION_SCAN_UNLIMITED,
 			scannedCount: 0,
 			judgedCount: 0,
 			flaggedCount: 0,
@@ -182,7 +190,11 @@ export class AiModerationScanService {
 		return true;
 	}
 
-	/** 始める前の見積もり。投稿数と、新しい方の投稿を少し調べた「判定に回る割合」から出す */
+	/**
+	 * 始める前の見積もり。投稿を数えきると大きなサーバーでは数分かかるので、抜き出した投稿から割合で出す。
+	 * - 期間が短い（90日以内）: 期間の投稿数を ID の範囲で数え、期間の中の数か所から抜き出す
+	 * - 期間が長い・最初から: 表全体から無作為に抜き出す（TABLESAMPLE）。投稿数は表の行数の見込みから出す
+	 */
 	@bindThis
 	public async estimate(params: { mode: 'filtered' | 'all'; target: 'all' | 'local' | 'remote'; days: number | null }): Promise<{
 		notes: number;
@@ -191,38 +203,83 @@ export class AiModerationScanService {
 		candidates: number;
 		secondsPerPost: number;
 		batchSize: number;
+		postsPerHour: number;
 		estimatedSeconds: number;
 	}> {
 		const now = Date.now();
 		const sinceNoteId = params.days != null ? this.idService.gen(now - params.days * 24 * 60 * 60 * 1000) : null;
 		const untilNoteId = this.idService.gen(now);
 
-		const notes = await this.baseQuery(params.mode, params.target, sinceNoteId, untilNoteId, null).getCount();
-		const sample = await this.baseQuery(params.mode, params.target, sinceNoteId, untilNoteId, null)
-			.orderBy('note.id', 'DESC')
-			.limit(2000)
-			.getMany();
-		const sampledCandidates = sample.length === 0 ? 0 : (await this.selectCandidates(sample, params.mode)).length;
-		const candidates = sample.length === 0 ? 0 : Math.round(notes * sampledCandidates / sample.length);
+		const { rows, scopeRows } = await this.sampleNotes(sinceNoteId, untilNoteId, params.days);
+		const inScope = rows.filter(note => this.matchesBase(note, params.mode, params.target));
+		const sampledCandidates = inScope.length === 0 ? 0 : (await this.selectCandidates(inScope, params.mode)).length;
+		const ratio = (n: number) => rows.length === 0 ? 0 : Math.round(scopeRows * n / rows.length);
 
 		const { secondsPerPost, batchSize } = await this.speed();
+		const candidates = ratio(sampledCandidates);
 		return {
-			notes,
-			sampled: sample.length,
+			notes: ratio(inScope.length),
+			sampled: rows.length,
 			sampledCandidates,
 			candidates,
 			secondsPerPost,
 			batchSize,
-			estimatedSeconds: this.wallSeconds(candidates, secondsPerPost, batchSize),
+			postsPerHour: Math.round(aiModerationScanPostsPerTick(secondsPerPost, batchSize) * 3600 / AI_MODERATION_SCAN_TICK_INTERVAL_SECONDS),
+			estimatedSeconds: aiModerationScanWallSeconds(candidates, secondsPerPost, batchSize),
 		};
 	}
 
-	/** 残りの件数を判定し終えるまでの実時間。2分ごとの定期実行の中で、90秒ぶん進める */
+	/** 見積もり用に投稿を抜き出す。scopeRows は期間内の投稿（文の有無を問わない）の数の見込み */
+	private async sampleNotes(sinceNoteId: string | null, untilNoteId: string, days: number | null): Promise<{ rows: MiNote[]; scopeRows: number }> {
+		if (sinceNoteId != null && days != null && days <= 90) {
+			const scopeRows = await this.notesRepository.createQueryBuilder('note')
+				.where('note.id >= :sinceNoteId', { sinceNoteId })
+				.andWhere('note.id < :untilNoteId', { untilNoteId })
+				.getCount();
+			const since = this.idService.parse(sinceNoteId).date.getTime();
+			const until = this.idService.parse(untilNoteId).date.getTime();
+			const rows: MiNote[] = [];
+			for (let i = 0; i < SAMPLE_SLICES; i++) {
+				const at = since + (until - since) * i / SAMPLE_SLICES;
+				rows.push(...await this.notesRepository.createQueryBuilder('note')
+					.where('note.id >= :from', { from: this.idService.gen(at) })
+					.andWhere('note.id < :untilNoteId', { untilNoteId })
+					.orderBy('note.id', 'ASC')
+					.limit(SAMPLE_PER_SLICE)
+					.getMany());
+			}
+			return { rows: [...new Map(rows.map(note => [note.id, note])).values()], scopeRows };
+		}
+
+		// 表全体から無作為にページを選んで抜き出す。行数は統計情報の見込み（数えない）
+		const stat = await this.notesRepository.query('SELECT reltuples::bigint AS "rows" FROM pg_class WHERE relname = \'note\'') as Array<{ rows: string }>;
+		const tableRows = Math.max(Number(stat[0]?.rows ?? 0), 1);
+		const percent = Math.min(100, (SAMPLE_SLICES * SAMPLE_PER_SLICE * 2) / tableRows * 100);
+		const sampled = await this.notesRepository.query(
+			'SELECT "id", "userId", "userHost", "text", "cw", "visibility", "mentions", "visibleUserIds", "replyUserId" FROM "note" TABLESAMPLE SYSTEM ($1)',
+			[percent],
+		) as MiNote[];
+		const inRange = sampled.filter(note => note.id < untilNoteId && (sinceNoteId == null || note.id >= sinceNoteId));
+		return {
+			rows: inRange,
+			scopeRows: sampled.length === 0 ? 0 : Math.round(tableRows * inRange.length / sampled.length),
+		};
+	}
+
+	/** baseQuery と同じ条件（文がある・どこの投稿・絞り込み）を、抜き出した投稿に当てる */
+	private matchesBase(note: MiNote, mode: 'filtered' | 'all', target: 'all' | 'local' | 'remote'): boolean {
+		if (note.text == null && note.cw == null) return false;
+		if (target === 'local' && note.userHost != null) return false;
+		if (target === 'remote' && note.userHost == null) return false;
+		if (mode === 'all') return true;
+		return LINK_LIKE_RE.test(note.text ?? '') || LINK_LIKE_RE.test(note.cw ?? '')
+			|| note.mentions.length > 0 || note.replyUserId != null || note.visibility === 'specified';
+	}
+
+	/** 残りの件数を判定し終えるまでの実時間 */
 	@bindThis
 	public wallSeconds(posts: number, secondsPerPost: number, batchSize: number): number {
-		if (posts <= 0) return 0;
-		const perTick = Math.max(batchSize, Math.floor(TICK_BUDGET_MS / 1000 / Math.max(secondsPerPost, 0.01)));
-		return Math.ceil(posts / perTick) * TICK_INTERVAL_SECONDS;
+		return aiModerationScanWallSeconds(posts, secondsPerPost, batchSize);
 	}
 
 	@bindThis
@@ -263,7 +320,10 @@ export class AiModerationScanService {
 		const startedAt = Date.now();
 		try {
 			let current: MiAiModerationScan = scan;
-			while (Date.now() - startedAt < TICK_BUDGET_MS) {
+			let lastBatchMs = 0;
+			// 次の1回分が予算に収まる間だけ続ける（見積もりの aiModerationScanPostsPerTick と同じ考え方）
+			while (Date.now() - startedAt + lastBatchMs <= TICK_BUDGET_MS) {
+				const batchStartedAt = Date.now();
 				// 途中で中止されていたら止める
 				const fresh = await this.aiModerationScanRepository.findOneBy({ id: current.id });
 				if (fresh == null || fresh.status !== 'running') return;
@@ -271,6 +331,7 @@ export class AiModerationScanService {
 
 				const finished = await this.processBatch(current, runtime.device === 'cpu' ? BATCH_CPU : BATCH_GPU);
 				if (finished) return;
+				lastBatchMs = Date.now() - batchStartedAt;
 			}
 		} catch (err) {
 			this.logger.error('AI moderation scan failed', { err });
@@ -594,7 +655,7 @@ export class AiModerationScanService {
 			since: scan.sinceNoteId != null ? this.idService.parse(scan.sinceNoteId).date.toISOString() : null,
 			until: this.idService.parse(scan.untilNoteId).date.toISOString(),
 			cursorAt: scan.cursor != null ? this.idService.parse(scan.cursor).date.toISOString() : null,
-			maxJudged: scan.maxJudged,
+			maxJudged: scan.maxJudged >= AI_MODERATION_SCAN_UNLIMITED ? null : scan.maxJudged,
 			scannedCount: scan.scannedCount,
 			judgedCount: scan.judgedCount,
 			flaggedCount: scan.flaggedCount,

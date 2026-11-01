@@ -7136,7 +7136,7 @@ export interface Locale extends ILocale {
          */
         "scanFromBeginning": string;
         /**
-         * 判定する上限（件）
+         * 判定する上限（件、最大 1000万）
          */
         "scanMaxJudged": string;
         /**
@@ -7152,9 +7152,17 @@ export interface Locale extends ILocale {
          */
         "scanCancel": string;
         /**
-         * 対象の投稿 {notes} 件のうち、判定に回るのはおよそ {candidates} 件（新しい {sampled} 件を調べて {sampledCandidates} 件）。1件あたり約 {seconds} 秒で、上限までなら およそ {time}
+         * 対象の投稿は約 {notes} 件、そのうち判定に回るのはおよそ {candidates} 件（無作為に抜き出した {sampled} 件のうち {sampledCandidates} 件）。1時間に約 {perHour} 件進むので、{judged} 件を判定し終えるまで およそ {time}
          */
-        "scanEstimateResult": ParameterizedString<"notes" | "candidates" | "sampled" | "sampledCandidates" | "seconds" | "time">;
+        "scanEstimateResult": ParameterizedString<"notes" | "candidates" | "sampled" | "sampledCandidates" | "perHour" | "judged" | "time">;
+        /**
+         * 上限なし（終わりまで）
+         */
+        "scanUnlimited": string;
+        /**
+         * 上限 {n} 件
+         */
+        "scanMaxValue": ParameterizedString<"n">;
         /**
          * 全体スキャンを始めますか？ 終わるまで GPU を使い続けます（2分ごとに最大90秒）。中止はいつでもできます。
          */

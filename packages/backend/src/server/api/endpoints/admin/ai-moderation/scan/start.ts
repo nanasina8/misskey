@@ -36,7 +36,7 @@ export const paramDef = {
 		mode: { type: 'string', enum: ['filtered', 'all'], default: 'filtered' },
 		target: { type: 'string', enum: ['all', 'local', 'remote'], default: 'all' },
 		days: { type: 'integer', minimum: 1, maximum: 3650, nullable: true, default: null },
-		maxJudged: { type: 'integer', minimum: 1, maximum: 200000, default: 5000 },
+		maxJudged: { type: 'integer', minimum: 1, maximum: 10000000, nullable: true, default: 5000, description: '判定する上限。null なら上限なし（終わりまで）' },
 	},
 	required: [],
 } as const;
@@ -52,7 +52,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					mode: ps.mode,
 					target: ps.target,
 					days: ps.days ?? null,
-					maxJudged: ps.maxJudged,
+					maxJudged: ps.maxJudged ?? null,
 				}, me);
 				return await this.aiModerationScanService.packScan(scan);
 			} catch (err) {

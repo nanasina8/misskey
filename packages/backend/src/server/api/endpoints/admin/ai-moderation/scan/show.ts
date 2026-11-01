@@ -116,11 +116,14 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			const cursorTime = scan.cursor != null ? this.idService.parse(scan.cursor).date.getTime() : sinceTime;
 			const progress = scan.status === 'done' ? 1 : untilTime > sinceTime ? Math.min(1, Math.max(0, (cursorTime - sinceTime) / (untilTime - sinceTime))) : null;
 
+			// 残り時間は「ここまでにかかった実時間 ÷ 進んだ割合」で出す（GPU 待ちなども含めた本当の速さ）。
+			// 判定の上限が先に来るときは、上限までの時間で頭打ちにする
 			let etaSeconds: number | null = null;
-			if (scan.status === 'running' && progress != null && progress > 0) {
-				const remaining = Math.min(scan.maxJudged - scan.judgedCount, Math.round(scan.judgedCount / progress - scan.judgedCount));
+			if (scan.status === 'running' && progress != null && progress >= 0.01) {
+				const elapsedSeconds = (Date.now() - this.idService.parse(scan.id).date.getTime()) / 1000;
+				etaSeconds = Math.round(elapsedSeconds * (1 - progress) / progress);
 				const { secondsPerPost, batchSize } = await this.aiModerationScanService.speed();
-				etaSeconds = this.aiModerationScanService.wallSeconds(remaining, secondsPerPost, batchSize);
+				etaSeconds = Math.min(etaSeconds, this.aiModerationScanService.wallSeconds(scan.maxJudged - scan.judgedCount, secondsPerPost, batchSize));
 			}
 
 			const criteria = await this.aiModerationCriteriaRepository.findOneBy({ id: scan.criteriaVersion });
