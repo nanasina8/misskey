@@ -58,6 +58,7 @@ import { HanamiTimelinePartitionMaintenanceProcessorService } from './processors
 import { HanamiRecommendationEventCacheRepairProcessorService } from './processors/HanamiRecommendationEventCacheRepairProcessorService.js';
 import { HibernationSweepProcessorService } from './processors/HibernationSweepProcessorService.js';
 import { EmojiImageFingerprintProcessorService } from './processors/EmojiImageFingerprintProcessorService.js';
+import { AiModerationCheckProcessorService } from './processors/AiModerationCheckProcessorService.js';
 import { QueueLoggerService } from './QueueLoggerService.js';
 import { QUEUE, baseWorkerOptions } from './const.js';
 import { ImportNotesProcessorService } from './processors/ImportNotesProcessorService.js';
@@ -175,6 +176,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 		private hanamiGenerationReconcileProcessorService: HanamiGenerationReconcileProcessorService,
 		private hanamiRecommendationEventCacheRepairProcessorService: HanamiRecommendationEventCacheRepairProcessorService,
 		private hanamiMetricsRollupProcessorService: HanamiMetricsRollupProcessorService,
+		private aiModerationCheckProcessorService: AiModerationCheckProcessorService,
 	) {
 		this.logger = this.queueLoggerService.logger;
 
@@ -225,6 +227,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 					case 'hanamiTasteRebuild': return this.hanamiTasteBatchProcessorService.processRebuild(job);
 					case 'hanamiMetricsRollup': return this.hanamiMetricsRollupProcessorService.process();
 					case 'maintainHanamiTimelinePartitions': return this.hanamiTimelinePartitionMaintenanceProcessorService.process();
+					case 'aiModerationCheck': return this.aiModerationCheckProcessorService.process();
 					default: throw new Error(`unrecognized job type ${job.name} for system`);
 				}
 			};

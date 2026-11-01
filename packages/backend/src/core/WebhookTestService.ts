@@ -331,6 +331,17 @@ export class WebhookTestService {
 				send('inactiveModeratorsInvitationOnlyChanged', {});
 				break;
 			}
+			case 'aiModerationFlagged': {
+				send('aiModerationFlagged', {
+					count: 1,
+					items: [{
+						noteId: 'dummy-note-1',
+						userHost: 'remote.example.com',
+						label: 'spam',
+					}],
+				});
+				break;
+			}
 			default: {
 				const _exhaustiveAssertion: never = params.type;
 				return;

@@ -185,6 +185,9 @@ const REPEATABLE_SYSTEM_JOB_DEF: RepeatableSystemJobDefinition[] = [{
 		type: 'exponential',
 		delay: 60000,
 	},
+}, {
+	name: 'aiModerationCheck',
+	pattern: '*/2 * * * *',
 }];
 
 function parseRedisInfo(infoText: string): Record<string, string> {

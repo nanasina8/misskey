@@ -124,6 +124,216 @@ export type paths = {
          */
         post: operations['admin___ad___update'];
     };
+    '/admin/ai-moderation/accounts': {
+        /**
+         * admin/ai-moderation/accounts
+         * @description 判定で引っかけたアカウントを、いまの状態（凍結・相手のサーバーで消えた・隠している・隠すのをやめた・何もしていない）付きで新しい順に返す。
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___accounts'];
+    };
+    '/admin/ai-moderation/bulk-resolve': {
+        /**
+         * admin/ai-moderation/bulk-resolve
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *write:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___bulk-resolve'];
+    };
+    '/admin/ai-moderation/bulk-suspend': {
+        /**
+         * admin/ai-moderation/bulk-suspend
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *write:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___bulk-suspend'];
+    };
+    '/admin/ai-moderation/criteria': {
+        /**
+         * admin/ai-moderation/criteria
+         * @description AI 投稿チェックの判定条件の版（モデル・判定スクリプトのハッシュ・閾値・目印の点数）を新しい順に返す。current はいまの版。
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___criteria'];
+    };
+    '/admin/ai-moderation/group-accounts': {
+        /**
+         * admin/ai-moderation/group-accounts
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___group-accounts'];
+    };
+    '/admin/ai-moderation/groups': {
+        /**
+         * admin/ai-moderation/groups
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___groups'];
+    };
+    '/admin/ai-moderation/hidden': {
+        /**
+         * admin/ai-moderation/hidden
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___hidden'];
+    };
+    '/admin/ai-moderation/hide': {
+        /**
+         * admin/ai-moderation/hide
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *write:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___hide'];
+    };
+    '/admin/ai-moderation/outcomes': {
+        /**
+         * admin/ai-moderation/outcomes
+         * @description 判定で引っかけたアカウントのその後（このサーバーで凍結・相手のサーバーで消えた・隠している・隠すのをやめた）を集計する。
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___outcomes'];
+    };
+    '/admin/ai-moderation/queue': {
+        /**
+         * admin/ai-moderation/queue
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___queue'];
+    };
+    '/admin/ai-moderation/resolve': {
+        /**
+         * admin/ai-moderation/resolve
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *write:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___resolve'];
+    };
+    '/admin/ai-moderation/scan/cancel': {
+        /**
+         * admin/ai-moderation/scan/cancel
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *write:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___scan___cancel'];
+    };
+    '/admin/ai-moderation/scan/estimate': {
+        /**
+         * admin/ai-moderation/scan/estimate
+         * @description 全体スキャンを始める前の見積もり（対象の投稿数・判定に回る件数・かかる時間）。
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___scan___estimate'];
+    };
+    '/admin/ai-moderation/scan/export': {
+        /**
+         * admin/ai-moderation/scan/export
+         * @description 全体スキャンの結果を、判定条件（使った版すべての中身）と一緒に書き出す。項目は古い順に最大 5000 件ずつ（sinceId で続き）。
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___scan___export'];
+    };
+    '/admin/ai-moderation/scan/items': {
+        /**
+         * admin/ai-moderation/scan/items
+         * @description 全体スキャンで判定した投稿を新しい順に返す（既定は引っかけたものだけ）。
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___scan___items'];
+    };
+    '/admin/ai-moderation/scan/show': {
+        /**
+         * admin/ai-moderation/scan/show
+         * @description 全体スキャンの進み具合と集計（判定の内訳・サーバー・リンク・目印・判定条件の版）。scanId を省くといちばん新しいもの。
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___scan___show'];
+    };
+    '/admin/ai-moderation/scan/start': {
+        /**
+         * admin/ai-moderation/scan/start
+         * @description 既にある投稿を古い順に判定する全体スキャンを始める。結果は参考用で、隠す・通知はしない。
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *write:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___scan___start'];
+    };
+    '/admin/ai-moderation/status': {
+        /**
+         * admin/ai-moderation/status
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___status'];
+    };
+    '/admin/ai-moderation/trial': {
+        /**
+         * admin/ai-moderation/trial
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___trial'];
+    };
+    '/admin/ai-moderation/unhide': {
+        /**
+         * admin/ai-moderation/unhide
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *write:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___unhide'];
+    };
+    '/admin/ai-moderation/update': {
+        /**
+         * admin/ai-moderation/update
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the misskey mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *write:admin:ai-moderation*
+         */
+        post: operations['admin___ai-moderation___update'];
+    };
     '/admin/announcements/create': {
         /**
          * admin/announcements/create
@@ -4797,6 +5007,7 @@ export type components = {
             reply?: components['schemas']['Note'] | null;
             renote?: components['schemas']['Note'] | null;
             isHidden?: boolean;
+            spamSuspected?: boolean;
             /** @enum {string} */
             visibility: 'public' | 'home' | 'followers' | 'specified';
             mentions?: string[];
@@ -4937,6 +5148,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'note';
+            spamSuspected?: boolean;
             user: components['schemas']['UserLite'];
             /** Format: id */
             userId: string;
@@ -4948,6 +5160,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'mention';
+            spamSuspected?: boolean;
             user: components['schemas']['UserLite'];
             /** Format: id */
             userId: string;
@@ -4959,6 +5172,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'reply';
+            spamSuspected?: boolean;
             user: components['schemas']['UserLite'];
             /** Format: id */
             userId: string;
@@ -4970,6 +5184,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'renote';
+            spamSuspected?: boolean;
             user: components['schemas']['UserLite'];
             /** Format: id */
             userId: string;
@@ -4981,6 +5196,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'quote';
+            spamSuspected?: boolean;
             user: components['schemas']['UserLite'];
             /** Format: id */
             userId: string;
@@ -4992,6 +5208,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'reaction';
+            spamSuspected?: boolean;
             user: components['schemas']['UserLite'];
             /** Format: id */
             userId: string;
@@ -5004,6 +5221,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'pollEnded';
+            spamSuspected?: boolean;
             user: components['schemas']['UserLite'];
             /** Format: id */
             userId: string;
@@ -5015,6 +5233,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'scheduledNotePosted';
+            spamSuspected?: boolean;
             note: components['schemas']['Note'];
         } | {
             /** Format: id */
@@ -5023,6 +5242,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'scheduledNotePostFailed';
+            spamSuspected?: boolean;
             noteDraft: components['schemas']['NoteDraft'];
         } | {
             /** Format: id */
@@ -5031,6 +5251,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'follow';
+            spamSuspected?: boolean;
             user: components['schemas']['UserLite'];
             /** Format: id */
             userId: string;
@@ -5041,6 +5262,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'receiveFollowRequest';
+            spamSuspected?: boolean;
             user: components['schemas']['UserLite'];
             /** Format: id */
             userId: string;
@@ -5051,6 +5273,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'followRequestAccepted';
+            spamSuspected?: boolean;
             user: components['schemas']['UserLite'];
             /** Format: id */
             userId: string;
@@ -5062,6 +5285,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'roleAssigned';
+            spamSuspected?: boolean;
             role: components['schemas']['Role'];
         } | {
             /** Format: id */
@@ -5070,6 +5294,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'chatRoomInvitationReceived';
+            spamSuspected?: boolean;
             invitation: components['schemas']['ChatRoomInvitation'];
         } | {
             /** Format: id */
@@ -5078,6 +5303,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'achievementEarned';
+            spamSuspected?: boolean;
             achievement: components['schemas']['AchievementName'];
         } | {
             /** Format: id */
@@ -5086,6 +5312,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'exportCompleted';
+            spamSuspected?: boolean;
             /** @enum {string} */
             exportedEntity: 'antenna' | 'blocking' | 'clip' | 'customEmoji' | 'favorite' | 'following' | 'muting' | 'note' | 'userList';
             /** Format: id */
@@ -5097,6 +5324,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'login';
+            spamSuspected?: boolean;
         } | {
             /** Format: id */
             id: string;
@@ -5104,6 +5332,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'createToken';
+            spamSuspected?: boolean;
         } | {
             /** Format: id */
             id: string;
@@ -5111,6 +5340,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'app';
+            spamSuspected?: boolean;
             body: string;
             header: string | null;
             icon: string | null;
@@ -5121,6 +5351,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'reaction:grouped';
+            spamSuspected?: boolean;
             note: components['schemas']['Note'];
             reactions: {
                 user: components['schemas']['UserLite'];
@@ -5133,6 +5364,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'renote:grouped';
+            spamSuspected?: boolean;
             note: components['schemas']['Note'];
             users: components['schemas']['UserLite'][];
         } | {
@@ -5142,6 +5374,7 @@ export type components = {
             createdAt: string;
             /** @enum {string} */
             type: 'test';
+            spamSuspected?: boolean;
         };
         DriveFile: {
             /**
@@ -5995,9 +6228,69 @@ export type components = {
             latestSentAt: string | null;
             latestStatus: number | null;
             name: string;
-            on: ('abuseReport' | 'abuseReportResolved' | 'userCreated' | 'inactiveModeratorsWarning' | 'inactiveModeratorsInvitationOnlyChanged')[];
+            on: ('abuseReport' | 'abuseReportResolved' | 'userCreated' | 'inactiveModeratorsWarning' | 'inactiveModeratorsInvitationOnlyChanged' | 'aiModerationFlagged')[];
             url: string;
             secret: string;
+        };
+        AiModerationQueue: {
+            id: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: id */
+            noteId: string;
+            note?: components['schemas']['Note'] | null;
+            /** Format: id */
+            noteUserId: string;
+            noteUser?: components['schemas']['UserLite'] | null;
+            noteUserHost: string | null;
+            noteVisibility: string;
+            noteText: string;
+            triggers: string[];
+            links: string[];
+            textFingerprint: string | null;
+            contactUserIds: string[];
+            contactKind: string | null;
+            contactCount: number;
+            author: {
+                /** Format: date-time */
+                createdAt: string;
+                notesCount: number;
+                followersCount: number;
+                followingCount: number;
+                hasAvatar: boolean;
+                isSuspended: boolean;
+                isHidden: boolean;
+                isHostHidden: boolean;
+            } | null;
+            related: {
+                sameLinkAccounts: number;
+                sameTextCount: number;
+                userFlagged: number;
+                userJudged: number;
+            };
+            localLabel: string | null;
+            localScores: {
+                [key: string]: number;
+            } | null;
+            localModel: string | null;
+            externalFlagged: boolean | null;
+            externalCategories: string[];
+            externalScores: {
+                [key: string]: number;
+            } | null;
+            externalModel: string | null;
+            flagged: boolean;
+            resolved: boolean;
+            /** Format: id */
+            assigneeId: string | null;
+            assignee: components['schemas']['UserLite'] | null;
+            moderationNote: string;
+            /** @enum {string|null} */
+            autoAction: 'hidden' | 'wouldHide' | 'hiddenHost' | 'wouldHideHost' | null;
+            criteriaVersion: string | null;
+            spamSignals: string[];
+            /** Format: date-time */
+            judgedAt: string | null;
         };
         AbuseReportNotificationRecipient: {
             id: string;
@@ -6985,6 +7278,1910 @@ export interface operations {
                     startsAt?: number;
                     dayOfWeek?: number;
                     isSensitive?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (without any results) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___accounts': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @default 30 */
+                    days?: number;
+                    /** @enum {string} */
+                    state?: 'suspended' | 'deleted' | 'hidden' | 'unhidden' | 'open';
+                    /** @enum {string} */
+                    auto?: 'none' | 'wouldHide' | 'hidden';
+                    /** @default 30 */
+                    limit?: number;
+                    /** @default 0 */
+                    offset?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        /** Format: misskey:id */
+                        userId: string;
+                        user: components['schemas']['UserLite'] | null;
+                        host: string | null;
+                        /** @enum {string} */
+                        state: 'suspended' | 'deleted' | 'hidden' | 'unhidden' | 'open';
+                        /** @enum {string} */
+                        auto: 'none' | 'wouldHide' | 'hidden';
+                        isSuspended: boolean;
+                        isDeleted: boolean;
+                        isHidden: boolean;
+                        wasUnhidden: boolean;
+                        signals: string[];
+                        flaggedCount: number;
+                        /** Format: date-time */
+                        firstAt: string;
+                        /** Format: date-time */
+                        lastAt: string;
+                        maxSpamScore: number | null;
+                    }[];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___bulk-resolve': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @enum {string} */
+                    groupBy: 'host' | 'link' | 'fingerprint';
+                    key: string | null;
+                    /** @default 24 */
+                    windowHours?: number;
+                    expectedCount: number;
+                    moderationNote?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (without any results) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___bulk-suspend': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    userIds: string[];
+                    expectedCount: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        suspended: string[];
+                        skipped: {
+                            userId: string;
+                            /** @enum {string} */
+                            reason: 'admin' | 'moderator' | 'localOld' | 'alreadySuspended' | 'missing';
+                        }[];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___criteria': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @default 30 */
+                    limit?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        current: string;
+                        versions: {
+                            version: string;
+                            /** Format: date-time */
+                            firstUsedAt: string;
+                            criteria: Record<string, never>;
+                        }[];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___group-accounts': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @enum {string} */
+                    groupBy: 'host' | 'link' | 'fingerprint';
+                    key: string | null;
+                    /** @default 24 */
+                    windowHours?: number;
+                    /** @default false */
+                    resolved?: boolean;
+                    /** @default 30 */
+                    limit?: number;
+                    /** @default 0 */
+                    offset?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        user: components['schemas']['UserLite'] | null;
+                        /** Format: date-time */
+                        createdAt: string;
+                        notesCount: number;
+                        followersCount: number;
+                        followingCount: number;
+                        judgedCount: number;
+                        flaggedCount: number;
+                        targetCount: number;
+                        contactKinds: string[];
+                        topLabel: string | null;
+                        topScore: number | null;
+                        signals: {
+                            noAvatar: boolean;
+                            namePattern: string;
+                            trailingNoise: boolean;
+                            namePatternMatchesTop: boolean;
+                        };
+                        isSuspended: boolean;
+                        isHidden: boolean;
+                    }[];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___groups': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @enum {string} */
+                    groupBy: 'host' | 'link' | 'fingerprint';
+                    /** @default 24 */
+                    windowHours?: number;
+                    /** @default false */
+                    resolved?: boolean;
+                    /** @default 20 */
+                    limit?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        key: string | null;
+                        flaggedCount: number;
+                        accountCount: number;
+                        targetCount: number;
+                        deliveryCount: number;
+                        /** Format: date-time */
+                        firstAt: string;
+                        /** Format: date-time */
+                        lastAt: string;
+                        peakPerHour: number;
+                        peakAccountsPerHour: number;
+                        labelCounts: {
+                            [key: string]: number;
+                        };
+                        avgSpamScore: number | null;
+                        maxPerAccount: number;
+                        trailingNoiseRatio: number;
+                        instance?: {
+                            softwareName: string | null;
+                            softwareVersion: string | null;
+                            openRegistrations: boolean | null;
+                            /** Format: date-time */
+                            firstRetrievedAt: string;
+                            usersCount: number;
+                            isBlocked: boolean;
+                            isSilenced: boolean;
+                            isSuspended: boolean;
+                            isHidden: boolean;
+                        } | null;
+                        localFollowersCount?: number;
+                        unsolicitedRatio?: number;
+                        newAccountRatio?: number;
+                        noAvatarRatio?: number;
+                        topNamePattern?: string | null;
+                        topNamePatternRatio?: number;
+                        /** @enum {string|null} */
+                        severity?: 'strong' | 'partial' | 'none' | null;
+                        /** @enum {string|null} */
+                        recommendation?: 'blockHost' | 'suspendAccounts' | null;
+                        topLinks?: {
+                            link: string;
+                            accounts: number;
+                        }[];
+                        hosts?: {
+                            host: string | null;
+                            accounts: number;
+                        }[];
+                        samples?: {
+                            text: string;
+                            count: number;
+                        }[];
+                    }[];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___hidden': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @default 30 */
+                    limit?: number;
+                    /** Format: misskey:id */
+                    sinceId?: string;
+                    /** Format: misskey:id */
+                    untilId?: string;
+                    /** @enum {string} */
+                    targetType?: 'user' | 'host';
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        /** Format: id */
+                        id: string;
+                        /** Format: date-time */
+                        createdAt: string;
+                        /** @enum {string} */
+                        targetType: 'user' | 'host';
+                        /** Format: id */
+                        userId: string | null;
+                        user: components['schemas']['UserLite'] | null;
+                        host: string | null;
+                        /** @enum {string} */
+                        reason: 'manual' | 'auto';
+                        createdBy: components['schemas']['UserLite'] | null;
+                        /** Format: id */
+                        sourceQueueId: string | null;
+                        moderationNote: string;
+                    }[];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___hide': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @enum {string} */
+                    targetType: 'user' | 'host';
+                    /** Format: misskey:id */
+                    userId?: string;
+                    host?: string;
+                    /** Format: misskey:id */
+                    sourceQueueId?: string;
+                    moderationNote?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        created: boolean;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___outcomes': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @default 30 */
+                    days?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        /** Format: date-time */
+                        since: string;
+                        accounts: number;
+                        byState: {
+                            suspended: number;
+                            deleted: number;
+                            hidden: number;
+                            unhidden: number;
+                            open: number;
+                        };
+                        auto: {
+                            suspended: number;
+                            deleted: number;
+                            hidden: number;
+                            unhidden: number;
+                            open: number;
+                            accounts: number;
+                            wouldHide: number;
+                            autoHidden: number;
+                        };
+                        notAuto: {
+                            suspended: number;
+                            deleted: number;
+                            hidden: number;
+                            unhidden: number;
+                            open: number;
+                            accounts: number;
+                        };
+                        autoConfirmedRate: number | null;
+                        bySignal: {
+                            signal: string;
+                            accounts: number;
+                            suspendedOrDeleted: number;
+                            unhidden: number;
+                        }[];
+                        byCriteria: {
+                            version: string | null;
+                            accounts: number;
+                            autoAccounts: number;
+                            suspendedOrDeleted: number;
+                            unhidden: number;
+                        }[];
+                        hosts: {
+                            host: string;
+                            accounts: number;
+                            suspended: number;
+                            deleted: number;
+                            hidden: number;
+                            isHostHidden: boolean;
+                            isBlocked: boolean;
+                            suspensionState: string | null;
+                        }[];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___queue': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    resolved?: boolean;
+                    /** @default true */
+                    onlyFlagged?: boolean;
+                    host?: string | null;
+                    textFingerprint?: string | null;
+                    link?: string | null;
+                    /** @enum {string} */
+                    autoAction?: 'hidden' | 'wouldHide';
+                    /** @default 10 */
+                    limit?: number;
+                    /** Format: misskey:id */
+                    sinceId?: string;
+                    /** Format: misskey:id */
+                    untilId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['AiModerationQueue'][];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___resolve': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Format: misskey:id */
+                    queueId: string;
+                    moderationNote?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (without any results) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___scan___cancel': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Format: misskey:id */
+                    scanId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        canceled: boolean;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___scan___estimate': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /**
+                     * @default filtered
+                     * @enum {string}
+                     */
+                    mode?: 'filtered' | 'all';
+                    /**
+                     * @default all
+                     * @enum {string}
+                     */
+                    target?: 'all' | 'local' | 'remote';
+                    /** @default null */
+                    days?: number | null;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        notes: number;
+                        sampled: number;
+                        sampledCandidates: number;
+                        candidates: number;
+                        secondsPerPost: number;
+                        batchSize: number;
+                        estimatedSeconds: number;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___scan___export': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Format: misskey:id */
+                    scanId: string;
+                    /** @default false */
+                    onlyFlagged?: boolean;
+                    /** @default 5000 */
+                    limit?: number;
+                    /** Format: misskey:id */
+                    sinceId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        scan: {
+                            /** Format: misskey:id */
+                            id: string;
+                            /** Format: date-time */
+                            createdAt: string;
+                            /** @enum {string} */
+                            status: 'running' | 'done' | 'canceled';
+                            /** @enum {string} */
+                            mode: 'filtered' | 'all';
+                            /** @enum {string} */
+                            target: 'all' | 'local' | 'remote';
+                            /** Format: date-time */
+                            since: string | null;
+                            /** Format: date-time */
+                            until: string;
+                            /** Format: date-time */
+                            cursorAt: string | null;
+                            maxJudged: number;
+                            scannedCount: number;
+                            judgedCount: number;
+                            flaggedCount: number;
+                            wouldHideCount: number;
+                            judgeSeconds: number;
+                            startedBy: string | null;
+                            /** Format: date-time */
+                            finishedAt: string | null;
+                            lastError: string | null;
+                            criteriaVersion: string;
+                        };
+                        criteria: {
+                            version: string;
+                            /** Format: date-time */
+                            firstUsedAt: string;
+                            criteria: Record<string, never>;
+                        }[];
+                        items: {
+                            /** Format: misskey:id */
+                            id: string;
+                            /** Format: misskey:id */
+                            noteId: string;
+                            /** Format: date-time */
+                            noteCreatedAt: string;
+                            noteExists: boolean;
+                            /** Format: misskey:id */
+                            noteUserId: string;
+                            noteUserHost: string | null;
+                            noteVisibility: string;
+                            noteText: string;
+                            triggers: string[];
+                            links: string[];
+                            localLabel: string | null;
+                            localScores: {
+                                normal: number;
+                                spam: number;
+                                scam: number;
+                                abuse: number;
+                            } | null;
+                            flagged: boolean;
+                            spamSignals: string[];
+                            wouldHide: boolean;
+                            criteriaVersion: string | null;
+                            username: string | null;
+                        }[];
+                        next: string | null;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___scan___items': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Format: misskey:id */
+                    scanId: string;
+                    /** @default true */
+                    flagged?: boolean | null;
+                    wouldHide?: boolean;
+                    /** @enum {string} */
+                    label?: 'normal' | 'spam' | 'scam' | 'abuse';
+                    host?: string | null;
+                    signal?: string;
+                    /** @default 30 */
+                    limit?: number;
+                    /** Format: misskey:id */
+                    sinceId?: string;
+                    /** Format: misskey:id */
+                    untilId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        /** Format: misskey:id */
+                        id: string;
+                        /** Format: misskey:id */
+                        noteId: string;
+                        /** Format: date-time */
+                        noteCreatedAt: string;
+                        noteExists: boolean;
+                        /** Format: misskey:id */
+                        noteUserId: string;
+                        noteUserHost: string | null;
+                        noteVisibility: string;
+                        noteText: string;
+                        triggers: string[];
+                        links: string[];
+                        localLabel: string | null;
+                        localScores: {
+                            normal: number;
+                            spam: number;
+                            scam: number;
+                            abuse: number;
+                        } | null;
+                        flagged: boolean;
+                        spamSignals: string[];
+                        wouldHide: boolean;
+                        criteriaVersion: string | null;
+                        user: components['schemas']['UserLite'] | null;
+                    }[];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___scan___show': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Format: misskey:id */
+                    scanId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        scan: {
+                            /** Format: misskey:id */
+                            id: string;
+                            /** Format: date-time */
+                            createdAt: string;
+                            /** @enum {string} */
+                            status: 'running' | 'done' | 'canceled';
+                            /** @enum {string} */
+                            mode: 'filtered' | 'all';
+                            /** @enum {string} */
+                            target: 'all' | 'local' | 'remote';
+                            /** Format: date-time */
+                            since: string | null;
+                            /** Format: date-time */
+                            until: string;
+                            /** Format: date-time */
+                            cursorAt: string | null;
+                            maxJudged: number;
+                            scannedCount: number;
+                            judgedCount: number;
+                            flaggedCount: number;
+                            wouldHideCount: number;
+                            judgeSeconds: number;
+                            startedBy: string | null;
+                            /** Format: date-time */
+                            finishedAt: string | null;
+                            lastError: string | null;
+                            criteriaVersion: string;
+                        } | null;
+                        scans: {
+                            /** Format: misskey:id */
+                            id: string;
+                            /** Format: date-time */
+                            createdAt: string;
+                            /** @enum {string} */
+                            status: 'running' | 'done' | 'canceled';
+                            /** @enum {string} */
+                            mode: 'filtered' | 'all';
+                            /** @enum {string} */
+                            target: 'all' | 'local' | 'remote';
+                            /** Format: date-time */
+                            since: string | null;
+                            /** Format: date-time */
+                            until: string;
+                            /** Format: date-time */
+                            cursorAt: string | null;
+                            maxJudged: number;
+                            scannedCount: number;
+                            judgedCount: number;
+                            flaggedCount: number;
+                            wouldHideCount: number;
+                            judgeSeconds: number;
+                            startedBy: string | null;
+                            /** Format: date-time */
+                            finishedAt: string | null;
+                            lastError: string | null;
+                            criteriaVersion: string;
+                        }[];
+                        progress: number | null;
+                        etaSeconds: number | null;
+                        criteria: Record<string, never> | null;
+                        byLabel: {
+                            label: string | null;
+                            items: number;
+                            flagged: number;
+                        }[];
+                        hosts: {
+                            host: string | null;
+                            items: number;
+                            accounts: number;
+                            wouldHideAccounts: number;
+                        }[];
+                        links: {
+                            link: string | null;
+                            items: number;
+                            accounts: number;
+                            wouldHideAccounts: number;
+                        }[];
+                        signals: {
+                            signal: string | null;
+                            items: number;
+                            accounts: number;
+                            wouldHideAccounts: number;
+                        }[];
+                        criteriaVersions: {
+                            version: string | null;
+                            items: number;
+                            accounts: number;
+                            wouldHideAccounts: number;
+                        }[];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___scan___start': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /**
+                     * @default filtered
+                     * @enum {string}
+                     */
+                    mode?: 'filtered' | 'all';
+                    /**
+                     * @default all
+                     * @enum {string}
+                     */
+                    target?: 'all' | 'local' | 'remote';
+                    /** @default null */
+                    days?: number | null;
+                    /** @default 5000 */
+                    maxJudged?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        /** Format: misskey:id */
+                        id: string;
+                        /** Format: date-time */
+                        createdAt: string;
+                        /** @enum {string} */
+                        status: 'running' | 'done' | 'canceled';
+                        /** @enum {string} */
+                        mode: 'filtered' | 'all';
+                        /** @enum {string} */
+                        target: 'all' | 'local' | 'remote';
+                        /** Format: date-time */
+                        since: string | null;
+                        /** Format: date-time */
+                        until: string;
+                        /** Format: date-time */
+                        cursorAt: string | null;
+                        maxJudged: number;
+                        scannedCount: number;
+                        judgedCount: number;
+                        flaggedCount: number;
+                        wouldHideCount: number;
+                        judgeSeconds: number;
+                        startedBy: string | null;
+                        /** Format: date-time */
+                        finishedAt: string | null;
+                        lastError: string | null;
+                        criteriaVersion: string;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___status': {
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        pending: number;
+                        enqueuedToday: number;
+                        droppedToday: number;
+                        judgedLast24h: number;
+                        flaggedLast24h: number;
+                        autoHiddenLast24h: number;
+                        wouldHideLast24h: number;
+                        /** @enum {string} */
+                        autoHideMode: 'off' | 'trial' | 'on';
+                        /** Format: date-time */
+                        lastJudgedAt: string | null;
+                        runtime: {
+                            available: boolean;
+                            device: string | null;
+                            deviceName: string | null;
+                            reason: string | null;
+                            /** Format: date-time */
+                            probedAt: string;
+                        } | null;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___trial': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    text: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        scores: {
+                            normal: number;
+                            spam: number;
+                            scam: number;
+                            abuse: number;
+                        } | null;
+                        localLabel: string | null;
+                        externalFlagged: boolean | null;
+                        externalCategories: string[];
+                        externalScores: {
+                            [key: string]: number;
+                        } | null;
+                        externalModel: string | null;
+                        flagged: boolean;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___unhide': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @enum {string} */
+                    targetType: 'user' | 'host';
+                    /** Format: misskey:id */
+                    userId?: string;
+                    host?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        removed: boolean;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___ai-moderation___update': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Format: misskey:id */
+                    queueId: string;
+                    moderationNote?: string;
                 };
             };
         };
@@ -9747,7 +11944,7 @@ export interface operations {
                      */
                     eventsLimit?: number;
                     /** @description Restrict events to these job families; omitted means all families. */
-                    eventJobs?: ('noteJudge' | 'topicJudge' | 'als' | 'tasteTick' | 'judgeTrial' | 'generation')[];
+                    eventJobs?: ('noteJudge' | 'topicJudge' | 'als' | 'tasteTick' | 'judgeTrial' | 'spamJudge' | 'generation')[];
                 };
             };
         };
@@ -9953,7 +12150,7 @@ export interface operations {
                              * @description Job family that emitted the event.
                              * @enum {string}
                              */
-                            job: 'noteJudge' | 'topicJudge' | 'als' | 'tasteTick' | 'judgeTrial' | 'generation';
+                            job: 'noteJudge' | 'topicJudge' | 'als' | 'tasteTick' | 'judgeTrial' | 'spamJudge' | 'generation';
                             /**
                              * @description Stable event code; successful lock renewals are not recorded.
                              * @enum {string}
@@ -11747,6 +13944,21 @@ export interface operations {
                         remoteNotesCleaningExpiryDaysForEachNotes: number;
                         remoteNotesCleaningMaxProcessingDurationInMinutes: number;
                         showRoleBadgesOfRemoteUsers: boolean;
+                        aiModerationEnabled: boolean;
+                        aiModerationNewAuthorDays: number;
+                        aiModerationDailyLimit: number;
+                        aiModerationLocalEnabled: boolean;
+                        aiModerationLocalThreshold: number;
+                        aiModerationExternalEnabled: boolean;
+                        aiModerationExternalApiUrl: string | null;
+                        aiModerationExternalApiKey: string | null;
+                        aiModerationExternalModel: string | null;
+                        aiModerationExternalVisibilities: string[];
+                        /** @enum {string} */
+                        aiModerationAutoHideMode: 'off' | 'trial' | 'on';
+                        aiModerationAutoHideThreshold: number;
+                        aiModerationAutoHideDailyLimit: number;
+                        aiModerationAutoHideHosts: boolean;
                     };
                 };
             };
@@ -14394,7 +16606,7 @@ export interface operations {
                 'application/json': {
                     isActive: boolean;
                     name: string;
-                    on: ('abuseReport' | 'abuseReportResolved' | 'userCreated' | 'inactiveModeratorsWarning' | 'inactiveModeratorsInvitationOnlyChanged')[];
+                    on: ('abuseReport' | 'abuseReportResolved' | 'userCreated' | 'inactiveModeratorsWarning' | 'inactiveModeratorsInvitationOnlyChanged' | 'aiModerationFlagged')[];
                     url: string;
                     /** @default  */
                     secret?: string;
@@ -14526,7 +16738,7 @@ export interface operations {
             content: {
                 'application/json': {
                     isActive?: boolean;
-                    on?: ('abuseReport' | 'abuseReportResolved' | 'userCreated' | 'inactiveModeratorsWarning' | 'inactiveModeratorsInvitationOnlyChanged')[];
+                    on?: ('abuseReport' | 'abuseReportResolved' | 'userCreated' | 'inactiveModeratorsWarning' | 'inactiveModeratorsInvitationOnlyChanged' | 'aiModerationFlagged')[];
                 };
             };
         };
@@ -14660,7 +16872,7 @@ export interface operations {
                     /** Format: misskey:id */
                     webhookId: string;
                     /** @enum {string} */
-                    type: 'abuseReport' | 'abuseReportResolved' | 'userCreated' | 'inactiveModeratorsWarning' | 'inactiveModeratorsInvitationOnlyChanged';
+                    type: 'abuseReport' | 'abuseReportResolved' | 'userCreated' | 'inactiveModeratorsWarning' | 'inactiveModeratorsInvitationOnlyChanged' | 'aiModerationFlagged';
                     override?: {
                         url?: string;
                         secret?: string;
@@ -14739,7 +16951,7 @@ export interface operations {
                     id: string;
                     isActive: boolean;
                     name: string;
-                    on: ('abuseReport' | 'abuseReportResolved' | 'userCreated' | 'inactiveModeratorsWarning' | 'inactiveModeratorsInvitationOnlyChanged')[];
+                    on: ('abuseReport' | 'abuseReportResolved' | 'userCreated' | 'inactiveModeratorsWarning' | 'inactiveModeratorsInvitationOnlyChanged' | 'aiModerationFlagged')[];
                     url: string;
                     /** @default  */
                     secret?: string;
@@ -15303,6 +17515,21 @@ export interface operations {
                     remoteNotesCleaningExpiryDaysForEachNotes?: number;
                     remoteNotesCleaningMaxProcessingDurationInMinutes?: number;
                     showRoleBadgesOfRemoteUsers?: boolean;
+                    aiModerationEnabled?: boolean;
+                    aiModerationNewAuthorDays?: number;
+                    aiModerationDailyLimit?: number;
+                    aiModerationLocalEnabled?: boolean;
+                    aiModerationLocalThreshold?: number;
+                    aiModerationExternalEnabled?: boolean;
+                    aiModerationExternalApiUrl?: string | null;
+                    aiModerationExternalApiKey?: string | null;
+                    aiModerationExternalModel?: string | null;
+                    aiModerationExternalVisibilities?: ('public' | 'home' | 'followers' | 'specified')[] | null;
+                    /** @enum {string} */
+                    aiModerationAutoHideMode?: 'off' | 'trial' | 'on';
+                    aiModerationAutoHideThreshold?: number;
+                    aiModerationAutoHideDailyLimit?: number;
+                    aiModerationAutoHideHosts?: boolean;
                 };
             };
         };

@@ -6562,6 +6562,1092 @@ export interface Locale extends ILocale {
          */
         "resolveTutorial": string;
     };
+    "_aiModeration": {
+        /**
+         * AI投稿チェック
+         */
+        "title": string;
+        /**
+         * 再読み込み
+         */
+        "reload": string;
+        /**
+         * 状況
+         */
+        "status": string;
+        /**
+         * 判定待ち
+         */
+        "pending": string;
+        /**
+         * 今日の投入
+         */
+        "enqueuedToday": string;
+        /**
+         * / 上限 {limit}
+         */
+        "perDayLimit": ParameterizedString<"limit">;
+        /**
+         * 上限で落とした {count} 件
+         */
+        "droppedToday": ParameterizedString<"count">;
+        /**
+         * 直近24時間
+         */
+        "judgedLast24h": string;
+        /**
+         * {count} 件を判定
+         */
+        "judgedCount": ParameterizedString<"count">;
+        /**
+         * うち {count} 件を引っかけた
+         */
+        "flaggedCount": ParameterizedString<"count">;
+        /**
+         * Qwen の実行環境
+         */
+        "runtimeLabel": string;
+        /**
+         * GPU あり
+         */
+        "gpuAvailable": string;
+        /**
+         * GPU なし
+         */
+        "gpuUnavailable": string;
+        /**
+         * まだ確認していません
+         */
+        "gpuUnknown": string;
+        /**
+         * {name}の投稿は、スパムのおそれがあるため隠しています（押すと表示）
+         */
+        "spamSuspectedNote": ParameterizedString<"name">;
+        /**
+         * スパムのおそれがある相手からの通知（押すと表示）
+         */
+        "spamSuspectedNotification": string;
+        /**
+         * スパムのおそれがある相手からの通知 {count} 件（押すと表示）
+         */
+        "spamSuspectedNotifications": ParameterizedString<"count">;
+        /**
+         * {posts} 件・{accounts} 人
+         */
+        "groupSuffix": ParameterizedString<"posts" | "accounts">;
+        /**
+         * サーバーの内訳
+         */
+        "hostsBreakdown": string;
+        /**
+         * 代表の文
+         */
+        "samplesTitle": string;
+        /**
+         * 隠し中
+         */
+        "hiddenShort": string;
+        /**
+         * 本文
+         */
+        "noteBody": string;
+        /**
+         * 投稿者
+         */
+        "authorTitle": string;
+        /**
+         * 投稿 {notes}・フォロー {following}・フォロワー {followers}
+         */
+        "authorSummary": ParameterizedString<"notes" | "following" | "followers">;
+        /**
+         * 宛先
+         */
+        "destinationTitle": string;
+        /**
+         * 外部 API
+         */
+        "externalTitle": string;
+        /**
+         * 状態
+         */
+        "stateTitle": string;
+        /**
+         * スパム {score}%
+         */
+        "itemSuffix": ParameterizedString<"score">;
+        /**
+         * 結果
+         */
+        "trialVerdict": string;
+        /**
+         * 自動で隠す
+         */
+        "autoHideLabel": string;
+        /**
+         * 直近24時間で {count} 件を自動で隠した
+         */
+        "autoHiddenCount": ParameterizedString<"count">;
+        /**
+         * 試運転: 直近24時間で {count} 件を隠すはずだった
+         */
+        "wouldHideCount": ParameterizedString<"count">;
+        /**
+         * オフ
+         */
+        "autoHideOff": string;
+        /**
+         * 試運転
+         */
+        "autoHideTrial": string;
+        /**
+         * 隠すはずだった投稿を記録するだけで、実際には隠しません。閾値を決めるために使います
+         */
+        "autoHideTrialCaption": string;
+        /**
+         * オン
+         */
+        "autoHideOn": string;
+        /**
+         * 条件に当たったアカウントを自動で隠します（初期値）。外すまで隠したままです。完全に見えなくするには、人が確かめて凍結します
+         */
+        "autoHideOnCaption": string;
+        /**
+         * 自動で隠した
+         */
+        "filterAutoHidden": string;
+        /**
+         * 試運転で隠すはずだった
+         */
+        "filterWouldHide": string;
+        /**
+         * 自動でアカウントを隠しました
+         */
+        "autoActionHidden": string;
+        /**
+         * 自動でサーバーを隠しました
+         */
+        "autoActionHiddenHost": string;
+        /**
+         * 試運転: アカウントを隠すはずだった
+         */
+        "autoActionWouldHide": string;
+        /**
+         * 試運転: サーバーを隠すはずだった
+         */
+        "autoActionWouldHideHost": string;
+        /**
+         * 隠す
+         */
+        "hide": string;
+        /**
+         * 隠すのをやめる
+         */
+        "unhide": string;
+        /**
+         * ユーザーから隠す
+         */
+        "hideCol": string;
+        /**
+         * このアカウントを隠す
+         */
+        "hideAccount": string;
+        /**
+         * このアカウントを隠すのをやめる
+         */
+        "unhideAccount": string;
+        /**
+         * このサーバーを隠す
+         */
+        "hideHost": string;
+        /**
+         * このサーバーを隠すのをやめる
+         */
+        "unhideHost": string;
+        /**
+         * アカウントを隠しています
+         */
+        "accountHidden": string;
+        /**
+         * サーバーを隠しています
+         */
+        "hostHidden": string;
+        /**
+         * {target} の投稿と通知を、見る人の画面で「スパムのおそれ」として畳みます。本人には普通に見えます。あとで外せます。隠しますか？
+         */
+        "confirmHide": ParameterizedString<"target">;
+        /**
+         * {target} を隠すのをやめますか？
+         */
+        "confirmUnhide": ParameterizedString<"target">;
+        /**
+         * 隠しているもの
+         */
+        "hiddenList": string;
+        /**
+         * ここにあるアカウント・サーバーの投稿と通知は、見る人の画面で畳まれています。プッシュ通知と未読の数にも入りません。
+         */
+        "hiddenListCaption": string;
+        /**
+         * アカウント
+         */
+        "hiddenTypeUser": string;
+        /**
+         * サーバー
+         */
+        "hiddenTypeHost": string;
+        /**
+         * 自動で隠した
+         */
+        "hiddenByAuto": string;
+        /**
+         * {name} が隠した
+         */
+        "hiddenByModerator": ParameterizedString<"name">;
+        /**
+         * 自動で隠すモード
+         */
+        "settingsAutoHide": string;
+        /**
+         * AI の点数が高いだけでは隠しません。知らない人へ送る・同じ文をばらまくといった行動の根拠が 4 点以上あり、このサーバーで誰にもフォローされていないアカウントだけを自動で隠します。リンクを貼っただけの投稿は隠しません。凍結・ブロックは自動ではしません。
+         */
+        "settingsAutoHideCaption": string;
+        /**
+         * 自動で隠す AI の点数（スパム＋詐欺）
+         */
+        "settingsAutoHideThreshold": string;
+        /**
+         * 自動で隠す1日の上限
+         */
+        "settingsAutoHideDailyLimit": string;
+        /**
+         * 強く疑わしいサーバーをサーバーごと自動で隠す
+         */
+        "settingsAutoHideHosts": string;
+        /**
+         * このサーバーで誰にもフォローされておらず、24時間で3アカウント以上が上の条件で自動で隠す対象になったサーバーが対象です
+         */
+        "settingsAutoHideHostsCaption": string;
+        /**
+         * GPU が見つからないため AI 判定は外部 API だけで動いています
+         */
+        "noGpuWarning": string;
+        /**
+         * 確認待ち
+         */
+        "queue": string;
+        /**
+         * まとめ方
+         */
+        "groupByLabel": string;
+        /**
+         * サーバーごと
+         */
+        "groupByHost": string;
+        /**
+         * 同じリンク・同じ文ごと
+         */
+        "groupByLink": string;
+        /**
+         * 1件ずつ
+         */
+        "groupByIndividual": string;
+        /**
+         * リンクごと
+         */
+        "byLink": string;
+        /**
+         * 文ごと
+         */
+        "byText": string;
+        /**
+         * 未対応
+         */
+        "unresolved": string;
+        /**
+         * 対応済み
+         */
+        "resolved": string;
+        /**
+         * 判定したもの全部
+         */
+        "allJudged": string;
+        /**
+         * 強く疑わしい
+         */
+        "strong": string;
+        /**
+         * 一部だけ怪しい
+         */
+        "partial": string;
+        /**
+         * 新規登録: 誰でも可
+         */
+        "registrationOpen": string;
+        /**
+         * 新規登録: 承認制
+         */
+        "registrationClosed": string;
+        /**
+         * 初めて連合
+         */
+        "firstFederated": string;
+        /**
+         * 引っかけた投稿（24時間）
+         */
+        "flaggedPosts24h": string;
+        /**
+         * 送ってきたアカウント
+         */
+        "sendingAccounts": string;
+        /**
+         * 1人あたり平均 {count} 件
+         */
+        "avgPerAccount": ParameterizedString<"count">;
+        /**
+         * 狙われたこのサーバーの人
+         */
+        "targetedLocalUsers": string;
+        /**
+         * 届いた数 {count}
+         */
+        "deliveredCount": ParameterizedString<"count">;
+        /**
+         * このサーバーからのフォロワー
+         */
+        "localFollowers": string;
+        /**
+         * （誰にもフォローされていない）
+         */
+        "noFollowers": string;
+        /**
+         * 頼まれていない接触の割合
+         */
+        "unsolicitedRatio": string;
+        /**
+         * 一番多い時間帯
+         */
+        "peakHour": string;
+        /**
+         * {count}人が同じ1時間に
+         */
+        "peakHourAccounts": ParameterizedString<"count">;
+        /**
+         * 怪しいと判断した理由
+         */
+        "reasonsTitle": string;
+        /**
+         * AI 判定でスパム {flagged}/{total} 件（平均 {avg}%）
+         */
+        "reasonSpam": ParameterizedString<"flagged" | "total" | "avg">;
+        /**
+         * 新しいアカウントが {ratio}%
+         */
+        "reasonNewAccounts": ParameterizedString<"ratio">;
+        /**
+         * 名前が「{pattern}」の型が {ratio}%
+         */
+        "reasonNamePattern": ParameterizedString<"pattern" | "ratio">;
+        /**
+         * アイコン無し {ratio}%
+         */
+        "reasonNoAvatar": ParameterizedString<"ratio">;
+        /**
+         * 同じリンク {link} を {accounts} 人が投稿
+         */
+        "reasonSameLink": ParameterizedString<"link" | "accounts">;
+        /**
+         * 文末に意味のない英字（{ratio}%）
+         */
+        "reasonTrailingNoise": ParameterizedString<"ratio">;
+        /**
+         * 1人あたり最大 {count} 件
+         */
+        "reasonMaxPerAccount": ParameterizedString<"count">;
+        /**
+         * 誰でも登録できる古い版のサーバー
+         */
+        "reasonOldOpenServer": string;
+        /**
+         * サーバーをブロック
+         */
+        "blockHost": string;
+        /**
+         * サイレンス
+         */
+        "silenceHost": string;
+        /**
+         * {count}人をまとめて凍結
+         */
+        "bulkSuspend": ParameterizedString<"count">;
+        /**
+         * {count}件をまとめて対応済み
+         */
+        "bulkResolve": ParameterizedString<"count">;
+        /**
+         * 連合の詳細を見る
+         */
+        "viewFederation": string;
+        /**
+         * このアカウントだけ凍結するのがおすすめ
+         */
+        "recommendSuspendAccounts": string;
+        /**
+         * このサーバーのアカウント（引っかけた数の多い順）
+         */
+        "accountList": string;
+        /**
+         * アカウント
+         */
+        "accountCol": string;
+        /**
+         * 作って
+         */
+        "createdAgoCol": string;
+        /**
+         * 投稿 / 引っかけ
+         */
+        "postsFlaggedCol": string;
+        /**
+         * 送った相手
+         */
+        "sentToCol": string;
+        /**
+         * AI 判定
+         */
+        "aiJudgementCol": string;
+        /**
+         * 目印
+         */
+        "signalsCol": string;
+        /**
+         * 残り {count} 人を見る
+         */
+        "remainingAccounts": ParameterizedString<"count">;
+        /**
+         * {count} 人（{kind}）
+         */
+        "sentTo": ParameterizedString<"count" | "kind">;
+        /**
+         * アイコン無し
+         */
+        "signalNoAvatar": string;
+        /**
+         * 名前の型
+         */
+        "signalNamePattern": string;
+        /**
+         * フォロー0
+         */
+        "signalFollow0": string;
+        /**
+         * 知らない人へ送った
+         */
+        "signalStrangerContact": string;
+        /**
+         * 24時間で3人以上の知らない人へ
+         */
+        "signalManyStrangers": string;
+        /**
+         * 別のアカウントも同じ文
+         */
+        "signalSameTextOtherAccounts": string;
+        /**
+         * 同じ文を3回以上
+         */
+        "signalRepeatedText": string;
+        /**
+         * 別のアカウント2人以上が同じリンク
+         */
+        "signalSameLinkOtherAccounts": string;
+        /**
+         * 同じサーバーからほかに2人以上
+         */
+        "signalHostWave": string;
+        /**
+         * 文末にでたらめな英字
+         */
+        "signalTrailingNoise": string;
+        /**
+         * 全体を調べる
+         */
+        "scanTab": string;
+        /**
+         * すでにある投稿を古い順に判定して、何が引っかかるかを見ます。いつもの判定のあと、GPU が空いているときに2分ごとに少しずつ進みます。結果は参考用で、隠す・通知は一切しません（自動で隠すモードなら隠していたか、だけ記録します）。外部 API には送りません。「絞り込みに当たる投稿だけ」は、いつもの判定と同じ条件（新しいアカウントのリンク・知らない人への接触）で選びます。
+         */
+        "scanCaption": string;
+        /**
+         * 対象の投稿
+         */
+        "scanMode": string;
+        /**
+         * 絞り込みに当たる投稿だけ
+         */
+        "scanModeFiltered": string;
+        /**
+         * 文のある投稿すべて
+         */
+        "scanModeAll": string;
+        /**
+         * どこの投稿
+         */
+        "scanTarget": string;
+        /**
+         * すべて
+         */
+        "scanTargetAll": string;
+        /**
+         * このサーバーだけ
+         */
+        "scanTargetLocal": string;
+        /**
+         * 他のサーバーだけ
+         */
+        "scanTargetRemote": string;
+        /**
+         * 期間
+         */
+        "scanPeriod": string;
+        /**
+         * 直近 {days} 日
+         */
+        "scanDays": ParameterizedString<"days">;
+        /**
+         * 最初から
+         */
+        "scanFromBeginning": string;
+        /**
+         * 判定する上限（件）
+         */
+        "scanMaxJudged": string;
+        /**
+         * 見積もる
+         */
+        "scanEstimate": string;
+        /**
+         * 始める
+         */
+        "scanStart": string;
+        /**
+         * 中止
+         */
+        "scanCancel": string;
+        /**
+         * 対象の投稿 {notes} 件のうち、判定に回るのはおよそ {candidates} 件（新しい {sampled} 件を調べて {sampledCandidates} 件）。1件あたり約 {seconds} 秒で、上限までなら およそ {time}
+         */
+        "scanEstimateResult": ParameterizedString<"notes" | "candidates" | "sampled" | "sampledCandidates" | "seconds" | "time">;
+        /**
+         * 全体スキャンを始めますか？ 終わるまで GPU を使い続けます（2分ごとに最大90秒）。中止はいつでもできます。
+         */
+        "scanConfirmStart": string;
+        /**
+         * 全体スキャンを中止しますか？ ここまでの結果は残ります。
+         */
+        "scanConfirmCancel": string;
+        /**
+         * スキャン
+         */
+        "scanHistory": string;
+        /**
+         * 状態
+         */
+        "scanState": string;
+        /**
+         * 実行中
+         */
+        "scanRunning": string;
+        /**
+         * 完了
+         */
+        "scanDone": string;
+        /**
+         * 中止
+         */
+        "scanCanceled": string;
+        /**
+         * 残り およそ {time}
+         */
+        "scanEta": ParameterizedString<"time">;
+        /**
+         * 条件
+         */
+        "scanConditions": string;
+        /**
+         * 件数
+         */
+        "scanCounts": string;
+        /**
+         * 見た {scanned} ・ 判定 {judged} ・ 引っかけた {flagged} ・ 自動なら隠した {wouldHide}
+         */
+        "scanCountsValue": ParameterizedString<"scanned" | "judged" | "flagged" | "wouldHide">;
+        /**
+         * 始めた人
+         */
+        "scanStartedBy": string;
+        /**
+         * 判定の内訳
+         */
+        "scanByLabel": string;
+        /**
+         * うち引っかけた {count}
+         */
+        "scanFlaggedOf": ParameterizedString<"count">;
+        /**
+         * 引っかけた投稿のサーバー
+         */
+        "scanByHost": string;
+        /**
+         * 引っかけた投稿のリンク
+         */
+        "scanByLink": string;
+        /**
+         * 引っかけた投稿の目印
+         */
+        "scanBySignal": string;
+        /**
+         * このサーバー
+         */
+        "scanLocalHost": string;
+        /**
+         * 件
+         */
+        "scanColItems": string;
+        /**
+         * 人
+         */
+        "scanColAccounts": string;
+        /**
+         * 自動なら隠した
+         */
+        "scanColWouldHide": string;
+        /**
+         * 投稿日時
+         */
+        "scanColPostedAt": string;
+        /**
+         * 引っかけた
+         */
+        "scanFilterFlagged": string;
+        /**
+         * 自動なら隠した
+         */
+        "scanFilterWouldHide": string;
+        /**
+         * 引っかけなかった
+         */
+        "scanFilterNotFlagged": string;
+        /**
+         * 隠す
+         */
+        "scanYes": string;
+        /**
+         * まだ全体スキャンをしていません
+         */
+        "scanNone": string;
+        /**
+         * {n} 分
+         */
+        "scanMinutes": ParameterizedString<"n">;
+        /**
+         * {n} 時間
+         */
+        "scanHours": ParameterizedString<"n">;
+        /**
+         * {n} 日
+         */
+        "scanDaysDuration": ParameterizedString<"n">;
+        /**
+         * 判定条件（このスキャンを始めた時点）
+         */
+        "criteriaTitle": string;
+        /**
+         * 版
+         */
+        "criteriaVersion": string;
+        /**
+         * 途中で条件が変わり、{count} つの版が混ざっています（エクスポートに各版の中身が入ります）
+         */
+        "criteriaMixed": ParameterizedString<"count">;
+        /**
+         * モデル
+         */
+        "criteriaModel": string;
+        /**
+         * 判定スクリプト
+         */
+        "criteriaScript": string;
+        /**
+         * 閾値
+         */
+        "criteriaThresholds": string;
+        /**
+         * 引っかける {flag} ・ 自動で隠す {hide} ・ 根拠 {points} 点 ・ 新しいアカウント {days} 日
+         */
+        "criteriaThresholdsValue": ParameterizedString<"flag" | "hide" | "points" | "days">;
+        /**
+         * 自動で隠したもののその後（30日）
+         */
+        "outcomesTitle": string;
+        /**
+         * 凍結 {suspended}・相手のサーバーで消えた {deleted}・隠すのをやめた {unhidden}・隠したまま {hidden}
+         */
+        "outcomesAuto": ParameterizedString<"suspended" | "deleted" | "unhidden" | "hidden">;
+        /**
+         * 自動では隠さず、あとで凍結・消えた {count}
+         */
+        "outcomesMissed": ParameterizedString<"count">;
+        /**
+         * 怪しさ
+         */
+        "colSeverity": string;
+        /**
+         * サーバー
+         */
+        "colServer": string;
+        /**
+         * ソフト・登録
+         */
+        "colSoftware": string;
+        /**
+         * 投稿
+         */
+        "colPosts": string;
+        /**
+         * 判定日時
+         */
+        "colJudgedAt": string;
+        /**
+         * 操作
+         */
+        "colActions": string;
+        /**
+         * メモ
+         */
+        "memoShort": string;
+        /**
+         * 人
+         */
+        "colAccounts": string;
+        /**
+         * 狙われた人
+         */
+        "colTargets": string;
+        /**
+         * フォロワー
+         */
+        "colFollowers": string;
+        /**
+         * 頼まれていない
+         */
+        "colUnsolicited": string;
+        /**
+         * 最多/時
+         */
+        "colPeak": string;
+        /**
+         * AI 判定
+         */
+        "colAi": string;
+        /**
+         * 根拠
+         */
+        "colEvidence": string;
+        /**
+         * フォロワー {followers}
+         */
+        "authorShort": ParameterizedString<"followers">;
+        /**
+         * 対応済み
+         */
+        "resolveShort": string;
+        /**
+         * 投稿を削除
+         */
+        "deleteShort": string;
+        /**
+         * スパムらしさの根拠
+         */
+        "evidenceTitle": string;
+        /**
+         * なし（自動では隠さない）
+         */
+        "evidenceNone": string;
+        /**
+         * {points} 点
+         */
+        "evidencePoints": ParameterizedString<"points">;
+        /**
+         * 相手
+         */
+        "hiddenTargetCol": string;
+        /**
+         * 単位
+         */
+        "hiddenTypeCol": string;
+        /**
+         * 誰が
+         */
+        "hiddenByCol": string;
+        /**
+         * いつ
+         */
+        "hiddenAtCol": string;
+        /**
+         * 判定
+         */
+        "settingsSectionJudge": string;
+        /**
+         * 自動で隠す
+         */
+        "settingsSectionAutoHide": string;
+        /**
+         * 外部 API
+         */
+        "settingsSectionExternal": string;
+        /**
+         * ＋英字
+         */
+        "trailingNoiseMark": string;
+        /**
+         * （{count}件）
+         */
+        "sampleCount": ParameterizedString<"count">;
+        /**
+         * 禁止ワードに {domain} を追加
+         */
+        "addProhibitedWord": ParameterizedString<"domain">;
+        /**
+         * AI 判定（Qwen）
+         */
+        "aiJudgementQwen": string;
+        /**
+         * ほかの判定
+         */
+        "otherJudgements": string;
+        /**
+         * スパム
+         */
+        "spam": string;
+        /**
+         * 詐欺
+         */
+        "scam": string;
+        /**
+         * 攻撃的
+         */
+        "abuse": string;
+        /**
+         * ふつう
+         */
+        "normal": string;
+        /**
+         * オフ
+         */
+        "externalApiOff": string;
+        /**
+         * 送っていない（DM）
+         */
+        "externalApiNotSentDm": string;
+        /**
+         * {categories}
+         */
+        "externalApiCategories": ParameterizedString<"categories">;
+        /**
+         * 頼まれていない接触
+         */
+        "triggerUnsolicitedContact": string;
+        /**
+         * 新しいアカウント＋リンク
+         */
+        "triggerNewAuthorLink": string;
+        /**
+         * 新しいローカルアカウントの接触
+         */
+        "triggerNewLocalContact": string;
+        /**
+         * 同じリンクを他に {count} 人が投稿
+         */
+        "relatedSameLink": ParameterizedString<"count">;
+        /**
+         * 同じ文（英字を除く）が他に {count} 件
+         */
+        "relatedSameText": ParameterizedString<"count">;
+        /**
+         * このユーザーの引っかけ {flagged}/{judged} 件
+         */
+        "relatedUserFlagged": ParameterizedString<"flagged" | "judged">;
+        /**
+         * 対応済みにする
+         */
+        "resolveAction": string;
+        /**
+         * メモを保存
+         */
+        "saveMemo": string;
+        /**
+         * ユーザーを見る
+         */
+        "viewUser": string;
+        /**
+         * 投稿を削除
+         */
+        "deleteNote": string;
+        /**
+         * 凍結
+         */
+        "suspendUser": string;
+        /**
+         * メモ
+         */
+        "moderationNoteLabel": string;
+        /**
+         * 試す
+         */
+        "trial": string;
+        /**
+         * 管理者だけに表示
+         */
+        "trialAdminOnly": string;
+        /**
+         * 判定する文
+         */
+        "trialTextLabel": string;
+        /**
+         * 判定
+         */
+        "trialRun": string;
+        /**
+         * → 引っかかります（spam+scam {score}% ≥ 閾値 {threshold}%）
+         */
+        "trialFlagged": ParameterizedString<"score" | "threshold">;
+        /**
+         * → 引っかかります
+         */
+        "trialFlaggedPlain": string;
+        /**
+         * → 引っかかりません
+         */
+        "trialNotFlagged": string;
+        /**
+         * 最初
+         */
+        "firstAt": string;
+        /**
+         * 設定
+         */
+        "settings": string;
+        /**
+         * 編集は管理者だけ
+         */
+        "settingsAdminOnly": string;
+        /**
+         * AI投稿チェックを使う
+         */
+        "settingsEnabled": string;
+        /**
+         * 新しいアカウントとみなす日数（1〜90）
+         */
+        "settingsNewAuthorDays": string;
+        /**
+         * 1日に判定する上限（0〜10000）
+         */
+        "settingsDailyLimit": string;
+        /**
+         * Qwen（このサーバーの GPU）で判定
+         */
+        "settingsQwen": string;
+        /**
+         * 本文は外に出ません
+         */
+        "settingsQwenCaption": string;
+        /**
+         * 引っかける閾値（0〜1、0.05 刻み）
+         */
+        "settingsThreshold": string;
+        /**
+         * 外部 API でも判定
+         */
+        "settingsExternal": string;
+        /**
+         * OpenAI 互換の moderations API。既定はオフ
+         */
+        "settingsExternalCaption": string;
+        /**
+         * URL（空なら OpenAI）
+         */
+        "settingsExternalUrl": string;
+        /**
+         * API キー
+         */
+        "settingsExternalKey": string;
+        /**
+         * モデル（空なら omni-moderation-latest）
+         */
+        "settingsExternalModel": string;
+        /**
+         * 外部に送る公開範囲
+         */
+        "settingsExternalVisibilities": string;
+        /**
+         * DM の本文が外部に送られます
+         */
+        "settingsSpecifiedWarning": string;
+        /**
+         * 保存（変更があると押せる）
+         */
+        "saveHint": string;
+        /**
+         * 件数が変わったので再読み込みしてください
+         */
+        "countMismatch": string;
+        /**
+         * 投稿は削除済み
+         */
+        "noteDeleted": string;
+        /**
+         * ダイレクト
+         */
+        "dmLabel": string;
+        /**
+         * メンション
+         */
+        "mentionLabel": string;
+        /**
+         * リプライ
+         */
+        "replyLabel": string;
+        /**
+         * → {count}人
+         */
+        "contactTo": ParameterizedString<"count">;
+        /**
+         * サーバー {host} をブロックしますか？
+         */
+        "confirmBlockHost": ParameterizedString<"host">;
+        /**
+         * サーバー {host} をサイレンスしますか？
+         */
+        "confirmSilenceHost": ParameterizedString<"host">;
+        /**
+         * {target} の {count} 人を凍結しますか？
+         */
+        "confirmSuspend": ParameterizedString<"target" | "count">;
+        /**
+         * {target} の {count} 件を対応済みにしますか？
+         */
+        "confirmResolve": ParameterizedString<"target" | "count">;
+        /**
+         * 禁止ワードに {word} を追加しますか？
+         */
+        "confirmAddProhibitedWord": ParameterizedString<"word">;
+        /**
+         * {count} 人を凍結しました
+         */
+        "suspendedResult": ParameterizedString<"count">;
+        /**
+         * {count} 人をスキップしました
+         */
+        "skippedResult": ParameterizedString<"count">;
+    };
     "_delivery": {
         /**
          * 配信状態
@@ -10043,6 +11129,14 @@ export interface Locale extends ILocale {
          */
         "read:admin:ad": string;
         /**
+         * AI投稿チェックを操作する
+         */
+        "write:admin:ai-moderation": string;
+        /**
+         * AI投稿チェックを見る
+         */
+        "read:admin:ai-moderation": string;
+        /**
          * 招待コードを作成する
          */
         "write:invite-codes": string;
@@ -11709,6 +12803,10 @@ export interface Locale extends ILocale {
              * モデレーターが一定期間非アクティブだったため、システムにより招待制へと変更されたとき
              */
             "inactiveModeratorsInvitationOnlyChanged": string;
+            /**
+             * AI投稿チェックで引っかかったとき
+             */
+            "aiModerationFlagged": string;
         };
         /**
          * Webhookを削除しますか？
@@ -11988,6 +13086,26 @@ export interface Locale extends ILocale {
          * プロキシアカウントの説明を更新
          */
         "updateProxyAccountDescription": string;
+        /**
+         * AI投稿チェックをまとめて対応済みにした
+         */
+        "resolveAiModerationBulk": string;
+        /**
+         * AI投稿チェックでユーザーから隠した
+         */
+        "hideAiModerationTarget": string;
+        /**
+         * AI投稿チェックで隠すのをやめた
+         */
+        "unhideAiModerationTarget": string;
+        /**
+         * AI投稿チェックの全体スキャンを始めた
+         */
+        "startAiModerationScan": string;
+        /**
+         * AI投稿チェックの全体スキャンを中止した
+         */
+        "cancelAiModerationScan": string;
     };
     "_fileViewer": {
         /**

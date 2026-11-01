@@ -20,6 +20,7 @@ import { ChatEntityService } from './ChatEntityService.js';
 import type { OnModuleInit } from '@nestjs/common';
 import type { UserEntityService } from './UserEntityService.js';
 import type { NoteEntityService } from './NoteEntityService.js';
+import type { AiModerationHiddenService } from '@/core/AiModerationHiddenService.js';
 
 const NOTE_REQUIRED_NOTIFICATION_TYPES = new Set([
 	'note',
@@ -40,6 +41,7 @@ export class NotificationEntityService implements OnModuleInit {
 	private noteEntityService: NoteEntityService;
 	private roleEntityService: RoleEntityService;
 	private chatEntityService: ChatEntityService;
+	private aiModerationHiddenService: AiModerationHiddenService;
 
 	constructor(
 		private moduleRef: ModuleRef,
@@ -62,6 +64,7 @@ export class NotificationEntityService implements OnModuleInit {
 		this.noteEntityService = this.moduleRef.get('NoteEntityService');
 		this.roleEntityService = this.moduleRef.get('RoleEntityService');
 		this.chatEntityService = this.moduleRef.get('ChatEntityService');
+		this.aiModerationHiddenService = this.moduleRef.get('AiModerationHiddenService');
 	}
 
 	/**
@@ -163,7 +166,7 @@ export class NotificationEntityService implements OnModuleInit {
 			return null;
 		}
 
-		return await awaitAll({
+		const packed = await awaitAll({
 			id: notification.id,
 			createdAt: new Date(notification.createdAt).toISOString(),
 			type: notification.type,
@@ -195,6 +198,14 @@ export class NotificationEntityService implements OnModuleInit {
 				icon: notification.customIcon,
 			} : {}),
 		});
+
+		// AI 投稿チェックで隠した相手からの通知は、画面側で畳む
+		const packedUser = 'user' in packed ? packed.user : null;
+		const packedNote = 'note' in packed ? packed.note : null;
+		if ((packedUser != null && this.aiModerationHiddenService.isHiddenAuthor(packedUser.id, packedUser.host)) || packedNote?.spamSuspected === true) {
+			return { ...packed, spamSuspected: true };
+		}
+		return packed;
 	}
 
 	async #packManyInternal <T extends MiNotification | MiGroupedNotification>	(

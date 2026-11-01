@@ -16,6 +16,11 @@ export const DI = {
 	redisForReactions: Symbol('redisForReactions'),
 
 	//#region Repositories
+	aiModerationQueueRepository: Symbol('aiModerationQueueRepository'),
+	aiModerationHiddenTargetRepository: Symbol('aiModerationHiddenTargetRepository'),
+	aiModerationScanRepository: Symbol('aiModerationScanRepository'),
+	aiModerationCriteriaRepository: Symbol('aiModerationCriteriaRepository'),
+	aiModerationScanItemRepository: Symbol('aiModerationScanItemRepository'),
 	usersRepository: Symbol('usersRepository'),
 	notesRepository: Symbol('notesRepository'),
 	announcementsRepository: Symbol('announcementsRepository'),

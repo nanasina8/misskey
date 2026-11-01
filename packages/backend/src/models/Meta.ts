@@ -763,6 +763,83 @@ export class MiMeta {
 	})
 	public showRoleBadgesOfRemoteUsers: boolean;
 
+	@Column('boolean', {
+		default: false,
+	})
+	public aiModerationEnabled: boolean;
+
+	@Column('integer', {
+		default: 7,
+	})
+	public aiModerationNewAuthorDays: number;
+
+	@Column('integer', {
+		default: 500,
+	})
+	public aiModerationDailyLimit: number;
+
+	@Column('boolean', {
+		default: true,
+	})
+	public aiModerationLocalEnabled: boolean;
+
+	@Column('real', {
+		default: 0.6,
+	})
+	public aiModerationLocalThreshold: number;
+
+	@Column('boolean', {
+		default: false,
+	})
+	public aiModerationExternalEnabled: boolean;
+
+	@Column('varchar', {
+		length: 1024,
+		nullable: true,
+	})
+	public aiModerationExternalApiUrl: string | null;
+
+	@Column('varchar', {
+		length: 1024,
+		nullable: true,
+	})
+	public aiModerationExternalApiKey: string | null;
+
+	@Column('varchar', {
+		length: 128,
+		nullable: true,
+	})
+	public aiModerationExternalModel: string | null;
+
+	@Column('varchar', {
+		length: 64,
+		array: true,
+		default: ['public', 'home', 'followers'],
+	})
+	public aiModerationExternalVisibilities: string[];
+
+	/** 自動で隠す: off / trial（記録だけ） / on（既定） */
+	@Column('varchar', {
+		length: 16,
+		default: 'on',
+	})
+	public aiModerationAutoHideMode: 'off' | 'trial' | 'on';
+
+	@Column('real', {
+		default: 0.9,
+	})
+	public aiModerationAutoHideThreshold: number;
+
+	@Column('integer', {
+		default: 50,
+	})
+	public aiModerationAutoHideDailyLimit: number;
+
+	@Column('boolean', {
+		default: false,
+	})
+	public aiModerationAutoHideHosts: boolean;
+
 	@Column('jsonb', {
 		default: { },
 	})

@@ -66,6 +66,10 @@ export const packedNoteSchema = {
 			type: 'boolean',
 			optional: true, nullable: false,
 		},
+		spamSuspected: {
+			type: 'boolean',
+			optional: true, nullable: false,
+		},
 		visibility: {
 			type: 'string',
 			optional: false, nullable: false,

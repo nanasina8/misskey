@@ -6,7 +6,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { In, LessThan } from 'typeorm';
 import { DI } from '@/di-symbols.js';
-import type { AntennasRepository, RoleAssignmentsRepository, UserIpsRepository } from '@/models/_.js';
+import type { AiModerationQueueRepository, AntennasRepository, RoleAssignmentsRepository, UserIpsRepository } from '@/models/_.js';
 import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import { IdService } from '@/core/IdService.js';
@@ -31,6 +31,9 @@ export class CleanProcessorService {
 
 		@Inject(DI.roleAssignmentsRepository)
 		private roleAssignmentsRepository: RoleAssignmentsRepository,
+
+		@Inject(DI.aiModerationQueueRepository)
+		private aiModerationQueueRepository: AiModerationQueueRepository,
 
 		private queueLoggerService: QueueLoggerService,
 		private reversiService: ReversiService,
@@ -68,6 +71,16 @@ export class CleanProcessorService {
 		}
 
 		this.reversiService.cleanOutdatedGames();
+
+		// AI 投稿チェックの掃除: 引っかからなかった行は30日、解決済みの行は180日で削除
+		await this.aiModerationQueueRepository.delete({
+			flagged: false,
+			judgedAt: LessThan(new Date(Date.now() - (1000 * 60 * 60 * 24 * 30))),
+		});
+		await this.aiModerationQueueRepository.delete({
+			resolved: true,
+			judgedAt: LessThan(new Date(Date.now() - (1000 * 60 * 60 * 24 * 180))),
+		});
 
 		this.logger.succ('Cleaned.');
 	}

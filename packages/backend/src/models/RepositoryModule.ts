@@ -10,6 +10,11 @@ import {
 	MiAbuseUserReport,
 	MiAccessToken,
 	MiAd,
+	MiAiModerationQueue,
+	MiAiModerationHiddenTarget,
+	MiAiModerationScan,
+	MiAiModerationCriteria,
+	MiAiModerationScanItem,
 	MiAnnouncement,
 	MiAnnouncementRead,
 	MiAntenna,
@@ -101,6 +106,36 @@ import type { DataSource } from 'typeorm';
 const $usersRepository: Provider = {
 	provide: DI.usersRepository,
 	useFactory: (db: DataSource) => db.getRepository(MiUser).extend(miRepository as MiRepository<MiUser>),
+	inject: [DI.db],
+};
+
+const $aiModerationQueueRepository: Provider = {
+	provide: DI.aiModerationQueueRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiAiModerationQueue).extend(miRepository as MiRepository<MiAiModerationQueue>),
+	inject: [DI.db],
+};
+
+const $aiModerationCriteriaRepository: Provider = {
+	provide: DI.aiModerationCriteriaRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiAiModerationCriteria).extend(miRepository as MiRepository<MiAiModerationCriteria>),
+	inject: [DI.db],
+};
+
+const $aiModerationScanRepository: Provider = {
+	provide: DI.aiModerationScanRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiAiModerationScan).extend(miRepository as MiRepository<MiAiModerationScan>),
+	inject: [DI.db],
+};
+
+const $aiModerationScanItemRepository: Provider = {
+	provide: DI.aiModerationScanItemRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiAiModerationScanItem).extend(miRepository as MiRepository<MiAiModerationScanItem>),
+	inject: [DI.db],
+};
+
+const $aiModerationHiddenTargetRepository: Provider = {
+	provide: DI.aiModerationHiddenTargetRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiAiModerationHiddenTarget).extend(miRepository as MiRepository<MiAiModerationHiddenTarget>),
 	inject: [DI.db],
 };
 
@@ -618,6 +653,11 @@ const $hanamiRecommendationEventsRepository: Provider = {
 @Module({
 	imports: [],
 	providers: [
+		$aiModerationQueueRepository,
+		$aiModerationHiddenTargetRepository,
+		$aiModerationScanRepository,
+		$aiModerationCriteriaRepository,
+		$aiModerationScanItemRepository,
 		$usersRepository,
 		$notesRepository,
 		$announcementsRepository,
@@ -706,6 +746,11 @@ const $hanamiRecommendationEventsRepository: Provider = {
 			$hanamiRecommendationEventsRepository,
 		],
 	exports: [
+		$aiModerationQueueRepository,
+		$aiModerationHiddenTargetRepository,
+		$aiModerationScanRepository,
+		$aiModerationCriteriaRepository,
+		$aiModerationScanItemRepository,
 		$usersRepository,
 		$notesRepository,
 		$announcementsRepository,

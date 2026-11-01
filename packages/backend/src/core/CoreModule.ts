@@ -5,6 +5,13 @@
 
 import { Module } from '@nestjs/common';
 import { AppLockService } from './AppLockService.js';
+import { AiModerationService } from './AiModerationService.js';
+import { AiModerationHiddenService } from './AiModerationHiddenService.js';
+import { AiModerationOutcomeService } from './AiModerationOutcomeService.js';
+import { AiModerationCriteriaService } from './AiModerationCriteriaService.js';
+import { AiModerationScanService } from './AiModerationScanService.js';
+import { AiModerationExternalService } from './AiModerationExternalService.js';
+import { AiModerationQueueEntityService } from './entities/AiModerationQueueEntityService.js';
 import { FanoutTimelineEndpointService } from '@/core/FanoutTimelineEndpointService.js';
 import { AbuseReportService } from '@/core/AbuseReportService.js';
 import { SystemWebhookEntityService } from '@/core/entities/SystemWebhookEntityService.js';
@@ -255,6 +262,7 @@ const $WebAuthnService: Provider = { provide: 'WebAuthnService', useExisting: We
 const $UserBlockingService: Provider = { provide: 'UserBlockingService', useExisting: UserBlockingService };
 const $CacheService: Provider = { provide: 'CacheService', useExisting: CacheService };
 const $HanaReactionMuteService: Provider = { provide: 'HanaReactionMuteService', useExisting: HanaReactionMuteService };
+const $AiModerationHiddenService: Provider = { provide: 'AiModerationHiddenService', useExisting: AiModerationHiddenService };
 const $UserService: Provider = { provide: 'UserService', useExisting: UserService };
 const $UserFollowingService: Provider = { provide: 'UserFollowingService', useExisting: UserFollowingService };
 const $UserKeypairService: Provider = { provide: 'UserKeypairService', useExisting: UserKeypairService };
@@ -383,6 +391,12 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 	],
 	providers: [
 		AppLockService,
+		AiModerationService,
+		AiModerationHiddenService,
+		AiModerationOutcomeService,
+		AiModerationCriteriaService,
+		AiModerationScanService,
+		AiModerationExternalService,
 		LoggerService,
 		AbuseReportService,
 		AbuseReportNotificationService,
@@ -548,6 +562,7 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		ReversiGameEntityService,
 		MetaEntityService,
 		SystemWebhookEntityService,
+		AiModerationQueueEntityService,
 
 		ApAudienceService,
 		ApDbResolverService,
@@ -618,6 +633,7 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		$UserBlockingService,
 		$CacheService,
 		$HanaReactionMuteService,
+		$AiModerationHiddenService,
 		$UserService,
 		$UserFollowingService,
 		$UserKeypairService,
@@ -743,6 +759,12 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 	],
 	exports: [
 		AppLockService,
+		AiModerationService,
+		AiModerationHiddenService,
+		AiModerationOutcomeService,
+		AiModerationCriteriaService,
+		AiModerationScanService,
+		AiModerationExternalService,
 		QueueModule,
 		LoggerService,
 		AbuseReportService,
@@ -915,6 +937,7 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		ReversiGameEntityService,
 		MetaEntityService,
 		SystemWebhookEntityService,
+		AiModerationQueueEntityService,
 
 		ApAudienceService,
 		ApDbResolverService,
@@ -985,6 +1008,7 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		$UserBlockingService,
 		$CacheService,
 		$HanaReactionMuteService,
+		$AiModerationHiddenService,
 		$UserService,
 		$UserFollowingService,
 		$UserKeypairService,

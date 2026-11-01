@@ -110,6 +110,120 @@ type AdminAdListResponse = operations['admin___ad___list']['responses']['200']['
 type AdminAdUpdateRequest = operations['admin___ad___update']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
+type AdminAiModerationAccountsRequest = operations['admin___ai-moderation___accounts']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationAccountsResponse = operations['admin___ai-moderation___accounts']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationBulkResolveRequest = operations['admin___ai-moderation___bulk-resolve']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationBulkSuspendRequest = operations['admin___ai-moderation___bulk-suspend']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationBulkSuspendResponse = operations['admin___ai-moderation___bulk-suspend']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationCriteriaRequest = operations['admin___ai-moderation___criteria']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationCriteriaResponse = operations['admin___ai-moderation___criteria']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationGroupAccountsRequest = operations['admin___ai-moderation___group-accounts']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationGroupAccountsResponse = operations['admin___ai-moderation___group-accounts']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationGroupsRequest = operations['admin___ai-moderation___groups']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationGroupsResponse = operations['admin___ai-moderation___groups']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationHiddenRequest = operations['admin___ai-moderation___hidden']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationHiddenResponse = operations['admin___ai-moderation___hidden']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationHideRequest = operations['admin___ai-moderation___hide']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationHideResponse = operations['admin___ai-moderation___hide']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationOutcomesRequest = operations['admin___ai-moderation___outcomes']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationOutcomesResponse = operations['admin___ai-moderation___outcomes']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationQueueRequest = operations['admin___ai-moderation___queue']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationQueueResponse = operations['admin___ai-moderation___queue']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationResolveRequest = operations['admin___ai-moderation___resolve']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationScanCancelRequest = operations['admin___ai-moderation___scan___cancel']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationScanCancelResponse = operations['admin___ai-moderation___scan___cancel']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationScanEstimateRequest = operations['admin___ai-moderation___scan___estimate']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationScanEstimateResponse = operations['admin___ai-moderation___scan___estimate']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationScanExportRequest = operations['admin___ai-moderation___scan___export']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationScanExportResponse = operations['admin___ai-moderation___scan___export']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationScanItemsRequest = operations['admin___ai-moderation___scan___items']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationScanItemsResponse = operations['admin___ai-moderation___scan___items']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationScanShowRequest = operations['admin___ai-moderation___scan___show']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationScanShowResponse = operations['admin___ai-moderation___scan___show']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationScanStartRequest = operations['admin___ai-moderation___scan___start']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationScanStartResponse = operations['admin___ai-moderation___scan___start']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationStatusResponse = operations['admin___ai-moderation___status']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationTrialRequest = operations['admin___ai-moderation___trial']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationTrialResponse = operations['admin___ai-moderation___trial']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationUnhideRequest = operations['admin___ai-moderation___unhide']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationUnhideResponse = operations['admin___ai-moderation___unhide']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminAiModerationUpdateRequest = operations['admin___ai-moderation___update']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
 type AdminAnnouncementsCreateRequest = operations['admin___announcements___create']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -546,6 +660,9 @@ type AdminUpdateProxyAccountResponse = operations['admin___update-proxy-account'
 
 // @public (undocumented)
 type AdminUpdateUserNoteRequest = operations['admin___update-user-note']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AiModerationQueue = components['schemas']['AiModerationQueue'];
 
 // @public (undocumented)
 type Announcement = components['schemas']['Announcement'];
@@ -1662,6 +1779,44 @@ declare namespace entities {
         AdminAdListRequest,
         AdminAdListResponse,
         AdminAdUpdateRequest,
+        AdminAiModerationAccountsRequest,
+        AdminAiModerationAccountsResponse,
+        AdminAiModerationBulkResolveRequest,
+        AdminAiModerationBulkSuspendRequest,
+        AdminAiModerationBulkSuspendResponse,
+        AdminAiModerationCriteriaRequest,
+        AdminAiModerationCriteriaResponse,
+        AdminAiModerationGroupAccountsRequest,
+        AdminAiModerationGroupAccountsResponse,
+        AdminAiModerationGroupsRequest,
+        AdminAiModerationGroupsResponse,
+        AdminAiModerationHiddenRequest,
+        AdminAiModerationHiddenResponse,
+        AdminAiModerationHideRequest,
+        AdminAiModerationHideResponse,
+        AdminAiModerationOutcomesRequest,
+        AdminAiModerationOutcomesResponse,
+        AdminAiModerationQueueRequest,
+        AdminAiModerationQueueResponse,
+        AdminAiModerationResolveRequest,
+        AdminAiModerationScanCancelRequest,
+        AdminAiModerationScanCancelResponse,
+        AdminAiModerationScanEstimateRequest,
+        AdminAiModerationScanEstimateResponse,
+        AdminAiModerationScanExportRequest,
+        AdminAiModerationScanExportResponse,
+        AdminAiModerationScanItemsRequest,
+        AdminAiModerationScanItemsResponse,
+        AdminAiModerationScanShowRequest,
+        AdminAiModerationScanShowResponse,
+        AdminAiModerationScanStartRequest,
+        AdminAiModerationScanStartResponse,
+        AdminAiModerationStatusResponse,
+        AdminAiModerationTrialRequest,
+        AdminAiModerationTrialResponse,
+        AdminAiModerationUnhideRequest,
+        AdminAiModerationUnhideResponse,
+        AdminAiModerationUpdateRequest,
         AdminAnnouncementsCreateRequest,
         AdminAnnouncementsCreateResponse,
         AdminAnnouncementsDeleteRequest,
@@ -2423,6 +2578,7 @@ declare namespace entities {
         MetaClientOptions,
         UserWebhook,
         SystemWebhook,
+        AiModerationQueue,
         AbuseReportNotificationRecipient,
         ChatMessage,
         ChatMessageLite,
@@ -3083,7 +3239,7 @@ type ModerationLog = {
 }[keyof ModerationLogPayloads]);
 
 // @public (undocumented)
-export const moderationLogTypes: readonly ["updateServerSettings", "suspend", "unsuspend", "updateUserNote", "addCustomEmoji", "updateCustomEmoji", "deleteCustomEmoji", "assignRole", "unassignRole", "createRole", "updateRole", "deleteRole", "clearQueue", "promoteQueue", "deleteDriveFile", "deleteNote", "createGlobalAnnouncement", "createUserAnnouncement", "updateGlobalAnnouncement", "updateUserAnnouncement", "deleteGlobalAnnouncement", "deleteUserAnnouncement", "resetPassword", "suspendRemoteInstance", "unsuspendRemoteInstance", "updateRemoteInstanceNote", "markSensitiveDriveFile", "unmarkSensitiveDriveFile", "resolveAbuseReport", "forwardAbuseReport", "updateAbuseReportNote", "createInvitation", "createAd", "updateAd", "deleteAd", "createAvatarDecoration", "updateAvatarDecoration", "deleteAvatarDecoration", "unsetMfa", "unsetUserAvatar", "unsetUserBanner", "createSystemWebhook", "updateSystemWebhook", "deleteSystemWebhook", "createAbuseReportNotificationRecipient", "updateAbuseReportNotificationRecipient", "deleteAbuseReportNotificationRecipient", "deleteAccount", "deletePage", "deleteFlash", "deleteGalleryPost", "deleteChatRoom", "updateProxyAccountDescription", "exportHanamiSuggestionEvents"];
+export const moderationLogTypes: readonly ["updateServerSettings", "suspend", "unsuspend", "updateUserNote", "addCustomEmoji", "updateCustomEmoji", "deleteCustomEmoji", "assignRole", "unassignRole", "createRole", "updateRole", "deleteRole", "clearQueue", "promoteQueue", "deleteDriveFile", "deleteNote", "createGlobalAnnouncement", "createUserAnnouncement", "updateGlobalAnnouncement", "updateUserAnnouncement", "deleteGlobalAnnouncement", "deleteUserAnnouncement", "resetPassword", "suspendRemoteInstance", "unsuspendRemoteInstance", "updateRemoteInstanceNote", "markSensitiveDriveFile", "unmarkSensitiveDriveFile", "resolveAbuseReport", "forwardAbuseReport", "updateAbuseReportNote", "createInvitation", "createAd", "updateAd", "deleteAd", "createAvatarDecoration", "updateAvatarDecoration", "deleteAvatarDecoration", "unsetMfa", "unsetUserAvatar", "unsetUserBanner", "createSystemWebhook", "updateSystemWebhook", "deleteSystemWebhook", "createAbuseReportNotificationRecipient", "updateAbuseReportNotificationRecipient", "deleteAbuseReportNotificationRecipient", "deleteAccount", "deletePage", "deleteFlash", "deleteGalleryPost", "deleteChatRoom", "updateProxyAccountDescription", "exportHanamiSuggestionEvents", "resolveAiModerationBulk", "hideAiModerationTarget", "unhideAiModerationTarget", "startAiModerationScan", "cancelAiModerationScan"];
 
 // @public (undocumented)
 type MuteCreateRequest = operations['mute___create']['requestBody']['content']['application/json'];
@@ -3435,7 +3591,7 @@ type PartialRolePolicyOverride = Partial<{
 }>;
 
 // @public (undocumented)
-export const permissions: readonly ["read:account", "write:account", "read:blocks", "write:blocks", "read:drive", "write:drive", "read:favorites", "write:favorites", "read:following", "write:following", "read:messaging", "write:messaging", "read:mutes", "write:mutes", "write:notes", "read:notifications", "write:notifications", "read:reactions", "write:reactions", "write:votes", "read:pages", "write:pages", "write:page-likes", "read:page-likes", "read:user-groups", "write:user-groups", "read:channels", "write:channels", "read:gallery", "write:gallery", "read:gallery-likes", "write:gallery-likes", "read:flash", "write:flash", "read:flash-likes", "write:flash-likes", "read:admin:abuse-user-reports", "write:admin:delete-account", "write:admin:delete-all-files-of-a-user", "read:admin:index-stats", "read:admin:table-stats", "read:admin:user-ips", "read:admin:meta", "write:admin:reset-password", "write:admin:resolve-abuse-user-report", "write:admin:send-email", "read:admin:server-info", "read:admin:show-moderation-log", "read:admin:show-user", "write:admin:suspend-user", "write:admin:unset-mfa", "write:admin:unset-user-avatar", "write:admin:unset-user-banner", "write:admin:unsuspend-user", "write:admin:meta", "write:admin:user-note", "write:admin:roles", "read:admin:roles", "write:admin:relays", "read:admin:relays", "write:admin:invite-codes", "read:admin:invite-codes", "write:admin:announcements", "read:admin:announcements", "write:admin:avatar-decorations", "read:admin:avatar-decorations", "write:admin:federation", "write:admin:account", "read:admin:account", "write:admin:emoji", "read:admin:emoji", "write:admin:queue", "read:admin:queue", "write:admin:promo", "write:admin:drive", "read:admin:drive", "write:admin:ad", "read:admin:ad", "write:invite-codes", "read:invite-codes", "write:clip-favorite", "read:clip-favorite", "read:federation", "write:report-abuse", "write:chat", "read:chat"];
+export const permissions: readonly ["read:account", "write:account", "read:blocks", "write:blocks", "read:drive", "write:drive", "read:favorites", "write:favorites", "read:following", "write:following", "read:messaging", "write:messaging", "read:mutes", "write:mutes", "write:notes", "read:notifications", "write:notifications", "read:reactions", "write:reactions", "write:votes", "read:pages", "write:pages", "write:page-likes", "read:page-likes", "read:user-groups", "write:user-groups", "read:channels", "write:channels", "read:gallery", "write:gallery", "read:gallery-likes", "write:gallery-likes", "read:flash", "write:flash", "read:flash-likes", "write:flash-likes", "read:admin:abuse-user-reports", "write:admin:delete-account", "write:admin:delete-all-files-of-a-user", "read:admin:index-stats", "read:admin:table-stats", "read:admin:user-ips", "read:admin:meta", "write:admin:reset-password", "write:admin:resolve-abuse-user-report", "write:admin:send-email", "read:admin:server-info", "read:admin:show-moderation-log", "read:admin:show-user", "write:admin:suspend-user", "write:admin:unset-mfa", "write:admin:unset-user-avatar", "write:admin:unset-user-banner", "write:admin:unsuspend-user", "write:admin:meta", "write:admin:user-note", "write:admin:roles", "read:admin:roles", "write:admin:relays", "read:admin:relays", "write:admin:invite-codes", "read:admin:invite-codes", "write:admin:announcements", "read:admin:announcements", "write:admin:avatar-decorations", "read:admin:avatar-decorations", "write:admin:federation", "write:admin:account", "read:admin:account", "write:admin:emoji", "read:admin:emoji", "write:admin:queue", "read:admin:queue", "write:admin:promo", "write:admin:drive", "read:admin:drive", "write:admin:ad", "read:admin:ad", "write:admin:ai-moderation", "read:admin:ai-moderation", "write:invite-codes", "read:invite-codes", "write:clip-favorite", "read:clip-favorite", "read:federation", "write:report-abuse", "write:chat", "read:chat"];
 
 // @public (undocumented)
 type PingResponse = operations['ping']['responses']['200']['content']['application/json'];

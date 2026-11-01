@@ -21,6 +21,7 @@ import { ReactionsBufferingService } from '@/core/ReactionsBufferingService.js';
 import { CacheService } from '@/core/CacheService.js';
 import { removeMutedUsersReactions } from '@/misc/reactions-mute.js';
 import type { HanaReactionMuteService } from '@/core/HanaReactionMuteService.js';
+import type { AiModerationHiddenService } from '@/core/AiModerationHiddenService.js';
 import type { OnModuleInit } from '@nestjs/common';
 import type { CustomEmojiService, ReactionLocalEmojiCandidate } from '../CustomEmojiService.js';
 import type { ReactionService } from '../ReactionService.js';
@@ -125,6 +126,7 @@ export class NoteEntityService implements OnModuleInit {
 	private cacheService: CacheService;
 	private noteLoader = new DebounceLoader(this.findNoteOrFail);
 	private hanaReactionMuteService: HanaReactionMuteService;
+	private aiModerationHiddenService: AiModerationHiddenService;
 
 	constructor(
 		private moduleRef: ModuleRef,
@@ -173,6 +175,7 @@ export class NoteEntityService implements OnModuleInit {
 		this.idService = this.moduleRef.get('IdService');
 		this.cacheService = this.moduleRef.get('CacheService');
 		this.hanaReactionMuteService = this.moduleRef.get('HanaReactionMuteService');
+		this.aiModerationHiddenService = this.moduleRef.get('AiModerationHiddenService');
 	}
 
 	@bindThis
@@ -684,6 +687,11 @@ export class NoteEntityService implements OnModuleInit {
 
 		if (!opts.skipHide && (await this.shouldHideNote(packed, meId))) {
 			this.hideNote(packed);
+		}
+
+		// AI 投稿チェックで隠した作者の投稿。中身は消さず、画面側で「スパムのおそれ」として畳む（本人には付けない）
+		if (meId !== note.userId && this.aiModerationHiddenService.isHiddenAuthor(note.userId, note.userHost)) {
+			packed.spamSuspected = true;
 		}
 
 		if (!opts._skipReactionsMute) await this.filterMutedReactions([packed], meId);

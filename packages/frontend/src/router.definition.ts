@@ -479,6 +479,10 @@ export const ROUTE_DEF = [{
 		name: 'abuses',
 		component: page(() => import('@/pages/admin/abuses.vue')),
 	}, {
+		path: '/ai-moderation',
+		name: 'ai-moderation',
+		component: page(() => import('@/pages/admin/ai-moderation.vue')),
+	}, {
 		path: '/modlog',
 		name: 'modlog',
 		component: page(() => import('@/pages/admin/modlog.vue')),

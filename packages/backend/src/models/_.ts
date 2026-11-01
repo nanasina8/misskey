@@ -10,6 +10,11 @@ import {
 } from 'typeorm';
 import { MiAbuseReportNotificationRecipient } from '@/models/AbuseReportNotificationRecipient.js';
 import { MiAbuseUserReport } from '@/models/AbuseUserReport.js';
+import { MiAiModerationQueue } from '@/models/AiModerationQueue.js';
+import { MiAiModerationHiddenTarget } from '@/models/AiModerationHiddenTarget.js';
+import { MiAiModerationScan } from '@/models/AiModerationScan.js';
+import { MiAiModerationCriteria } from '@/models/AiModerationCriteria.js';
+import { MiAiModerationScanItem } from '@/models/AiModerationScanItem.js';
 import { MiAccessToken } from '@/models/AccessToken.js';
 import { MiAd } from '@/models/Ad.js';
 import { MiAnnouncement } from '@/models/Announcement.js';
@@ -128,6 +133,11 @@ export const miRepository = {
 export {
 	MiAbuseUserReport,
 	MiAbuseReportNotificationRecipient,
+	MiAiModerationQueue,
+	MiAiModerationHiddenTarget,
+	MiAiModerationScan,
+	MiAiModerationCriteria,
+	MiAiModerationScanItem,
 	MiAccessToken,
 	MiAd,
 	MiAnnouncement,
@@ -234,6 +244,11 @@ export {
 };
 
 export type AbuseUserReportsRepository = Repository<MiAbuseUserReport> & MiRepository<MiAbuseUserReport>;
+export type AiModerationQueueRepository = Repository<MiAiModerationQueue> & MiRepository<MiAiModerationQueue>;
+export type AiModerationHiddenTargetRepository = Repository<MiAiModerationHiddenTarget> & MiRepository<MiAiModerationHiddenTarget>;
+export type AiModerationCriteriaRepository = Repository<MiAiModerationCriteria> & MiRepository<MiAiModerationCriteria>;
+export type AiModerationScanRepository = Repository<MiAiModerationScan> & MiRepository<MiAiModerationScan>;
+export type AiModerationScanItemRepository = Repository<MiAiModerationScanItem> & MiRepository<MiAiModerationScanItem>;
 export type AbuseReportNotificationRecipientRepository =
 	Repository<MiAbuseReportNotificationRecipient>
 	& MiRepository<MiAbuseReportNotificationRecipient>;

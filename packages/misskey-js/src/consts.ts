@@ -126,6 +126,8 @@ export const permissions = [
 	'read:admin:drive',
 	'write:admin:ad',
 	'read:admin:ad',
+	'write:admin:ai-moderation',
+	'read:admin:ai-moderation',
 	'write:invite-codes',
 	'read:invite-codes',
 	'write:clip-favorite',
@@ -191,6 +193,11 @@ export const moderationLogTypes = [
 	'deleteChatRoom',
 	'updateProxyAccountDescription',
 	'exportHanamiSuggestionEvents',
+	'resolveAiModerationBulk',
+	'hideAiModerationTarget',
+	'unhideAiModerationTarget',
+	'startAiModerationScan',
+	'cancelAiModerationScan',
 ] as const;
 
 export const rolePolicies = [
@@ -549,5 +556,39 @@ export type ModerationLogPayloads = {
 		period: { startAt: string; endAt: string };
 		count: number;
 		exportId: string;
+	};
+	resolveAiModerationBulk: {
+		groupBy: string;
+		key: string | null;
+		count: number;
+		moderationNote: string | null;
+	};
+	hideAiModerationTarget: {
+		targetType: 'user' | 'host';
+		userId: string | null;
+		userUsername: string | null;
+		userHost: string | null;
+		host: string | null;
+		reason: 'manual' | 'auto';
+	};
+	unhideAiModerationTarget: {
+		targetType: 'user' | 'host';
+		userId: string | null;
+		userUsername: string | null;
+		userHost: string | null;
+		host: string | null;
+	};
+	startAiModerationScan: {
+		scanId: string;
+		mode: 'filtered' | 'all';
+		target: 'all' | 'local' | 'remote';
+		days: number | null;
+		maxJudged: number;
+		criteriaVersion: string;
+	};
+	cancelAiModerationScan: {
+		scanId: string;
+		judgedCount: number;
+		flaggedCount: number;
 	};
 };

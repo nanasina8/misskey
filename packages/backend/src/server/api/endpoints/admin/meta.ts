@@ -665,6 +665,67 @@ export const meta = {
 				type: 'boolean',
 				optional: false, nullable: false,
 			},
+			aiModerationEnabled: {
+				type: 'boolean',
+				optional: false, nullable: false,
+			},
+			aiModerationNewAuthorDays: {
+				type: 'number',
+				optional: false, nullable: false,
+			},
+			aiModerationDailyLimit: {
+				type: 'number',
+				optional: false, nullable: false,
+			},
+			aiModerationLocalEnabled: {
+				type: 'boolean',
+				optional: false, nullable: false,
+			},
+			aiModerationLocalThreshold: {
+				type: 'number',
+				optional: false, nullable: false,
+			},
+			aiModerationExternalEnabled: {
+				type: 'boolean',
+				optional: false, nullable: false,
+			},
+			aiModerationExternalApiUrl: {
+				type: 'string',
+				optional: false, nullable: true,
+			},
+			aiModerationExternalApiKey: {
+				type: 'string',
+				optional: false, nullable: true,
+			},
+			aiModerationExternalModel: {
+				type: 'string',
+				optional: false, nullable: true,
+			},
+			aiModerationExternalVisibilities: {
+				type: 'array',
+				optional: false, nullable: false,
+				items: {
+					type: 'string',
+					optional: false, nullable: false,
+				},
+			},
+			aiModerationAutoHideMode: {
+				type: 'string',
+				optional: false, nullable: false,
+				enum: ['off', 'trial', 'on'],
+			},
+			aiModerationAutoHideThreshold: {
+				type: 'number',
+				optional: false, nullable: false,
+			},
+			aiModerationAutoHideDailyLimit: {
+				type: 'number',
+				optional: false, nullable: false,
+			},
+			aiModerationAutoHideHosts: {
+				type: 'boolean',
+				optional: false, nullable: false,
+			},
 		},
 	},
 } as const;
@@ -831,6 +892,20 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				remoteNotesCleaningExpiryDaysForEachNotes: instance.remoteNotesCleaningExpiryDaysForEachNotes,
 				remoteNotesCleaningMaxProcessingDurationInMinutes: instance.remoteNotesCleaningMaxProcessingDurationInMinutes,
 				showRoleBadgesOfRemoteUsers: instance.showRoleBadgesOfRemoteUsers,
+				aiModerationEnabled: instance.aiModerationEnabled,
+				aiModerationNewAuthorDays: instance.aiModerationNewAuthorDays,
+				aiModerationDailyLimit: instance.aiModerationDailyLimit,
+				aiModerationLocalEnabled: instance.aiModerationLocalEnabled,
+				aiModerationLocalThreshold: instance.aiModerationLocalThreshold,
+				aiModerationExternalEnabled: instance.aiModerationExternalEnabled,
+				aiModerationExternalApiUrl: instance.aiModerationExternalApiUrl,
+				aiModerationExternalApiKey: instance.aiModerationExternalApiKey,
+				aiModerationExternalModel: instance.aiModerationExternalModel,
+				aiModerationExternalVisibilities: instance.aiModerationExternalVisibilities,
+				aiModerationAutoHideMode: instance.aiModerationAutoHideMode,
+				aiModerationAutoHideThreshold: instance.aiModerationAutoHideThreshold,
+				aiModerationAutoHideDailyLimit: instance.aiModerationAutoHideDailyLimit,
+				aiModerationAutoHideHosts: instance.aiModerationAutoHideHosts,
 			};
 		});
 	}

@@ -48,6 +48,7 @@ import type { AnnouncementService } from '@/core/AnnouncementService.js';
 import type { CustomEmojiService } from '@/core/CustomEmojiService.js';
 import { AvatarDecorationService } from '@/core/AvatarDecorationService.js';
 import { ChatService } from '@/core/ChatService.js';
+import type { AiModerationHiddenService } from '@/core/AiModerationHiddenService.js';
 import type { OnModuleInit } from '@nestjs/common';
 import type { NoteEntityService } from './NoteEntityService.js';
 import type { PageEntityService } from './PageEntityService.js';
@@ -95,6 +96,7 @@ export class UserEntityService implements OnModuleInit {
 	private idService: IdService;
 	private avatarDecorationService: AvatarDecorationService;
 	private chatService: ChatService;
+	private aiModerationHiddenService: AiModerationHiddenService;
 
 	constructor(
 		private moduleRef: ModuleRef,
@@ -151,6 +153,7 @@ export class UserEntityService implements OnModuleInit {
 		this.idService = this.moduleRef.get('IdService');
 		this.avatarDecorationService = this.moduleRef.get('AvatarDecorationService');
 		this.chatService = this.moduleRef.get('ChatService');
+		this.aiModerationHiddenService = this.moduleRef.get('AiModerationHiddenService');
 	}
 
 	//#region Validators
@@ -343,7 +346,9 @@ export class UserEntityService implements OnModuleInit {
 		const latestReadNotificationId = await this.redisClient.get(`latestReadNotification:${userId}`);
 
 		if (!latestReadNotificationId) {
-			response.unreadCount = await this.redisClient.xlen(`notificationTimeline:${userId}`);
+			// 一度も既読にしていない: 全件が未読（隠した相手からの通知は除く）
+			const allNotificationsRes = await this.redisClient.xrevrange(`notificationTimeline:${userId}`, '+', '-');
+			response.unreadCount = await this.countVisibleUnreadNotifications(allNotificationsRes);
 		} else {
 			const latestNotificationIdsRes = await this.redisClient.xrevrange(
 				`notificationTimeline:${userId}`,
@@ -351,7 +356,8 @@ export class UserEntityService implements OnModuleInit {
 				latestReadNotificationId,
 			);
 
-			response.unreadCount = (latestNotificationIdsRes.length - 1 >= 0) ? latestNotificationIdsRes.length - 1 : 0;
+			// 末尾は既読の1件そのもの。AI 投稿チェックで隠した相手・凍結した相手からの通知は未読に数えない
+			response.unreadCount = await this.countVisibleUnreadNotifications(latestNotificationIdsRes.slice(0, -1));
 		}
 
 		if (response.unreadCount > 0) {
@@ -359,6 +365,33 @@ export class UserEntityService implements OnModuleInit {
 		}
 
 		return response;
+	}
+
+	private async countVisibleUnreadNotifications(entries: [string, string[]][]): Promise<number> {
+		const notifierIds = new Map<string, string>();
+		for (const [id, fields] of entries) {
+			try {
+				const data = JSON.parse(fields[1]) as { notifierId?: string };
+				if (typeof data.notifierId === 'string') notifierIds.set(id, data.notifierId);
+			} catch {
+				// 壊れた通知はそのまま数える
+			}
+		}
+		if (notifierIds.size === 0) return entries.length;
+
+		const notifiers = await this.usersRepository.find({
+			select: { id: true, host: true, isSuspended: true },
+			where: { id: In([...new Set(notifierIds.values())]) },
+		});
+		const notifierById = new Map(notifiers.map(u => [u.id, u]));
+		return entries.filter(([id]) => {
+			const notifierId = notifierIds.get(id);
+			if (notifierId == null) return true;
+			const notifier = notifierById.get(notifierId);
+			// 消えた相手・凍結した相手の通知は通知欄に出ない（NotificationEntityService）ので、未読にも数えない
+			if (notifier == null || notifier.isSuspended) return false;
+			return !this.aiModerationHiddenService.isHiddenAuthor(notifierId, notifier.host);
+		}).length;
 	}
 
 	@bindThis

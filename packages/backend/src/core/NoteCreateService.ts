@@ -62,6 +62,9 @@ import { CacheService } from '@/core/CacheService.js';
 import { SearchService } from './SearchService.js';
 import { isQuote, isRenote } from '@/misc/is-renote.js';
 import { extractUrlsForKeyWordCheck } from '@/misc/extract-urls-for-keyword-check.js';
+import { AiModerationService } from '@/core/AiModerationService.js';
+import { LoggerService } from '@/core/LoggerService.js';
+import type Logger from '@/logger.js';
 
 type NotificationType = 'reply' | 'renote' | 'quote' | 'mention';
 
@@ -200,6 +203,7 @@ type Option = {
 export class NoteCreateService implements OnApplicationShutdown {
 	#shutdownController = new AbortController();
 	private updateNotesCountQueue: CollapsedQueue<MiNote['id'], number>;
+	private logger: Logger;
 
 	constructor(
 		@Inject(DI.config)
@@ -279,7 +283,10 @@ export class NoteCreateService implements OnApplicationShutdown {
 		private cacheService: CacheService,
 		private hanamiForYouProvenanceService: HanamiForYouProvenanceService,
 		private hanamiRecentActService: HanamiRecentActService,
+		private aiModerationService: AiModerationService,
+		private loggerService: LoggerService,
 	) {
+		this.logger = this.loggerService.getLogger('note-create-service');
 		this.updateNotesCountQueue = new CollapsedQueue(process.env.NODE_ENV !== 'test' ? 60 * 1000 * 5 : 0, this.collapseNotesCount, this.performUpdateNotesCount);
 	}
 
@@ -650,6 +657,16 @@ export class NoteCreateService implements OnApplicationShutdown {
 		}
 
 		const note = await this.insertNote(user, data, tags, emojis, mentionedUsers);
+
+		// AI 投稿チェック: 怪しい投稿だけを待ち行列へ入れる。hot path を塞がないよう await しない。
+		void this.aiModerationService.considerNote(note, {
+			user: { id: user.id, host: user.host },
+			text: data.text ?? null,
+			cw: data.cw ?? null,
+			mentions: mentionedUsers,
+			visibleUsers: data.visibleUsers ?? null,
+			reply: data.reply != null ? { userId: data.reply.userId, userHost: data.reply.userHost } : null,
+		}).catch(err => this.logger.warn('ai-moderation considerNote failed', { err }));
 
 		setImmediate('post created', { signal: this.#shutdownController.signal }).then(
 			() => this.postNoteCreated(note, user, data, silent, tags!, mentionedUsers!),

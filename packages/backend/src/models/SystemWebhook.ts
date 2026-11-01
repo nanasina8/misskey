@@ -18,6 +18,8 @@ export const systemWebhookEventTypes = [
 	'inactiveModeratorsWarning',
 	// モデレータが一定期間不在のためシステムにより招待制へと変更された
 	'inactiveModeratorsInvitationOnlyChanged',
+	// AI 投稿チェックで引っかかった投稿が1件以上出たとき
+	'aiModerationFlagged',
 ] as const;
 export type SystemWebhookEventType = typeof systemWebhookEventTypes[number];
 

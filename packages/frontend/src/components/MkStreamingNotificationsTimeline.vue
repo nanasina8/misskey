@@ -23,13 +23,16 @@ SPDX-License-Identifier: AGPL-3.0-only
 			:moveClass="$style.transition_x_move"
 			tag="div"
 		>
-			<MkOffscreenKeeper v-for="(notification, i) in paginator.items.value" :key="notification.id" :data-scroll-anchor="notification.id" :class="$style.item">
-				<div v-if="i > 0 && isSeparatorNeeded(paginator.items.value[i -1].createdAt, notification.createdAt)" :class="$style.date">
-					<span><i class="ti ti-chevron-up"></i> {{ getSeparatorInfo(paginator.items.value[i -1].createdAt, notification.createdAt)?.prevText }}</span>
+			<MkOffscreenKeeper v-for="(notification, i) in displayItems" :key="notification.id" :data-scroll-anchor="notification.id" :class="$style.item">
+				<div v-if="i > 0 && isSeparatorNeeded(displayItems[i -1].createdAt, notification.createdAt)" :class="$style.date">
+					<span><i class="ti ti-chevron-up"></i> {{ getSeparatorInfo(displayItems[i -1].createdAt, notification.createdAt)?.prevText }}</span>
 					<span style="height: 1em; width: 1px; background: var(--MI_THEME-divider);"></span>
-					<span>{{ getSeparatorInfo(paginator.items.value[i -1].createdAt, notification.createdAt)?.nextText }} <i class="ti ti-chevron-down"></i></span>
+					<span>{{ getSeparatorInfo(displayItems[i -1].createdAt, notification.createdAt)?.nextText }} <i class="ti ti-chevron-down"></i></span>
 				</div>
-				<MkNote v-if="['reply', 'quote', 'mention'].includes(notification.type) && 'note' in notification" :class="$style.content" :note="notification.note" :withHardMute="true"/>
+				<button v-if="spamRuns.has(notification.id)" class="_button" :class="[$style.content, $style.spamSuspected]" @click="revealSpam(notification.id)">
+					<i class="ti ti-eye-off"></i> {{ (spamRuns.get(notification.id)?.length ?? 1) > 1 ? i18n.tsx._aiModeration.spamSuspectedNotifications({ count: spamRuns.get(notification.id)?.length ?? 1 }) : i18n.ts._aiModeration.spamSuspectedNotification }}
+				</button>
+				<MkNote v-else-if="['reply', 'quote', 'mention'].includes(notification.type) && 'note' in notification" :class="$style.content" :note="revealedNote(notification.note)" :withHardMute="true"/>
 				<XNotification v-else :class="$style.content" :notification="notification" :withTime="true" :full="true"/>
 			</MkOffscreenKeeper>
 		</component>
@@ -42,7 +45,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { onUnmounted, onMounted, computed, useTemplateRef, TransitionGroup, markRaw, watch } from 'vue';
+import { onUnmounted, onMounted, computed, useTemplateRef, TransitionGroup, markRaw, watch, reactive } from 'vue';
 import * as Misskey from 'misskey-js';
 import { notificationTypes } from 'misskey-js';
 import { useInterval } from '@@/js/use-interval.js';
@@ -65,6 +68,9 @@ const props = defineProps<{
 
 const rootEl = useTemplateRef('rootEl');
 
+// AI 投稿チェックで隠した相手からの通知は、押すまで中身を出さない。続けて来たものは1行にまとめる
+const revealedSpamIds = reactive(new Set<string>());
+
 const paginator = prefer.s.useGroupedNotifications ? markRaw(new Paginator('i/notifications-grouped', {
 	limit: 20,
 	computedParams: computed(() => ({
@@ -76,6 +82,43 @@ const paginator = prefer.s.useGroupedNotifications ? markRaw(new Paginator('i/no
 		excludeTypes: props.excludeTypes ?? undefined,
 	})),
 }));
+
+// 続けて来た「スパムのおそれ」の通知（まだ表示していないもの）を、先頭の通知の ID ごとにまとめる
+const spamRuns = computed(() => {
+	const runs = new Map<string, string[]>();
+	let head: string | null = null;
+	for (const notification of paginator.items.value) {
+		if (notification.spamSuspected === true && !revealedSpamIds.has(notification.id)) {
+			if (head == null) {
+				head = notification.id;
+				runs.set(head, []);
+			}
+			runs.get(head)!.push(notification.id);
+		} else {
+			head = null;
+		}
+	}
+	return runs;
+});
+
+// まとめた通知の2件目以降は出さない。
+// 各行は MkOffscreenKeeper の中で描くので、畳むかどうかは行の中で spamRuns を読んで決める（外で決めると行が描き直されない）
+const displayItems = computed(() => {
+	const folded = new Set<string>();
+	for (const ids of spamRuns.value.values()) {
+		for (const id of ids.slice(1)) folded.add(id);
+	}
+	return paginator.items.value.filter(notification => !folded.has(notification.id));
+});
+
+function revealSpam(headId: string) {
+	for (const id of spamRuns.value.get(headId) ?? [headId]) revealedSpamIds.add(id);
+}
+
+// 通知の側で「表示」を押したら、投稿の側でもう一度畳まない
+function revealedNote(note: Misskey.entities.Note): Misskey.entities.Note {
+	return note.spamSuspected === true ? { ...note, spamSuspected: false } : note;
+}
 
 const MIN_POLLING_INTERVAL = 1000 * 10;
 const POLLING_INTERVAL =
@@ -227,6 +270,15 @@ defineExpose({
 .notifications {
 	container-type: inline-size;
 	background: var(--MI_THEME-panel);
+}
+
+.spamSuspected {
+	display: block;
+	width: 100%;
+	padding: 16px 32px;
+	text-align: left;
+	font-size: 0.9em;
+	opacity: 0.7;
 }
 
 .item {

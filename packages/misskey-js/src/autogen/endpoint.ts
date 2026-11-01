@@ -23,6 +23,44 @@ import type {
 	AdminAdListRequest,
 	AdminAdListResponse,
 	AdminAdUpdateRequest,
+	AdminAiModerationAccountsRequest,
+	AdminAiModerationAccountsResponse,
+	AdminAiModerationBulkResolveRequest,
+	AdminAiModerationBulkSuspendRequest,
+	AdminAiModerationBulkSuspendResponse,
+	AdminAiModerationCriteriaRequest,
+	AdminAiModerationCriteriaResponse,
+	AdminAiModerationGroupAccountsRequest,
+	AdminAiModerationGroupAccountsResponse,
+	AdminAiModerationGroupsRequest,
+	AdminAiModerationGroupsResponse,
+	AdminAiModerationHiddenRequest,
+	AdminAiModerationHiddenResponse,
+	AdminAiModerationHideRequest,
+	AdminAiModerationHideResponse,
+	AdminAiModerationOutcomesRequest,
+	AdminAiModerationOutcomesResponse,
+	AdminAiModerationQueueRequest,
+	AdminAiModerationQueueResponse,
+	AdminAiModerationResolveRequest,
+	AdminAiModerationScanCancelRequest,
+	AdminAiModerationScanCancelResponse,
+	AdminAiModerationScanEstimateRequest,
+	AdminAiModerationScanEstimateResponse,
+	AdminAiModerationScanExportRequest,
+	AdminAiModerationScanExportResponse,
+	AdminAiModerationScanItemsRequest,
+	AdminAiModerationScanItemsResponse,
+	AdminAiModerationScanShowRequest,
+	AdminAiModerationScanShowResponse,
+	AdminAiModerationScanStartRequest,
+	AdminAiModerationScanStartResponse,
+	AdminAiModerationStatusResponse,
+	AdminAiModerationTrialRequest,
+	AdminAiModerationTrialResponse,
+	AdminAiModerationUnhideRequest,
+	AdminAiModerationUnhideResponse,
+	AdminAiModerationUpdateRequest,
 	AdminAnnouncementsCreateRequest,
 	AdminAnnouncementsCreateResponse,
 	AdminAnnouncementsDeleteRequest,
@@ -739,6 +777,27 @@ export type Endpoints = {
 	'admin/ad/delete': { req: AdminAdDeleteRequest; res: EmptyResponse };
 	'admin/ad/list': { req: AdminAdListRequest; res: AdminAdListResponse };
 	'admin/ad/update': { req: AdminAdUpdateRequest; res: EmptyResponse };
+	'admin/ai-moderation/accounts': { req: AdminAiModerationAccountsRequest; res: AdminAiModerationAccountsResponse };
+	'admin/ai-moderation/bulk-resolve': { req: AdminAiModerationBulkResolveRequest; res: EmptyResponse };
+	'admin/ai-moderation/bulk-suspend': { req: AdminAiModerationBulkSuspendRequest; res: AdminAiModerationBulkSuspendResponse };
+	'admin/ai-moderation/criteria': { req: AdminAiModerationCriteriaRequest; res: AdminAiModerationCriteriaResponse };
+	'admin/ai-moderation/group-accounts': { req: AdminAiModerationGroupAccountsRequest; res: AdminAiModerationGroupAccountsResponse };
+	'admin/ai-moderation/groups': { req: AdminAiModerationGroupsRequest; res: AdminAiModerationGroupsResponse };
+	'admin/ai-moderation/hidden': { req: AdminAiModerationHiddenRequest; res: AdminAiModerationHiddenResponse };
+	'admin/ai-moderation/hide': { req: AdminAiModerationHideRequest; res: AdminAiModerationHideResponse };
+	'admin/ai-moderation/outcomes': { req: AdminAiModerationOutcomesRequest; res: AdminAiModerationOutcomesResponse };
+	'admin/ai-moderation/queue': { req: AdminAiModerationQueueRequest; res: AdminAiModerationQueueResponse };
+	'admin/ai-moderation/resolve': { req: AdminAiModerationResolveRequest; res: EmptyResponse };
+	'admin/ai-moderation/scan/cancel': { req: AdminAiModerationScanCancelRequest; res: AdminAiModerationScanCancelResponse };
+	'admin/ai-moderation/scan/estimate': { req: AdminAiModerationScanEstimateRequest; res: AdminAiModerationScanEstimateResponse };
+	'admin/ai-moderation/scan/export': { req: AdminAiModerationScanExportRequest; res: AdminAiModerationScanExportResponse };
+	'admin/ai-moderation/scan/items': { req: AdminAiModerationScanItemsRequest; res: AdminAiModerationScanItemsResponse };
+	'admin/ai-moderation/scan/show': { req: AdminAiModerationScanShowRequest; res: AdminAiModerationScanShowResponse };
+	'admin/ai-moderation/scan/start': { req: AdminAiModerationScanStartRequest; res: AdminAiModerationScanStartResponse };
+	'admin/ai-moderation/status': { req: EmptyRequest; res: AdminAiModerationStatusResponse };
+	'admin/ai-moderation/trial': { req: AdminAiModerationTrialRequest; res: AdminAiModerationTrialResponse };
+	'admin/ai-moderation/unhide': { req: AdminAiModerationUnhideRequest; res: AdminAiModerationUnhideResponse };
+	'admin/ai-moderation/update': { req: AdminAiModerationUpdateRequest; res: EmptyResponse };
 	'admin/announcements/create': { req: AdminAnnouncementsCreateRequest; res: AdminAnnouncementsCreateResponse };
 	'admin/announcements/delete': { req: AdminAnnouncementsDeleteRequest; res: EmptyResponse };
 	'admin/announcements/list': { req: AdminAnnouncementsListRequest; res: AdminAnnouncementsListResponse };

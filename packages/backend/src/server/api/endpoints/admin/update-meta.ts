@@ -243,6 +243,20 @@ export const paramDef = {
 		remoteNotesCleaningExpiryDaysForEachNotes: { type: 'number' },
 		remoteNotesCleaningMaxProcessingDurationInMinutes: { type: 'number' },
 		showRoleBadgesOfRemoteUsers: { type: 'boolean' },
+		aiModerationEnabled: { type: 'boolean' },
+		aiModerationNewAuthorDays: { type: 'integer', minimum: 1, maximum: 90 },
+		aiModerationDailyLimit: { type: 'integer', minimum: 0, maximum: 10000 },
+		aiModerationLocalEnabled: { type: 'boolean' },
+		aiModerationLocalThreshold: { type: 'number', minimum: 0, maximum: 1 },
+		aiModerationExternalEnabled: { type: 'boolean' },
+		aiModerationExternalApiUrl: { type: 'string', nullable: true },
+		aiModerationExternalApiKey: { type: 'string', nullable: true },
+		aiModerationExternalModel: { type: 'string', nullable: true },
+		aiModerationExternalVisibilities: { type: 'array', nullable: true, uniqueItems: true, items: { type: 'string', enum: ['public', 'home', 'followers', 'specified'] } },
+		aiModerationAutoHideMode: { type: 'string', enum: ['off', 'trial', 'on'] },
+		aiModerationAutoHideThreshold: { type: 'number', minimum: 0, maximum: 1 },
+		aiModerationAutoHideDailyLimit: { type: 'integer', minimum: 0, maximum: 10000 },
+		aiModerationAutoHideHosts: { type: 'boolean' },
 	},
 	required: [],
 } as const;
@@ -817,6 +831,62 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			if (ps.showRoleBadgesOfRemoteUsers !== undefined) {
 				set.showRoleBadgesOfRemoteUsers = ps.showRoleBadgesOfRemoteUsers;
+			}
+
+			if (ps.aiModerationEnabled !== undefined) {
+				set.aiModerationEnabled = ps.aiModerationEnabled;
+			}
+
+			if (ps.aiModerationNewAuthorDays !== undefined) {
+				set.aiModerationNewAuthorDays = ps.aiModerationNewAuthorDays;
+			}
+
+			if (ps.aiModerationDailyLimit !== undefined) {
+				set.aiModerationDailyLimit = ps.aiModerationDailyLimit;
+			}
+
+			if (ps.aiModerationLocalEnabled !== undefined) {
+				set.aiModerationLocalEnabled = ps.aiModerationLocalEnabled;
+			}
+
+			if (ps.aiModerationLocalThreshold !== undefined) {
+				set.aiModerationLocalThreshold = ps.aiModerationLocalThreshold;
+			}
+
+			if (ps.aiModerationExternalEnabled !== undefined) {
+				set.aiModerationExternalEnabled = ps.aiModerationExternalEnabled;
+			}
+
+			if (ps.aiModerationExternalApiUrl !== undefined) {
+				set.aiModerationExternalApiUrl = ps.aiModerationExternalApiUrl === '' ? null : ps.aiModerationExternalApiUrl;
+			}
+
+			if (ps.aiModerationExternalApiKey !== undefined) {
+				set.aiModerationExternalApiKey = ps.aiModerationExternalApiKey === '' ? null : ps.aiModerationExternalApiKey;
+			}
+
+			if (ps.aiModerationExternalModel !== undefined) {
+				set.aiModerationExternalModel = ps.aiModerationExternalModel === '' ? null : ps.aiModerationExternalModel;
+			}
+
+			if (Array.isArray(ps.aiModerationExternalVisibilities)) {
+				set.aiModerationExternalVisibilities = [...new Set(ps.aiModerationExternalVisibilities.filter(Boolean))];
+			}
+
+			if (ps.aiModerationAutoHideMode !== undefined) {
+				set.aiModerationAutoHideMode = ps.aiModerationAutoHideMode;
+			}
+
+			if (ps.aiModerationAutoHideThreshold !== undefined) {
+				set.aiModerationAutoHideThreshold = ps.aiModerationAutoHideThreshold;
+			}
+
+			if (ps.aiModerationAutoHideDailyLimit !== undefined) {
+				set.aiModerationAutoHideDailyLimit = ps.aiModerationAutoHideDailyLimit;
+			}
+
+			if (ps.aiModerationAutoHideHosts !== undefined) {
+				set.aiModerationAutoHideHosts = ps.aiModerationAutoHideHosts;
 			}
 
 			const before = await this.metaService.fetch(true);

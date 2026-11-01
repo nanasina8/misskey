@@ -23,6 +23,10 @@ const baseSchema = {
 			optional: false, nullable: false,
 			enum: [...notificationTypes, 'reaction:grouped', 'renote:grouped'],
 		},
+		spamSuspected: {
+			type: 'boolean',
+			optional: true, nullable: false,
+		},
 	},
 } as const;
 

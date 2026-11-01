@@ -20,7 +20,7 @@ const lastThrottledEventAt = new Map<string, number>();
 export function clearHanamiLlmEventThrottle(): void {
 	lastThrottledEventAt.clear();
 }
-export const HANAMI_GPU_JOBS = ['noteJudge', 'topicJudge', 'als', 'tasteTick', 'judgeTrial'] as const;
+export const HANAMI_GPU_JOBS = ['noteJudge', 'topicJudge', 'als', 'tasteTick', 'judgeTrial', 'spamJudge'] as const;
 export const HANAMI_EVENT_JOBS = [...HANAMI_GPU_JOBS, 'generation'] as const;
 export const HANAMI_LLM_EVENTS = ['dispatched', 'dispatchFailed', 'rejected', 'lockAcquired', 'lockBusy', 'lockRenewFailed', 'lockReleased', 'waiting', 'gaveUp', 'started', 'finished', 'empty', 'failed', 'interrupted', 'noGpu'] as const;
 export type HanamiGpuJob = typeof HANAMI_GPU_JOBS[number];

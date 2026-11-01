@@ -20,6 +20,7 @@ import { IdService } from '@/core/IdService.js';
 import { CacheService } from '@/core/CacheService.js';
 import type { Config } from '@/config.js';
 import { UserListService } from '@/core/UserListService.js';
+import { AiModerationHiddenService } from '@/core/AiModerationHiddenService.js';
 import { FilterUnionByProperty, groupedNotificationTypes, obsoleteNotificationTypes } from '@/types.js';
 import { trackPromise } from '@/misc/promise-tracker.js';
 // import { escapeHtml } from '@/misc/escape-html.js';
@@ -44,6 +45,7 @@ export class NotificationService implements OnApplicationShutdown {
 		private pushNotificationService: PushNotificationService,
 		private cacheService: CacheService,
 		private userListService: UserListService,
+		private aiModerationHiddenService: AiModerationHiddenService,
 	) {
 	}
 
@@ -181,6 +183,9 @@ export class NotificationService implements OnApplicationShutdown {
 		const packed = await this.notificationEntityService.pack(notification, notifieeId, {});
 
 		if (packed == null) return null;
+
+		// AI 投稿チェックで隠した相手からの通知は保存だけして、ストリーム・未読・プッシュ・メールを出さない
+		if (packed.spamSuspected === true) return notification;
 
 		// Publish notification event
 		this.globalEventService.publishMainStream(notifieeId, 'notification', packed);

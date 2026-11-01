@@ -13,6 +13,11 @@ import { bindThis } from '@/decorators.js';
 
 import { MiAbuseUserReport } from '@/models/AbuseUserReport.js';
 import { MiAbuseReportNotificationRecipient } from '@/models/AbuseReportNotificationRecipient.js';
+import { MiAiModerationQueue } from '@/models/AiModerationQueue.js';
+import { MiAiModerationHiddenTarget } from '@/models/AiModerationHiddenTarget.js';
+import { MiAiModerationScan } from '@/models/AiModerationScan.js';
+import { MiAiModerationCriteria } from '@/models/AiModerationCriteria.js';
+import { MiAiModerationScanItem } from '@/models/AiModerationScanItem.js';
 import { MiAccessToken } from '@/models/AccessToken.js';
 import { MiAd } from '@/models/Ad.js';
 import { MiAnnouncement } from '@/models/Announcement.js';
@@ -217,6 +222,11 @@ export const entities = [
 	MiAvatarDecoration,
 	MiAuthSession,
 	MiAccessToken,
+	MiAiModerationQueue,
+	MiAiModerationHiddenTarget,
+	MiAiModerationScan,
+	MiAiModerationCriteria,
+	MiAiModerationScanItem,
 	MiUser,
 	MiUserProfile,
 	MiUserKeypair,

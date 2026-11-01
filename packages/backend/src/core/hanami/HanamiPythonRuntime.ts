@@ -86,6 +86,10 @@ export function resolveHanamiNoteJudgeScript(env: NodeJS.ProcessEnv = process.en
 	return env.HANAMI_NOTE_JUDGE_SCRIPT ?? Path.join(resolveHanamiRepoRoot(), 'packages/backend/src/core/hanami/HanamiNoteJudgeCpu.py');
 }
 
+export function resolveHanamiSpamJudgeScript(env: NodeJS.ProcessEnv = process.env): string {
+	return env.HANAMI_SPAM_JUDGE_SCRIPT ?? Path.join(resolveHanamiRepoRoot(), 'packages/backend/src/core/hanami/HanamiSpamJudge.py');
+}
+
 /**
  * ノート判定（Qwen3-4B）を動かしてよいか。GPU が無ければ動かさない（CPU は実用外の速度）。
  * `HANAMI_NOTE_JUDGE_DEVICE=cpu` で明示した場合だけ CPU を許可する。結果は 10 分キャッシュ。

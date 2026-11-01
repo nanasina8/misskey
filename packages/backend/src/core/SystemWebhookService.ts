@@ -41,11 +41,21 @@ export type InactiveModeratorsWarningPayload = {
 	remainingTime: ModeratorInactivityRemainingTime;
 };
 
+export type AiModerationFlaggedPayload = {
+	count: number;
+	items: Array<{
+		noteId: string;
+		userHost: string | null;
+		label: string | null;
+	}>;
+};
+
 export type SystemWebhookPayload<T extends SystemWebhookEventType> =
 	T extends 'abuseReport' | 'abuseReportResolved' ? AbuseReportPayload :
 	T extends 'userCreated' ? Packed<'UserLite'> :
 	T extends 'inactiveModeratorsWarning' ? InactiveModeratorsWarningPayload :
 	T extends 'inactiveModeratorsInvitationOnlyChanged' ? Record<string, never> :
+	T extends 'aiModerationFlagged' ? AiModerationFlaggedPayload :
 		never;
 
 @Injectable()
