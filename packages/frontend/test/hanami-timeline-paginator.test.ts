@@ -7,6 +7,7 @@ import { computed } from 'vue';
 import * as Misskey from 'misskey-js';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
+	clearHanamiTimelineSnapshot,
 	generateHanamiRefreshToken,
 	HanamiTimelinePaginator,
 	HanamiTimelineProtocolError,
@@ -43,6 +44,9 @@ function response(overrides: Partial<Misskey.entities.NotesHanamiTimelineRespons
 function paginator(withFiles = false): HanamiTimelinePaginator {
 	return new HanamiTimelinePaginator(computed(() => ({ withFiles })));
 }
+
+// dispose した並びの控えがテストをまたいで残らないようにする。
+beforeEach(() => { clearHanamiTimelineSnapshot(); });
 
 describe('HanamiTimelinePaginator', () => {
 	beforeEach(() => {
@@ -278,32 +282,159 @@ describe('HanamiTimelinePaginator', () => {
 describe('Hanami H3 and tuning refresh', () => {
 	beforeEach(() => { vi.useFakeTimers(); misskeyApiMock.mockReset(); });
 	afterEach(() => { vi.useRealTimers(); });
-	test('tuning keeps existing items, uses its own reason, and checks once after 4s then replaces only a changed head', async () => {
-		misskeyApiMock.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ generationPending: true })).mockResolvedValueOnce(response({ headBatchId: 'head-2', items: [item('new-entry')] }));
+	test('tuning keeps existing items, uses its own reason, polls every 3s and replaces a changed head automatically', async () => {
+		misskeyApiMock.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ generationPending: true }))
+			.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ headBatchId: 'head-2', items: [item('new-entry')] }));
 		const p = paginator(); await p.init();
 		const refreshing = p.refreshTuning('new-token');
 		expect(p.items.value).toHaveLength(1); expect(p.generationPending.value).toBe(true); expect(p.fetching.value).toBe(false);
 		await refreshing;
 		expect(misskeyApiMock.mock.calls[1][1]).toMatchObject({ refresh: true, reason: 'tuning', refreshToken: 'new-token', limit: 15 });
-		await vi.advanceTimersByTimeAsync(3999); expect(misskeyApiMock).toHaveBeenCalledTimes(2);
+		await vi.advanceTimersByTimeAsync(2999); expect(misskeyApiMock).toHaveBeenCalledTimes(2);
 		await vi.advanceTimersByTimeAsync(1);
 		expect(misskeyApiMock.mock.calls[2][1]).toEqual({ limit: 15, refresh: false, withFiles: false });
-		expect(p.items.value[0].feedEntryId).toBe('new-entry'); expect(p.generationPending.value).toBe(false);
-		await vi.advanceTimersByTimeAsync(40000); expect(misskeyApiMock).toHaveBeenCalledTimes(3);
+		expect(p.items.value[0].feedEntryId).toBe('entry-1'); expect(p.generationPending.value).toBe(true);
+		await vi.advanceTimersByTimeAsync(3000);
+		expect(p.items.value[0].feedEntryId).toBe('new-entry'); expect(p.generationPending.value).toBe(false); expect(p.newHeadReady.value).toBe(false);
+		await vi.advanceTimersByTimeAsync(40000); expect(misskeyApiMock).toHaveBeenCalledTimes(4);
 		p.dispose();
 	});
-	test('same head keeps items and pending banner even when cursorless response is no longer pending', async () => {
-		misskeyApiMock.mockResolvedValueOnce(response({ generationPending: true })).mockResolvedValueOnce(response({ items: [item('should-not-replace')] }));
-		const p = paginator(); await p.init(); await vi.advanceTimersByTimeAsync(4000);
+	test('same head keeps items while polling and gives up the banner after 20 checks', async () => {
+		misskeyApiMock.mockResolvedValueOnce(response({ generationPending: true })).mockResolvedValue(response({ items: [item('should-not-replace')] }));
+		const p = paginator(); await p.init(); await vi.advanceTimersByTimeAsync(3000);
 		expect(p.items.value[0].feedEntryId).toBe('entry-1'); expect(p.generationPending.value).toBe(true);
-		await vi.advanceTimersByTimeAsync(40000); expect(misskeyApiMock).toHaveBeenCalledTimes(2); p.dispose();
+		await vi.advanceTimersByTimeAsync(57000); expect(misskeyApiMock).toHaveBeenCalledTimes(21);
+		expect(p.generationPending.value).toBe(false); expect(p.items.value[0].feedEntryId).toBe('entry-1');
+		await vi.advanceTimersByTimeAsync(30000); expect(misskeyApiMock).toHaveBeenCalledTimes(21); p.dispose();
 	});
 	test('a new refresh cancels the previous H3 timer and dispose cancels the next one', async () => {
 		misskeyApiMock.mockResolvedValue(response({ generationPending: true }));
-		const p = paginator(); await p.init(); await vi.advanceTimersByTimeAsync(3000);
+		const p = paginator(); await p.init(); await vi.advanceTimersByTimeAsync(2999);
 		await p.refreshTuning('next'); await vi.advanceTimersByTimeAsync(1000);
 		expect(misskeyApiMock).toHaveBeenCalledTimes(2);
 		p.dispose(); await vi.advanceTimersByTimeAsync(5000); expect(misskeyApiMock).toHaveBeenCalledTimes(2);
+	});
+	test('a normal refresh without stock keeps the list and offers the new head through a button', async () => {
+		misskeyApiMock.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ generationPending: true }))
+			.mockResolvedValueOnce(response({ headBatchId: 'head-2', items: [item('new-entry')] }));
+		const p = paginator(); await p.init();
+		await p.refresh();
+		expect(p.generationPending.value).toBe(true); expect(p.items.value[0].feedEntryId).toBe('entry-1');
+		await vi.advanceTimersByTimeAsync(3000);
+		expect(p.newHeadReady.value).toBe(true); expect(p.generationPending.value).toBe(false);
+		expect(p.items.value[0].feedEntryId).toBe('entry-1');
+		p.showReadyHead();
+		expect(p.items.value[0].feedEntryId).toBe('new-entry'); expect(p.headBatchId.value).toBe('head-2'); expect(p.newHeadReady.value).toBe(false);
+		p.dispose();
+	});
+	test('starting another refresh clears a ready-head button', async () => {
+		misskeyApiMock.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ generationPending: true }))
+			.mockResolvedValueOnce(response({ headBatchId: 'head-2', items: [item('new-entry')] }))
+			.mockResolvedValueOnce(response({ headBatchId: 'head-3', items: [item('third')] }));
+		const p = paginator(); await p.init();
+		await p.refresh(); await vi.advanceTimersByTimeAsync(3000);
+		expect(p.newHeadReady.value).toBe(true);
+		await p.refresh();
+		expect(p.newHeadReady.value).toBe(false); expect(p.items.value[0].feedEntryId).toBe('third');
+		p.showReadyHead(); expect(p.items.value[0].feedEntryId).toBe('third');
+		p.dispose();
+	});
+});
+
+describe('Hanami tab-switch snapshot', () => {
+	beforeEach(() => { misskeyApiMock.mockReset(); });
+	afterEach(() => { vi.useRealTimers(); });
+
+	test('shows the previous list immediately within 30 minutes and keeps it when the head is unchanged', async () => {
+		misskeyApiMock.mockResolvedValueOnce(response({ nextCursor: 'cursor-1', hasMore: true }));
+		const first = paginator(); await first.init(); first.dispose();
+
+		let resolveCheck!: (value: Misskey.entities.NotesHanamiTimelineResponse) => void;
+		misskeyApiMock.mockReturnValueOnce(new Promise(resolve => { resolveCheck = resolve; }));
+		const second = paginator();
+		const initializing = second.init();
+		expect(second.fetching.value).toBe(false);
+		expect(second.items.value.map(i => i.feedEntryId)).toEqual(['entry-1']);
+		expect(second.canFetchOlder.value).toBe(true);
+		expect(misskeyApiMock.mock.calls[1]?.[1]).toEqual({ limit: 15, withFiles: false });
+
+		resolveCheck(response({ items: [item('server-copy')], nextCursor: 'cursor-1', hasMore: true }));
+		await initializing;
+		expect(second.items.value.map(i => i.feedEntryId)).toEqual(['entry-1']);
+		second.dispose();
+	});
+
+	test('replaces the restored list when the server head changed', async () => {
+		misskeyApiMock.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ headBatchId: 'head-2', items: [item('new-entry')] }));
+		const first = paginator(); await first.init(); first.dispose();
+		const second = paginator(); await second.init();
+		expect(second.items.value.map(i => i.feedEntryId)).toEqual(['new-entry']);
+		expect(second.headBatchId.value).toBe('head-2');
+		second.dispose();
+	});
+
+	test('keeps the restored list when the background check fails', async () => {
+		misskeyApiMock.mockResolvedValueOnce(response()).mockRejectedValueOnce(new Error('offline'));
+		const first = paginator(); await first.init(); first.dispose();
+		const second = paginator(); await second.init();
+		expect(second.items.value.map(i => i.feedEntryId)).toEqual(['entry-1']);
+		expect(second.error.value).toBeNull();
+		second.dispose();
+	});
+
+	test('loads normally after 30 minutes or with a different file filter', async () => {
+		vi.useFakeTimers();
+		misskeyApiMock.mockResolvedValue(response());
+		const first = paginator(); await first.init(); first.dispose();
+		const otherFilter = paginator(true);
+		const loadingOther = otherFilter.init();
+		expect(otherFilter.fetching.value).toBe(true);
+		await loadingOther; otherFilter.dispose();
+
+		clearHanamiTimelineSnapshot();
+		const again = paginator(); await again.init(); again.dispose();
+		await vi.advanceTimersByTimeAsync(30 * 60_000);
+		const later = paginator();
+		const loadingLater = later.init();
+		expect(later.fetching.value).toBe(true);
+		await loadingLater; later.dispose();
+	});
+
+	test('does not keep a failed or empty list', async () => {
+		misskeyApiMock.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(response());
+		const failed = paginator(); await failed.init(); failed.dispose();
+		const next = paginator();
+		const loading = next.init();
+		expect(next.fetching.value).toBe(true);
+		await loading; next.dispose();
+	});
+});
+
+describe('Hanami reload refresh after another timeline', () => {
+	test('a browser reload counts as a Hanami refresh only when Hanami is the first timeline', async () => {
+		class NavigationTiming {
+			constructor(public readonly type: 'navigate' | 'reload') {}
+		}
+		vi.stubGlobal('PerformanceNavigationTiming', NavigationTiming);
+		const navigationSpy = vi.spyOn(performance, 'getEntriesByType').mockReturnValue([new NavigationTiming('reload') as unknown as PerformanceEntry]);
+		misskeyApiMock.mockReset();
+		misskeyApiMock.mockResolvedValue(response());
+
+		vi.resetModules();
+		const fresh = await import('@/utility/hanami-timeline-paginator.js');
+		fresh.markNonHanamiTimelineMounted();
+		const p = new fresh.HanamiTimelinePaginator(computed(() => ({ withFiles: false })));
+		await p.init();
+		expect(misskeyApiMock.mock.calls[0]?.[1]).toEqual({ limit: 15, withFiles: false });
+
+		vi.resetModules();
+		const reloaded = await import('@/utility/hanami-timeline-paginator.js');
+		const q = new reloaded.HanamiTimelinePaginator(computed(() => ({ withFiles: false })));
+		await q.init();
+		expect(misskeyApiMock.mock.calls[1]?.[1]).toMatchObject({ refresh: true });
+
+		navigationSpy.mockRestore();
+		vi.unstubAllGlobals();
 	});
 });
 

@@ -12,6 +12,9 @@ const INITIAL_LIMIT = 15;
 const OLDER_LIMIT = 30;
 const MAX_AUTOMATIC_EMPTY_PAGES = 3;
 const REFRESH_RATE_LIMIT_MS = 60_000;
+const SESSION_SNAPSHOT_MS = 30 * 60_000;
+const PENDING_POLL_INTERVAL_MS = 3000;
+const PENDING_POLL_MAX_ATTEMPTS = 20;
 
 type HanamiTimelineRequest = Misskey.entities.NotesHanamiTimelineRequest;
 type HanamiTimelineResponse = Misskey.entities.NotesHanamiTimelineResponse;
@@ -45,7 +48,18 @@ type OlderRetry = {
 
 type RetryState = CursorlessRetry | OlderRetry;
 
+type HanamiTimelineSnapshot = {
+	withFiles: boolean | undefined;
+	savedAt: number;
+	items: HanamiTimelineItem[];
+	nextCursor: string | null;
+	mode: HanamiTimelineResponse['mode'] | null;
+	feedEpochId: string | null;
+	headBatchId: string | null;
+};
+
 let reloadRefreshConsumed = false;
+let lastSnapshot: HanamiTimelineSnapshot | null = null;
 
 export class HanamiTimelineProtocolError extends Error {
 	constructor() {
@@ -58,6 +72,22 @@ export function generateHanamiRefreshToken(): string {
 	const bytes = crypto.getRandomValues(new Uint8Array(32));
 	const base64 = btoa(String.fromCharCode(...bytes));
 	return base64.replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+}
+
+/** ほかの TL が先に表示されたら、ブラウザの再読み込みをはなみTLの更新として扱わない。 */
+export function markNonHanamiTimelineMounted(): void {
+	reloadRefreshConsumed = true;
+}
+
+/** 30 分以内に戻ったときに、前の並びをすぐ出すための控え（サーバーの「しばらくぶり」と同じ 30 分）。 */
+export function clearHanamiTimelineSnapshot(): void {
+	lastSnapshot = null;
+}
+
+function takeSnapshot(withFiles: boolean | undefined): HanamiTimelineSnapshot | null {
+	if (lastSnapshot == null || lastSnapshot.withFiles !== withFiles) return null;
+	if (Date.now() - lastSnapshot.savedAt >= SESSION_SNAPSHOT_MS) return null;
+	return lastSnapshot;
 }
 
 function consumeReloadRefresh(): boolean {
@@ -88,7 +118,10 @@ export class HanamiTimelinePaginator {
 	public readonly feedEpochId = ref<string | null>(null);
 	public readonly headBatchId = ref<string | null>(null);
 	public readonly refreshRateLimited = ref(false);
+	/** 裏で作っていた新しい並びができた。押すまで今の並びは変えない。 */
+	public readonly newHeadReady = ref(false);
 
+	private readyHead: HanamiTimelineResponse | null = null;
 	private pendingHeadTimer: number | null = null;
 	private headRevision = 0;
 	private disposed = false;
@@ -106,10 +139,18 @@ export class HanamiTimelinePaginator {
 		this.retry = this.retry.bind(this);
 		this.fetchOlder = this.fetchOlder.bind(this);
 		this.removeNote = this.removeNote.bind(this);
+		this.showReadyHead = this.showReadyHead.bind(this);
 	}
 
 	public async init(): Promise<void> {
 		const refresh = consumeReloadRefresh();
+		const snapshot = refresh ? null : takeSnapshot(this.computedParams.value.withFiles);
+		if (snapshot != null) {
+			// タブを切り替えて戻っただけなら、前の並びをすぐ出して裏で確かめる。
+			this.restoreSnapshot(snapshot);
+			await this.revalidate(snapshot.headBatchId);
+			return;
+		}
 		const request = refresh
 			? this.cursorlessRequest({ refresh: true, refreshToken: generateHanamiRefreshToken() })
 			: this.cursorlessRequest({ refresh: false });
@@ -153,40 +194,122 @@ export class HanamiTimelinePaginator {
 	}
 
 	public dispose(): void {
+		if (!this.disposed && this.items.value.length > 0 && this.error.value == null && !this.fetching.value) {
+			lastSnapshot = {
+				withFiles: this.computedParams.value.withFiles,
+				savedAt: Date.now(),
+				items: this.items.value,
+				nextCursor: this.nextCursor,
+				mode: this.mode.value,
+				feedEpochId: this.feedEpochId.value,
+				headBatchId: this.headBatchId.value,
+			};
+		}
 		this.disposed = true;
 		this.operationId++;
 		this.cancelPendingHead();
 		this.clearRefreshRateLimit();
 	}
 
+	/** できていた新しい並びに入れ替える（「新しい並びができました」を押したとき）。 */
+	public showReadyHead(): void {
+		const response = this.readyHead;
+		this.readyHead = null;
+		this.newHeadReady.value = false;
+		if (response != null) this.applyHead(response);
+	}
+
 	private cancelPendingHead(): void {
 		this.headRevision++;
 		if (this.pendingHeadTimer != null) window.clearTimeout(this.pendingHeadTimer);
 		this.pendingHeadTimer = null;
+		this.readyHead = null;
+		this.newHeadReady.value = false;
 	}
 
-	private schedulePendingHead(withFiles?: boolean): void {
+	/**
+	 * 裏で作っている並びができるまで数秒おきに見に行く（サーバーは待たない）。
+	 * 調整を変えたときは自動で入れ替え、それ以外は今の並びを残してボタンで知らせる。
+	 */
+	private schedulePendingHead(withFiles: boolean | undefined, autoReplace: boolean): void {
 		this.cancelPendingHead();
 		const revision = this.headRevision;
 		const previousHead = this.headBatchId.value;
-		this.pendingHeadTimer = window.setTimeout(async () => {
-			this.pendingHeadTimer = null;
-			try {
-				const response = await misskeyApi('notes/hanami-timeline', { limit: INITIAL_LIMIT, refresh: false, ...(withFiles === undefined ? {} : { withFiles }) });
-				if (this.disposed || revision !== this.headRevision || response.headBatchId === previousHead) return;
-				if (!this.validCursorProgress(response, null)) return;
-				this.operationId++;
-				this.fetchingOlder.value = false;
-				this.mode.value = response.mode;
-				this.feedEpochId.value = response.feedEpochId;
-				this.headBatchId.value = response.headBatchId;
-				this.generationPending.value = response.generationPending;
-				this.error.value = null;
-				this.retryState = null;
-				this.replaceItems(response.items);
-				this.updateCursor(response);
-			} catch { /* Keep the pending banner; H3 never creates or retries a batch. */ }
-		}, 4000);
+		let attempts = 0;
+		const poll = (): void => {
+			this.pendingHeadTimer = window.setTimeout(async () => {
+				this.pendingHeadTimer = null;
+				attempts++;
+				try {
+					const response = await misskeyApi('notes/hanami-timeline', { limit: INITIAL_LIMIT, refresh: false, ...(withFiles === undefined ? {} : { withFiles }) });
+					if (this.disposed || revision !== this.headRevision) return;
+					if (response.headBatchId !== previousHead && this.validCursorProgress(response, null)) {
+						if (autoReplace || this.items.value.length === 0) {
+							this.applyHead(response);
+						} else {
+							this.readyHead = response;
+							this.newHeadReady.value = true;
+							this.generationPending.value = false;
+						}
+						return;
+					}
+				} catch { /* 次の回でまた見る。ここで batch は作らない。 */ }
+				if (this.disposed || revision !== this.headRevision) return;
+				if (attempts < PENDING_POLL_MAX_ATTEMPTS) {
+					poll();
+				} else {
+					this.generationPending.value = false;
+				}
+			}, PENDING_POLL_INTERVAL_MS);
+		};
+		poll();
+	}
+
+	private applyHead(response: HanamiTimelineResponse): void {
+		this.operationId++;
+		this.fetchingOlder.value = false;
+		this.mode.value = response.mode;
+		this.feedEpochId.value = response.feedEpochId;
+		this.headBatchId.value = response.headBatchId;
+		this.generationPending.value = response.generationPending;
+		this.error.value = null;
+		this.retryState = null;
+		this.replaceItems(response.items);
+		this.updateCursor(response);
+	}
+
+	private restoreSnapshot(snapshot: HanamiTimelineSnapshot): void {
+		this.cancelPendingHead();
+		this.error.value = null;
+		this.retryState = null;
+		this.items.value = snapshot.items;
+		this.nextCursor = snapshot.nextCursor;
+		this.canFetchOlder.value = snapshot.nextCursor != null;
+		this.mode.value = snapshot.mode;
+		this.feedEpochId.value = snapshot.feedEpochId;
+		this.headBatchId.value = snapshot.headBatchId;
+		this.generationPending.value = false;
+		this.fetching.value = false;
+		this.fetchingOlder.value = false;
+	}
+
+	/** 前の並びを出したまま先頭を確かめ、変わっていたときだけ入れ替える。失敗したら前の並びのまま。 */
+	private async revalidate(previousHead: string | null): Promise<void> {
+		const operationId = ++this.operationId;
+		const request = this.cursorlessRequest({ refresh: false });
+		let response: HanamiTimelineResponse;
+		try {
+			response = await misskeyApi('notes/hanami-timeline', request);
+		} catch {
+			return;
+		}
+		if (this.disposed || operationId !== this.operationId || !this.validCursorProgress(response, null)) return;
+		if (response.headBatchId !== previousHead) {
+			this.applyHead(response);
+		} else {
+			this.generationPending.value = response.generationPending;
+		}
+		if (response.generationPending) this.schedulePendingHead(request.withFiles, false);
 	}
 
 	public async retry(): Promise<void> {
@@ -306,7 +429,7 @@ export class HanamiTimelinePaginator {
 		this.headBatchId.value = response.headBatchId;
 		const retainedCount = this.replaceItems(response.items);
 		this.updateCursor(response);
-		if (response.generationPending) this.schedulePendingHead(state.request.withFiles);
+		if (response.generationPending) this.schedulePendingHead(state.request.withFiles, state.request.reason === 'tuning');
 
 		if (retainedCount === 0 && response.hasMore && response.nextCursor != null) {
 			await this.loadOlder({

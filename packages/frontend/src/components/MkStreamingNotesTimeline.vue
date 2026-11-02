@@ -16,6 +16,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<div v-if="generationPending" :class="$style.generationPending">
 			<i class="ti ti-loader-2"></i> {{ i18n.ts._hana.hanamiTimelineGenerationPending }}
 		</div>
+		<div v-if="hanamiNewHeadReady" :class="$style.new">
+			<div :class="$style.newBg1"></div>
+			<div :class="$style.newBg2"></div>
+			<button class="_button" :class="$style.newButton" @click="showHanamiReadyHead()"><i class="ti ti-circle-arrow-up"></i> {{ i18n.ts._hana.hanamiTimelineNewHeadReady }}</button>
+		</div>
 		<div v-if="queuedAheadItemsCount > 0" :class="$style.new">
 			<div :class="$style.newBg1"></div>
 			<div :class="$style.newBg2"></div>
@@ -86,7 +91,7 @@ import { globalEvents, useGlobalEvent } from '@/events.js';
 import { isSeparatorNeeded, getSeparatorInfo } from '@/utility/timeline-date-separate.js';
 import { Paginator } from '@/utility/paginator.js';
 import { openHanamiTuning } from '@/utility/hanami-tuning-client.js';
-import { HanamiTimelinePaginator } from '@/utility/hanami-timeline-paginator.js';
+import { HanamiTimelinePaginator, markNonHanamiTimelineMounted } from '@/utility/hanami-timeline-paginator.js';
 import type { HanamiTimelineItem } from '@/utility/hanami-timeline-paginator.js';
 
 const props = withDefaults(defineProps<{
@@ -214,6 +219,13 @@ if (hanamiPaginator) useGlobalEvent('hanamiTuningChanged', token => { void hanam
 onUnmounted(() => hanamiPaginator?.dispose());
 
 const generationPending = computed(() => hanamiPaginator?.generationPending.value ?? false);
+const hanamiNewHeadReady = computed(() => hanamiPaginator?.newHeadReady.value ?? false);
+
+function showHanamiReadyHead(): void {
+	hanamiPaginator?.showReadyHead();
+	if (rootEl.value != null) scrollToTop(rootEl.value);
+}
+
 const queuedAheadItemsCount = computed(() => paginator?.queuedAheadItemsCount.value ?? 0);
 
 function isHanamiItem(item: TimelineItem): item is HanamiTimelineItem {
@@ -233,6 +245,7 @@ function itemFeedEntryId(item: TimelineItem): string | undefined {
 }
 
 onMounted(() => {
+	if (hanamiPaginator == null) markNonHanamiTimelineMounted();
 	void (hanamiPaginator?.init() ?? paginator!.init());
 
 	const computedParams = hanamiPaginator?.computedParams ?? paginator?.computedParams;
