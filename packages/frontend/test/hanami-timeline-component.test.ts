@@ -29,7 +29,8 @@ describe('MkStreamingNotesTimeline Hanami integration', () => {
 	});
 
 	test('separates user refresh from automatic reinitialization', () => {
-		expect(source).toContain('await (hanamiPaginator?.refresh() ?? paginator!.reload());');
+		expect(source).toContain('await hanamiPaginator.refresh();');
+		expect(source).toContain('await paginator!.reload();');
 		expect(source).toContain('await (hanamiPaginator?.init() ?? paginator!.reload());');
 	});
 });

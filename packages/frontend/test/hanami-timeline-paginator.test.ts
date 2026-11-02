@@ -315,3 +315,64 @@ test('a successful tuning retry clears a previous timeline error', async () => {
 	await p.refreshTuning('second'); expect(p.error.value).toBeNull(); expect(p.items.value).toHaveLength(1);
 	p.dispose();
 });
+
+describe('Hanami in-place refresh', () => {
+	beforeEach(() => { misskeyApiMock.mockReset(); });
+
+	test('keeps the current items with the pending banner until the refreshed head replaces them', async () => {
+		let resolveRefresh!: (value: Misskey.entities.NotesHanamiTimelineResponse) => void;
+		misskeyApiMock
+			.mockResolvedValueOnce(response({ nextCursor: 'cursor-1', hasMore: true }))
+			.mockReturnValueOnce(new Promise(resolve => { resolveRefresh = resolve; }));
+		const p = paginator(); await p.init();
+
+		const refreshing = p.refresh();
+		expect(p.items.value.map(i => i.feedEntryId)).toEqual(['entry-1']);
+		expect(p.fetching.value).toBe(false);
+		expect(p.generationPending.value).toBe(true);
+		expect(misskeyApiMock.mock.calls[1]?.[1]).toMatchObject({ refresh: true, limit: 15 });
+
+		await p.fetchOlder();
+		expect(misskeyApiMock).toHaveBeenCalledTimes(2);
+
+		resolveRefresh(response({ headBatchId: 'head-2', items: [item('new-entry')] }));
+		await refreshing;
+		expect(p.items.value.map(i => i.feedEntryId)).toEqual(['new-entry']);
+		expect(p.headBatchId.value).toBe('head-2');
+		expect(p.generationPending.value).toBe(false);
+		expect(p.canFetchOlder.value).toBe(false);
+		p.dispose();
+	});
+
+	test('shows the loading state when there is nothing to keep', async () => {
+		let resolveRefresh!: (value: Misskey.entities.NotesHanamiTimelineResponse) => void;
+		misskeyApiMock
+			.mockResolvedValueOnce(response({ items: [] }))
+			.mockReturnValueOnce(new Promise(resolve => { resolveRefresh = resolve; }));
+		const p = paginator(); await p.init();
+
+		const refreshing = p.refresh();
+		expect(p.fetching.value).toBe(true);
+		resolveRefresh(response({ headBatchId: 'head-2' }));
+		await refreshing;
+		expect(p.fetching.value).toBe(false);
+		expect(p.items.value).toHaveLength(1);
+		p.dispose();
+	});
+
+	test('a failed in-place refresh surfaces the error and allows older pages again', async () => {
+		misskeyApiMock
+			.mockResolvedValueOnce(response({ nextCursor: 'cursor-1', hasMore: true }))
+			.mockRejectedValueOnce(new Error('offline'))
+			.mockResolvedValueOnce(response({ headBatchId: 'head-2', items: [item('retried')] }));
+		const p = paginator(); await p.init();
+
+		await p.refresh();
+		expect(p.error.value).not.toBeNull();
+		await p.retry();
+		expect(p.error.value).toBeNull();
+		expect(p.items.value.map(i => i.feedEntryId)).toEqual(['retried']);
+		expect(misskeyApiMock.mock.calls[2]?.[1]).toMatchObject({ refresh: true, refreshToken: misskeyApiMock.mock.calls[1]?.[1].refreshToken });
+		p.dispose();
+	});
+});

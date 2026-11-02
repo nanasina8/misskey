@@ -92,6 +92,7 @@ export class HanamiTimelinePaginator {
 	private pendingHeadTimer: number | null = null;
 	private headRevision = 0;
 	private disposed = false;
+	private inPlaceRefreshCount = 0;
 
 	private nextCursor: string | null = null;
 	private retryState: RetryState | null = null;
@@ -122,12 +123,25 @@ export class HanamiTimelinePaginator {
 
 	public async refresh(): Promise<void> {
 		if (this.isRefreshRateLimited()) return;
-		await this.startCursorless({
+		const state: CursorlessRetry = {
 			kind: 'cursorless',
 			request: this.cursorlessRequest({ refresh: true, refreshToken: generateHanamiRefreshToken() }),
 			allowRefreshTokenReplacement: true,
 			allowCursorRestart: true,
-		}, true);
+		};
+		if (this.items.value.length === 0 || this.error.value != null) {
+			await this.startCursorless(state, true);
+			return;
+		}
+
+		// 作っている間も今の並びを消さず、上の帯で知らせる。できたら差し替える。
+		this.generationPending.value = true;
+		this.inPlaceRefreshCount++;
+		try {
+			await this.startCursorless(state, false, false);
+		} finally {
+			this.inPlaceRefreshCount--;
+		}
 	}
 
 	public async refreshTuning(refreshToken = generateHanamiRefreshToken()): Promise<void> {
@@ -190,7 +204,8 @@ export class HanamiTimelinePaginator {
 	}
 
 	public async fetchOlder(): Promise<void> {
-		if (!this.canFetchOlder.value || this.fetching.value || this.fetchingOlder.value || this.nextCursor == null) return;
+		// 差し替え待ちの間に古いページを読むと、更新の結果が捨てられてしまう。
+		if (this.inPlaceRefreshCount > 0 || !this.canFetchOlder.value || this.fetching.value || this.fetchingOlder.value || this.nextCursor == null) return;
 		await this.startOlder({
 			kind: 'older',
 			request: this.olderRequest(this.nextCursor),
@@ -233,13 +248,13 @@ export class HanamiTimelinePaginator {
 		this.headBatchId.value = null;
 	}
 
-	private async startCursorless(state: CursorlessRetry, reset: boolean): Promise<void> {
+	private async startCursorless(state: CursorlessRetry, reset: boolean, showLoading = state.request.reason !== 'tuning'): Promise<void> {
 		this.cancelPendingHead();
 		this.error.value = null;
 		this.retryState = null;
 		const operationId = ++this.operationId;
 		if (reset) this.reset();
-		this.fetching.value = state.request.reason !== 'tuning';
+		this.fetching.value = showLoading;
 		this.fetchingOlder.value = false;
 		await this.loadCursorless(state, operationId);
 		if (operationId === this.operationId) this.fetching.value = false;

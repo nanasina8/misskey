@@ -475,7 +475,14 @@ async function reinitTimeline(): Promise<void> {
 
 async function reloadTimeline(): Promise<void> {
 	adInsertionCounter = 0;
-	await (hanamiPaginator?.refresh() ?? paginator!.reload());
+	if (hanamiPaginator == null) {
+		await paginator!.reload();
+		return;
+	}
+	const previousHead = hanamiPaginator.headBatchId.value;
+	await hanamiPaginator.refresh();
+	// 更新中も並びを残すので、新しい並びに替わったら先頭に戻す。
+	if (rootEl.value != null && hanamiPaginator.headBatchId.value !== previousHead) scrollToTop(rootEl.value);
 }
 
 async function retryTimeline(): Promise<void> {
