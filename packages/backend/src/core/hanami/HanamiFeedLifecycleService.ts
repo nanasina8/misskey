@@ -9,6 +9,7 @@ import { hanamiReturningRows } from '@/core/hanami/HanamiReturningRows.js';
 import { IdService } from '@/core/IdService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { HanamiCommonHeadQueries } from './HanamiCommonHeadQueries.js';
+import type { HanamiFeedDiscardReason } from './HanamiFeedStockEvents.js';
 import type { MiUser } from '@/models/User.js';
 import type { EntityManager } from 'typeorm';
 
@@ -49,7 +50,7 @@ export class HanamiFeedLifecycleService {
 		await this.obsoleteCurrentWork(manager, stateUserIds, transitionedAt);
 		for (const state of states) {
 			if (state.stock_batch_id != null) {
-				await this.discardStock(manager, state.user_id, state.epoch_id, state.stock_batch_id);
+				await this.discardStock(manager, state.user_id, state.epoch_id, state.stock_batch_id, 'hibernate');
 			}
 		}
 		const commonHead = await this.commonHeadQueries.lockLatestReadyCommonHead(manager);
@@ -97,7 +98,7 @@ export class HanamiFeedLifecycleService {
 		await this.lockActiveEpochs(manager, [state]);
 		await this.obsoleteCurrentWork(manager, [userId], transitionedAt);
 		if (state.stock_batch_id != null) {
-			await this.discardStock(manager, userId, state.epoch_id, state.stock_batch_id);
+			await this.discardStock(manager, userId, state.epoch_id, state.stock_batch_id, 'revive');
 		}
 		const initialGenerationState = await this.getInitialGenerationState(manager, userId);
 		const commonHead = await this.commonHeadQueries.lockLatestReadyCommonHead(manager);
@@ -231,16 +232,16 @@ export class HanamiFeedLifecycleService {
 		}
 	}
 
-	private async discardStock(manager: EntityManager, userId: MiUser['id'], epochId: string, stockBatchId: string): Promise<void> {
+	private async discardStock(manager: EntityManager, userId: MiUser['id'], epochId: string, stockBatchId: string, reason: HanamiFeedDiscardReason): Promise<void> {
 		await manager.query(`
 			DELETE FROM "hanami_user_feed_entry"
 			WHERE "userId" = $1 AND "epochId" = $2 AND "batchId" = $3
 		`, [userId, epochId, stockBatchId]);
 		await manager.query(`
 			UPDATE "hanami_user_feed_batch"
-			SET "status" = 'obsolete'
+			SET "status" = 'obsolete', "discardReason" = $3
 			WHERE "id" = $1 AND "userId" = $2 AND "status" = 'ready'
-		`, [stockBatchId, userId]);
+		`, [stockBatchId, userId, reason]);
 	}
 
 	private async getInitialGenerationState(

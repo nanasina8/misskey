@@ -665,6 +665,15 @@ export type paths = {
          */
         post: operations['admin___get-user-ips'];
     };
+    '/admin/hanami/feed-status': {
+        /**
+         * admin/hanami/feed-status
+         * @description Inspect whether the Hanami feed stock is working, where it is made to wait, and whether its invariants hold, without reading logs or the database directly. All timestamps are UTC ISO 8601.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['admin___hanami___feed-status'];
+    };
     '/admin/hanami/gpu-queue': {
         /**
          * admin/hanami/gpu-queue
@@ -11972,6 +11981,445 @@ export interface operations {
                         /** Format: date-time */
                         createdAt: string;
                     }[];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___hanami___feed-status': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /**
+                     * Format: misskey:id
+                     * @description Restrict detail and events to this user.
+                     */
+                    userId?: string;
+                    /**
+                     * @description Maximum number of newest events to return.
+                     * @default 50
+                     */
+                    eventsLimit?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        /**
+                         * Format: date-time
+                         * @description UTC time this report was generated.
+                         */
+                        generatedAt: string;
+                        /** @description Stock configuration in effect. */
+                        config: {
+                            /** @description Age after which a served stock is considered stale. */
+                            stockMaxAgeMinutes: number;
+                            /** @description Age after which a stock is rebuilt in the background. */
+                            stockRefreshAfterMinutes: number;
+                            /** @description Gap after which opening serves the stock (seen-key TTL). */
+                            sessionGapMinutes: number;
+                            /** @description Throttle window for prewarming from other timelines. */
+                            prewarmIntervalMinutes: number;
+                            /** @description Active-user window for stock maintenance. */
+                            activeDays: number;
+                            /** @description Configured hanamiGenerationSyncWaitMs. */
+                            initialSyncWaitMs: number;
+                        };
+                        /** @description Recorded request outcomes aggregated from the Redis daily counts. */
+                        requests: {
+                            /** @description Today (JST) window. */
+                            day: {
+                                /** @description Recorded kind.outcome counts summed over the window. */
+                                counts: {
+                                    [key: string]: number;
+                                };
+                                /** @description (open.stock + refresh.stock) / (open.stock + open.pending + refresh.stock + refresh.pending); null when the denominator is 0. */
+                                stockHitRate: number | null;
+                                /** @description (refresh.pending + tuning.pending + open.pending) / (those + refresh.stock + tuning.stock + open.stock); rate-limited, expired and repeated tokens are excluded; null when the denominator is 0. */
+                                pendingRate: number | null;
+                            };
+                            /** @description Today plus the previous six days (JST). */
+                            week: {
+                                /** @description Recorded kind.outcome counts summed over the window. */
+                                counts: {
+                                    [key: string]: number;
+                                };
+                                /** @description (open.stock + refresh.stock) / (open.stock + open.pending + refresh.stock + refresh.pending); null when the denominator is 0. */
+                                stockHitRate: number | null;
+                                /** @description (refresh.pending + tuning.pending + open.pending) / (those + refresh.stock + tuning.stock + open.stock); rate-limited, expired and repeated tokens are excluded; null when the denominator is 0. */
+                                pendingRate: number | null;
+                            };
+                        };
+                        /** @description Server-side processing time (durationMs) percentiles grouped by kind and outcome, from the retained event list. */
+                        latency: {
+                            [key: string]: {
+                                /** @description Number of recorded events in this group. */
+                                count?: number;
+                                /** @description 50th percentile of durationMs; null when absent. */
+                                p50?: number | null;
+                                /** @description 95th percentile of durationMs; null when absent. */
+                                p95?: number | null;
+                                /** @description Maximum durationMs; null when absent. */
+                                max?: number | null;
+                            };
+                        };
+                        /** @description Batch counts and timings from the database, over 24h and 7d windows. */
+                        batches: {
+                            /** @description Last 24 hours. */
+                            last24h: {
+                                /** @description Count of batches grouped by trigger, reason and status. */
+                                byTriggerReasonStatus: {
+                                    /** @description Batch trigger. */
+                                    trigger: string | null;
+                                    /** @description Batch reason. */
+                                    reason: string | null;
+                                    /** @description Batch status. */
+                                    status: string;
+                                    /** @description Number of batches. */
+                                    count: number;
+                                }[];
+                                /** @description Failed batches grouped by failureKind. */
+                                failedByKind: {
+                                    /** @description Failure kind. */
+                                    failureKind: string | null;
+                                    /** @description Number of failed batches. */
+                                    count: number;
+                                }[];
+                                /** @description Prefetch batch disposition. */
+                                prefetch: {
+                                    /** @description Prefetch batches promoted (promotedAt set). */
+                                    used: number;
+                                    /** @description Discarded prefetch batches grouped by discardReason. */
+                                    discarded: {
+                                        [key: string]: number;
+                                    };
+                                    /** @description Ready prefetch batches not yet used and not discarded. */
+                                    pending: number;
+                                    /** @description Share of prewarm batches that were used; null when fewer than 20 prewarm batches exist. */
+                                    prewarmUsedRate: number | null;
+                                };
+                                /** @description startedAt - createdAt percentiles by trigger. */
+                                queueWaitMs: {
+                                    [key: string]: {
+                                        /** @description p50 in ms. */
+                                        p50?: number | null;
+                                        /** @description p95 in ms. */
+                                        p95?: number | null;
+                                    };
+                                };
+                                /** @description finishedAt - startedAt percentiles by trigger. */
+                                generateMs: {
+                                    [key: string]: {
+                                        /** @description p50 in ms. */
+                                        p50?: number | null;
+                                        /** @description p95 in ms. */
+                                        p95?: number | null;
+                                    };
+                                };
+                                /** @description promotedAt - finishedAt percentiles. */
+                                stockAgeAtUseMs: {
+                                    /** @description p50 in ms. */
+                                    p50: number | null;
+                                    /** @description p95 in ms. */
+                                    p95: number | null;
+                                };
+                            };
+                            /** @description Last 7 days. */
+                            last7d: {
+                                /** @description Count of batches grouped by trigger, reason and status. */
+                                byTriggerReasonStatus: {
+                                    /** @description Batch trigger. */
+                                    trigger: string | null;
+                                    /** @description Batch reason. */
+                                    reason: string | null;
+                                    /** @description Batch status. */
+                                    status: string;
+                                    /** @description Number of batches. */
+                                    count: number;
+                                }[];
+                                /** @description Failed batches grouped by failureKind. */
+                                failedByKind: {
+                                    /** @description Failure kind. */
+                                    failureKind: string | null;
+                                    /** @description Number of failed batches. */
+                                    count: number;
+                                }[];
+                                /** @description Prefetch batch disposition. */
+                                prefetch: {
+                                    /** @description Prefetch batches promoted (promotedAt set). */
+                                    used: number;
+                                    /** @description Discarded prefetch batches grouped by discardReason. */
+                                    discarded: {
+                                        [key: string]: number;
+                                    };
+                                    /** @description Ready prefetch batches not yet used and not discarded. */
+                                    pending: number;
+                                    /** @description Share of prewarm batches that were used; null when fewer than 20 prewarm batches exist. */
+                                    prewarmUsedRate: number | null;
+                                };
+                                /** @description startedAt - createdAt percentiles by trigger. */
+                                queueWaitMs: {
+                                    [key: string]: {
+                                        /** @description p50 in ms. */
+                                        p50?: number | null;
+                                        /** @description p95 in ms. */
+                                        p95?: number | null;
+                                    };
+                                };
+                                /** @description finishedAt - startedAt percentiles by trigger. */
+                                generateMs: {
+                                    [key: string]: {
+                                        /** @description p50 in ms. */
+                                        p50?: number | null;
+                                        /** @description p95 in ms. */
+                                        p95?: number | null;
+                                    };
+                                };
+                                /** @description promotedAt - finishedAt percentiles. */
+                                stockAgeAtUseMs: {
+                                    /** @description p50 in ms. */
+                                    p50: number | null;
+                                    /** @description p95 in ms. */
+                                    p95: number | null;
+                                };
+                            };
+                        };
+                        /** @description Current state snapshot. */
+                        current: {
+                            /** @description Users in personalized mode. */
+                            personalizedUsers: number;
+                            /** @description Users in common mode. */
+                            commonUsers: number;
+                            /** @description Personalized users with a stock batch. */
+                            withStock: number;
+                            /** @description Stock age distribution. */
+                            stockAgeBuckets: {
+                                /** @description Stocks newer than one hour. */
+                                under1h: number;
+                                /** @description Stocks between one and three hours old. */
+                                from1hTo3h: number;
+                                /** @description Stocks older than three hours. */
+                                over3h: number;
+                            };
+                            /** @description Active batches grouped by trigger and status. */
+                            activeBatchByTriggerStatus: {
+                                /** @description Batch trigger. */
+                                trigger: string;
+                                /** @description Batch status. */
+                                status: string;
+                                /** @description Number of batches. */
+                                count: number;
+                            }[];
+                            /** @description Age of the oldest pending batch in ms. */
+                            oldestPendingWaitMs: number | null;
+                            /** @description Generating batches whose lease has expired. */
+                            expiredGeneratingLeases: number;
+                        };
+                        /** @description Invariant self-checks. */
+                        checks: {
+                            /** @description Stable check code. */
+                            code: string;
+                            /** @description True when no violations were found. */
+                            ok: boolean;
+                            /** @description Total number of violating rows (not capped by samples). */
+                            count: number;
+                            /** @description Why this check could not run; null when it ran. A failed check is never reported as ok. */
+                            error: string | null;
+                            /** @description Up to five violating rows. */
+                            samples: {
+                                /** @description Owner user id. */
+                                userId: string;
+                                /** @description Related batch id. */
+                                batchId: string | null;
+                                /** @description Short explanation. */
+                                detail: string | null;
+                            }[];
+                        }[];
+                        /** @description Derived issues for humans. */
+                        issues: {
+                            /**
+                             * @description Severity.
+                             * @enum {string}
+                             */
+                            level: 'error' | 'warning' | 'info';
+                            /** @description Stable issue code. */
+                            code: string;
+                            /** @description One-sentence Japanese explanation. */
+                            message: string;
+                            /** @description Violation count when known. */
+                            count: number | null;
+                        }[];
+                        /** @description Newest recorded stock events. */
+                        events: {
+                            /**
+                             * Format: date-time
+                             * @description UTC recording time.
+                             */
+                            at: string;
+                            /** @description Owner user id. */
+                            userId: string;
+                            /** @description Event kind. */
+                            kind: string;
+                            /** @description Event outcome. */
+                            outcome: string;
+                            /** @description Elapsed milliseconds when recorded. */
+                            durationMs?: number;
+                            /** @description Stock age in ms when recorded. */
+                            stockAgeMs?: number;
+                            /** @description Related batch id. */
+                            batchId?: string;
+                            /** @description Related reason. */
+                            reason?: string;
+                        }[];
+                        /** @description Detail for the requested user; null when userId is absent or unknown. */
+                        user: {
+                            /** @description User feed state; null when absent. */
+                            state: {
+                                /** @description Feed mode. */
+                                mode: string;
+                                /** @description Initial generation state. */
+                                initialGenerationState: string;
+                                /** @description Feed epoch id. */
+                                epochId: string;
+                                /** @description Latest ready batch id. */
+                                latestReadyBatchId: string | null;
+                                /** @description Latest sequence. */
+                                latestSequence: string | null;
+                                /** @description Generating batch id. */
+                                generatingBatchId: string | null;
+                                /** @description Stock batch id. */
+                                stockBatchId: string | null;
+                                /** @description Stock sequence. */
+                                stockSequence: string | null;
+                                /**
+                                 * Format: date-time
+                                 * @description State update time.
+                                 */
+                                updatedAt: string | null;
+                            } | null;
+                            /** @description Head batch info; null when absent. */
+                            head: {
+                                /** @description Head batch id. */
+                                batchId: string;
+                                /**
+                                 * Format: date-time
+                                 * @description Head finish time.
+                                 */
+                                finishedAt: string | null;
+                                /** @description Head item count. */
+                                itemCount: number;
+                                /** @description Age of the head in ms. */
+                                ageMs: number | null;
+                            } | null;
+                            /** @description Stock batch info; null when absent. */
+                            stock: {
+                                /** @description Stock batch id. */
+                                batchId: string;
+                                /**
+                                 * Format: date-time
+                                 * @description Stock finish time.
+                                 */
+                                finishedAt: string | null;
+                                /** @description Stock item count. */
+                                itemCount: number;
+                                /** @description Age of the stock in ms. */
+                                ageMs: number | null;
+                            } | null;
+                            /** @description Remaining seconds of the seen key; null when absent. */
+                            inSession: number | null;
+                            /** @description Remaining seconds of the prewarm key; null when absent. */
+                            prewarmThrottleSeconds: number | null;
+                            /** @description Twenty most recent batches. */
+                            recentBatches: {
+                                /** @description Batch id. */
+                                id: string;
+                                /** @description Batch trigger. */
+                                trigger: string;
+                                /** @description Batch reason. */
+                                reason: string | null;
+                                /** @description Batch status. */
+                                status: string;
+                                /** @description Attempts. */
+                                attempts: number;
+                                /**
+                                 * Format: date-time
+                                 * @description Created time.
+                                 */
+                                createdAt: string;
+                                /**
+                                 * Format: date-time
+                                 * @description Started time.
+                                 */
+                                startedAt: string | null;
+                                /**
+                                 * Format: date-time
+                                 * @description Finished time.
+                                 */
+                                finishedAt: string | null;
+                                /**
+                                 * Format: date-time
+                                 * @description Promoted time.
+                                 */
+                                promotedAt: string | null;
+                                /** @description Discard reason. */
+                                discardReason: string | null;
+                                /** @description Failure kind. */
+                                failureKind: string | null;
+                                /** @description Item count. */
+                                itemCount: number;
+                            }[];
+                        } | null;
+                    };
                 };
             };
             /** @description Client error */

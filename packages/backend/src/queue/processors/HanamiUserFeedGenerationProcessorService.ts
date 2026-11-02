@@ -9,8 +9,10 @@ import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import {
 	HANAMI_USER_FEED_GENERATION_LIFECYCLE,
+	HANAMI_USER_FEED_REQUEST,
 	type HanamiUserFeedGenerationLifecyclePort,
 	type HanamiUserFeedGenerationRunResult,
+	type HanamiUserFeedRequestPort,
 } from '@/core/hanami/HanamiUserFeedContracts.js';
 import { QueueService } from '@/core/QueueService.js';
 import type { HanamiUserFeedGenerationJobData } from '../types.js';
@@ -36,6 +38,8 @@ export class HanamiUserFeedGenerationProcessorService {
 	constructor(
 		@Inject(HANAMI_USER_FEED_GENERATION_LIFECYCLE)
 		private lifecycle: HanamiUserFeedGenerationLifecyclePort,
+		@Inject(HANAMI_USER_FEED_REQUEST)
+		private userFeedRequest: HanamiUserFeedRequestPort,
 		private queueService: QueueService,
 		private queueLoggerService: QueueLoggerService,
 	) {
@@ -59,6 +63,14 @@ export class HanamiUserFeedGenerationProcessorService {
 					failureKind: result.failureKind ?? null,
 					failureMessage: result.failureMessage ?? null,
 				});
+			}
+			if (result.kind === 'published') {
+				// 先頭を動かす publish のあと、ストックが無ければ次のストックを裏で仕込む（prefetch の場合は no-op）。
+				try {
+					await this.userFeedRequest.ensureStock(result.userId, 'afterGenerate');
+				} catch (error) {
+					this.logger.warn('hanami user feed stock backfill failed', { batchId: job.data.batchId, e: error });
+				}
 			}
 			this.logger.info('hanami user feed generation delivery completed', {
 				batchId: job.data.batchId,

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import type { HanamiFeedStockReason } from './HanamiFeedStockEvents.js';
 import type { HanamiMetricsFailureKind } from './HanamiMetricsFailure.js';
 
 export const HANAMI_USER_FEED_AXES = Object.freeze([
@@ -126,6 +127,20 @@ export interface HanamiUserFeedRequestPort {
 	 * returned batch IDs.
 	 */
 	maintainStock(limit: number): Promise<{ batchIdsToEnqueue: string[] }>;
+
+	/**
+	 * Creates the next prefetch stock batch for a personalized user when
+	 * eligible. Never throws; used to backfill a stock after serving a generated
+	 * batch. The reason is recorded on the created batch.
+	 */
+	ensureStock(userId: string, reason?: HanamiFeedStockReason): Promise<void>;
+
+	/**
+	 * Pre-warms a user's Hanami stock in the background (at most once per
+	 * throttle window). Fire-and-forget: callers must not await the generation,
+	 * and any failure is only logged.
+	 */
+	prewarm(userId: string): void;
 }
 
 export type HanamiPersonalFeedCandidate = {
@@ -260,6 +275,7 @@ export type HanamiUserFeedGenerationRunResult =
 	| {
 		readonly kind: 'published';
 		readonly batchId: string;
+		readonly userId: string;
 		readonly attempt: number;
 		readonly itemCount: number;
 		readonly feedEpochId: string;

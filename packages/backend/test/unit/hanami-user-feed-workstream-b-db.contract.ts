@@ -23,6 +23,9 @@ import {
 } from '@/core/hanami/HanamiUserFeedContracts.js';
 import { HanamiPersistedTimelinePhase11787097600000 } from '../../migration/1787097600000-hanamiPersistedTimelinePhase1.js';
 import { HanamiUserFeedStock1793611851090 } from '../../migration/1793611851090-hanamiUserFeedStock.js';
+import FeedStatusEndpoint, { meta as feedStatusMeta } from '@/server/api/endpoints/admin/hanami/feed-status.js';
+import type { SchemaType } from '@/misc/json-schema.js';
+import { HanamiUserFeedStockDiagnostics1793617490823 } from '../../migration/1793617490823-hanamiUserFeedStockDiagnostics.js';
 
 type DbRow = Record<string, unknown>;
 type DbQuery = <T extends DbRow = DbRow>(sql: string, values?: unknown[]) => Promise<T[]>;
@@ -147,6 +150,7 @@ const makeRuntime = (schema: string, options: {
 	policy?: boolean;
 	metricsCapture?: HanamiMetricsCaptureService;
 	metricsHealth?: Pick<HanamiMetricsTimelineHealthService, 'begin' | 'finish'>;
+	redis?: unknown;
 } = {}) => {
 	const db = makeDataSource(schema);
 	const ids = makeIdService(options.idPrefix ?? 'wb');
@@ -178,6 +182,7 @@ const makeRuntime = (schema: string, options: {
 		queue as never,
 		loggerService as never,
 		common,
+		options.redis as never,
 	);
 	const read = new HanamiPersistedFeedReadService(db as never);
 	const lifecycle = new HanamiFeedLifecycleService(ids as never, role as never, common);
@@ -215,6 +220,7 @@ const withMigratedSchema = async (run: (context: { schema: string; query: DbQuer
 		await query(`ALTER TABLE "hanami_user_feed_batch"
 			ADD COLUMN "failureKind" varchar(32), ADD COLUMN "failureMessage" varchar(512)`);
 		await new HanamiUserFeedStock1793611851090().up({ query } as never);
+		await new HanamiUserFeedStockDiagnostics1793617490823().up({ query } as never);
 		// R7 の maintainStock 判定に必要な最小の metrics timeline 表。
 		await query(`CREATE TABLE "hanami_metrics_timeline" (
 			"day" date NOT NULL, "kind" varchar(32) NOT NULL,
@@ -270,6 +276,37 @@ const makeMetricsHealth = () => ({
 	begin: jest.fn<HanamiMetricsTimelineHealthService['begin']>(),
 	finish: jest.fn<HanamiMetricsTimelineHealthService['finish']>(),
 });
+
+// セッション判定（seen キー）と prewarm の SET NX、記録の multi を再現する最小の偽 Redis。
+const makeFakeRedis = () => {
+	const store = new Map<string, string>();
+	const events: Array<{ kind: string; outcome: string; userId: string; batchId?: string }> = [];
+	const chain = {
+		lpush: jest.fn((_key: string, value: string) => { events.push(JSON.parse(value)); return chain; }),
+		ltrim: jest.fn(() => chain), expire: jest.fn(() => chain), hincrby: jest.fn(() => chain),
+		exec: jest.fn(async () => [] as Array<[Error | null, unknown]>),
+	};
+	return {
+		store,
+		events,
+		exists: jest.fn(async (key: string) => (store.has(key) ? 1 : 0)),
+		set: jest.fn(async (key: string, value: string, _mode?: string, _ttl?: number, nx?: string) => {
+			if (nx === 'NX' && store.has(key)) return null;
+			store.set(key, value);
+			return 'OK';
+		}),
+		multi: jest.fn(() => chain),
+	};
+};
+
+const waitFor = async (predicate: () => boolean | Promise<boolean>, timeoutMs = 2_000): Promise<void> => {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (await predicate()) return;
+		await sleep(10);
+	}
+	throw new Error('waitFor timed out');
+};
 
 type Runtime = ReturnType<typeof makeRuntime>;
 
@@ -1375,6 +1412,251 @@ describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 			expect(await query(`SELECT COUNT(*)::text AS count FROM "hanami_user_feed_entry" WHERE "userId" = 't9-discard' AND "batchId" = $1`, [stockBatchId])).toEqual([{ count: '0' }]);
 			expect(await query(`SELECT "latestReadyBatchId", "latestSequence"::text, "stockBatchId", "stockSequence"::text
 				FROM "hanami_user_feed_state" WHERE "userId" = 't9-discard'`)).toEqual([{ latestReadyBatchId: refreshId, latestSequence: '2', stockBatchId: null, stockSequence: null }]);
+		});
+	}, 20_000);
+
+	test('S1 refresh without a stock returns pending immediately and records reason refresh', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 's1-refresh');
+			const runtime = makeRuntime(schema, { idPrefix: 's1', config: { hanamiGenerationSyncWaitMs: 2_000 } });
+			const initial = await runtime.request.evaluateCursorless('s1-refresh');
+			if (initial.kind !== 'serve' || !initial.generationPending) throw new Error('expected initial batch');
+			await runtime.generation.runUserFeedGeneration(initial.requestedBatchId);
+			await query(`UPDATE "hanami_user_feed_batch" SET "finishedAt" = clock_timestamp() - INTERVAL '21 minutes' WHERE "id" = $1`, [initial.requestedBatchId]);
+
+			const startedAt = Date.now();
+			const refreshed = await runtime.request.requestRefresh('s1-refresh', token(81));
+			expect(refreshed).toMatchObject({ kind: 'serve', generationPending: true });
+			expect(Date.now() - startedAt).toBeLessThan(1_000);
+			if (refreshed.kind !== 'serve' || !refreshed.generationPending) throw new Error('expected pending refresh');
+			expect(await query(`SELECT "trigger", "reason", "status" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [refreshed.requestedBatchId]))
+				.toEqual([{ trigger: 'refresh', reason: 'refresh', status: 'pending' }]);
+		});
+	}, 20_000);
+
+	test('S2 opening while a refresh batch is generating returns pending without waiting', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 's2-open');
+			const runtime = makeRuntime(schema, { idPrefix: 's2', config: { hanamiGenerationSyncWaitMs: 2_000 } });
+			const initial = await runtime.request.evaluateCursorless('s2-open');
+			if (initial.kind !== 'serve' || !initial.generationPending) throw new Error('expected initial batch');
+			await runtime.generation.runUserFeedGeneration(initial.requestedBatchId);
+			await query(`UPDATE "hanami_user_feed_batch" SET "finishedAt" = clock_timestamp() - INTERVAL '21 minutes' WHERE "id" = $1`, [initial.requestedBatchId]);
+			const refresh = await runtime.request.requestRefresh('s2-open', token(82));
+			if (refresh.kind !== 'serve' || !refresh.generationPending) throw new Error('expected refresh batch');
+
+			const startedAt = Date.now();
+			const opened = await runtime.request.evaluateCursorless('s2-open');
+			expect(opened).toMatchObject({ kind: 'serve', generationPending: true, requestedBatchId: refresh.requestedBatchId });
+			expect(Date.now() - startedAt).toBeLessThan(1_000);
+			expect(await query(`SELECT "status" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [refresh.requestedBatchId])).toEqual([{ status: 'pending' }]);
+		});
+	}, 20_000);
+
+	test('S3 away-from-keyboard open promotes a fresh stock, sets promotedAt, and schedules afterPromote', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 's3-session');
+			const redis = makeFakeRedis();
+			const runtime = makeRuntime(schema, { idPrefix: 's3', redis });
+			// セットアップ中は in-session とみなし、普通にストックを作らせる。
+			redis.store.set('hanami:feed:seen:s3-session', '1');
+			const { stockBatchId } = await setupStock(runtime, 's3-session');
+			redis.store.delete('hanami:feed:seen:s3-session');
+
+			// seen キー無し → 30 分以上見ていない → 普通に開いてもストックが先頭になる。
+			const opened = await runtime.request.evaluateCursorless('s3-session');
+			expect(opened).toMatchObject({ kind: 'serve', generationPending: false, requestedBatchId: stockBatchId, head: { kind: 'personal', headBatchId: stockBatchId, headSequence: '2' } });
+			expect(await query(`SELECT "latestReadyBatchId", "latestSequence"::text, "stockBatchId", "stockSequence"::text, "promotedAt"
+				FROM "hanami_user_feed_batch" b JOIN "hanami_user_feed_state" s ON s."userId" = b."userId" AND b."id" = s."latestReadyBatchId"
+				WHERE b."userId" = 's3-session'`)).toEqual([{ latestReadyBatchId: stockBatchId, latestSequence: '2', stockBatchId: null, stockSequence: null, promotedAt: expect.any(Date) }]);
+			const afterPromote = await query(`SELECT "id", "reason" FROM "hanami_user_feed_batch"
+				WHERE "userId" = 's3-session' AND "trigger" = 'prefetch' AND "status" = 'pending'`);
+			expect(afterPromote).toEqual([{ id: expect.any(String), reason: 'afterPromote' }]);
+
+			// seen キーあり → 30 分以内 → 先頭は変わらない（stockBatchId のまま）。
+			redis.store.set('hanami:feed:seen:s3-session', '1');
+			const inSession = await runtime.request.evaluateCursorless('s3-session');
+			expect(inSession).toMatchObject({ kind: 'serve', generationPending: false, head: { kind: 'personal', headBatchId: stockBatchId } });
+			expect(await query(`SELECT "latestReadyBatchId" FROM "hanami_user_feed_state" WHERE "userId" = 's3-session'`)).toEqual([{ latestReadyBatchId: stockBatchId }]);
+		});
+	}, 20_000);
+
+	test('S4 away-from-keyboard open without a stock returns pending with a session refresh batch', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 's4-session');
+			const redis = makeFakeRedis();
+			const runtime = makeRuntime(schema, { idPrefix: 's4', redis, config: { hanamiGenerationSyncWaitMs: 2_000 } });
+			const initial = await runtime.request.evaluateCursorless('s4-session');
+			if (initial.kind !== 'serve' || !initial.generationPending) throw new Error('expected initial batch');
+			await runtime.generation.runUserFeedGeneration(initial.requestedBatchId);
+			// 作ったばかりで未表示の先頭はそのまま出す（S4b）。ここでは古い先頭にして、作り直しの経路を確かめる。
+			await query(`UPDATE "hanami_user_feed_batch" SET "finishedAt" = clock_timestamp() - INTERVAL '21 minutes' WHERE "id" = $1`, [initial.requestedBatchId]);
+
+			const startedAt = Date.now();
+			const opened = await runtime.request.evaluateCursorless('s4-session');
+			expect(opened).toMatchObject({ kind: 'serve', generationPending: true });
+			expect(Date.now() - startedAt).toBeLessThan(1_000);
+			if (opened.kind !== 'serve' || !opened.generationPending) throw new Error('expected pending session');
+			expect(await query(`SELECT "trigger", "reason" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [opened.requestedBatchId]))
+				.toEqual([{ trigger: 'refresh', reason: 'session' }]);
+		});
+	}, 20_000);
+
+	test('S5 prewarm creates an initial or prefetch batch with reason prewarm and is throttled', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 's5-fresh');
+			const redis = makeFakeRedis();
+			const runtime = makeRuntime(schema, { idPrefix: 's5', redis });
+			// state 無し → initial（reason prewarm）。2 回目は SET NX が取れず何もしない。
+			runtime.request.prewarm('s5-fresh');
+			await waitFor(async () => runtime.queueCalls.length >= 1);
+			expect(await query(`SELECT "trigger", "reason" FROM "hanami_user_feed_batch" WHERE "userId" = 's5-fresh'`))
+				.toEqual([{ trigger: 'initial', reason: 'prewarm' }]);
+			const callsAfterFirst = runtime.queueCalls.length;
+			runtime.request.prewarm('s5-fresh');
+			await sleep(30);
+			expect(runtime.queueCalls.length).toBe(callsAfterFirst);
+		});
+	}, 20_000);
+
+	test('S5b prewarm discards a stale stock with reason prewarm and creates a prewarm prefetch', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 's5b-stale');
+			const redis = makeFakeRedis();
+			const runtime = makeRuntime(schema, { idPrefix: 's5b', redis });
+			// セットアップ中は in-session とみなし、普通にストックを作らせる。
+			redis.store.set('hanami:feed:seen:s5b-stale', '1');
+			const { stockBatchId } = await setupStock(runtime, 's5b-stale');
+			await query(`UPDATE "hanami_user_feed_batch" SET "finishedAt" = clock_timestamp() - INTERVAL '90 minutes' WHERE "id" = $1`, [stockBatchId]);
+
+			const before = runtime.queueCalls.length;
+			runtime.request.prewarm('s5b-stale');
+			await waitFor(async () => runtime.queueCalls.length > before);
+			expect(await query(`SELECT "discardReason", "status" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [stockBatchId]))
+				.toEqual([{ discardReason: 'prewarm', status: 'obsolete' }]);
+			expect(await query(`SELECT "trigger", "reason" FROM "hanami_user_feed_batch" WHERE "userId" = 's5b-stale' AND "trigger" = 'prefetch' AND "status" = 'pending'`))
+				.toEqual([{ trigger: 'prefetch', reason: 'prewarm' }]);
+		});
+	}, 20_000);
+
+	test('S6 discardReason is recorded across stale, tuning, and publish paths', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 's6-stale');
+			const runtime = makeRuntime(schema, { idPrefix: 's6a' });
+			const { stockBatchId } = await setupStock(runtime, 's6-stale');
+			await query(`UPDATE "hanami_user_feed_batch" SET "finishedAt" = clock_timestamp() - INTERVAL '4 hours' WHERE "id" = $1`, [stockBatchId]);
+			await runtime.request.requestRefresh('s6-stale', token(83));
+			expect(await query(`SELECT "discardReason" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [stockBatchId])).toEqual([{ discardReason: 'stale' }]);
+
+			await seedUser(query, 's6-tuning');
+			const tuningRuntime = makeRuntime(schema, { idPrefix: 's6b' });
+			const tuning = await setupStock(tuningRuntime, 's6-tuning');
+			await tuningRuntime.request.requestRefresh('s6-tuning', token(84), 'tuning');
+			expect(await query(`SELECT "discardReason" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [tuning.stockBatchId])).toEqual([{ discardReason: 'tuning' }]);
+
+			await seedUser(query, 's6-publish');
+			const publishRuntime = makeRuntime(schema, { idPrefix: 's6c' });
+			const publish = await setupStock(publishRuntime, 's6-publish');
+			const refreshId = 's6-refresh-batch';
+			const epochRow = await query<{ epoch_id: string }>(`SELECT "epochId" AS epoch_id FROM "hanami_user_feed_state" WHERE "userId" = 's6-publish'`);
+			await query(`INSERT INTO "hanami_user_feed_batch"
+				("id", "userId", "epochId", "trigger", "status", "attempts", "createdAt", "availableAt", "baseCommonGenerationId")
+				VALUES ($1, 's6-publish', $2, 'refresh', 'pending', 0, clock_timestamp(), clock_timestamp(), 'common-generation-1')`, [refreshId, epochRow[0]!.epoch_id]);
+			await query(`UPDATE "hanami_user_feed_state" SET "generatingBatchId" = $1 WHERE "userId" = 's6-publish'`, [refreshId]);
+			await publishRuntime.generation.runUserFeedGeneration(refreshId);
+			expect(await query(`SELECT "discardReason" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [publish.stockBatchId])).toEqual([{ discardReason: 'publish' }]);
+		});
+	}, 20_000);
+
+	test('S4b away-from-keyboard open serves a just-made unseen head instead of generating again', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 's4b-fresh');
+			const redis = makeFakeRedis();
+			const runtime = makeRuntime(schema, { idPrefix: 's4b', redis, config: { hanamiGenerationSyncWaitMs: 2_000 } });
+			const initial = await runtime.request.evaluateCursorless('s4b-fresh');
+			if (initial.kind !== 'serve' || !initial.generationPending) throw new Error('expected initial batch');
+			await runtime.generation.runUserFeedGeneration(initial.requestedBatchId);
+
+			const opened = await runtime.request.evaluateCursorless('s4b-fresh');
+			expect(opened).toMatchObject({ kind: 'serve', generationPending: false, head: { kind: 'personal', headBatchId: initial.requestedBatchId } });
+			expect(await query(`SELECT COUNT(*)::int AS count FROM "hanami_user_feed_batch" WHERE "userId" = 's4b-fresh' AND "reason" = 'session'`)).toEqual([{ count: 0 }]);
+			expect(await query(`SELECT "trigger", "reason" FROM "hanami_user_feed_batch" WHERE "userId" = 's4b-fresh' AND "status" = 'pending'`))
+				.toEqual([{ trigger: 'prefetch', reason: 'afterServe' }]);
+			expect(redis.events.filter((event) => event.kind === 'open').map((event) => event.outcome)).toEqual(['initialPending', 'stock']);
+		});
+	}, 20_000);
+
+	test('S10 away-from-keyboard open while a refresh is still generating returns that batch as pending without failing', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 's10-busy');
+			const redis = makeFakeRedis();
+			const runtime = makeRuntime(schema, { idPrefix: 's10', redis, config: { hanamiGenerationSyncWaitMs: 2_000 } });
+			const initial = await runtime.request.evaluateCursorless('s10-busy');
+			if (initial.kind !== 'serve' || !initial.generationPending) throw new Error('expected initial batch');
+			await runtime.generation.runUserFeedGeneration(initial.requestedBatchId);
+			await query(`UPDATE "hanami_user_feed_batch" SET "finishedAt" = clock_timestamp() - INTERVAL '21 minutes' WHERE "id" = $1`, [initial.requestedBatchId]);
+			const refresh = await runtime.request.requestRefresh('s10-busy', token(91));
+			if (refresh.kind !== 'serve' || !refresh.generationPending) throw new Error('expected refresh batch');
+
+			// 30 分以上たった（seen キー無し）が、更新の生成はまだ終わっていない（失敗のやり直し待ちなど）。
+			const opened = await runtime.request.evaluateCursorless('s10-busy');
+			expect(opened).toMatchObject({ kind: 'serve', generationPending: true, requestedBatchId: refresh.requestedBatchId });
+			expect(await query(`SELECT COUNT(*)::int AS count FROM "hanami_user_feed_batch" WHERE "userId" = 's10-busy' AND "status" IN ('pending', 'generating')`)).toEqual([{ count: 1 }]);
+			expect(redis.events.filter((event) => event.kind !== 'discard').map((event) => `${event.kind}.${event.outcome}`))
+				.toEqual(['open.initialPending', 'refresh.pending', 'open.pending']);
+		});
+	}, 20_000);
+
+	test('S11 records unavailable, repeated and stock outcomes separately from pending', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 's11-off');
+			const offRedis = makeFakeRedis();
+			const off = makeRuntime(schema, { idPrefix: 's11a', redis: offRedis, policy: false });
+			expect(await off.request.requestRefresh('s11-off', token(92))).toEqual({ kind: 'roleDisabled' });
+			expect(await off.request.evaluateCursorless('s11-off')).toEqual({ kind: 'roleDisabled' });
+			expect(offRedis.events.map((event) => `${event.kind}.${event.outcome}`)).toEqual(['refresh.unavailable', 'open.unavailable']);
+
+			await seedUser(query, 's11-stock');
+			const redis = makeFakeRedis();
+			const runtime = makeRuntime(schema, { idPrefix: 's11b', redis });
+			redis.store.set('hanami:feed:seen:s11-stock', '1');
+			await setupStock(runtime, 's11-stock');
+			redis.events.length = 0;
+			await runtime.request.requestRefresh('s11-stock', token(93));
+			await runtime.request.requestRefresh('s11-stock', token(93));
+			expect(redis.events.filter((event) => event.kind === 'refresh').map((event) => event.outcome)).toEqual(['stock', 'repeat']);
+		});
+	}, 20_000);
+
+	test('S12 admin/hanami/feed-status runs every query on the real schema and counts broken invariants', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 's12status');
+			const runtime = makeRuntime(schema, { idPrefix: 's12' });
+			const { headBatchId } = await setupStock(runtime, 's12status');
+			const redis = { hgetall: jest.fn(async () => ({})), lrange: jest.fn(async () => [] as string[]), ttl: jest.fn(async () => -2) };
+			const endpoint = new FeedStatusEndpoint(makeDataSource(schema) as never, redis as never, config());
+			const read = async (): Promise<SchemaType<typeof feedStatusMeta.res>> => await endpoint.exec({ userId: 's12status' }, { id: 'admin' } as never, null);
+
+			const healthy = await read();
+			expect(healthy.checks.filter((check) => !check.ok || check.error != null)).toEqual([]);
+			expect(healthy.issues).toEqual([]);
+			expect(healthy.current).toMatchObject({ personalizedUsers: 1, withStock: 1 });
+			expect(healthy.batches.last7d.byTriggerReasonStatus).toEqual(expect.arrayContaining([
+				expect.objectContaining({ trigger: 'prefetch', reason: 'afterServe', status: 'ready', count: 1 }),
+			]));
+			expect(healthy.user).toMatchObject({ state: { mode: 'personalized' }, stock: { itemCount: 1 } });
+
+			// 先頭より上にストックではない行を入れ、ストックの番号もずらす（I1・I2 違反）。
+			await query(`INSERT INTO "note" ("id") VALUES ('s12-stray-note')`);
+			await query(`INSERT INTO "hanami_user_feed_entry"
+				("id", "userId", "epochId", "sequence", "batchId", "position", "noteId", "source", "sources", "origin", "reasonMetadata", "generatedAt")
+				SELECT 's12-stray', s."userId", s."epochId", s."stockSequence" + 5, $1, 200, 's12-stray-note', 'globalPopular', '["globalPopular"]', 'commonCandidate', '{"version":1}', clock_timestamp()
+				FROM "hanami_user_feed_state" s WHERE s."userId" = 's12status'`, [headBatchId]);
+			await query(`UPDATE "hanami_user_feed_state" SET "stockSequence" = "stockSequence" + 1 WHERE "userId" = 's12status'`);
+			const broken = await read();
+			expect(broken.checks.find((check) => check.code === 'entryAboveHeadNotStock')).toMatchObject({ ok: false, count: 1, error: null });
+			expect(broken.checks.find((check) => check.code === 'stockShapeMismatch')).toMatchObject({ ok: false, count: 1, error: null });
+			expect(broken.issues.map((issue) => issue.code)).toEqual(expect.arrayContaining(['entryAboveHeadNotStock', 'stockShapeMismatch']));
 		});
 	}, 20_000);
 });

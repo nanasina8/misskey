@@ -16,6 +16,7 @@ import ActiveUsersChart from '@/core/chart/charts/active-users.js';
 import HanamiTimelineChart from '@/core/chart/charts/hanami-timeline.js';
 import { DI } from '@/di-symbols.js';
 import { RoleService } from '@/core/RoleService.js';
+import { HANAMI_USER_FEED_REQUEST, type HanamiUserFeedRequestPort } from '@/core/hanami/HanamiUserFeedContracts.js';
 import { ApiError } from '../../error.js';
 
 export const meta = {
@@ -66,8 +67,15 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private roleService: RoleService,
 		private activeUsersChart: ActiveUsersChart,
 		private hanamiTimelineChart: HanamiTimelineChart,
+		@Inject(HANAMI_USER_FEED_REQUEST)
+		private userFeedRequest: HanamiUserFeedRequestPort,
 	) {
 		super(meta, paramDef, async (ps, me) => {
+			// ほかの TL の最初のページを読んだ人の分も、裏ではなみTLのストックを先回りで作っておく。
+			if (me != null && ps.untilId == null && ps.sinceId == null && ps.untilDate == null && ps.sinceDate == null) {
+				this.userFeedRequest.prewarm(me.id);
+			}
+
 			const policies = await this.roleService.getUserPolicies(me ? me.id : null);
 			if (!policies.gtlAvailable) {
 				throw new ApiError(meta.errors.gtlDisabled);

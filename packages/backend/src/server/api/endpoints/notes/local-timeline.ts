@@ -17,6 +17,7 @@ import { QueryService } from '@/core/QueryService.js';
 import { MiLocalUser } from '@/models/User.js';
 import { FanoutTimelineEndpointService } from '@/core/FanoutTimelineEndpointService.js';
 import { ChannelMutingService } from '@/core/ChannelMutingService.js';
+import { HANAMI_USER_FEED_REQUEST, type HanamiUserFeedRequestPort } from '@/core/hanami/HanamiUserFeedContracts.js';
 import { ApiError } from '../../error.js';
 
 export const meta = {
@@ -80,10 +81,17 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private queryService: QueryService,
 		private channelMutingService: ChannelMutingService,
 		private hanamiTimelineChart: HanamiTimelineChart,
+		@Inject(HANAMI_USER_FEED_REQUEST)
+		private userFeedRequest: HanamiUserFeedRequestPort,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			const untilId = ps.untilId ?? (ps.untilDate ? this.idService.gen(ps.untilDate!) : null);
 			const sinceId = ps.sinceId ?? (ps.sinceDate ? this.idService.gen(ps.sinceDate!) : null);
+
+			// ほかの TL の最初のページを読んだ人の分も、裏ではなみTLのストックを先回りで作っておく。
+			if (me != null && ps.untilId == null && ps.sinceId == null && ps.untilDate == null && ps.sinceDate == null) {
+				this.userFeedRequest.prewarm(me.id);
+			}
 
 			const policies = await this.roleService.getUserPolicies(me ? me.id : null);
 			if (!policies.ltlAvailable) {

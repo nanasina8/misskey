@@ -14,6 +14,7 @@ import { HanamiFeedLifecycleService } from '@/core/hanami/HanamiFeedLifecycleSer
 import { HibernationSweepProcessorService } from '@/queue/processors/HibernationSweepProcessorService.js';
 import { HanamiPersistedTimelinePhase11787097600000 } from '../../migration/1787097600000-hanamiPersistedTimelinePhase1.js';
 import { HanamiUserFeedStock1793611851090 } from '../../migration/1793611851090-hanamiUserFeedStock.js';
+import { HanamiUserFeedStockDiagnostics1793617490823 } from '../../migration/1793617490823-hanamiUserFeedStockDiagnostics.js';
 
 type DbRow = Record<string, unknown>;
 type DbQuery = <T extends DbRow = DbRow>(sql: string, values?: unknown[]) => Promise<T[]>;
@@ -123,6 +124,7 @@ const withMigratedSchema = async (run: (context: SchemaContext) => Promise<void>
 			WHERE "host" IS NULL AND "isHibernated" = false AND "lastActiveDate" IS NOT NULL`);
 		await new HanamiPersistedTimelinePhase11787097600000().up({ query } as never);
 		await new HanamiUserFeedStock1793611851090().up({ query } as never);
+		await new HanamiUserFeedStockDiagnostics1793617490823().up({ query } as never);
 		await run({ schema, query });
 	} catch (error) {
 		if (isDbConnectionError(error)) {

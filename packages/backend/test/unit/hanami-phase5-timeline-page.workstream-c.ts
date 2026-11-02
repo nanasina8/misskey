@@ -108,6 +108,8 @@ function fixture(options: {
 			kind: 'serve', head: personalHead, generationPending: false, requestedBatchId: 'refresh-batch',
 		})),
 		maintainStock: jest.fn<HanamiUserFeedRequestPort['maintainStock']>(async () => ({ batchIdsToEnqueue: [] })),
+		ensureStock: jest.fn<HanamiUserFeedRequestPort['ensureStock']>(async () => undefined),
+		prewarm: jest.fn<HanamiUserFeedRequestPort['prewarm']>(() => undefined),
 	};
 	const readPort = {
 		scanReadyEntries: jest.fn<HanamiPersistedFeedReadPort['scanReadyEntries']>(async () => ({
@@ -207,7 +209,8 @@ describe('Hanami Phase 5 workstream C timeline page service', () => {
 	test('keeps Redis marker failure non-fatal and cursor pagination generation-free', async () => {
 		const target = fixture({ redisFailure: new Error('redis unavailable') });
 		await expect(target.service.serve({ me, request: request({ cursor: cursor() }) })).resolves.toMatchObject({ kind: 'ok' });
-		expect(target.redisSet).toHaveBeenCalledTimes(1);
+		// active marker と seen キーの 2 回 SET するが、どちらも失敗しても応答は続ける。
+		expect(target.redisSet).toHaveBeenCalledTimes(2);
 		expect(target.requestPort.checkAvailability).toHaveBeenCalledTimes(1);
 		expect(target.readPort.resumeReadyEntries).toHaveBeenCalledTimes(1);
 		expect(target.requestPort.evaluateCursorless).not.toHaveBeenCalled();

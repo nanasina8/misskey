@@ -17,6 +17,9 @@ function createHarness() {
 		runUserFeedGeneration: jest.fn<HanamiUserFeedGenerationLifecyclePort['runUserFeedGeneration']>(),
 		reconcileUserFeedGeneration: jest.fn<HanamiUserFeedGenerationLifecyclePort['reconcileUserFeedGeneration']>(),
 	};
+	const userFeedRequest = {
+		ensureStock: jest.fn(async () => undefined),
+	};
 	const queueService = {
 		enqueueHanamiUserFeedGeneration: jest.fn(async () => undefined),
 	};
@@ -30,8 +33,8 @@ function createHarness() {
 			createSubLogger: jest.fn(() => logger),
 		},
 	};
-	const service = new HanamiUserFeedGenerationProcessorService(lifecycle, queueService as never, queueLoggerService as never);
-	return { service, lifecycle, queueService, logger, queueLoggerService };
+	const service = new HanamiUserFeedGenerationProcessorService(lifecycle, userFeedRequest as never, queueService as never, queueLoggerService as never);
+	return { service, lifecycle, userFeedRequest, queueService, logger, queueLoggerService };
 }
 
 function job(data: unknown) {
@@ -51,7 +54,7 @@ describe('HanamiUserFeedGenerationProcessorService workstream C', () => {
 		{ kind: 'stale', batchId: 'batch-01', attempt: 1 },
 		{ kind: 'obsolete', batchId: 'batch-01' },
 		{ kind: 'alreadyReady', batchId: 'batch-01', itemCount: 30 },
-		{ kind: 'published', batchId: 'batch-01', attempt: 1, itemCount: 30, feedEpochId: 'epoch-01', headSequence: '30' },
+		{ kind: 'published', batchId: 'batch-01', userId: 'user-01', attempt: 1, itemCount: 30, feedEpochId: 'epoch-01', headSequence: '30' },
 		{ kind: 'failed', batchId: 'batch-01', attempt: 1, terminal: false },
 	] satisfies HanamiUserFeedGenerationRunResult[];
 
@@ -76,7 +79,7 @@ describe('HanamiUserFeedGenerationProcessorService workstream C', () => {
 	test('tolerates duplicate deliveries by invoking the idempotent lifecycle with the same batch', async () => {
 		const { service, lifecycle } = createHarness();
 		lifecycle.runUserFeedGeneration
-			.mockResolvedValueOnce({ kind: 'published', batchId: 'batch-01', attempt: 1, itemCount: 1, feedEpochId: 'epoch-01', headSequence: '1' })
+			.mockResolvedValueOnce({ kind: 'published', batchId: 'batch-01', userId: 'user-01', attempt: 1, itemCount: 1, feedEpochId: 'epoch-01', headSequence: '1' })
 			.mockResolvedValueOnce({ kind: 'alreadyReady', batchId: 'batch-01', itemCount: 1 });
 
 		await service.process(job({ batchId: 'batch-01' }) as never);
@@ -111,5 +114,23 @@ describe('HanamiUserFeedGenerationProcessorService workstream C', () => {
 		await expect(service.process(generationJob as never)).rejects.toBe(timeout);
 		expect(generationJob.log).not.toHaveBeenCalled();
 		expect(generationJob.updateProgress).not.toHaveBeenCalled();
+	});
+
+	test('S7 backfills the stock with afterGenerate after a non-prefetch publish', async () => {
+		const { service, lifecycle, userFeedRequest } = createHarness();
+		lifecycle.runUserFeedGeneration.mockResolvedValue({ kind: 'published', batchId: 'batch-01', userId: 'user-01', attempt: 1, itemCount: 30, feedEpochId: 'epoch-01', headSequence: '30' });
+
+		await service.process(job({ batchId: 'batch-01' }) as never);
+
+		expect(userFeedRequest.ensureStock).toHaveBeenCalledWith('user-01', 'afterGenerate');
+	});
+
+	test('does not backfill the stock for a prefetch-or-other non-published result', async () => {
+		const { service, lifecycle, userFeedRequest } = createHarness();
+		lifecycle.runUserFeedGeneration.mockResolvedValue({ kind: 'failed', batchId: 'batch-01', attempt: 1, terminal: true });
+
+		await service.process(job({ batchId: 'batch-01' }) as never);
+
+		expect(userFeedRequest.ensureStock).not.toHaveBeenCalled();
 	});
 });

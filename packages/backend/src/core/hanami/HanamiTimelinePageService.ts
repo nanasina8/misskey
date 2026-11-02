@@ -24,6 +24,7 @@ import {
 	HanamiInvalidFeedEntryError,
 } from '@/core/hanami/HanamiForYouProvenanceService.js';
 import { refreshHanamiForYouActiveMarker } from '@/core/hanami/HanamiForYouService.js';
+import { HANAMI_FEED_SEEN_KEY_PREFIX, HANAMI_FEED_SEEN_TTL_SECONDS } from '@/core/hanami/HanamiFeedStockEvents.js';
 import { HanamiForYouSafetyService } from '@/core/hanami/HanamiForYouSafetyService.js';
 import type {
 	HanamiTimelinePageInput,
@@ -222,6 +223,8 @@ export class HanamiTimelinePageService {
 			})));
 		}
 		refreshHanamiForYouActiveMarker(this.redisClient, input.me.id);
+		// ページを返すたびに「前回見た」の目印を更新（30 分）。失敗しても応答は続ける。
+		this.redisClient.set(HANAMI_FEED_SEEN_KEY_PREFIX + input.me.id, '1', 'EX', HANAMI_FEED_SEEN_TTL_SECONDS).catch(() => { /* 次回ページで再試行 */ });
 
 		const response: HanamiTimelineResponse = {
 			items,

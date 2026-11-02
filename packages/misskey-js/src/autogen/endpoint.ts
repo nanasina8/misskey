@@ -109,6 +109,8 @@ import type {
 	AdminGetTableStatsResponse,
 	AdminGetUserIpsRequest,
 	AdminGetUserIpsResponse,
+	AdminHanamiFeedStatusRequest,
+	AdminHanamiFeedStatusResponse,
 	AdminHanamiGpuQueueRequest,
 	AdminHanamiGpuQueueResponse,
 	AdminHanamiJobsStatusRequest,
@@ -838,6 +840,7 @@ export type Endpoints = {
 	'admin/get-index-stats': { req: EmptyRequest; res: AdminGetIndexStatsResponse };
 	'admin/get-table-stats': { req: EmptyRequest; res: AdminGetTableStatsResponse };
 	'admin/get-user-ips': { req: AdminGetUserIpsRequest; res: AdminGetUserIpsResponse };
+	'admin/hanami/feed-status': { req: AdminHanamiFeedStatusRequest; res: AdminHanamiFeedStatusResponse };
 	'admin/hanami/gpu-queue': { req: AdminHanamiGpuQueueRequest; res: AdminHanamiGpuQueueResponse };
 	'admin/hanami/jobs-status': { req: AdminHanamiJobsStatusRequest; res: AdminHanamiJobsStatusResponse };
 	'admin/hanami/judge-aggregate': { req: AdminHanamiJudgeAggregateRequest; res: AdminHanamiJudgeAggregateResponse };

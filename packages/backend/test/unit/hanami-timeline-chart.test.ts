@@ -322,15 +322,16 @@ function restHarness(kind: HanamiTimelineKind, useFanout = true) {
 		generateBaseNoteFilteringQuery: jest.fn(), generateUgcVisibilityQueryForVisitor: jest.fn(), generateMutedUserRenotesQueryForNotes: jest.fn(),
 	} as never;
 	const unused = {} as never;
+	const userFeedRequest = { prewarm: jest.fn() } as never;
 	const serve = jest.fn<() => Promise<unknown>>().mockResolvedValue({ kind: 'ok', response: { items: [], mode: 'common' } });
 	const endpoint = kind === 'home'
-		? new HomeEndpoint(settings, notes, noteEntity, active, unused, cache, fanout, unused, unused, unused, query, metrics)
+		? new HomeEndpoint(settings, notes, noteEntity, active, unused, cache, fanout, unused, unused, unused, query, metrics, userFeedRequest)
 		: kind === 'local'
-			? new LocalEndpoint(settings, notes, noteEntity, roles, active, unused, fanout, query, unused, metrics)
+			? new LocalEndpoint(settings, notes, noteEntity, roles, active, unused, fanout, query, unused, metrics, userFeedRequest)
 			: kind === 'social'
-				? new SocialEndpoint(settings, notes, noteEntity, roles, active, unused, cache, query, unused, unused, unused, fanout, metrics)
+				? new SocialEndpoint(settings, notes, noteEntity, roles, active, unused, cache, query, unused, unused, unused, fanout, metrics, userFeedRequest)
 				: kind === 'global'
-					? new GlobalEndpoint(notes, noteEntity, cache, query, roles, active, metrics)
+					? new GlobalEndpoint(notes, noteEntity, cache, query, roles, active, metrics, userFeedRequest)
 					: new HanamiEndpoint({ serve } as never, metrics);
 	if ('getFromDb' in endpoint) {
 		jest.spyOn(endpoint as unknown as { getFromDb: () => Promise<unknown[]> }, 'getFromDb').mockImplementation(getMany);

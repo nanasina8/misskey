@@ -27,6 +27,8 @@ import {
 } from './HanamiUserFeedContracts.js';
 import { HanamiCommonHeadQueries } from './HanamiCommonHeadQueries.js';
 import { classifyHanamiMetricsFailure, type HanamiMetricsFailureKind } from './HanamiMetricsFailure.js';
+import { recordHanamiFeedEvent, type HanamiFeedDiscardReason } from './HanamiFeedStockEvents.js';
+import type { Redis } from 'ioredis';
 import type { DataSource, QueryRunner } from 'typeorm';
 
 const MAX_ITEMS = 210;
@@ -126,6 +128,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 		private commonHeadQueries: HanamiCommonHeadQueries = new HanamiCommonHeadQueries(),
 		@Optional() private metricsCapture?: HanamiMetricsCaptureService,
 		@Optional() private metricsHealth?: HanamiMetricsTimelineHealthService,
+		@Optional() @Inject(DI.redis) private metricsRedis?: Redis,
 	) {}
 
 	@bindThis
@@ -136,6 +139,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 		}
 
 		const workerLease = this.startWorkerLease(batchId);
+		const startedAt = performance.now();
 		let claim: Claim | undefined;
 		try {
 			const claimed = await this.claimBatch(batchId, workerLease);
@@ -164,9 +168,12 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 			if (publication.kind === 'stale') {
 				return { kind: 'stale', batchId, attempt: claim.attempt };
 			}
+			// R4 で途中から refresh に変わることがあるので、claim 時ではなく publish 先で記録する。
+			this.recordPublishEvent(claim.userId, batchId, publication.toStock ? 'stock' : 'head', startedAt);
 			return {
 				kind: 'published',
 				batchId,
+				userId: claim.userId,
 				attempt: claim.attempt,
 				itemCount: computation.items.length,
 				feedEpochId: claim.epochId,
@@ -186,15 +193,18 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 				const resolution = await this.resolveFailure(claim, failureBudget, primaryError);
 				if (resolution.kind === 'stale') return { kind: 'stale', batchId, attempt: claim.attempt };
 				if (resolution.kind === 'published') {
+					this.recordPublishEvent(claim.userId, batchId, claim.trigger === 'prefetch' ? 'stock' : 'head', startedAt);
 					return {
 						kind: 'published',
 						batchId,
+						userId: claim.userId,
 						attempt: claim.attempt,
 						itemCount: resolution.itemCount,
 						feedEpochId: resolution.feedEpochId,
 						headSequence: resolution.headSequence,
 					};
 				}
+				this.recordPublishEvent(claim.userId, batchId, 'failed', startedAt);
 				return { kind: 'failed', batchId, attempt: claim.attempt, terminal: resolution.terminal, failureKind: resolution.failureKind, failureMessage: primaryError instanceof Error ? primaryError.message : String(primaryError) };
 			} finally {
 				failureBudget.dispose();
@@ -472,7 +482,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 		claim: Claim,
 		computation: HanamiPersonalFeedComputationResult,
 		budget: Budget,
-	): Promise<{ kind: 'published'; headSequence: string } | { kind: 'stale' }> {
+	): Promise<{ kind: 'published'; headSequence: string; toStock: boolean } | { kind: 'stale' }> {
 		const entryIds = computation.items.map(() => this.idService.gen());
 		const { metricsCandidates, ...checksumComputation } = computation;
 		const checksum = createHash('sha256').update(this.canonicalJson({
@@ -521,7 +531,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 					}
 				} else if (state.stock_batch_id != null) {
 					// I3: ストックがあるまま別のまとまりを先頭に出す前に、先に捨てる。
-					await this.discardStock(queryRunner, budget, claim.userId, claim.epochId, state.stock_batch_id);
+					await this.discardStock(queryRunner, budget, claim.userId, claim.epochId, state.stock_batch_id, 'publish');
 					state = { ...state, stock_batch_id: null, stock_sequence: null };
 				}
 
@@ -640,7 +650,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 								: await this.deadlineQuery(queryRunner, budget, sql, parameters));
 					} finally { this.metricsHealth?.finish(day, captured); }
 				}
-				return { kind: 'published', headSequence: publishedHeadSequence } as const;
+				return { kind: 'published', headSequence: publishedHeadSequence, toStock: isPrefetch } as const;
 			});
 		} catch (error) {
 			if (error instanceof HanamiUserFeedLeaseLostError) return { kind: 'stale' };
@@ -854,7 +864,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 		return rows.at(0) ?? null;
 	}
 
-	private async discardStock(queryRunner: QueryRunner, budget: Budget, userId: string, epochId: string, stockBatchId: string): Promise<void> {
+	private async discardStock(queryRunner: QueryRunner, budget: Budget, userId: string, epochId: string, stockBatchId: string, reason: HanamiFeedDiscardReason): Promise<void> {
 		await this.deadlineQuery(queryRunner, budget, `
 			UPDATE "hanami_user_feed_state"
 			SET "stockBatchId" = NULL, "stockSequence" = NULL, "updatedAt" = clock_timestamp()
@@ -866,9 +876,21 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 		`, [userId, epochId, stockBatchId]);
 		await this.deadlineQuery(queryRunner, budget, `
 			UPDATE "hanami_user_feed_batch"
-			SET "status" = 'obsolete'
+			SET "status" = 'obsolete', "discardReason" = $3
 			WHERE "id" = $1 AND "userId" = $2 AND "status" = 'ready'
-		`, [stockBatchId, userId]);
+		`, [stockBatchId, userId, reason]);
+	}
+
+	private recordPublishEvent(userId: string, batchId: string, outcome: string, startedAt: number): void {
+		if (this.metricsRedis == null) return;
+		void recordHanamiFeedEvent(this.metricsRedis, {
+			at: new Date().toISOString(),
+			userId,
+			kind: 'publish',
+			outcome,
+			batchId,
+			durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+		});
 	}
 
 	private isExactLiveClaim(state: StateRow, batch: BatchRow | null, claim: Claim): batch is BatchRow {

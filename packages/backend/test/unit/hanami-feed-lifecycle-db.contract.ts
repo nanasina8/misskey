@@ -10,6 +10,7 @@ import { Client } from 'pg';
 import { HanamiFeedLifecycleService } from '@/core/hanami/HanamiFeedLifecycleService.js';
 import { HanamiPersistedTimelinePhase11787097600000 } from '../../migration/1787097600000-hanamiPersistedTimelinePhase1.js';
 import { HanamiUserFeedStock1793611851090 } from '../../migration/1793611851090-hanamiUserFeedStock.js';
+import { HanamiUserFeedStockDiagnostics1793617490823 } from '../../migration/1793617490823-hanamiUserFeedStockDiagnostics.js';
 
 type DbRow = Record<string, unknown>;
 type DbQuery = <T extends DbRow = DbRow>(sql: string, values?: unknown[]) => Promise<T[]>;
@@ -108,6 +109,7 @@ const withMigratedSchema = async (run: (context: SchemaContext) => Promise<void>
 		)`);
 		await new HanamiPersistedTimelinePhase11787097600000().up({ query } as never);
 		await new HanamiUserFeedStock1793611851090().up({ query } as never);
+		await new HanamiUserFeedStockDiagnostics1793617490823().up({ query } as never);
 		await run({ schema, query, openClient });
 	} catch (error) {
 		if (isDbConnectionError(error)) {

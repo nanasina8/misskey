@@ -10,6 +10,7 @@ import type { MiUser } from './User.js';
 @Entity('hanami_user_feed_batch', { synchronize: false })
 @Index('IDX_hanami_user_feed_batch_active_user', { synchronize: false })
 @Index('IDX_hanami_user_feed_batch_available', ['status', 'availableAt'])
+@Index('IDX_hanami_user_feed_batch_created', ['createdAt'])
 export class MiHanamiUserFeedBatch {
 	@PrimaryColumn(id())
 	public id: string;
@@ -23,8 +24,14 @@ export class MiHanamiUserFeedBatch {
 	@Column('varchar', { length: 32 })
 	public trigger: string;
 
+	@Column('varchar', { length: 16, nullable: true })
+	public reason: string | null;
+
 	@Column('varchar', { length: 32 })
 	public status: string;
+
+	@Column('varchar', { length: 16, nullable: true })
+	public discardReason: string | null;
 
 	@Column('varchar', { length: 32, nullable: true })
 	public failureKind: string | null;
@@ -52,6 +59,9 @@ export class MiHanamiUserFeedBatch {
 
 	@Column('timestamp with time zone', { nullable: true })
 	public finishedAt: Date | null;
+
+	@Column('timestamp with time zone', { nullable: true })
+	public promotedAt: Date | null;
 
 	@Column('integer', { default: 0 })
 	public itemCount: number;

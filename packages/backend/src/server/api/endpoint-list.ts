@@ -87,6 +87,7 @@ export * as 'admin/hanami/taste-rebuild-status' from './endpoints/admin/hanami/t
 export * as 'admin/hanami/judge-settings' from './endpoints/admin/hanami/judge-settings.js';
 export * as 'admin/hanami/gpu-queue' from './endpoints/admin/hanami/gpu-queue.js';
 export * as 'admin/hanami/jobs-status' from './endpoints/admin/hanami/jobs-status.js';
+export * as 'admin/hanami/feed-status' from './endpoints/admin/hanami/feed-status.js';
 export * as 'admin/hanami/judge-status' from './endpoints/admin/hanami/judge-status.js';
 export * as 'admin/hanami/metrics/summary' from './endpoints/admin/hanami/metrics/summary.js';
 export * as 'admin/hanami/metrics/breakdown' from './endpoints/admin/hanami/metrics/breakdown.js';
