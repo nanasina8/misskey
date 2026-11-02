@@ -119,6 +119,13 @@ export interface HanamiUserFeedRequestPort {
 		refreshToken: string,
 		reason?: 'tuning',
 	): Promise<HanamiUserFeedRequestResult>;
+
+	/**
+	 * Creates or refreshes at most `limit` prefetch stock batches for recently
+	 * active personalized users. The caller is responsible for enqueuing the
+	 * returned batch IDs.
+	 */
+	maintainStock(limit: number): Promise<{ batchIdsToEnqueue: string[] }>;
 }
 
 export type HanamiPersonalFeedCandidate = {

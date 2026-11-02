@@ -22,6 +22,7 @@ import {
 	type HanamiPersonalFeedComputationResult,
 } from '@/core/hanami/HanamiUserFeedContracts.js';
 import { HanamiPersistedTimelinePhase11787097600000 } from '../../migration/1787097600000-hanamiPersistedTimelinePhase1.js';
+import { HanamiUserFeedStock1793611851090 } from '../../migration/1793611851090-hanamiUserFeedStock.js';
 
 type DbRow = Record<string, unknown>;
 type DbQuery = <T extends DbRow = DbRow>(sql: string, values?: unknown[]) => Promise<T[]>;
@@ -213,6 +214,13 @@ const withMigratedSchema = async (run: (context: { schema: string; query: DbQuer
 		// Match 1789948800000-hanamiMetricsDaily without its unrelated metrics tables.
 		await query(`ALTER TABLE "hanami_user_feed_batch"
 			ADD COLUMN "failureKind" varchar(32), ADD COLUMN "failureMessage" varchar(512)`);
+		await new HanamiUserFeedStock1793611851090().up({ query } as never);
+		// R7 の maintainStock 判定に必要な最小の metrics timeline 表。
+		await query(`CREATE TABLE "hanami_metrics_timeline" (
+			"day" date NOT NULL, "kind" varchar(32) NOT NULL,
+			"userId" varchar(32) REFERENCES "user"("id") ON DELETE CASCADE,
+			"requests" integer NOT NULL DEFAULT 0
+		)`);
 		await query(`INSERT INTO "note" ("id") SELECT id FROM unnest($1::varchar[]) input(id)`, [[
 			'common-note-1', 'common-note-2', 'common-note-3',
 			'personal-note-1', 'personal-note-2', 'personal-note-3', 'personal-note-4',
@@ -262,6 +270,61 @@ const makeMetricsHealth = () => ({
 	begin: jest.fn<HanamiMetricsTimelineHealthService['begin']>(),
 	finish: jest.fn<HanamiMetricsTimelineHealthService['finish']>(),
 });
+
+type Runtime = ReturnType<typeof makeRuntime>;
+
+// 初回生成を publish して personalized の先頭を作り、続けてストック用 prefetch を publish する。
+const setupStock = async (runtime: Runtime, userId: string): Promise<{ headBatchId: string; stockBatchId: string; feedEpochId: string }> => {
+	const initial = await runtime.request.evaluateCursorless(userId);
+	if (initial.kind !== 'serve' || !initial.generationPending) throw new Error('expected initial batch');
+	const published = await runtime.generation.runUserFeedGeneration(initial.requestedBatchId);
+	if (published.kind !== 'published') throw new Error('expected initial publication');
+	await runtime.request.evaluateCursorless(userId);
+	const stockBatchId = runtime.queueCalls.at(-1)!;
+	await runtime.generation.runUserFeedGeneration(stockBatchId);
+	return { headBatchId: initial.requestedBatchId, stockBatchId, feedEpochId: published.feedEpochId };
+};
+
+// maintainStock の候補判定に必要な最小の personalized ユーザーを直接作る。
+const seedPersonalizedUser = async (query: DbQuery, userId: string, options: {
+	hibernated?: boolean;
+	metrics?: boolean;
+	freshStock?: boolean;
+	recentBatch?: boolean;
+} = {}): Promise<void> => {
+	const epochId = `${userId}-epoch`;
+	const headBatchId = `${userId}-head`;
+	await query(`INSERT INTO "user" ("id", "isHibernated") VALUES ($1, $2)`, [userId, options.hibernated ?? false]);
+	await query(`INSERT INTO "user_profile" ("userId", "hanamiRecommendationEnabled") VALUES ($1, TRUE)`, [userId]);
+	await query(`INSERT INTO "hanami_user_feed_epoch" ("epochId", "userId", "createdAt", "retiredAt")
+		VALUES ($1, $2, clock_timestamp() - INTERVAL '2 hours', NULL)`, [epochId, userId]);
+	await query(`INSERT INTO "hanami_user_feed_batch"
+		("id", "userId", "epochId", "trigger", "status", "attempts", "createdAt", "availableAt", "finishedAt", "itemCount", "baseCommonGenerationId")
+		VALUES ($1, $2, $3, 'initial', 'ready', 1, clock_timestamp() - INTERVAL '2 hours', clock_timestamp() - INTERVAL '2 hours', clock_timestamp() - INTERVAL '2 hours', 1, 'common-generation-1')`,
+	[headBatchId, userId, epochId]);
+	await query(`INSERT INTO "hanami_user_feed_state"
+		("userId", "epochId", "mode", "initialGenerationState", "latestReadyBatchId", "generatingBatchId", "latestSequence", "earliestRetainedSequence", "updatedAt")
+		VALUES ($1, $2, 'personalized', 'ready', $3, NULL, 1, 1, clock_timestamp())`,
+	[userId, epochId, headBatchId]);
+	if (options.metrics) {
+		await query(`INSERT INTO "hanami_metrics_timeline" ("day", "kind", "userId", "requests")
+			VALUES ((clock_timestamp() AT TIME ZONE 'Asia/Tokyo')::date, 'hanami', $1, 1)`, [userId]);
+	}
+	if (options.freshStock) {
+		const stockBatchId = `${userId}-stock`;
+		await query(`INSERT INTO "hanami_user_feed_batch"
+			("id", "userId", "epochId", "trigger", "status", "attempts", "createdAt", "availableAt", "finishedAt", "itemCount", "baseCommonGenerationId")
+			VALUES ($1, $2, $3, 'prefetch', 'ready', 1, clock_timestamp(), clock_timestamp(), clock_timestamp(), 1, 'common-generation-1')`,
+		[stockBatchId, userId, epochId]);
+		await query(`UPDATE "hanami_user_feed_state" SET "stockBatchId" = $1, "stockSequence" = 2 WHERE "userId" = $2`, [stockBatchId, userId]);
+	}
+	if (options.recentBatch) {
+		await query(`INSERT INTO "hanami_user_feed_batch"
+			("id", "userId", "epochId", "trigger", "status", "attempts", "createdAt", "availableAt", "baseCommonGenerationId")
+			VALUES ($1, $2, $3, 'refresh', 'obsolete', 1, clock_timestamp(), clock_timestamp(), 'common-generation-1')`,
+		[`${userId}-recent`, userId, epochId]);
+	}
+};
 
 describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 	if (!databaseUrl) {
@@ -567,7 +630,10 @@ describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 				JOIN "hanami_user_feed_state" s ON s."userId" = e."userId"
 				WHERE e."userId" = 'request-user'
 			`);
-			expect(sequenceRows).toEqual([{ sequence: '1', status: 'ready', pointer: null }]);
+			expect(sequenceRows).toEqual([{ sequence: '1', status: 'ready', pointer: expect.any(String) }]);
+			// 普通に開いただけで並びは変えないが、次のストックを裏で作り始める。
+			expect(await query(`SELECT "trigger", "status" FROM "hanami_user_feed_batch"
+				WHERE "userId" = 'request-user' AND "trigger" = 'prefetch'`)).toEqual([{ trigger: 'prefetch', status: 'pending' }]);
 		});
 	}, 20_000);
 
@@ -635,7 +701,7 @@ describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 				idPrefix: 'pg',
 				config: { hanamiGenerationSyncWaitMs: 2_000 },
 				queue: async (batchId) => {
-					void generationHolder.service!.runUserFeedGeneration(batchId);
+					await generationHolder.service!.runUserFeedGeneration(batchId);
 				},
 			});
 			generationHolder.service = synchronous.generation;
@@ -644,7 +710,8 @@ describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 				kind: 'serve', generationPending: false,
 				head: { kind: 'personal', headSequence: '1' },
 			});
-			expect(synchronous.queueCalls).toHaveLength(1);
+			// 初回の batch と、その後に仕込まれるストック用 prefetch の 2 回 enqueue される。
+			expect(synchronous.queueCalls).toHaveLength(2);
 
 			await seedUser(query, 'never-enqueue-user');
 			const neverEnqueue = makeRuntime(schema, {
@@ -1110,6 +1177,204 @@ describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 			expect(second.batchIdsToEnqueue).toHaveLength(3);
 			expect(second.deletedRefreshCount).toBe(2);
 			expect(second.hasMore).toBe(false);
+		});
+	}, 20_000);
+
+	test('T1 prefetch publish becomes a stock above the head and stays invisible to scans', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 't1-stock');
+			const runtime = makeRuntime(schema, { idPrefix: 't1' });
+			const { headBatchId, stockBatchId, feedEpochId } = await setupStock(runtime, 't1-stock');
+
+			const state = await query(`SELECT "latestReadyBatchId", "latestSequence"::text, "generatingBatchId", "stockBatchId", "stockSequence"::text
+				FROM "hanami_user_feed_state" WHERE "userId" = 't1-stock'`);
+			expect(state).toEqual([{ latestReadyBatchId: headBatchId, latestSequence: '1', generatingBatchId: null, stockBatchId, stockSequence: '2' }]);
+			// ストックの entry は先頭より上（sequence 2）にあり、先頭（sequence 1）は動いていない。
+			const entries = await query(`SELECT "sequence"::text AS sequence, "batchId" FROM "hanami_user_feed_entry"
+				WHERE "userId" = 't1-stock' ORDER BY "sequence" DESC`);
+			expect(entries).toEqual([{ sequence: '2', batchId: stockBatchId }, { sequence: '1', batchId: headBatchId }]);
+			const scan = await runtime.read.scanReadyEntries({
+				requesterUserId: 't1-stock',
+				head: { mode: 'personalized', kind: 'personal', feedEpochId, headBatchId, headSequence: '1' },
+				beforeSequence: null,
+				scanLimit: 10,
+			});
+			expect(scan).toMatchObject({ kind: 'page', hasMore: false });
+			if (scan.kind === 'page') expect(scan.entries.map((entry) => entry.sequence)).toEqual(['1']);
+		});
+	}, 20_000);
+
+	test('T2 opening while a prefetch is generating returns immediately without waiting', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 't2-prefetch');
+			const runtime = makeRuntime(schema, { idPrefix: 't2' });
+			const initial = await runtime.request.evaluateCursorless('t2-prefetch');
+			if (initial.kind !== 'serve' || !initial.generationPending) throw new Error('expected initial batch');
+			await runtime.generation.runUserFeedGeneration(initial.requestedBatchId);
+			await runtime.request.evaluateCursorless('t2-prefetch');
+			const prefetchId = runtime.queueCalls.at(-1)!;
+
+			const open = await runtime.request.evaluateCursorless('t2-prefetch');
+			expect(open).toMatchObject({ kind: 'serve', generationPending: false, requestedBatchId: null, head: { kind: 'personal', headSequence: '1' } });
+			expect(await query(`SELECT "status" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [prefetchId])).toEqual([{ status: 'pending' }]);
+		});
+	}, 20_000);
+
+	test('T3 a fresh stock is promoted on refresh and schedules the next prefetch', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 't3-promote');
+			const runtime = makeRuntime(schema, { idPrefix: 't3' });
+			const { stockBatchId } = await setupStock(runtime, 't3-promote');
+
+			const refreshed = await runtime.request.requestRefresh('t3-promote', token(71));
+			expect(refreshed).toMatchObject({ kind: 'serve', generationPending: false, requestedBatchId: stockBatchId, head: { kind: 'personal', headBatchId: stockBatchId, headSequence: '2' } });
+			expect(await query(`SELECT "latestReadyBatchId", "latestSequence"::text, "stockBatchId", "stockSequence"::text
+				FROM "hanami_user_feed_state" WHERE "userId" = 't3-promote'`)).toEqual([{ latestReadyBatchId: stockBatchId, latestSequence: '2', stockBatchId: null, stockSequence: null }]);
+			expect(await query(`SELECT "status", "resultMode", "resultHeadBatchId", "resultHeadSequence"::text
+				FROM "hanami_user_feed_refresh" WHERE "userId" = 't3-promote'`)).toEqual([{ status: 'ready', resultMode: 'personalized', resultHeadBatchId: stockBatchId, resultHeadSequence: '2' }]);
+			// 繰り上げたストックの次を裏で作り始め、enqueue されている。
+			const prefetchRows = await query(`SELECT "id", "trigger", "status" FROM "hanami_user_feed_batch"
+				WHERE "userId" = 't3-promote' AND "trigger" = 'prefetch' AND "status" = 'pending'`);
+			expect(prefetchRows).toEqual([{ id: expect.any(String), trigger: 'prefetch', status: 'pending' }]);
+			expect(runtime.queueCalls).toContain(prefetchRows[0]!.id);
+		});
+	}, 20_000);
+
+	test('T4 a stale stock is discarded and refresh falls back to a fresh batch', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 't4-stale');
+			const runtime = makeRuntime(schema, { idPrefix: 't4' });
+			const initial = await runtime.request.evaluateCursorless('t4-stale');
+			if (initial.kind !== 'serve' || !initial.generationPending) throw new Error('expected initial batch');
+			await runtime.generation.runUserFeedGeneration(initial.requestedBatchId);
+			await query(`UPDATE "hanami_user_feed_batch" SET "finishedAt" = clock_timestamp() - INTERVAL '21 minutes' WHERE "id" = $1`, [initial.requestedBatchId]);
+			await runtime.request.evaluateCursorless('t4-stale');
+			const stockId = runtime.queueCalls.at(-1)!;
+			await runtime.generation.runUserFeedGeneration(stockId);
+			await query(`UPDATE "hanami_user_feed_batch" SET "finishedAt" = clock_timestamp() - INTERVAL '4 hours' WHERE "id" = $1`, [stockId]);
+
+			const refreshed = await runtime.request.requestRefresh('t4-stale', token(72));
+			expect(refreshed).toMatchObject({ kind: 'serve', generationPending: true, requestedBatchId: expect.any(String) });
+			expect(await query(`SELECT "status" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [stockId])).toEqual([{ status: 'obsolete' }]);
+			expect(await query(`SELECT COUNT(*)::text AS count FROM "hanami_user_feed_entry" WHERE "userId" = 't4-stale' AND "batchId" = $1`, [stockId])).toEqual([{ count: '0' }]);
+			expect(await query(`SELECT "stockBatchId", "stockSequence"::text, "latestReadyBatchId", "generatingBatchId"
+				FROM "hanami_user_feed_state" WHERE "userId" = 't4-stale'`)).toEqual([{ stockBatchId: null, stockSequence: null, latestReadyBatchId: initial.requestedBatchId, generatingBatchId: expect.any(String) }]);
+		});
+	}, 20_000);
+
+	test('T5 refresh during a prefetch converts it to refresh so the head advances', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 't5-refresh');
+			const runtime = makeRuntime(schema, { idPrefix: 't5' });
+			const initial = await runtime.request.evaluateCursorless('t5-refresh');
+			if (initial.kind !== 'serve' || !initial.generationPending) throw new Error('expected initial batch');
+			await runtime.generation.runUserFeedGeneration(initial.requestedBatchId);
+			await query(`UPDATE "hanami_user_feed_batch" SET "finishedAt" = clock_timestamp() - INTERVAL '21 minutes' WHERE "id" = $1`, [initial.requestedBatchId]);
+			await runtime.request.evaluateCursorless('t5-refresh');
+			const prefetchId = runtime.queueCalls.at(-1)!;
+
+			const refreshed = await runtime.request.requestRefresh('t5-refresh', token(73));
+			expect(refreshed).toMatchObject({ kind: 'serve', generationPending: true, requestedBatchId: prefetchId });
+			expect(await query(`SELECT "trigger" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [prefetchId])).toEqual([{ trigger: 'refresh' }]);
+
+			expect(await runtime.generation.runUserFeedGeneration(prefetchId)).toMatchObject({ kind: 'published', headSequence: '2' });
+			expect(await query(`SELECT "latestReadyBatchId", "latestSequence"::text, "stockBatchId", "stockSequence"::text
+				FROM "hanami_user_feed_state" WHERE "userId" = 't5-refresh'`)).toEqual([{ latestReadyBatchId: prefetchId, latestSequence: '2', stockBatchId: null, stockSequence: null }]);
+		});
+	}, 20_000);
+
+	test('T6 tuning discards the stock and creates a fresh batch', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 't6-tuning');
+			const runtime = makeRuntime(schema, { idPrefix: 't6' });
+			const { stockBatchId } = await setupStock(runtime, 't6-tuning');
+
+			const tuned = await runtime.request.requestRefresh('t6-tuning', token(74), 'tuning');
+			expect(tuned).toMatchObject({ kind: 'serve', generationPending: true, requestedBatchId: expect.any(String) });
+			expect(await query(`SELECT "status" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [stockBatchId])).toEqual([{ status: 'obsolete' }]);
+			expect(await query(`SELECT COUNT(*)::text AS count FROM "hanami_user_feed_entry" WHERE "userId" = 't6-tuning' AND "batchId" = $1`, [stockBatchId])).toEqual([{ count: '0' }]);
+			expect(await query(`SELECT "stockBatchId", "stockSequence"::text FROM "hanami_user_feed_state" WHERE "userId" = 't6-tuning'`)).toEqual([{ stockBatchId: null, stockSequence: null }]);
+		});
+	}, 20_000);
+
+	test('T7 maintainStock rebuilds only eligible users', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedPersonalizedUser(query, 'active-user', { metrics: true });
+			await seedPersonalizedUser(query, 'inactive-user');
+			await seedPersonalizedUser(query, 'fresh-stock-user', { metrics: true, freshStock: true });
+			await seedPersonalizedUser(query, 'hibernated-user', { metrics: true, hibernated: true });
+			await seedPersonalizedUser(query, 'recent-batch-user', { metrics: true, recentBatch: true });
+			const runtime = makeRuntime(schema, { idPrefix: 't7' });
+
+			const result = await runtime.request.maintainStock(20);
+			expect(result.batchIdsToEnqueue).toHaveLength(1);
+			const prefetchId = result.batchIdsToEnqueue[0]!;
+			expect(await query(`SELECT "userId", "trigger", "status" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [prefetchId])).toEqual([{ userId: 'active-user', trigger: 'prefetch', status: 'pending' }]);
+			expect(await query(`SELECT "userId" FROM "hanami_user_feed_batch" WHERE "trigger" = 'prefetch' AND "status" = 'pending' ORDER BY "userId"`)).toEqual([{ userId: 'active-user' }]);
+			expect(await query(`SELECT "generatingBatchId" FROM "hanami_user_feed_state" WHERE "userId" = 'active-user'`)).toEqual([{ generatingBatchId: prefetchId }]);
+		});
+	}, 20_000);
+
+	test('T8 hibernation and revival discard the stock', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 't8-hibernate');
+			const runtime = makeRuntime(schema, { idPrefix: 't8' });
+			const { stockBatchId } = await setupStock(runtime, 't8-hibernate');
+
+			const db = makeDataSource(schema);
+			const runner = db.createQueryRunner();
+			await runner.connect();
+			await runner.startTransaction();
+			try {
+				await runner.query(`SELECT "id" FROM "user" WHERE "id" = 't8-hibernate' FOR UPDATE`);
+				await runtime.lifecycle.hibernateUsers(runner.manager as never, ['t8-hibernate'], new Date());
+				await runner.query(`UPDATE "user" SET "isHibernated" = TRUE WHERE "id" = 't8-hibernate'`);
+				await runner.commitTransaction();
+			} finally {
+				await runner.release();
+			}
+			expect(await query(`SELECT "status" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [stockBatchId])).toEqual([{ status: 'obsolete' }]);
+			expect(await query(`SELECT COUNT(*)::text AS count FROM "hanami_user_feed_entry" WHERE "userId" = 't8-hibernate' AND "batchId" = $1`, [stockBatchId])).toEqual([{ count: '0' }]);
+			expect(await query(`SELECT "stockBatchId", "stockSequence"::text, "mode" FROM "hanami_user_feed_state" WHERE "userId" = 't8-hibernate'`)).toEqual([{ stockBatchId: null, stockSequence: null, mode: 'common' }]);
+
+			// 復帰（旧 epoch のストックを捨て、新 epoch は stock 列 NULL）。
+			await seedUser(query, 't8-revive');
+			const { stockBatchId: reviveStockId } = await setupStock(runtime, 't8-revive');
+			const reviveRunner = db.createQueryRunner();
+			await reviveRunner.connect();
+			await reviveRunner.startTransaction();
+			try {
+				await reviveRunner.query(`SELECT "id" FROM "user" WHERE "id" = 't8-revive' FOR UPDATE`);
+				await runtime.lifecycle.reviveUser(reviveRunner.manager as never, 't8-revive', new Date());
+				await reviveRunner.query(`UPDATE "user" SET "isHibernated" = FALSE WHERE "id" = 't8-revive'`);
+				await reviveRunner.commitTransaction();
+			} finally {
+				await reviveRunner.release();
+			}
+			expect(await query(`SELECT "status" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [reviveStockId])).toEqual([{ status: 'obsolete' }]);
+			expect(await query(`SELECT "stockBatchId", "stockSequence"::text FROM "hanami_user_feed_state" WHERE "userId" = 't8-revive'`)).toEqual([{ stockBatchId: null, stockSequence: null }]);
+		});
+	}, 20_000);
+
+	test('T9 a non-prefetch publish discards the stock before advancing the head', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 't9-discard');
+			const runtime = makeRuntime(schema, { idPrefix: 't9' });
+			const { stockBatchId } = await setupStock(runtime, 't9-discard');
+
+			// ストックを保ったまま refresh の生成 batch を手で立て、publish 時の discard を直接検証する。
+			const refreshId = 't9-refresh-batch';
+			const epochRow = await query<{ epoch_id: string }>(`SELECT "epochId" AS epoch_id FROM "hanami_user_feed_state" WHERE "userId" = 't9-discard'`);
+			await query(`INSERT INTO "hanami_user_feed_batch"
+				("id", "userId", "epochId", "trigger", "status", "attempts", "createdAt", "availableAt", "baseCommonGenerationId")
+				VALUES ($1, 't9-discard', $2, 'refresh', 'pending', 0, clock_timestamp(), clock_timestamp(), 'common-generation-1')`, [refreshId, epochRow[0]!.epoch_id]);
+			await query(`UPDATE "hanami_user_feed_state" SET "generatingBatchId" = $1 WHERE "userId" = 't9-discard'`, [refreshId]);
+
+			expect(await runtime.generation.runUserFeedGeneration(refreshId)).toMatchObject({ kind: 'published', headSequence: '2' });
+			expect(await query(`SELECT "status" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [stockBatchId])).toEqual([{ status: 'obsolete' }]);
+			expect(await query(`SELECT COUNT(*)::text AS count FROM "hanami_user_feed_entry" WHERE "userId" = 't9-discard' AND "batchId" = $1`, [stockBatchId])).toEqual([{ count: '0' }]);
+			expect(await query(`SELECT "latestReadyBatchId", "latestSequence"::text, "stockBatchId", "stockSequence"::text
+				FROM "hanami_user_feed_state" WHERE "userId" = 't9-discard'`)).toEqual([{ latestReadyBatchId: refreshId, latestSequence: '2', stockBatchId: null, stockSequence: null }]);
 		});
 	}, 20_000);
 });

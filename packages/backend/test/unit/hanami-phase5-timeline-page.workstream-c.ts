@@ -107,6 +107,7 @@ function fixture(options: {
 		requestRefresh: jest.fn<HanamiUserFeedRequestPort['requestRefresh']>(async () => ({
 			kind: 'serve', head: personalHead, generationPending: false, requestedBatchId: 'refresh-batch',
 		})),
+		maintainStock: jest.fn<HanamiUserFeedRequestPort['maintainStock']>(async () => ({ batchIdsToEnqueue: [] })),
 	};
 	const readPort = {
 		scanReadyEntries: jest.fn<HanamiPersistedFeedReadPort['scanReadyEntries']>(async () => ({

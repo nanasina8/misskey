@@ -31,6 +31,12 @@ const REFRESH_TTL_MINUTES = 15;
 const REFRESH_RATE_LIMIT = 3;
 const SYNC_POLL_INTERVAL_MS = 20;
 const UNSERVED_HEAD_REUSE_MINUTES = 20;
+// 更新で表に出してよいストックの古さ（これより新しいストックだけを即座に表へ出す）。
+const STOCK_MAX_AGE_MINUTES = 180;
+// ストックを作り直すべき古さ（この経過時間を超えたストックを裏で作り直す）。
+const STOCK_REFRESH_AFTER_MINUTES = 60;
+// ストックを作り直す対象になる、最後に使ってからの日数。
+const STOCK_ACTIVE_DAYS = 7;
 
 type UserRow = {
 	id: string;
@@ -44,6 +50,8 @@ type StateRow = {
 	initial_state: 'notEvaluated' | 'requested' | 'ready' | 'failed' | 'skippedUnavailable';
 	latest_ready_batch_id: string | null;
 	generating_batch_id: string | null;
+	stock_batch_id: string | null;
+	stock_sequence: string | null;
 	latest_sequence: string;
 	earliest_retained_sequence: string;
 	common_epoch_id: string | null;
@@ -60,7 +68,7 @@ type BatchRow = {
 	id: string;
 	user_id: string;
 	epoch_id: string;
-	trigger: 'initial' | 'refresh';
+	trigger: 'initial' | 'refresh' | 'prefetch';
 	status: 'pending' | 'generating' | 'ready' | 'failed' | 'obsolete';
 	attempts: number;
 	item_count: number;
@@ -95,6 +103,7 @@ type PendingDecision = {
 	result: HanamiUserFeedRequestResult;
 	batchId: string | null;
 	refreshDigest: Buffer | null;
+	backgroundBatchId: string | null;
 };
 
 class HanamiCommonNotReadyError extends Error {}
@@ -134,6 +143,85 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 		});
 	}
 
+	/** 応答の返却後に次のストックを裏で作り始める（別トランザクション）。失敗は応答に影響させない。 */
+	@bindThis
+	public async ensureStock(userId: string): Promise<void> {
+		try {
+			const batchId = await this.withTransaction(async (queryRunner) => {
+				const context = await this.lockContext(queryRunner, userId);
+				if (context.user.is_hibernated) return null;
+				const availability = await this.evaluateAvailability(queryRunner, userId);
+				if (availability.kind !== 'available') return null;
+				return await this.startPrefetchIfEligible(queryRunner, context);
+			});
+			if (batchId != null) {
+				await this.queueService.enqueueHanamiUserFeedGeneration(batchId);
+			}
+		} catch (error) {
+			this.logger.warn('Failed to ensure Hanami stock', { userId, e: error });
+		}
+	}
+
+	/** 最近使った personalized ユーザーのストックを作り直す。enqueue は呼び出し側の責務。 */
+	@bindThis
+	public async maintainStock(limit: number): Promise<{ batchIdsToEnqueue: string[] }> {
+		if (!Number.isSafeInteger(limit) || limit <= 0) throw new TypeError('limit must be a positive safe integer');
+		const candidates = await this.db.query(`
+			SELECT s."userId" AS user_id, s."epochId" AS epoch_id, s."stockBatchId" AS stock_batch_id
+			FROM "hanami_user_feed_state" s
+			JOIN "user" u ON u."id" = s."userId"
+			WHERE s."mode" = 'personalized'
+				AND s."latestReadyBatchId" IS NOT NULL
+				AND s."generatingBatchId" IS NULL
+				AND u."isHibernated" = FALSE
+				AND EXISTS (
+					SELECT 1 FROM "hanami_metrics_timeline" t
+					WHERE t."userId" = s."userId" AND t."kind" = 'hanami'
+						AND t."day" >= ((clock_timestamp() AT TIME ZONE 'Asia/Tokyo')::date - ${STOCK_ACTIVE_DAYS})
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM "hanami_user_feed_batch" b
+					WHERE b."userId" = s."userId" AND b."createdAt" > clock_timestamp() - INTERVAL '${STOCK_REFRESH_AFTER_MINUTES} minutes'
+				)
+				AND (
+					s."stockBatchId" IS NULL
+					OR EXISTS (
+						SELECT 1 FROM "hanami_user_feed_batch" sb
+						WHERE sb."id" = s."stockBatchId" AND sb."userId" = s."userId"
+							AND sb."finishedAt" <= clock_timestamp() - INTERVAL '${STOCK_REFRESH_AFTER_MINUTES} minutes'
+					)
+				)
+			ORDER BY s."userId" ASC
+			LIMIT $1
+		`, [limit]) as Array<{ user_id: string; epoch_id: string; stock_batch_id: string | null }>;
+
+		const batchIdsToEnqueue: string[] = [];
+		for (const candidate of candidates) {
+			try {
+				const batchId = await this.withTransaction(async (queryRunner) => {
+					const context = await this.lockContext(queryRunner, candidate.user_id);
+					if (context.user.is_hibernated) return null;
+					if (context.activeBatch != null) return null;
+					if (context.state == null || context.state.mode !== 'personalized') return null;
+					const availability = await this.evaluateAvailability(queryRunner, candidate.user_id);
+					if (availability.kind !== 'available') return null;
+					let state = context.state;
+					if (state.stock_batch_id != null) {
+						if (await this.isStockFresherThan(queryRunner, state, STOCK_REFRESH_AFTER_MINUTES)) return null;
+						await this.discardStock(queryRunner, candidate.user_id, state.epoch_id, state.stock_batch_id);
+						state = { ...state, stock_batch_id: null, stock_sequence: null };
+						context.state = state;
+					}
+					return await this.startPrefetchIfEligible(queryRunner, context);
+				});
+				if (batchId != null) batchIdsToEnqueue.push(batchId);
+			} catch (error) {
+				this.logger.warn('Failed to maintain Hanami stock for a user', { userId: candidate.user_id, e: error });
+			}
+		}
+		return { batchIdsToEnqueue };
+	}
+
 	@bindThis
 	public async evaluateCursorless(userId: string): Promise<HanamiUserFeedRequestResult> {
 		let decision: PendingDecision;
@@ -150,6 +238,7 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 							: { kind: 'recommendationDisabled', head: await this.recommendationDisabledHead(queryRunner, state, false) },
 						batchId: null,
 						refreshDigest: null,
+						backgroundBatchId: null,
 					};
 				}
 
@@ -160,23 +249,37 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 						result: this.pendingResult(this.commonHead(commonHead), started.batchId),
 						batchId: started.batchId,
 						refreshDigest: null,
+						backgroundBatchId: null,
 					};
 				}
 
 				const state = context.state;
 				const head = await this.requireStateHead(queryRunner, state);
 				if (context.activeBatch != null && context.activeBatch.id === state.generating_batch_id) {
+					// ストック用の生成中は待たせない（I4）。普通に開いただけで並びを変えず、今の先頭を出す。
+					if (context.activeBatch.trigger === 'prefetch') {
+						return {
+							result: { kind: 'serve', head, generationPending: false, requestedBatchId: null },
+							batchId: null,
+							refreshDigest: null,
+							backgroundBatchId: null,
+						};
+					}
 					return {
 						result: this.pendingResult(head, context.activeBatch.id),
 						batchId: context.activeBatch.id,
 						refreshDigest: null,
+						backgroundBatchId: null,
 					};
 				}
 
+				// ストックは先頭より上に置き、更新で表に出す。普通に開いただけでは並びを変えない。
+				const backgroundBatchId = await this.startPrefetchIfEligible(queryRunner, context);
 				return {
 					result: { kind: 'serve', head, generationPending: false, requestedBatchId: null },
 					batchId: null,
 					refreshDigest: null,
+					backgroundBatchId,
 				};
 			});
 		} catch (error) {
@@ -184,7 +287,12 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 			throw error;
 		}
 
-		return await this.dispatchAndWait(userId, decision);
+		const result = await this.dispatchAndWait(userId, decision);
+		// その場で作って待った結果、personalized の先頭が返ったら次のストックを裏で仕込む。
+		if (decision.batchId != null && result.kind === 'serve' && !result.generationPending && result.head.mode === 'personalized') {
+			await this.ensureStock(userId);
+		}
+		return result;
 	}
 
 	@bindThis
@@ -214,21 +322,22 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 							: { kind: 'recommendationDisabled', head: await this.recommendationDisabledHead(queryRunner, state, false) },
 						batchId: null,
 						refreshDigest: null,
+						backgroundBatchId: null,
 					};
 				}
 
 				await this.deleteExpiredMatchingRefresh(queryRunner, userId, refreshDigest);
 				const existing = await this.lockRefreshMappings(queryRunner, userId, refreshDigest);
 				if (existing.some((row) => row.epoch_id !== context.state?.epoch_id)) {
-					return { result: { kind: 'refreshTokenExpired' }, batchId: null, refreshDigest: null };
+					return { result: { kind: 'refreshTokenExpired' }, batchId: null, refreshDigest: null, backgroundBatchId: null };
 				}
 				const currentMapping = existing.find((row) => row.epoch_id === context.state?.epoch_id);
 				if (currentMapping != null) {
 					if (currentMapping.status === 'obsolete') {
-						return { result: { kind: 'refreshTokenExpired' }, batchId: null, refreshDigest: null };
+						return { result: { kind: 'refreshTokenExpired' }, batchId: null, refreshDigest: null, backgroundBatchId: null };
 					}
 					if (currentMapping.status === 'ready' || currentMapping.status === 'failed') {
-						return { result: this.terminalMappingResult(currentMapping), batchId: null, refreshDigest: null };
+						return { result: this.terminalMappingResult(currentMapping), batchId: null, refreshDigest: null, backgroundBatchId: null };
 					}
 					const requestedBatches = await queryRunner.query(`
 						SELECT b."status" AS status
@@ -236,7 +345,7 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 						WHERE b."id" = $1 AND b."userId" = $2 AND b."epochId" = $3
 					`, [currentMapping.requested_batch_id, userId, currentMapping.epoch_id]) as Array<{ status: BatchRow['status'] }>;
 					if (requestedBatches.at(0)?.status === 'obsolete') {
-						return { result: { kind: 'refreshTokenExpired' }, batchId: null, refreshDigest: null };
+						return { result: { kind: 'refreshTokenExpired' }, batchId: null, refreshDigest: null, backgroundBatchId: null };
 					}
 
 					const fallback = await this.requireStateHead(queryRunner, context.state!);
@@ -244,14 +353,62 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 						result: this.pendingResult(fallback, currentMapping.requested_batch_id),
 						batchId: currentMapping.requested_batch_id,
 						refreshDigest,
+						backgroundBatchId: null,
 					};
 				}
 
 				if (await this.isRefreshRateLimited(queryRunner, userId, reason)) {
-					return { result: { kind: 'refreshRateLimited' }, batchId: null, refreshDigest: null };
+					return { result: { kind: 'refreshRateLimited' }, batchId: null, refreshDigest: null, backgroundBatchId: null };
 				}
 
 				let state = context.state;
+				let backgroundBatchId: string | null = null;
+				// ストックを表に出すのは更新のときだけ。新しくて形が合えば待たずに先頭へ繰り上げる。
+				if (reason !== 'tuning' && state != null && state.mode === 'personalized' && context.activeBatch == null
+					&& state.stock_batch_id != null) {
+					if (await this.isFreshServedStock(queryRunner, state)) {
+						const stockBatchId = state.stock_batch_id;
+						const promoted = hanamiReturningRows(await queryRunner.query(`
+							UPDATE "hanami_user_feed_state"
+							SET "latestReadyBatchId" = "stockBatchId",
+								"latestSequence" = "stockSequence",
+								"stockBatchId" = NULL,
+								"stockSequence" = NULL,
+								"updatedAt" = clock_timestamp()
+							WHERE "userId" = $1 AND "epochId" = $2 AND "stockBatchId" = $3 AND "generatingBatchId" IS NULL
+							RETURNING "latestSequence"::text AS latest_sequence
+						`, [userId, state.epoch_id, stockBatchId]) as Array<{ latest_sequence: string }>);
+						if (promoted.length !== 1) throw new Error('Failed to promote the Hanami stock batch to the head');
+						const newLatestSequence = promoted[0]!.latest_sequence;
+						await queryRunner.query(`
+							INSERT INTO "hanami_user_feed_refresh" (
+								"userId", "epochId", "refreshTokenDigest", "requestedBatchId", "status",
+								"resultMode", "resultFeedEpochId", "resultHeadBatchId", "resultHeadSequence", "createdAt", "expiresAt"
+							)
+							VALUES ($1, $2, $3, $4, 'ready', 'personalized', $2, $4, $5::bigint, clock_timestamp(),
+								clock_timestamp() + INTERVAL '${REFRESH_TTL_MINUTES} minutes')
+						`, [userId, state.epoch_id, refreshDigest, stockBatchId, newLatestSequence]);
+						// 繰り上げたストックの次を裏で作り始める。表の並びはここでは変えない。
+						context.state = { ...state, latest_ready_batch_id: stockBatchId, latest_sequence: newLatestSequence, stock_batch_id: null, stock_sequence: null };
+						backgroundBatchId = await this.startPrefetchIfEligible(queryRunner, context);
+						return {
+							result: {
+								kind: 'serve',
+								head: { mode: 'personalized', kind: 'personal', feedEpochId: state.epoch_id, headBatchId: stockBatchId, headSequence: newLatestSequence },
+								generationPending: false,
+								requestedBatchId: stockBatchId,
+							},
+							batchId: null,
+							refreshDigest: null,
+							backgroundBatchId,
+						};
+					}
+					// 古い・形が合わないストックは捨てて、今までどおりその場で作って待つ。
+					await this.discardStock(queryRunner, userId, state.epoch_id, state.stock_batch_id);
+					state = { ...state, stock_batch_id: null, stock_sequence: null };
+					context.state = state;
+				}
+
 				if (reason !== 'tuning' && state != null && state.mode === 'personalized' && state.latest_ready_batch_id != null && context.activeBatch == null
 					&& await this.isUnservedReadyHead(queryRunner, state)) {
 					const head = await this.requireStateHead(queryRunner, state);
@@ -267,7 +424,15 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 						result: { kind: 'serve', head, generationPending: false, requestedBatchId: state.latest_ready_batch_id },
 						batchId: null,
 						refreshDigest: null,
+						backgroundBatchId: null,
 					};
+				}
+
+				// tuning は設定が古いのでストックを使わない。先に捨ててから作り直す。
+				if (reason === 'tuning' && state != null && state.stock_batch_id != null) {
+					await this.discardStock(queryRunner, userId, state.epoch_id, state.stock_batch_id);
+					state = { ...state, stock_batch_id: null, stock_sequence: null };
+					context.state = state;
 				}
 
 				// A tuning request must use a fresh settings snapshot. Fence an older
@@ -282,6 +447,16 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 					state = { ...state, generating_batch_id: null };
 					context.activeBatch = null;
 				}
+				// 更新がストック用の生成中に来たら、そのまま refresh として先頭に出す（R4）。
+				if (context.activeBatch != null && context.activeBatch.trigger === 'prefetch') {
+					await queryRunner.query(`
+						UPDATE "hanami_user_feed_batch"
+						SET "trigger" = 'refresh'
+						WHERE "id" = $1 AND "status" IN ('pending', 'generating') AND "trigger" = 'prefetch'
+					`, [context.activeBatch.id]);
+					context.activeBatch = { ...context.activeBatch, trigger: 'refresh' };
+				}
+
 				let batchId: string;
 				if (state == null || state.initial_state === 'notEvaluated') {
 					const commonHead = await this.requireLockedCommonHead(queryRunner);
@@ -325,6 +500,7 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 					result: this.pendingResult(fallback, batchId),
 					batchId,
 					refreshDigest,
+					backgroundBatchId,
 				};
 			});
 		} catch (error) {
@@ -335,7 +511,12 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 		if (decision.result.kind === 'refreshRateLimited') {
 			try { await this.metricsRedis?.incr(metricsKey); } catch { /* serving remains independent */ }
 		}
-		return await this.dispatchAndWait(userId, decision);
+		const result = await this.dispatchAndWait(userId, decision);
+		// その場で作って待った結果、personalized の先頭が返ったら次のストックを裏で仕込む。
+		if (decision.batchId != null && result.kind === 'serve' && !result.generationPending && result.head.mode === 'personalized') {
+			await this.ensureStock(userId);
+		}
+		return result;
 	}
 
 	private async lockContext(queryRunner: QueryRunner, userId: string): Promise<LockedContext> {
@@ -353,6 +534,8 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 				s."initialGenerationState" AS initial_state,
 				s."latestReadyBatchId" AS latest_ready_batch_id,
 				s."generatingBatchId" AS generating_batch_id,
+				s."stockBatchId" AS stock_batch_id,
+				s."stockSequence"::text AS stock_sequence,
 				s."latestSequence"::text AS latest_sequence,
 				s."earliestRetainedSequence"::text AS earliest_retained_sequence,
 				s."commonEpochId" AS common_epoch_id,
@@ -573,7 +756,7 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 		batchId: string,
 		userId: string,
 		epochId: string,
-		trigger: 'initial' | 'refresh',
+		trigger: 'initial' | 'refresh' | 'prefetch',
 		baseCommonGenerationId: string,
 	): Promise<boolean> {
 		const rows = await queryRunner.query(`
@@ -666,6 +849,84 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 		return rows.length === 1;
 	}
 
+	/**
+	 * ストックを捨てる。同じトランザクション内で state の stock 2 列を NULL にし、
+	 * 先頭より上にある entry を消し、ready の batch を obsolete にする。
+	 */
+	private async discardStock(queryRunner: QueryRunner, userId: string, epochId: string, stockBatchId: string): Promise<void> {
+		await queryRunner.query(`
+			UPDATE "hanami_user_feed_state"
+			SET "stockBatchId" = NULL, "stockSequence" = NULL, "updatedAt" = clock_timestamp()
+			WHERE "userId" = $1 AND "epochId" = $2 AND "stockBatchId" = $3
+		`, [userId, epochId, stockBatchId]);
+		await queryRunner.query(`
+			DELETE FROM "hanami_user_feed_entry"
+			WHERE "userId" = $1 AND "epochId" = $2 AND "batchId" = $3
+		`, [userId, epochId, stockBatchId]);
+		await queryRunner.query(`
+			UPDATE "hanami_user_feed_batch"
+			SET "status" = 'obsolete'
+			WHERE "id" = $1 AND "userId" = $2 AND "status" = 'ready'
+		`, [stockBatchId, userId]);
+	}
+
+	/**
+	 * 条件をすべて満たすときだけ trigger='prefetch' の batch を作って generatingBatchId に入れ、
+	 * batchId を返す。満たさなければ null（例外にしない）。可用性は呼び出し側で確認済みを前提とする。
+	 */
+	private async startPrefetchIfEligible(queryRunner: QueryRunner, context: LockedContext): Promise<string | null> {
+		const state = context.state;
+		if (context.user.is_hibernated) return null;
+		if (state == null || state.mode !== 'personalized') return null;
+		if (state.latest_ready_batch_id == null) return null;
+		if (state.generating_batch_id != null) return null;
+		if (context.activeBatch != null) return null;
+		if (state.stock_batch_id != null) return null;
+
+		// 普通に開くたびに通るので共通の先頭はロックしない（共通の生成の publish と取り合わない）。
+		// base は FK で守られ、ready でなくなった場合は claim と reconcile が batch を止める。
+		const commonHead = await this.commonHeadQueries.readLatestReadyCommonHead(queryRunner);
+		if (commonHead == null) return null;
+
+		const batchId = this.idService.gen();
+		const inserted = await this.insertBatch(queryRunner, batchId, state.user_id, state.epoch_id, 'prefetch', commonHead.generationId);
+		if (!inserted) return null;
+		const updated = hanamiReturningRows(await queryRunner.query(`
+			UPDATE "hanami_user_feed_state"
+			SET "generatingBatchId" = $3, "updatedAt" = clock_timestamp()
+			WHERE "userId" = $1 AND "epochId" = $2 AND "generatingBatchId" IS NULL AND "stockBatchId" IS NULL
+			RETURNING "userId" AS user_id
+		`, [state.user_id, state.epoch_id, batchId]) as Array<{ user_id: string }>);
+		if (updated.length !== 1) throw new Error('Failed to install the Hanami prefetch generation batch');
+		return batchId;
+	}
+
+	/** 更新で表に出してよいストックか（ready・十分新しく・先頭に正しく連なる・空でない）。 */
+	private async isFreshServedStock(queryRunner: QueryRunner, state: StateRow): Promise<boolean> {
+		if (state.stock_batch_id == null || state.stock_sequence == null) return false;
+		const rows = await queryRunner.query(`
+			SELECT b."id" AS id
+			FROM "hanami_user_feed_batch" b
+			WHERE b."id" = $1 AND b."userId" = $2 AND b."epochId" = $3 AND b."status" = 'ready'
+				AND b."finishedAt" > clock_timestamp() - INTERVAL '${STOCK_MAX_AGE_MINUTES} minutes'
+				AND b."itemCount" > 0
+				AND $4::bigint = $5::bigint + b."itemCount"
+		`, [state.stock_batch_id, state.user_id, state.epoch_id, state.stock_sequence, state.latest_sequence]) as Array<{ id: string }>;
+		return rows.length === 1;
+	}
+
+	/** ストックの batch が指定分数より新しいか（作り直しの要否判定に使う）。 */
+	private async isStockFresherThan(queryRunner: QueryRunner, state: StateRow, minutes: number): Promise<boolean> {
+		if (state.stock_batch_id == null) return false;
+		const rows = await queryRunner.query(`
+			SELECT b."id" AS id
+			FROM "hanami_user_feed_batch" b
+			WHERE b."id" = $1 AND b."userId" = $2 AND b."epochId" = $3
+				AND b."finishedAt" > clock_timestamp() - ($4::text || ' minutes')::interval
+		`, [state.stock_batch_id, state.user_id, state.epoch_id, String(minutes)]) as Array<{ id: string }>;
+		return rows.length === 1;
+	}
+
 	private async requireStateHead(queryRunner: QueryRunner, state: StateRow): Promise<HanamiFeedHeadSnapshot> {
 		const head = await this.headFromState(queryRunner, state);
 		if (head == null) throw new HanamiCommonNotReadyError('Hanami feed state has no fallback head');
@@ -703,6 +964,7 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 				: { kind: 'serve', head, generationPending: false, requestedBatchId: null },
 			batchId: null,
 			refreshDigest: null,
+			backgroundBatchId: null,
 		};
 	}
 
@@ -806,6 +1068,8 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 			initial_state: initialState,
 			latest_ready_batch_id: null,
 			generating_batch_id: null,
+			stock_batch_id: null,
+			stock_sequence: null,
 			latest_sequence: '0',
 			earliest_retained_sequence: '0',
 			common_epoch_id: commonHead?.epochId ?? null,
@@ -815,6 +1079,15 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 	}
 
 	private async dispatchAndWait(userId: string, decision: PendingDecision): Promise<HanamiUserFeedRequestResult> {
+		// ストック用の生成は裏で進める。待たず、失敗しても応答には影響させない（I4）。
+		if (decision.backgroundBatchId != null) {
+			try {
+				void Promise.resolve(this.queueService.enqueueHanamiUserFeedGeneration(decision.backgroundBatchId))
+					.catch((error) => this.logQueueFailure(userId, decision.backgroundBatchId!, error));
+			} catch (error) {
+				this.logQueueFailure(userId, decision.backgroundBatchId!, error);
+			}
+		}
 		if (decision.batchId == null || decision.result.kind !== 'serve' || !decision.result.generationPending) return decision.result;
 		const deadline = performance.now() + this.config.hanamiGenerationSyncWaitMs;
 		let enqueueOperation: Promise<unknown>;

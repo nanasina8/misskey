@@ -32,6 +32,12 @@ export class MiHanamiUserFeedState {
 	@Column({ ...id(), nullable: true })
 	public generatingBatchId: string | null;
 
+	@Column({ ...id(), nullable: true })
+	public stockBatchId: string | null;
+
+	@Column('bigint', { nullable: true, transformer: nullableHanamiBigintTransformer })
+	public stockSequence: string | null;
+
 	@Column('bigint', { default: '0', transformer: hanamiBigintTransformer })
 	public latestSequence: string;
 

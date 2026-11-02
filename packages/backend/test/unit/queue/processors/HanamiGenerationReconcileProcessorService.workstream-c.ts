@@ -4,7 +4,6 @@
  */
 import { describe, test, expect } from 'vitest';
 
-
 import { vi as jest } from 'vitest';
 import * as Bull from 'bullmq';
 import type { HanamiUserFeedGenerationLifecyclePort } from '@/core/hanami/HanamiUserFeedContracts.js';
@@ -35,6 +34,9 @@ function createHarness() {
 			return reconcileResult(false);
 		}),
 	};
+	const userFeedRequest = {
+		maintainStock: jest.fn(async () => ({ batchIdsToEnqueue: [] })),
+	};
 	const queueService = {
 		enqueueHanamiUserFeedGeneration: jest.fn(async (batchId: string) => {
 			order.push(`batch:${batchId}`);
@@ -55,10 +57,11 @@ function createHarness() {
 	const service = new HanamiGenerationReconcileProcessorService(
 		commonGenerationProcessorService as never,
 		userFeedLifecycle,
+		userFeedRequest as never,
 		queueService as never,
 		queueLoggerService as never,
 	);
-	return { service, commonGenerationProcessorService, userFeedLifecycle, queueService, logger, order };
+	return { service, commonGenerationProcessorService, userFeedLifecycle, userFeedRequest, queueService, logger, order };
 }
 
 function job(data: unknown = {}) {

@@ -4,7 +4,6 @@
  */
 import { describe, test, expect } from 'vitest';
 
-
 import { vi as jest } from 'vitest';
 import { HanamiFeedLifecycleService } from '@/core/hanami/HanamiFeedLifecycleService.js';
 
@@ -38,7 +37,7 @@ const makeRuntime = (options: RuntimeOptions = {}) => {
 		const normalized = compactSql(sql);
 		calls.push({ sql: normalized, values });
 
-		if (normalized.startsWith('SELECT s."userId" AS user_id, s."epochId" AS epoch_id FROM "hanami_user_feed_state" s')) {
+		if (normalized.startsWith('SELECT s."userId" AS user_id, s."epochId" AS epoch_id, s."stockBatchId" AS stock_batch_id FROM "hanami_user_feed_state" s')) {
 			return hasState ? stateRows : [];
 		}
 		if (normalized.startsWith('SELECT e."userId" AS user_id')) return options.hasActiveEpoch === false ? [] : stateRows;

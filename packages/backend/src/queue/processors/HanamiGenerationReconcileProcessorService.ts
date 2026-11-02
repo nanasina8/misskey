@@ -10,8 +10,10 @@ import { bindThis } from '@/decorators.js';
 import type { HanamiCommonGenerationDispatch } from '@/core/hanami/HanamiCommonGenerationContracts.js';
 import {
 	HANAMI_USER_FEED_GENERATION_LIFECYCLE,
+	HANAMI_USER_FEED_REQUEST,
 	type HanamiUserFeedGenerationLifecyclePort,
 	type HanamiUserFeedGenerationReconcileResult,
+	type HanamiUserFeedRequestPort,
 } from '@/core/hanami/HanamiUserFeedContracts.js';
 import { QueueService } from '@/core/QueueService.js';
 import type { HanamiGenerationReconcileJobData } from '../types.js';
@@ -19,6 +21,9 @@ import { QueueLoggerService } from '../QueueLoggerService.js';
 import { HanamiCommonGenerationProcessorService } from './HanamiCommonGenerationProcessorService.js';
 
 const HANAMI_USER_FEED_RECONCILE_LIMIT = 100;
+// ストック維持は reconcile の都度でなく、プロセス内の時刻で間引く。
+const HANAMI_STOCK_MAINTENANCE_INTERVAL_MS = 60_000;
+const HANAMI_STOCK_MAINTENANCE_LIMIT = 20;
 
 type HanamiGenerationReconcileJob = Bull.Job<HanamiGenerationReconcileJobData, unknown, 'hanamiGenerationReconcile'>;
 
@@ -41,11 +46,14 @@ function normalizeBullRejection(error: unknown): Error {
 @Injectable()
 export class HanamiGenerationReconcileProcessorService {
 	private logger: Logger;
+	private lastStockMaintenanceAt = 0;
 
 	constructor(
 		private commonGenerationProcessorService: HanamiCommonGenerationProcessorService,
 		@Inject(HANAMI_USER_FEED_GENERATION_LIFECYCLE)
 		private userFeedLifecycle: HanamiUserFeedGenerationLifecyclePort,
+		@Inject(HANAMI_USER_FEED_REQUEST)
+		private userFeedRequest: HanamiUserFeedRequestPort,
 		private queueService: QueueService,
 		private queueLoggerService: QueueLoggerService,
 	) {
@@ -86,6 +94,22 @@ export class HanamiGenerationReconcileProcessorService {
 					hasMore: userFeedGeneration.hasMore,
 				});
 				await job.log(`user feed reconcile dispatched ${userFeedGeneration.batchIdsToEnqueue.length} batches; hasMore=${userFeedGeneration.hasMore}`);
+
+				const now = Date.now();
+				if (now - this.lastStockMaintenanceAt >= HANAMI_STOCK_MAINTENANCE_INTERVAL_MS) {
+					this.lastStockMaintenanceAt = now;
+					try {
+						const maintenance = await this.userFeedRequest.maintainStock(HANAMI_STOCK_MAINTENANCE_LIMIT);
+						for (const batchId of maintenance.batchIdsToEnqueue) {
+							await this.queueService.enqueueHanamiUserFeedGeneration(batchId);
+						}
+						this.logger.info('hanami user feed stock maintenance completed', {
+							prefetchBatchCount: maintenance.batchIdsToEnqueue.length,
+						});
+					} catch (error) {
+						this.logger.warn('hanami user feed stock maintenance failed', { e: normalizeBullRejection(error) });
+					}
+				}
 			} catch (error) {
 				userFeedFailure = normalizeBullRejection(error);
 			}

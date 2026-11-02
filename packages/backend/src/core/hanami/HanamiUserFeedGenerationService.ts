@@ -52,7 +52,7 @@ type Claim = {
 	batchId: string;
 	userId: string;
 	epochId: string;
-	trigger: 'initial' | 'refresh';
+	trigger: 'initial' | 'refresh' | 'prefetch';
 	attempt: number;
 	leaseOwner: string;
 	baseCommonGenerationId: string;
@@ -69,6 +69,8 @@ type StateRow = {
 	initial_state: 'notEvaluated' | 'requested' | 'ready' | 'failed' | 'skippedUnavailable';
 	latest_ready_batch_id: string | null;
 	generating_batch_id: string | null;
+	stock_batch_id: string | null;
+	stock_sequence: string | null;
 	latest_sequence: string;
 	earliest_retained_sequence: string;
 	common_epoch_id: string | null;
@@ -80,7 +82,7 @@ type BatchRow = {
 	id: string;
 	user_id: string;
 	epoch_id: string;
-	trigger: 'initial' | 'refresh';
+	trigger: 'initial' | 'refresh' | 'prefetch';
 	status: 'pending' | 'generating' | 'ready' | 'failed' | 'obsolete';
 	attempts: number;
 	lease_owner: string | null;
@@ -323,7 +325,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 				id: string;
 				user_id: string;
 				epoch_id: string;
-				trigger: 'initial' | 'refresh';
+				trigger: 'initial' | 'refresh' | 'prefetch';
 				attempts: number;
 				base_common_generation_id: string;
 				latest_ready_batch_id: string | null;
@@ -490,7 +492,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 				const user = users.at(0);
 				if (user == null || user.is_hibernated) throw new HanamiUserFeedLeaseLostError();
 
-				const state = await this.lockState(queryRunner, budget, claim.userId);
+				let state = await this.lockState(queryRunner, budget, claim.userId);
 				if (state == null) throw new HanamiUserFeedLeaseLostError();
 				const epochs = await this.deadlineQuery(queryRunner, budget, `
 					SELECT e."epochId" AS epoch_id, e."retiredAt" AS retired_at
@@ -509,6 +511,19 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 				`, [claim.baseCommonGenerationId]) as Array<{ id: string }>;
 				if (commonRows.length !== 1) throw new HanamiUserFeedLeaseLostError();
 				this.assertBudget(budget);
+
+				// R4 で途中から refresh に変わることがあるため、claim 時の trigger ではなくロックした行の trigger で分ける。
+				const isPrefetch = batch.trigger === 'prefetch';
+				if (isPrefetch) {
+					// ストックの前提が崩れていたら不変条件違反。先頭を動かす publish とは別物として扱う。
+					if (state.mode !== 'personalized' || state.latest_ready_batch_id == null || state.stock_batch_id != null) {
+						throw new Error(`Hanami prefetch publication for ${claim.batchId} lost its stock preconditions`);
+					}
+				} else if (state.stock_batch_id != null) {
+					// I3: ストックがあるまま別のまとまりを先頭に出す前に、先に捨てる。
+					await this.discardStock(queryRunner, budget, claim.userId, claim.epochId, state.stock_batch_id);
+					state = { ...state, stock_batch_id: null, stock_sequence: null };
+				}
 
 				await this.deadlineQuery(queryRunner, budget, `
 					INSERT INTO "hanami_user_feed_entry" (
@@ -548,32 +563,64 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 				`, [claim.batchId, claim.leaseOwner, claim.attempt, computation.items.length, checksum, this.databaseDeadlineAt(budget)]) as Array<{ id: string }>);
 				if (readyRows.length !== 1) throw new HanamiUserFeedLeaseLostError();
 
-				const stateRows = hanamiReturningRows(await this.deadlineQuery(queryRunner, budget, `
-					UPDATE "hanami_user_feed_state" s
-					SET "mode" = 'personalized', "latestReadyBatchId" = $3,
-						"generatingBatchId" = NULL,
-						"latestSequence" = s."latestSequence" + $4::bigint,
-						"earliestRetainedSequence" = CASE WHEN s."latestSequence" = 0 THEN 1 ELSE s."earliestRetainedSequence" END,
-						"initialGenerationState" = CASE WHEN s."initialGenerationState" = 'requested' THEN 'ready' ELSE s."initialGenerationState" END,
-						"updatedAt" = clock_timestamp()
-					WHERE s."userId" = $1 AND s."epochId" = $2 AND s."generatingBatchId" = $3
-						AND s."latestSequence" = $5::bigint AND s."earliestRetainedSequence" = $6::bigint
-						AND clock_timestamp() < $7::timestamptz
-						AND EXISTS (SELECT 1 FROM "user" u WHERE u."id" = $1 AND u."isHibernated" = FALSE)
-						AND EXISTS (SELECT 1 FROM "hanami_user_feed_batch" b WHERE b."id" = $3 AND b."status" = 'ready' AND b."attempts" = $8)
-					RETURNING s."latestSequence"::text AS latest_sequence
-				`, [
-					claim.userId,
-					claim.epochId,
-					claim.batchId,
-					String(computation.items.length),
-					state.latest_sequence,
-					state.earliest_retained_sequence,
-					this.databaseDeadlineAt(budget),
-					claim.attempt,
-				]) as Array<{ latest_sequence: string }>);
-				const publishedState = stateRows.at(0);
-				if (publishedState == null) throw new HanamiUserFeedLeaseLostError();
+				let publishedHeadSequence: string;
+				if (isPrefetch) {
+					// ストックは先頭を動かさず、先頭より上に置く（I1・I2）。更新で表に出すまでは見えない。
+					const stateRows = hanamiReturningRows(await this.deadlineQuery(queryRunner, budget, `
+						UPDATE "hanami_user_feed_state" s
+						SET "generatingBatchId" = NULL,
+							"stockBatchId" = $3,
+							"stockSequence" = s."latestSequence" + $4::bigint,
+							"updatedAt" = clock_timestamp()
+						WHERE s."userId" = $1 AND s."epochId" = $2 AND s."generatingBatchId" = $3
+							AND s."latestSequence" = $5::bigint AND s."earliestRetainedSequence" = $6::bigint
+							AND clock_timestamp() < $7::timestamptz
+							AND EXISTS (SELECT 1 FROM "user" u WHERE u."id" = $1 AND u."isHibernated" = FALSE)
+							AND EXISTS (SELECT 1 FROM "hanami_user_feed_batch" b WHERE b."id" = $3 AND b."status" = 'ready' AND b."attempts" = $8)
+							AND s."stockBatchId" IS NULL AND s."mode" = 'personalized'
+						RETURNING (s."latestSequence" + $4::bigint)::text AS stock_sequence
+					`, [
+						claim.userId,
+						claim.epochId,
+						claim.batchId,
+						String(computation.items.length),
+						state.latest_sequence,
+						state.earliest_retained_sequence,
+						this.databaseDeadlineAt(budget),
+						claim.attempt,
+					]) as Array<{ stock_sequence: string }>);
+					const publishedState = stateRows.at(0);
+					if (publishedState == null) throw new HanamiUserFeedLeaseLostError();
+					publishedHeadSequence = publishedState.stock_sequence;
+				} else {
+					const stateRows = hanamiReturningRows(await this.deadlineQuery(queryRunner, budget, `
+						UPDATE "hanami_user_feed_state" s
+						SET "mode" = 'personalized', "latestReadyBatchId" = $3,
+							"generatingBatchId" = NULL,
+							"latestSequence" = s."latestSequence" + $4::bigint,
+							"earliestRetainedSequence" = CASE WHEN s."latestSequence" = 0 THEN 1 ELSE s."earliestRetainedSequence" END,
+							"initialGenerationState" = CASE WHEN s."initialGenerationState" = 'requested' THEN 'ready' ELSE s."initialGenerationState" END,
+							"updatedAt" = clock_timestamp()
+						WHERE s."userId" = $1 AND s."epochId" = $2 AND s."generatingBatchId" = $3
+							AND s."latestSequence" = $5::bigint AND s."earliestRetainedSequence" = $6::bigint
+							AND clock_timestamp() < $7::timestamptz
+							AND EXISTS (SELECT 1 FROM "user" u WHERE u."id" = $1 AND u."isHibernated" = FALSE)
+							AND EXISTS (SELECT 1 FROM "hanami_user_feed_batch" b WHERE b."id" = $3 AND b."status" = 'ready' AND b."attempts" = $8)
+						RETURNING s."latestSequence"::text AS latest_sequence
+					`, [
+						claim.userId,
+						claim.epochId,
+						claim.batchId,
+						String(computation.items.length),
+						state.latest_sequence,
+						state.earliest_retained_sequence,
+						this.databaseDeadlineAt(budget),
+						claim.attempt,
+					]) as Array<{ latest_sequence: string }>);
+					const publishedState = stateRows.at(0);
+					if (publishedState == null) throw new HanamiUserFeedLeaseLostError();
+					publishedHeadSequence = publishedState.latest_sequence;
+				}
 
 				await this.deadlineQuery(queryRunner, budget, `
 					UPDATE "hanami_user_feed_refresh"
@@ -581,7 +628,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 						"resultFeedEpochId" = $2, "resultHeadBatchId" = $3,
 						"resultHeadSequence" = $4::bigint
 					WHERE "userId" = $1 AND "epochId" = $2 AND "requestedBatchId" = $3 AND "status" = 'pending'
-				`, [claim.userId, claim.epochId, claim.batchId, publishedState.latest_sequence]);
+				`, [claim.userId, claim.epochId, claim.batchId, publishedHeadSequence]);
 				if (this.metricsCapture && metricsCandidates) {
 					const day = jstDay(new Date(claim.generatedAt));
 					this.metricsHealth?.begin(day);
@@ -593,7 +640,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 								: await this.deadlineQuery(queryRunner, budget, sql, parameters));
 					} finally { this.metricsHealth?.finish(day, captured); }
 				}
-				return { kind: 'published', headSequence: publishedState.latest_sequence } as const;
+				return { kind: 'published', headSequence: publishedHeadSequence } as const;
 			});
 		} catch (error) {
 			if (error instanceof HanamiUserFeedLeaseLostError) return { kind: 'stale' };
@@ -621,9 +668,12 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 				if (epochs.at(0)?.retired_at != null || epochs.length !== 1) return { kind: 'stale' } as const;
 
 				const batch = await this.lockBatch(queryRunner, budget, claim.batchId);
-				if (batch?.status === 'ready' && batch.attempts === claim.attempt
-					&& state.latest_ready_batch_id === claim.batchId && state.epoch_id === claim.epochId) {
-					return { kind: 'published', itemCount: batch.item_count, feedEpochId: claim.epochId, headSequence: state.latest_sequence } as const;
+				if (batch?.status === 'ready' && batch.attempts === claim.attempt && state.epoch_id === claim.epochId
+					&& (state.latest_ready_batch_id === claim.batchId || state.stock_batch_id === claim.batchId)) {
+					// prefetch の publish 後は stock_batch_id が指すので、そちらも publish 済みとみなす。
+					const headSequence = state.stock_batch_id === claim.batchId && state.stock_sequence != null
+						? state.stock_sequence : state.latest_sequence;
+					return { kind: 'published', itemCount: batch.item_count, feedEpochId: claim.epochId, headSequence } as const;
 				}
 				if (!this.isExactLiveClaim(state, batch, claim)) return { kind: 'stale' } as const;
 
@@ -688,6 +738,8 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 					s."initialGenerationState" AS initial_state,
 					s."latestReadyBatchId" AS latest_ready_batch_id,
 					s."generatingBatchId" AS generating_batch_id,
+					s."stockBatchId" AS stock_batch_id,
+					s."stockSequence"::text AS stock_sequence,
 					s."latestSequence"::text AS latest_sequence,
 					s."earliestRetainedSequence"::text AS earliest_retained_sequence,
 					s."commonEpochId" AS common_epoch_id, s."commonHeadGenerationId" AS common_generation_id,
@@ -778,6 +830,8 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 				s."initialGenerationState" AS initial_state,
 				s."latestReadyBatchId" AS latest_ready_batch_id,
 				s."generatingBatchId" AS generating_batch_id,
+				s."stockBatchId" AS stock_batch_id,
+				s."stockSequence"::text AS stock_sequence,
 				s."latestSequence"::text AS latest_sequence,
 				s."earliestRetainedSequence"::text AS earliest_retained_sequence,
 				s."commonEpochId" AS common_epoch_id, s."commonHeadGenerationId" AS common_generation_id,
@@ -798,6 +852,23 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 			FROM "hanami_user_feed_batch" b WHERE b."id" = $1 FOR UPDATE OF b
 		`, [batchId]) as BatchRow[];
 		return rows.at(0) ?? null;
+	}
+
+	private async discardStock(queryRunner: QueryRunner, budget: Budget, userId: string, epochId: string, stockBatchId: string): Promise<void> {
+		await this.deadlineQuery(queryRunner, budget, `
+			UPDATE "hanami_user_feed_state"
+			SET "stockBatchId" = NULL, "stockSequence" = NULL, "updatedAt" = clock_timestamp()
+			WHERE "userId" = $1 AND "epochId" = $2 AND "stockBatchId" = $3
+		`, [userId, epochId, stockBatchId]);
+		await this.deadlineQuery(queryRunner, budget, `
+			DELETE FROM "hanami_user_feed_entry"
+			WHERE "userId" = $1 AND "epochId" = $2 AND "batchId" = $3
+		`, [userId, epochId, stockBatchId]);
+		await this.deadlineQuery(queryRunner, budget, `
+			UPDATE "hanami_user_feed_batch"
+			SET "status" = 'obsolete'
+			WHERE "id" = $1 AND "userId" = $2 AND "status" = 'ready'
+		`, [stockBatchId, userId]);
 	}
 
 	private isExactLiveClaim(state: StateRow, batch: BatchRow | null, claim: Claim): batch is BatchRow {

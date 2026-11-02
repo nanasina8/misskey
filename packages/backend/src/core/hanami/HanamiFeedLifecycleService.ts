@@ -15,6 +15,7 @@ import type { EntityManager } from 'typeorm';
 type UserFeedStateRow = {
 	user_id: MiUser['id'];
 	epoch_id: string;
+	stock_batch_id: string | null;
 };
 
 @Injectable()
@@ -35,7 +36,7 @@ export class HanamiFeedLifecycleService {
 		if (orderedUserIds.length === 0) return;
 
 		const states = await manager.query<UserFeedStateRow[]>(`
-			SELECT s."userId" AS user_id, s."epochId" AS epoch_id
+			SELECT s."userId" AS user_id, s."epochId" AS epoch_id, s."stockBatchId" AS stock_batch_id
 			FROM "hanami_user_feed_state" s
 			WHERE s."userId" = ANY($1::varchar[])
 			ORDER BY s."userId" ASC
@@ -46,12 +47,19 @@ export class HanamiFeedLifecycleService {
 
 		await this.lockActiveEpochs(manager, states);
 		await this.obsoleteCurrentWork(manager, stateUserIds, transitionedAt);
+		for (const state of states) {
+			if (state.stock_batch_id != null) {
+				await this.discardStock(manager, state.user_id, state.epoch_id, state.stock_batch_id);
+			}
+		}
 		const commonHead = await this.commonHeadQueries.lockLatestReadyCommonHead(manager);
 
 		const updated = hanamiReturningRows(await manager.query<Array<{ user_id: MiUser['id'] }>>(`
 			UPDATE "hanami_user_feed_state" s
 			SET "mode" = 'common',
 				"generatingBatchId" = NULL,
+				"stockBatchId" = NULL,
+				"stockSequence" = NULL,
 				"commonEpochId" = $2,
 				"commonHeadGenerationId" = $3,
 				"commonHeadSequence" = $4::bigint,
@@ -77,7 +85,7 @@ export class HanamiFeedLifecycleService {
 		transitionedAt: Date,
 	): Promise<void> {
 		const states = await manager.query<UserFeedStateRow[]>(`
-			SELECT s."userId" AS user_id, s."epochId" AS epoch_id
+			SELECT s."userId" AS user_id, s."epochId" AS epoch_id, s."stockBatchId" AS stock_batch_id
 			FROM "hanami_user_feed_state" s
 			WHERE s."userId" = $1
 			ORDER BY s."userId" ASC
@@ -88,6 +96,9 @@ export class HanamiFeedLifecycleService {
 
 		await this.lockActiveEpochs(manager, [state]);
 		await this.obsoleteCurrentWork(manager, [userId], transitionedAt);
+		if (state.stock_batch_id != null) {
+			await this.discardStock(manager, userId, state.epoch_id, state.stock_batch_id);
+		}
 		const initialGenerationState = await this.getInitialGenerationState(manager, userId);
 		const commonHead = await this.commonHeadQueries.lockLatestReadyCommonHead(manager);
 
@@ -113,6 +124,8 @@ export class HanamiFeedLifecycleService {
 				"initialGenerationAttemptedAt" = NULL,
 				"latestReadyBatchId" = NULL,
 				"generatingBatchId" = NULL,
+				"stockBatchId" = NULL,
+				"stockSequence" = NULL,
 				"latestSequence" = '0'::bigint,
 				"earliestRetainedSequence" = '0'::bigint,
 				"commonEpochId" = $4,
@@ -216,7 +229,18 @@ export class HanamiFeedLifecycleService {
 				throw new Error(`Hanami lifecycle obsoleted ${updated.length} of ${refreshes.length} locked pending refreshes`);
 			}
 		}
+	}
 
+	private async discardStock(manager: EntityManager, userId: MiUser['id'], epochId: string, stockBatchId: string): Promise<void> {
+		await manager.query(`
+			DELETE FROM "hanami_user_feed_entry"
+			WHERE "userId" = $1 AND "epochId" = $2 AND "batchId" = $3
+		`, [userId, epochId, stockBatchId]);
+		await manager.query(`
+			UPDATE "hanami_user_feed_batch"
+			SET "status" = 'obsolete'
+			WHERE "id" = $1 AND "userId" = $2 AND "status" = 'ready'
+		`, [stockBatchId, userId]);
 	}
 
 	private async getInitialGenerationState(

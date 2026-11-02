@@ -4,7 +4,6 @@
  */
 import { describe, test, expect } from 'vitest';
 
-
 import { randomBytes } from 'node:crypto';
 import { vi as jest } from 'vitest';
 import { Client } from 'pg';
@@ -14,6 +13,7 @@ import { UserService } from '@/core/UserService.js';
 import { HanamiFeedLifecycleService } from '@/core/hanami/HanamiFeedLifecycleService.js';
 import { HibernationSweepProcessorService } from '@/queue/processors/HibernationSweepProcessorService.js';
 import { HanamiPersistedTimelinePhase11787097600000 } from '../../migration/1787097600000-hanamiPersistedTimelinePhase1.js';
+import { HanamiUserFeedStock1793611851090 } from '../../migration/1793611851090-hanamiUserFeedStock.js';
 
 type DbRow = Record<string, unknown>;
 type DbQuery = <T extends DbRow = DbRow>(sql: string, values?: unknown[]) => Promise<T[]>;
@@ -122,6 +122,7 @@ const withMigratedSchema = async (run: (context: SchemaContext) => Promise<void>
 		await query(`CREATE INDEX "IDX_user_hibernation_candidates" ON "user" ("lastActiveDate")
 			WHERE "host" IS NULL AND "isHibernated" = false AND "lastActiveDate" IS NOT NULL`);
 		await new HanamiPersistedTimelinePhase11787097600000().up({ query } as never);
+		await new HanamiUserFeedStock1793611851090().up({ query } as never);
 		await run({ schema, query });
 	} catch (error) {
 		if (isDbConnectionError(error)) {
