@@ -81,6 +81,7 @@ const VERBOSE = flag('--verbose');
 
 function parseSince(spec) {
 	if (spec == null) return null;
+	if (spec === 'all') return new Date(TIME2000 + 1); // 最初から
 	const rel = /^(\d+)([dh])$/.exec(spec);
 	if (rel) return new Date(Date.now() - Number(rel[1]) * (rel[2] === 'd' ? 86400000 : 3600000));
 	const d = new Date(spec);
@@ -514,19 +515,20 @@ function perUserMax() {
 }
 
 /** id の範囲で 5000 件ずつ読む。sql は ${cursor} と ${hi} を受け取る関数 */
-function scanById(label, sql, lo, hi) {
-	const rows = [];
+// 全部をメモリに載せないよう、5000 件ずつ読んでは 1 行ずつ渡す (本番の note は数千万行ある)
+function* scanById(label, sql, lo, hi) {
 	let cursor = lo;
+	let total = 0;
 	for (;;) {
 		const chunk = psql(sql(cursor, hi));
 		if (chunk.length === 0) break;
-		rows.push(...chunk);
+		total += chunk.length;
 		cursor = chunk.at(-1)[0];
-		process.stdout.write(`\r${label}: ${rows.length} 件   `);
+		process.stdout.write(`\r${label}: ${total} 件 (${jst(idMs(cursor))} まで)   `);
+		yield* chunk;
 		if (chunk.length < 5000) break;
 	}
-	process.stdout.write(`\r${label}: ${rows.length} 件   \n`);
-	return rows;
+	process.stdout.write(`\r${label}: ${total} 件${' '.repeat(30)}\n`);
 }
 
 // ---------- 消えた期間を調べる (読むだけ) ----------
@@ -760,17 +762,32 @@ async function main() {
 			return;
 		}
 		if (!candidates.has(notifieeId)) candidates.set(notifieeId, []);
-		candidates.get(notifieeId).push({ ms, type, notifierId, data });
+		const list = candidates.get(notifieeId);
+		list.push({ ms, type, notifierId, data });
+		// 上限 (1 人 maxLen 件) を超える古い分は最後に捨てられるので、ため込まない。
+		// 新しい方から maxLen 件より古い候補は、それより新しいもの (候補か、すでにある同じ通知) が maxLen 件あるので必ず捨てられる
+		if (list.length > maxLen * 4) {
+			list.sort((a, b) => b.ms - a.ms);
+			list.length = maxLen + 50;
+		}
 	}
 
 	// ---------- 投稿: reply / mention / renote / quote / note ----------
+	// 通知になりうる投稿だけを DB 側で絞る: ローカルの人への返信・リノート、ローカルの人へのメンション、投稿の通知をオンにされている人の返信でない投稿
+	const localIdArray = `ARRAY[${sqlList([...users.keys()])}]::varchar[]`;
+	const noteFilterSql = [
+		`("replyId" IS NOT NULL AND "replyUserHost" IS NULL)`,
+		`("renoteId" IS NOT NULL AND "renoteUserHost" IS NULL)`,
+		`(mentions && ${localIdArray})`,
+		...(noteSubscribers.size > 0 ? [`("replyId" IS NULL AND "userId" IN (${sqlList([...noteSubscribers.keys()])}))`] : []),
+	].join(' OR ');
 	const notes = scanById('投稿', (c, h) => `
 		SELECT id, "userId", visibility, array_to_string("visibleUserIds", ','), array_to_string(mentions, ','),
 		       coalesce("replyId", ''), coalesce("replyUserId", ''), ("replyUserHost" IS NULL),
 		       coalesce("renoteId", ''), coalesce("renoteUserId", ''), ("renoteUserHost" IS NULL),
 		       (text IS NOT NULL OR cw IS NOT NULL OR "replyId" IS NOT NULL OR "hasPoll" OR coalesce(cardinality("fileIds"), 0) > 0),
 		       coalesce("threadId", '')
-		FROM note WHERE id > '${c}' AND id <= '${h}' ORDER BY id ASC LIMIT 5000;`, lo, hi);
+		FROM note WHERE id > '${c}' AND id <= '${h}' AND (${noteFilterSql}) ORDER BY id ASC LIMIT 5000;`, lo, hi);
 	for (const r of notes) {
 		const [id, userId, visibility, visibleCsv, mentionsCsv, replyId, replyUserId, replyUserLocal, renoteId, renoteUserId, renoteUserLocal, quoteLike, threadId] = r;
 		const ms = idMs(id);
@@ -881,7 +898,8 @@ async function main() {
 
 	// ---------- 今ある通知と突き合わせる ----------
 	console.log(`\n通知を作る候補: ${[...candidates.values()].reduce((a, l) => a + l.length, 0)} 件 / ${candidates.size} 人`);
-	const plan = []; // { userId, existing, latestRead, add: [[sid, json, n]] }
+	const plan = []; // { userId, existing, latestRead, add: [[sid, json, n]], droppedExisting }
+	let dropped = 0; // 上限を超えるので戻さない古い通知
 	const totalByType = {};
 	for (const [userId, list] of candidates) {
 		const existing = await redis.xrangeAll(streamKey(userId));
@@ -904,7 +922,16 @@ async function main() {
 			add.push([sid, JSON.stringify(n), n]);
 			totalByType[n.type] = (totalByType[n.type] ?? 0) + 1;
 		}
-		if (add.length > 0) plan.push({ userId, existing, latestRead, add });
+		// 上限 (maxLen 件) で残るものだけにする。今ある通知と合わせて新しい方から maxLen 件
+		const sidKey = (sid) => { const [ms, seq] = sid.split('-'); return [BigInt(ms), BigInt(seq)]; };
+		const cmpSid = (a, b) => { const [am, as] = sidKey(a), [bm, bs] = sidKey(b); return am === bm ? (as < bs ? -1 : as > bs ? 1 : 0) : (am < bm ? -1 : 1); };
+		const all = [...existing.map(e => e[0]), ...add.map(a => a[0])].sort(cmpSid);
+		const cutoff = all.length > maxLen ? all[all.length - maxLen] : null;
+		const kept = cutoff == null ? add : add.filter(a => cmpSid(a[0], cutoff) >= 0);
+		for (const [, , n] of add) totalByType[n.type]--;
+		for (const [, , n] of kept) totalByType[n.type]++;
+		dropped += add.length - kept.length;
+		if (kept.length > 0) plan.push({ userId, existing, latestRead, add: kept, droppedExisting: Math.max(0, existing.length + kept.length - maxLen) });
 	}
 
 	// ---------- 結果の表示 ----------
@@ -913,14 +940,14 @@ async function main() {
 		const u = users.get(p.userId);
 		const byType = {};
 		for (const [, , n] of p.add) byType[n.type] = (byType[n.type] ?? 0) + 1;
-		const over = Math.max(0, p.existing.length + p.add.length - maxLen);
 		console.log(`  @${u.username}: 今 ${p.existing.length} 件 + 戻す ${p.add.length} 件 (${Object.entries(byType).map(([t, c]) => `${t} ${c}`).join(', ')})`
-			+ (over > 0 ? ` / 上限超えで古い ${over} 件は捨てる` : ''));
+			+ (p.droppedExisting > 0 ? ` / 今ある古い ${p.droppedExisting} 件は上限で消える` : ''));
 		if (VERBOSE) for (const [, , n] of p.add) console.log(`      ${jst(Date.parse(n.createdAt))} ${n.type} ${n.notifierId ?? ''} ${n.noteId ?? n.roleId ?? n.achievement ?? ''} ${n.reaction ?? ''}`);
 	}
 	const total = plan.reduce((a, p) => a + p.add.length, 0);
 	console.log(`\n戻す通知: ${total} 件 / ${plan.length} 人`);
-	console.log(`  種類別: ${Object.entries(totalByType).map(([t, c]) => `${t} ${c}`).join(', ') || '(なし)'}`);
+	console.log(`  種類別: ${Object.entries(totalByType).filter(([, c]) => c > 0).map(([t, c]) => `${t} ${c}`).join(', ') || '(なし)'}`);
+	if (dropped > 0) console.log(`  1 人 ${maxLen} 件の上限を超えるので戻さない古い通知: ${dropped} 件`);
 	if (Object.keys(skippedByRule).length > 0) console.log(`  受け取り設定・ミュートで除いたもの: ${Object.entries(skippedByRule).map(([t, c]) => `${t} ${c}`).join(', ')}`);
 	console.log('  書き戻したユーザーは全員「全部既読」になります (通知音・プッシュ・未読バッジは出ません)');
 
