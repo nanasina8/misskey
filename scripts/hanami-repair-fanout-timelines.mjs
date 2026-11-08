@@ -30,6 +30,11 @@
  *   node scripts/hanami-repair-fanout-timelines.mjs --since 4d
  *   node scripts/hanami-repair-fanout-timelines.mjs --since 4d --apply
  *
+ * 直すのは「今 Redis にあるリスト」と「アンテナ」だけ。空のリストは読み出しのときに DB から
+ * 読み直されるので直す必要がない (困るのは中に抜けがあるリスト)。空のリストも作るなら --fill-empty。
+ * 投稿は新しい方から流し、各リストの上限件数ぶんしか持たないので、--since を最初 (2000 年) にしても
+ * メモリは増えない。
+ *
  * アンテナ (list:antennaTimeline:*) も AntennaService#checkHitAntenna と同じ条件で埋める
  * (止まっているアンテナも含む)。アンテナを外すときは --no-antenna。
  *
@@ -41,6 +46,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { domainToASCII, fileURLToPath } from 'node:url';
 
 // Misskey のリポジトリ直下 (.config がある所)。標準入力から流したとき (docker の web コンテナ内) は今いる場所から探す
@@ -224,6 +230,20 @@ function psqlViaNode(sql) {
 	if (r.error) throw r.error;
 	if (r.status !== 0) throw new Error(`DB への問い合わせに失敗:\n${r.stderr}`);
 	return r.stdout.split('\n').filter(l => l.length > 0).map(l => l.split('\t'));
+}
+
+const cell = (v) => v == null ? '' : v === true ? 't' : v === false ? 'f' : v instanceof Date ? v.toISOString() : typeof v === 'object' ? JSON.stringify(v) : String(v);
+let pgClient = null;
+/** psql が無いとき (web コンテナ内) は pg ライブラリで 1 本つなぎっぱなしにして問い合わせる。返す形は psql() と同じ */
+async function q(sql) {
+	if (PG_CONTAINER || HAS_PSQL) return psql(sql);
+	if (pgClient == null) {
+		const pg = createRequire(path.join(ROOT, 'packages/backend/package.json'))('pg');
+		pgClient = new pg.Client({ host: config.db.host ?? '127.0.0.1', port: Number(config.db.port ?? 5432), user: PG.user, password: PG.pass, database: PG.db });
+		await pgClient.connect();
+	}
+	const res = await pgClient.query({ text: sql, rowMode: 'array' });
+	return ((Array.isArray(res) ? res.at(-1) : res).rows ?? []).map(r => r.map(cell));
 }
 
 /** SQL を投げて TSV の二次元配列で返す */
@@ -446,12 +466,15 @@ async function openRedis() {
 }
 
 // ---------- 修復対象の蓄積 ----------
-/** @type {Map<string, { max: number, ids: Set<string> }>} */
+// 投稿は新しい方から流すので、各キーは上限に達したらそれ以上持たない (メモリを上限件数ぶんに抑える)
+/** @type {Map<string, { max: number, ids: string[] }>} */
 const want = new Map();
+let keyFilter = () => true;
 const add = (key, max, id) => {
+	if (!keyFilter(key)) return;
 	let e = want.get(key);
-	if (e == null) want.set(key, e = { max: Math.floor(max), ids: new Set() });
-	e.ids.add(id);
+	if (e == null) want.set(key, e = { max: Math.floor(max), ids: [] });
+	if (e.ids.length < e.max && e.ids.at(-1) !== id) e.ids.push(id);
 };
 
 const isReply = (note, viewerId) =>
@@ -460,7 +483,7 @@ const isReply = (note, viewerId) =>
 async function main() {
 	// ---------- 環境の解決を先に全部表示する ----------
 	if (PG_CONTAINER) console.log(`Postgres: docker exec ${PG_CONTAINER} psql -U ${PG.user} -d ${PG.db}`);
-	else console.log(`Postgres: ホストの psql で ${config.db.host ?? '127.0.0.1'}:${config.db.port ?? 5432}/${PG.db} へ接続 (dockerのpostgresが見つからない)`);
+	else console.log(`Postgres: ${HAS_PSQL ? 'ホストの psql' : 'pg ライブラリ'} で ${config.db.host ?? '127.0.0.1'}:${config.db.port ?? 5432}/${PG.db} へ接続`);
 
 	const { redis, seen } = await openRedis();
 	console.log(`Redis: ${redis.describe()}`);
@@ -492,7 +515,7 @@ async function main() {
 		return;
 	}
 
-	const [metaRow] = psql(`SELECT "perLocalUserUserTimelineCacheMax", "perRemoteUserUserTimelineCacheMax",
+	const [metaRow] = await q(`SELECT "perLocalUserUserTimelineCacheMax", "perRemoteUserUserTimelineCacheMax",
 	                               "perUserHomeTimelineCacheMax", "perUserListTimelineCacheMax",
 	                               "enableFanoutTimeline" FROM meta LIMIT 1;`);
 	if (metaRow == null) throw new Error('meta テーブルが読めない');
@@ -520,67 +543,32 @@ async function main() {
 	const loId = dateToId(since), hiId = dateToId(until);
 	console.log(`対象範囲: ${since.toISOString()} 〜 ${until.toISOString()}  (id ${loId}… 〜 ${hiId}…)`);
 
-	// ---------- note を走査 ----------
-	let cursor = loId.padEnd(16, '0');
-	const end = hiId.padEnd(16, 'z');
-	const notes = [];
-	for (;;) {
-		const rows = psql(`
-			SELECT id, "userId", ("userHost" IS NULL), visibility,
-			       array_to_string("visibleUserIds", ','),
-			       (coalesce(array_length("fileIds", 1), 0) > 0),
-			       coalesce("replyId", ''), coalesce("replyUserId", ''), ("replyUserHost" IS NULL),
-			       coalesce("channelId", ''), "isNoteInHanaMode"
-			FROM note WHERE id > '${cursor}' AND id <= '${end}' ORDER BY id ASC LIMIT 5000;`);
-		if (rows.length === 0) break;
-		for (const r of rows) {
-			notes.push({
-				id: r[0], userId: r[1], isLocal: r[2] === 't', visibility: r[3],
-				visibleUserIds: r[4] ? r[4].split(',') : [], hasFiles: r[5] === 't',
-				replyId: r[6], replyUserId: r[7], replyUserLocal: r[8] === 't',
-				channelId: r[9], hana: r[10] === 't',
-			});
-		}
-		cursor = rows.at(-1)[0];
-		process.stdout.write(`\rnote 取得: ${notes.length} 件   `);
-		if (rows.length < 5000) break;
-	}
-	console.log(`\nnote ${notes.length} 件を対象に fanout を再計算`);
-	if (notes.length === 0) { redis.close(); return; }
+	// ---------- 直すキーを決める ----------
+	// 空のリストは読み出しのときに DB から読み直されるので、直さなくてよい (困るのは中に抜けがあるリスト)。
+	// 今 Redis にあるリストと、DB から読み直さないアンテナだけを埋める。空のリストも作るなら --fill-empty
+	const FILL_EMPTY = flag('--fill-empty');
+	const present = new Set((await redis.scanKeys(k('list:*'))).map(x => x.slice(prefix.length)));
+	console.log(`今ある TL のリスト: ${present.size} 本${FILL_EMPTY ? ' (--fill-empty: 無いリストも作る)' : ' (無いリストは作らない)'}`);
+	if (!FILL_EMPTY) keyFilter = (key) => present.has(key) || key.startsWith('list:antennaTimeline:');
 
-	// ---------- 関連テーブルを一括取得 ----------
-	const authorIds = [...new Set(notes.map(n => n.userId))];
-	const channelIds = [...new Set(notes.map(n => n.channelId).filter(x => x !== ''))];
+	const ant = flag('--no-antenna') ? null : await loadAntennas();
+	const withText = ant != null;
 
+	// ---------- 関連テーブルを先に全部読む (ローカルの人のフォローだけなので小さい) ----------
 	const followings = new Map();   // authorId -> [{followerId, withReplies}]
 	const memberships = new Map();  // authorId -> [{userListId, userListUserId, withReplies}]
 	const chFollowers = new Map();  // channelId -> [followerId]
-
-	for (let i = 0; i < authorIds.length; i += 500) {
-		const chunk = sqlList(authorIds.slice(i, i + 500));
-		for (const r of psql(`SELECT "followeeId", "followerId", "withReplies" FROM following
-			WHERE "followeeId" IN (${chunk}) AND "followerHost" IS NULL AND "isFollowerHibernated" = false;`)) {
-			if (!followings.has(r[0])) followings.set(r[0], []);
-			followings.get(r[0]).push({ followerId: r[1], withReplies: r[2] === 't' });
-		}
-		for (const r of psql(`SELECT "userId", "userListId", "userListUserId", "withReplies"
-			FROM user_list_membership WHERE "userId" IN (${chunk});`)) {
-			if (!memberships.has(r[0])) memberships.set(r[0], []);
-			memberships.get(r[0]).push({ userListId: r[1], userListUserId: r[2], withReplies: r[3] === 't' });
-		}
-		process.stdout.write(`\rフォロー関係: ${Math.min(i + 500, authorIds.length)}/${authorIds.length} 作者   `);
+	const push = (m, key, v) => { let xs = m.get(key); if (xs == null) m.set(key, xs = []); xs.push(v); };
+	for (const r of await q(`SELECT "followeeId", "followerId", "withReplies" FROM following
+		WHERE "followerHost" IS NULL AND "isFollowerHibernated" = false;`)) push(followings, r[0], { followerId: r[1], withReplies: r[2] === 't' });
+	for (const r of await q(`SELECT "userId", "userListId", "userListUserId", "withReplies" FROM user_list_membership;`)) {
+		push(memberships, r[0], { userListId: r[1], userListUserId: r[2], withReplies: r[3] === 't' });
 	}
-	for (let i = 0; i < channelIds.length; i += 500) {
-		for (const r of psql(`SELECT "followeeId", "followerId" FROM channel_following
-			WHERE "followeeId" IN (${sqlList(channelIds.slice(i, i + 500))});`)) {
-			if (!chFollowers.has(r[0])) chFollowers.set(r[0], []);
-			chFollowers.get(r[0]).push(r[1]);
-		}
-	}
-	console.log('');
+	for (const r of await q(`SELECT "followeeId", "followerId" FROM channel_following;`)) push(chFollowers, r[0], r[1]);
+	console.log(`フォローされている人 ${followings.size} / リストに入っている人 ${memberships.size} / チャンネル ${chFollowers.size}`);
 
 	// ---------- pushToTl の再現 ----------
-	for (const note of notes) {
+	const fanout = (note) => {
 		const userMax = note.isLocal ? meta.localUser : meta.remoteUser;
 		const pushLocalTl = !note.hana; // はなモードのノートは LTL に出さない
 
@@ -591,7 +579,7 @@ async function main() {
 				add(`list:homeTimeline:${followerId}`, meta.home, note.id);
 				if (note.hasFiles) add(`list:homeTimelineWithFiles:${followerId}`, meta.home / 2, note.id);
 			}
-			continue;
+			return;
 		}
 
 		const follows = followings.get(note.userId) ?? [];
@@ -636,8 +624,53 @@ async function main() {
 				if (note.hasFiles) add('list:localTimelineWithFiles', 500, note.id);
 			}
 		}
+	};
+
+	// ---------- note を新しい方から流す (持つのは各リストの上限件数ぶんだけ) ----------
+	// 本文は改行やタブを含むので base64 で受け取る (アンテナのキーワード用)
+	const CHUNK = 20000;
+	let cursor = hiId + 'z'.repeat(16);
+	let scanned = 0;
+	const started = Date.now();
+	for (;;) {
+		const rows = await q(`
+			SELECT n.id, n."userId", (n."userHost" IS NULL), n.visibility,
+			       array_to_string(n."visibleUserIds", ','),
+			       (coalesce(array_length(n."fileIds", 1), 0) > 0),
+			       coalesce(n."replyId", ''), coalesce(n."replyUserId", ''), (n."replyUserHost" IS NULL),
+			       coalesce(n."channelId", ''), n."isNoteInHanaMode"
+			       ${withText ? `, u.username, coalesce(u.host, ''), u."isBot", coalesce(c."isSensitive", false),
+			       (n.text IS NULL), replace(encode(convert_to(coalesce(n.text, ''), 'UTF8'), 'base64'), E'\\n', ''),
+			       (n.cw IS NULL), replace(encode(convert_to(coalesce(n.cw, ''), 'UTF8'), 'base64'), E'\\n', '')` : ''}
+			FROM note n
+			${withText ? 'JOIN "user" u ON u.id = n."userId" LEFT JOIN channel c ON c.id = n."channelId"' : ''}
+			WHERE n.id < '${cursor}' AND n.id >= '${loId}' ORDER BY n.id DESC LIMIT ${CHUNK};`);
+		if (rows.length === 0) break;
+		for (const r of rows) {
+			const note = {
+				id: r[0], userId: r[1], isLocal: r[2] === 't', visibility: r[3],
+				visibleUserIds: r[4] ? r[4].split(',') : [], hasFiles: r[5] === 't',
+				replyId: r[6], replyUserId: r[7], replyUserLocal: r[8] === 't',
+				channelId: r[9], hana: r[10] === 't',
+			};
+			fanout(note);
+			if (withText) {
+				const host = r[12] === '' ? null : r[12];
+				ant.check({
+					...note, host, acct: fullAcct(r[11], host), isBot: r[13] === 't', channelSensitive: r[14] === 't',
+					hasReply: note.replyId !== '',
+					text: r[15] === 't' ? null : b64(r[16] ?? ''), cw: r[17] === 't' ? null : b64(r[18] ?? ''),
+				});
+			}
+		}
+		scanned += rows.length;
+		cursor = rows.at(-1)[0];
+		process.stdout.write(`\rnote: ${scanned.toLocaleString()} 件 (${idToDate(cursor).toISOString().slice(0, 10)} まで・${Math.round((Date.now() - started) / 1000)} 秒)   `);
+		if (rows.length < CHUNK) break;
 	}
-	if (!flag('--no-antenna')) await collectAntennas(loId, hiId);
+	console.log('');
+	if (ant != null) ant.report();
+
 
 	console.log(`対象キー ${want.size} 本`);
 
@@ -692,28 +725,28 @@ const fullAcct = (username, host) => `${username}@${host ? puny(host) : LOCAL_HO
 const parseAcct = (s) => { const t = s.startsWith('@') ? s.slice(1) : s; const [username, host] = t.split('@', 2); return fullAcct(username, host ?? null); };
 const cleanKeywords = (xs) => (Array.isArray(xs) ? xs : []).map(and => (Array.isArray(and) ? and : []).filter(x => x !== '')).filter(and => and.length > 0);
 
-async function collectAntennas(loId, hiId) {
+async function loadAntennas() {
 	// 止まっているアンテナ (使われずに isActive=false) も埋める。開いた時点で動き出すので、埋めておいて困ることはない
-	const antennas = psql(`SELECT id, "userId", src, coalesce("userListId", ''), array_to_json(users)::text,
+	const antennas = (await q(`SELECT id, "userId", src, coalesce("userListId", ''), array_to_json(users)::text,
 		keywords::text, "excludeKeywords"::text, "caseSensitive", "excludeBots", "withReplies", "withFile",
-		"localOnly", "excludeNotesInSensitiveChannel", "isActive" FROM antenna;`).map(r => ({
+		"localOnly", "excludeNotesInSensitiveChannel", "isActive" FROM antenna;`)).map(r => ({
 		id: r[0], userId: r[1], src: r[2], userListId: r[3],
 		accts: new Set(JSON.parse(r[4] || '[]').map(parseAcct)),
 		keywords: cleanKeywords(JSON.parse(r[5] || '[]')), excludeKeywords: cleanKeywords(JSON.parse(r[6] || '[]')),
 		caseSensitive: r[7] === 't', excludeBots: r[8] === 't', withReplies: r[9] === 't', withFile: r[10] === 't',
 		localOnly: r[11] === 't', excludeSensitiveChannel: r[12] === 't', isActive: r[13] === 't',
 	}));
-	if (antennas.length === 0) { console.log('アンテナ: なし'); return; }
+	if (antennas.length === 0) { console.log('アンテナ: なし'); return null; }
 	console.log(`アンテナ: ${antennas.length} 本 (止まっているもの ${antennas.filter(a => !a.isActive).length} 本も含む)`);
 
 	// 持ち主のフォロー先 (followers 限定の投稿用) と、リストの中身 (src=list 用)
 	const ownerIds = [...new Set(antennas.map(a => a.userId))];
 	const followeesOf = new Map(ownerIds.map(id => [id, new Set()]));
-	for (const r of psql(`SELECT "followerId", "followeeId" FROM following WHERE "followerId" IN (${sqlList(ownerIds)});`)) followeesOf.get(r[0])?.add(r[1]);
+	for (const r of await q(`SELECT "followerId", "followeeId" FROM following WHERE "followerId" IN (${sqlList(ownerIds)});`)) followeesOf.get(r[0])?.add(r[1]);
 	const listIds = [...new Set(antennas.map(a => a.userListId).filter(x => x !== ''))];
 	const listMembers = new Map(listIds.map(id => [id, new Set()]));
 	if (listIds.length > 0) {
-		for (const r of psql(`SELECT "userListId", "userId" FROM user_list_membership WHERE "userListId" IN (${sqlList(listIds)});`)) listMembers.get(r[0])?.add(r[1]);
+		for (const r of await q(`SELECT "userListId", "userId" FROM user_list_membership WHERE "userListId" IN (${sqlList(listIds)});`)) listMembers.get(r[0])?.add(r[1]);
 	}
 
 	const matchText = (a, kws, text, cw) => {
@@ -748,44 +781,20 @@ async function collectAntennas(loId, hiId) {
 		return true;
 	};
 
-	// 本文は改行やタブを含むので base64 で受け取る。量が多いので 5000 件ずつ見て捨てる
-	let cursor = loId.padEnd(16, '0');
-	const end = hiId.padEnd(16, 'z');
-	let seen = 0;
 	const hits = new Map(antennas.map(a => [a.id, 0]));
-	for (;;) {
-		const rows = psql(`
-			SELECT n.id, n."userId", u.username, coalesce(u.host, ''), u."isBot", n.visibility,
-			       array_to_string(n."visibleUserIds", ','), (coalesce(array_length(n."fileIds", 1), 0) > 0),
-			       (n."replyId" IS NOT NULL), coalesce(c."isSensitive", false), n."isNoteInHanaMode",
-			       (n.text IS NULL), replace(encode(convert_to(coalesce(n.text, ''), 'UTF8'), 'base64'), E'\\n', ''),
-			       (n.cw IS NULL), replace(encode(convert_to(coalesce(n.cw, ''), 'UTF8'), 'base64'), E'\\n', '')
-			FROM note n JOIN "user" u ON u.id = n."userId" LEFT JOIN channel c ON c.id = n."channelId"
-			WHERE n.id > '${cursor}' AND n.id <= '${end}' ORDER BY n.id ASC LIMIT 5000;`);
-		if (rows.length === 0) break;
-		for (const r of rows) {
-			const host = r[3] === '' ? null : r[3];
-			const n = {
-				id: r[0], userId: r[1], host, acct: fullAcct(r[2], host), isBot: r[4] === 't', visibility: r[5],
-				visibleUserIds: r[6] ? r[6].split(',') : [], hasFiles: r[7] === 't', hasReply: r[8] === 't',
-				channelSensitive: r[9] === 't', hana: r[10] === 't',
-				text: r[11] === 't' ? null : b64(r[12] ?? ''), cw: r[13] === 't' ? null : b64(r[14] ?? ''),
-			};
+	return {
+		check(n) {
 			for (const a of antennas) {
 				if (!hit(a, n)) continue;
 				add(`list:antennaTimeline:${a.id}`, ANTENNA_MAX, n.id);
 				hits.set(a.id, hits.get(a.id) + 1);
 			}
-		}
-		seen += rows.length;
-		cursor = rows.at(-1)[0];
-		process.stdout.write(`\rアンテナ判定: note ${seen} 件   `);
-		if (rows.length < 5000) break;
-	}
-	console.log('');
-	if (VERBOSE || !APPLY) {
-		for (const a of antennas) console.log(`  アンテナ ${a.id} (${a.src}${a.isActive ? '' : '・停止中'}): 期間内に当たった投稿 ${hits.get(a.id)} 件`);
-	}
+		},
+		report() {
+			if (!VERBOSE && APPLY) return;
+			for (const a of antennas) console.log(`  アンテナ ${a.id} (${a.src}${a.isActive ? '' : '・停止中'}): 当たった投稿 ${Math.min(hits.get(a.id), ANTENNA_MAX)} 件${hits.get(a.id) >= ANTENNA_MAX ? ' (上限)' : ''}`);
+		},
+	};
 }
 
-main().catch(err => { console.error(err.message ?? err); process.exitCode = 1; });
+main().catch(err => { console.error(err.message ?? err); process.exitCode = 1; }).finally(() => pgClient?.end().catch(() => {}));
