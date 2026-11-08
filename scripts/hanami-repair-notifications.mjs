@@ -559,6 +559,27 @@ async function findGap(redis, prefix) {
 		} catch { /* INFO が無い実装は飛ばす */ }
 	}
 
+	let startedAt = null;
+	try {
+		const info = await call('INFO', 'server');
+		const m = /uptime_in_seconds:(\d+)/.exec(Array.isArray(info) ? info.join('\n') : String(info));
+		if (m) startedAt = Date.now() - Number(m[1]) * 1000;
+	} catch { /* 取れなければ出さない */ }
+	if (startedAt) console.log(`  → Dragonfly の起動: ${jst(startedAt)}`);
+
+	console.log('\n== FTT の設定');
+	try {
+		const [row] = psql(`SELECT "enableFanoutTimeline", "enableFanoutTimelineDbFallback" FROM meta LIMIT 1;`);
+		console.log(`  Redis に TL を保存: ${row[0] === 't' ? 'オン' : 'オフ'} / DB フォールバック: ${row[1] === 't' ? 'オン' : 'オフ'}`);
+	} catch (e) { console.log(`  読めず (${e.message})`); }
+	const listKeys = await redis.scanKeys(`${prefix}list:*`);
+	const kinds = {};
+	for (const key of listKeys) {
+		const kind = key.slice(prefix.length + 'list:'.length).split(':')[0];
+		kinds[kind] = (kinds[kind] ?? 0) + 1;
+	}
+	console.log(`  TL のリスト: ${listKeys.length} 本 (${Object.entries(kinds).map(([k, n]) => `${k} ${n}`).join(', ') || 'なし'})`);
+
 	console.log('\n== TL (list:localTimeline)');
 	const tl = await call('LRANGE', `${prefix}list:localTimeline`, 0, -1);
 	const tlIds = (tl ?? []).filter(id => /^[0-9a-z]{16}$/.test(id));
@@ -585,10 +606,28 @@ async function findGap(redis, prefix) {
 	console.log(`  通知のあるユーザー: ${keys.length} 人`);
 	rows.sort((a, b) => b.gap - a.gap);
 	for (const r of rows.slice(0, 15)) console.log(`  ${r.userId}: ${r.count} 件 / 一番大きい抜け ${jst(r.older)} 〜 ${jst(r.newer)} (${hours(r.gap)})`);
-	console.log('\n  抜けの始まり (10 分単位) がそろっている人数 (多い順):');
-	for (const [bucket, n] of [...starts].sort((a, b) => b[1] - a[1]).slice(0, 5)) console.log(`    ${jst(bucket)} から: ${n} 人`);
-	console.log('\n  多くの人で始まりがそろっていれば、そこが前回保存した時刻 (= --since)。');
-	console.log('  終わり側 (再起動後の最初の通知) の少し前が停電の時刻 (= --until)。');
+	// 全員分の通知を日ごと (JST) に数える。消えた期間は 0 件の日が続く所に出る
+	const allTimes = [];
+	for (const key of keys) for (const [sid] of await redis.xrangeAll(key)) allTimes.push(Number(sid.split('-')[0]));
+	allTimes.sort((a, b) => a - b);
+	const dayOf = (ms) => new Date(ms + 9 * 3600e3).toISOString().slice(0, 10);
+	const perDay = new Map();
+	for (const t of allTimes) perDay.set(dayOf(t), (perDay.get(dayOf(t)) ?? 0) + 1);
+	const days = Number(opt('--days', '45'));
+	console.log(`\n  全員分の通知の日ごとの件数 (JST・直近 ${days} 日):`);
+	for (let i = days - 1; i >= 0; i--) {
+		const d = dayOf(Date.now() - i * 86400e3);
+		const n = perDay.get(d) ?? 0;
+		console.log(`    ${d}  ${String(n).padStart(5)}  ${'#'.repeat(Math.min(60, Math.ceil(n / 5)))}${n === 0 ? '  ← 0 件' : ''}`);
+	}
+	if (startedAt) {
+		const before = allTimes.filter(t => t < startedAt);
+		const after = allTimes.filter(t => t >= startedAt);
+		console.log(`\n  Dragonfly の起動 (${jst(startedAt)}) より前で一番新しい通知: ${before.length ? jst(before.at(-1)) : 'なし'}`);
+		console.log(`  起動より後の通知: ${after.length} 件${after.length ? ` (最初 ${jst(after[0])})` : ''}`);
+	}
+	console.log('\n  0 件の日が続く所の始まり (その直前の通知の時刻) が --since、終わり (停電・再起動の時刻) が --until。');
+	console.log('  Dragonfly を停電の後にも再起動していると、起動の時刻は停電の時刻と一致しないので注意。');
 }
 
 // ---------- 巻き戻し ----------
