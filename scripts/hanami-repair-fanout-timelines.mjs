@@ -20,6 +20,10 @@
  *
  * 環境を確かめるだけなら --list を付ける (接続も書き込みもしない)。
  *
+ * docker で動かしている本番では、ホストに node が無くてもよい。web コンテナの node に標準入力で流す:
+ *   docker compose exec -T web node --input-type=module - --list < scripts/hanami-repair-fanout-timelines.mjs
+ *   (引数は「-」の後ろに書く。コンテナ内では psql の代わりに pg ライブラリ、Redis は設定のホストへ直接つなぐ)
+ *
  * 既定は dry-run。実際に書き込むには --apply を付ける。
  *
  *   node scripts/hanami-repair-fanout-timelines.mjs
@@ -36,7 +40,18 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// Misskey のリポジトリ直下 (.config がある所)。標準入力から流したとき (docker の web コンテナ内) は今いる場所から探す
+const ROOT = (() => {
+	const starts = [process.cwd()];
+	if (import.meta.url.startsWith('file:') && !import.meta.url.includes('[eval')) starts.unshift(path.dirname(fileURLToPath(import.meta.url)));
+	for (const start of starts) {
+		for (let dir = start; ; dir = path.dirname(dir)) {
+			if (fs.existsSync(path.join(dir, '.config'))) return dir;
+			if (path.dirname(dir) === dir) break;
+		}
+	}
+	return process.cwd();
+})();
 const TIME2000 = 946684800000;
 const ID_RE = /^[0-9a-zA-Z]{1,32}$/;
 
@@ -180,8 +195,37 @@ if (PG_CONTAINER) {
 	}
 }
 
+// psql も docker も無いとき (docker の web コンテナ内で動かすとき) は、
+// コンテナにある pg ライブラリで子プロセスから問い合わせる。出力は psql -A -t -F '\t' と同じ形にそろえる
+const HAS_PSQL = (() => { const r = spawnSync('psql', ['--version'], { encoding: 'utf8' }); return !r.error && r.status === 0; })();
+const PG_CHILD = `
+import { createRequire } from 'node:module';
+const [root, host, port, user, pass, db] = process.argv.slice(1);
+const require = createRequire(root + '/packages/backend/package.json');
+const pg = require('pg');
+let sql = '';
+for await (const c of process.stdin) sql += c;
+const client = new pg.Client({ host, port: Number(port), user, password: pass, database: db });
+await client.connect();
+const res = await client.query({ text: sql, rowMode: 'array' });
+await client.end();
+const last = Array.isArray(res) ? res.at(-1) : res;
+const cell = (v) => v == null ? '' : v === true ? 't' : v === false ? 'f' : v instanceof Date ? v.toISOString() : typeof v === 'object' ? JSON.stringify(v) : String(v);
+process.stdout.write((last.rows ?? []).map(r => r.map(cell).join('\\t')).join('\\n') + '\\n');
+`;
+
+function psqlViaNode(sql) {
+	const r = spawnSync(process.execPath, ['--input-type=module', '-e', PG_CHILD, ROOT, config.db.host ?? '127.0.0.1', String(config.db.port ?? 5432), PG.user, PG.pass, PG.db], {
+		input: sql, encoding: 'utf8', maxBuffer: 1024 * 1024 * 1024,
+	});
+	if (r.error) throw r.error;
+	if (r.status !== 0) throw new Error(`DB への問い合わせに失敗:\n${r.stderr}`);
+	return r.stdout.split('\n').filter(l => l.length > 0).map(l => l.split('\t'));
+}
+
 /** SQL を投げて TSV の二次元配列で返す */
 function psql(sql) {
+	if (!PG_CONTAINER && !HAS_PSQL) return psqlViaNode(sql);
 	const psqlArgs = ['-U', PG.user, '-d', PG.db, '-X', '-q', '-A', '-t', '-F', '\t', '-v', 'ON_ERROR_STOP=1', '-f', '-'];
 	const [cmd, args] = PG_CONTAINER
 		? ['docker', ['exec', '-i', '-e', `PGPASSWORD=${PG.pass}`, PG_CONTAINER, 'psql', ...psqlArgs]]

@@ -28,8 +28,13 @@
  *
  * すでに同じ通知 (種類・相手・投稿・リアクションが同じ) があれば足さない。何度流しても増えない。
  *
+ * docker で動かしている本番では、ホストに node が無くてもよい。web コンテナの node に標準入力で流す:
+ *   docker compose exec -T web node --input-type=module - --list < scripts/hanami-repair-notifications.mjs
+ *   (引数は「-」の後ろに書く。コンテナ内では psql の代わりに pg ライブラリ、Redis は設定のホストへ直接つなぐ)
+ *
  * 既定は dry-run。実際に書き込むには --apply を付ける。書き込む前に、触るユーザーの通知と
- * 既読位置を _local/runs/notifications-backup-<時刻>.json に保存する (--rollback <file> で戻せる)。
+ * 既読位置を _local/runs/ (docker の web コンテナ内では files/hanami-repair-backups/) の
+ * notifications-backup-<時刻>.json に保存する (--rollback <file> で戻せる。--backup-dir で場所を変えられる)。
  *
  *   node scripts/hanami-repair-notifications.mjs --list
  *   node scripts/hanami-repair-notifications.mjs --find-gap   (消えた期間を調べる。読むだけ)
@@ -49,7 +54,18 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// Misskey のリポジトリ直下 (.config がある所)。標準入力から流したとき (docker の web コンテナ内) は今いる場所から探す
+const ROOT = (() => {
+	const starts = [process.cwd()];
+	if (import.meta.url.startsWith('file:') && !import.meta.url.includes('[eval')) starts.unshift(path.dirname(fileURLToPath(import.meta.url)));
+	for (const start of starts) {
+		for (let dir = start; ; dir = path.dirname(dir)) {
+			if (fs.existsSync(path.join(dir, '.config'))) return dir;
+			if (path.dirname(dir) === dir) break;
+		}
+	}
+	return process.cwd();
+})();
 const TIME2000 = 946684800000;
 const ID_RE = /^[0-9a-zA-Z]{1,32}$/;
 
@@ -193,8 +209,37 @@ if (PG_CONTAINER) {
 	}
 }
 
+// psql も docker も無いとき (docker の web コンテナ内で動かすとき) は、
+// コンテナにある pg ライブラリで子プロセスから問い合わせる。出力は psql -A -t -F '\t' と同じ形にそろえる
+const HAS_PSQL = (() => { const r = spawnSync('psql', ['--version'], { encoding: 'utf8' }); return !r.error && r.status === 0; })();
+const PG_CHILD = `
+import { createRequire } from 'node:module';
+const [root, host, port, user, pass, db] = process.argv.slice(1);
+const require = createRequire(root + '/packages/backend/package.json');
+const pg = require('pg');
+let sql = '';
+for await (const c of process.stdin) sql += c;
+const client = new pg.Client({ host, port: Number(port), user, password: pass, database: db });
+await client.connect();
+const res = await client.query({ text: sql, rowMode: 'array' });
+await client.end();
+const last = Array.isArray(res) ? res.at(-1) : res;
+const cell = (v) => v == null ? '' : v === true ? 't' : v === false ? 'f' : v instanceof Date ? v.toISOString() : typeof v === 'object' ? JSON.stringify(v) : String(v);
+process.stdout.write((last.rows ?? []).map(r => r.map(cell).join('\\t')).join('\\n') + '\\n');
+`;
+
+function psqlViaNode(sql) {
+	const r = spawnSync(process.execPath, ['--input-type=module', '-e', PG_CHILD, ROOT, config.db.host ?? '127.0.0.1', String(config.db.port ?? 5432), PG.user, PG.pass, PG.db], {
+		input: sql, encoding: 'utf8', maxBuffer: 1024 * 1024 * 1024,
+	});
+	if (r.error) throw r.error;
+	if (r.status !== 0) throw new Error(`DB への問い合わせに失敗:\n${r.stderr}`);
+	return r.stdout.split('\n').filter(l => l.length > 0).map(l => l.split('\t'));
+}
+
 /** SQL を投げて TSV の二次元配列で返す */
 function psql(sql) {
+	if (!PG_CONTAINER && !HAS_PSQL) return psqlViaNode(sql);
 	const psqlArgs = ['-U', PG.user, '-d', PG.db, '-X', '-q', '-A', '-t', '-F', '\t', '-v', 'ON_ERROR_STOP=1', '-f', '-'];
 	const [cmd, args] = PG_CONTAINER
 		? ['docker', ['exec', '-i', '-e', `PGPASSWORD=${PG.pass}`, PG_CONTAINER, 'psql', ...psqlArgs]]
@@ -562,7 +607,7 @@ async function rollback(redis, file) {
 
 async function main() {
 	if (PG_CONTAINER) console.log(`Postgres: docker exec ${PG_CONTAINER} psql -U ${PG.user} -d ${PG.db}`);
-	else console.log(`Postgres: ホストの psql で ${config.db.host ?? '127.0.0.1'}:${config.db.port ?? 5432}/${PG.db} へ接続`);
+	else console.log(`Postgres: ${HAS_PSQL ? 'psql' : 'pg ライブラリ'} で ${config.db.host ?? '127.0.0.1'}:${config.db.port ?? 5432}/${PG.db} へ接続`);
 
 	const redis = await openRedis();
 	console.log(`Redis: ${redis.describe()}`);
@@ -848,7 +893,10 @@ async function main() {
 
 	// ---------- バックアップしてから書き込む ----------
 	const stamp = new Date(Date.now() + 9 * 3600e3).toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
-	const backupDir = path.join(ROOT, '_local/runs');
+	// docker の web コンテナ内では files/ (ホストにマウントされている) に置く。コンテナを作り直しても消えない
+	const backupDir = opt('--backup-dir') ?? (fs.existsSync(path.join(ROOT, 'files')) && !fs.existsSync(path.join(ROOT, '_local'))
+		? path.join(ROOT, 'files/hanami-repair-backups')
+		: path.join(ROOT, '_local/runs'));
 	fs.mkdirSync(backupDir, { recursive: true });
 	const backupFile = path.join(backupDir, `notifications-backup-${stamp}.json`);
 	fs.writeFileSync(backupFile, JSON.stringify({
