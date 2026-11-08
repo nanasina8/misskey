@@ -30,7 +30,10 @@
  *   node scripts/hanami-repair-fanout-timelines.mjs --since 4d
  *   node scripts/hanami-repair-fanout-timelines.mjs --since 4d --apply
  *
- * 触らないもの: 通知(notificationTimeline)、ジョブキュー(bull:*)、アンテナ、
+ * アンテナ (list:antennaTimeline:*) も AntennaService#checkHitAntenna と同じ条件で埋める
+ * (止まっているアンテナも含む)。アンテナを外すときは --no-antenna。
+ *
+ * 触らないもの: 通知(notificationTimeline)、ジョブキュー(bull:*)、
  * その他すべてのキー。list: で始まる TL キーだけを書き換える。
  */
 
@@ -38,7 +41,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { domainToASCII, fileURLToPath } from 'node:url';
 
 // Misskey のリポジトリ直下 (.config がある所)。標準入力から流したとき (docker の web コンテナ内) は今いる場所から探す
 const ROOT = (() => {
@@ -634,6 +637,8 @@ async function main() {
 			}
 		}
 	}
+	if (!flag('--no-antenna')) await collectAntennas(loId, hiId);
+
 	console.log(`対象キー ${want.size} 本`);
 
 	// ---------- Redis と突き合わせて書き戻し ----------
@@ -675,6 +680,112 @@ async function main() {
 	console.log(`修復が必要なキー: ${touched} 本 (追加ID延べ ${inserted} 件) / 既に正常: ${skipped} 本`);
 	console.log(APPLY ? '--apply 指定のため書き込み済み。' : 'dry-run。実行するには --apply を付けてください。');
 	redis.close();
+}
+
+// ---------- アンテナ (AntennaService#checkHitAntenna を写す) ----------
+const ANTENNA_MAX = 200; // AntennaService#addNoteToAntennas の上限
+const b64 = (s) => Buffer.from(s, 'base64').toString('utf8');
+const puny = (host) => (domainToASCII(host) || host).toLowerCase();
+const LOCAL_HOST = config.url ? puny(new URL(config.url).host) : '';
+/** UtilityService#getFullApAccount と同じ形 (小文字) */
+const fullAcct = (username, host) => `${username}@${host ? puny(host) : LOCAL_HOST}`.toLowerCase();
+const parseAcct = (s) => { const t = s.startsWith('@') ? s.slice(1) : s; const [username, host] = t.split('@', 2); return fullAcct(username, host ?? null); };
+const cleanKeywords = (xs) => (Array.isArray(xs) ? xs : []).map(and => (Array.isArray(and) ? and : []).filter(x => x !== '')).filter(and => and.length > 0);
+
+async function collectAntennas(loId, hiId) {
+	// 止まっているアンテナ (使われずに isActive=false) も埋める。開いた時点で動き出すので、埋めておいて困ることはない
+	const antennas = psql(`SELECT id, "userId", src, coalesce("userListId", ''), array_to_json(users)::text,
+		keywords::text, "excludeKeywords"::text, "caseSensitive", "excludeBots", "withReplies", "withFile",
+		"localOnly", "excludeNotesInSensitiveChannel", "isActive" FROM antenna;`).map(r => ({
+		id: r[0], userId: r[1], src: r[2], userListId: r[3],
+		accts: new Set(JSON.parse(r[4] || '[]').map(parseAcct)),
+		keywords: cleanKeywords(JSON.parse(r[5] || '[]')), excludeKeywords: cleanKeywords(JSON.parse(r[6] || '[]')),
+		caseSensitive: r[7] === 't', excludeBots: r[8] === 't', withReplies: r[9] === 't', withFile: r[10] === 't',
+		localOnly: r[11] === 't', excludeSensitiveChannel: r[12] === 't', isActive: r[13] === 't',
+	}));
+	if (antennas.length === 0) { console.log('アンテナ: なし'); return; }
+	console.log(`アンテナ: ${antennas.length} 本 (止まっているもの ${antennas.filter(a => !a.isActive).length} 本も含む)`);
+
+	// 持ち主のフォロー先 (followers 限定の投稿用) と、リストの中身 (src=list 用)
+	const ownerIds = [...new Set(antennas.map(a => a.userId))];
+	const followeesOf = new Map(ownerIds.map(id => [id, new Set()]));
+	for (const r of psql(`SELECT "followerId", "followeeId" FROM following WHERE "followerId" IN (${sqlList(ownerIds)});`)) followeesOf.get(r[0])?.add(r[1]);
+	const listIds = [...new Set(antennas.map(a => a.userListId).filter(x => x !== ''))];
+	const listMembers = new Map(listIds.map(id => [id, new Set()]));
+	if (listIds.length > 0) {
+		for (const r of psql(`SELECT "userListId", "userId" FROM user_list_membership WHERE "userListId" IN (${sqlList(listIds)});`)) listMembers.get(r[0])?.add(r[1]);
+	}
+
+	const matchText = (a, kws, text, cw) => {
+		const t = (text ?? '') + '\n' + (cw ?? '');
+		const lower = t.toLowerCase();
+		return kws.some(and => and.every(kw => a.caseSensitive ? t.includes(kw) : lower.includes(kw.toLowerCase())));
+	};
+	const hit = (a, n) => {
+		if (a.excludeSensitiveChannel && n.channelSensitive) return false;
+		if (a.excludeBots && n.isBot) return false;
+		if (a.localOnly && n.host != null) return false;
+		if (a.localOnly && n.hana) return false;
+		if (!a.withReplies && n.hasReply) return false;
+		if (n.visibility === 'specified' && n.userId !== a.userId && !n.visibleUserIds.includes(a.userId)) return false;
+		if (n.visibility === 'followers' && n.userId !== a.userId && !followeesOf.get(a.userId)?.has(n.userId)) return false;
+		if (a.src === 'list') {
+			if (a.userListId === '' || !listMembers.get(a.userListId)?.has(n.userId)) return false;
+		} else if (a.src === 'users') {
+			if (!a.accts.has(n.acct)) return false;
+		} else if (a.src === 'users_blacklist') {
+			if (a.accts.has(n.acct)) return false;
+		}
+		if (a.keywords.length > 0) {
+			if (n.text == null && n.cw == null) return false;
+			if (!matchText(a, a.keywords, n.text, n.cw)) return false;
+		}
+		if (a.excludeKeywords.length > 0) {
+			if (n.text == null && n.cw == null) return false;
+			if (matchText(a, a.excludeKeywords, n.text, n.cw)) return false;
+		}
+		if (a.withFile && !n.hasFiles) return false;
+		return true;
+	};
+
+	// 本文は改行やタブを含むので base64 で受け取る。量が多いので 5000 件ずつ見て捨てる
+	let cursor = loId.padEnd(16, '0');
+	const end = hiId.padEnd(16, 'z');
+	let seen = 0;
+	const hits = new Map(antennas.map(a => [a.id, 0]));
+	for (;;) {
+		const rows = psql(`
+			SELECT n.id, n."userId", u.username, coalesce(u.host, ''), u."isBot", n.visibility,
+			       array_to_string(n."visibleUserIds", ','), (coalesce(array_length(n."fileIds", 1), 0) > 0),
+			       (n."replyId" IS NOT NULL), coalesce(c."isSensitive", false), n."isNoteInHanaMode",
+			       (n.text IS NULL), replace(encode(convert_to(coalesce(n.text, ''), 'UTF8'), 'base64'), E'\\n', ''),
+			       (n.cw IS NULL), replace(encode(convert_to(coalesce(n.cw, ''), 'UTF8'), 'base64'), E'\\n', '')
+			FROM note n JOIN "user" u ON u.id = n."userId" LEFT JOIN channel c ON c.id = n."channelId"
+			WHERE n.id > '${cursor}' AND n.id <= '${end}' ORDER BY n.id ASC LIMIT 5000;`);
+		if (rows.length === 0) break;
+		for (const r of rows) {
+			const host = r[3] === '' ? null : r[3];
+			const n = {
+				id: r[0], userId: r[1], host, acct: fullAcct(r[2], host), isBot: r[4] === 't', visibility: r[5],
+				visibleUserIds: r[6] ? r[6].split(',') : [], hasFiles: r[7] === 't', hasReply: r[8] === 't',
+				channelSensitive: r[9] === 't', hana: r[10] === 't',
+				text: r[11] === 't' ? null : b64(r[12] ?? ''), cw: r[13] === 't' ? null : b64(r[14] ?? ''),
+			};
+			for (const a of antennas) {
+				if (!hit(a, n)) continue;
+				add(`list:antennaTimeline:${a.id}`, ANTENNA_MAX, n.id);
+				hits.set(a.id, hits.get(a.id) + 1);
+			}
+		}
+		seen += rows.length;
+		cursor = rows.at(-1)[0];
+		process.stdout.write(`\rアンテナ判定: note ${seen} 件   `);
+		if (rows.length < 5000) break;
+	}
+	console.log('');
+	if (VERBOSE || !APPLY) {
+		for (const a of antennas) console.log(`  アンテナ ${a.id} (${a.src}${a.isActive ? '' : '・停止中'}): 期間内に当たった投稿 ${hits.get(a.id)} 件`);
+	}
 }
 
 main().catch(err => { console.error(err.message ?? err); process.exitCode = 1; });
