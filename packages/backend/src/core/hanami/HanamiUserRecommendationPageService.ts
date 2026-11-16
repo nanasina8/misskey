@@ -149,7 +149,7 @@ export class HanamiUserRecommendationPageService {
 		return await this.withTransaction(async (queryRunner) => {
 			const users = await queryRunner.query(`
 				SELECT u."id" AS id, u."isHibernated" AS is_hibernated
-				FROM "user" u WHERE u."id" = $1 FOR UPDATE OF u
+				FROM "user" u WHERE u."id" = $1 FOR NO KEY UPDATE OF u
 			`, [userId]) as Array<{ id: string; is_hibernated: boolean }>;
 			const user = users.at(0);
 			if (user == null || user.is_hibernated) return { kind: 'empty' };
@@ -296,7 +296,7 @@ export class HanamiUserRecommendationPageService {
 		}));
 
 		await this.withTransaction(async (queryRunner) => {
-			const users = await queryRunner.query(`SELECT "isHibernated" AS is_hibernated FROM "user" WHERE "id" = $1 FOR UPDATE`, [userId]) as Array<{ is_hibernated: boolean }>;
+			const users = await queryRunner.query(`SELECT "isHibernated" AS is_hibernated FROM "user" WHERE "id" = $1 FOR NO KEY UPDATE`, [userId]) as Array<{ is_hibernated: boolean }>;
 			const state = await this.lockState(queryRunner, userId);
 			const batches = await queryRunner.query(`
 				SELECT b."status" AS status FROM "hanami_user_recommendation_batch" b

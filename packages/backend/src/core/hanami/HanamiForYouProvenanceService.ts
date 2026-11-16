@@ -498,11 +498,12 @@ export class HanamiForYouProvenanceService {
 
 	private async lockRequester(queryRunner: QueryRunner, userId: string): Promise<{ id: string; is_hibernated: boolean }> {
 		if (typeof userId !== 'string' || userId.length === 0) throw new HanamiInvalidFeedEntryError('Invalid feed entry requester');
+		// FOR NO KEY UPDATE: はなみ同士・休眠の切り替えとは直列のまま、本人の投稿などの INSERT は待たせない。
 		const rows = await queryRunner.query(`
 			SELECT u."id" AS id, u."isHibernated" AS is_hibernated
 			FROM "user" u
 			WHERE u."id" = $1
-			FOR UPDATE OF u
+			FOR NO KEY UPDATE OF u
 		`, [userId]) as Array<{ id: string; is_hibernated: boolean }>;
 		const user = rows.at(0);
 		if (user == null) throw new HanamiInvalidFeedEntryError('Feed entry requester does not exist');

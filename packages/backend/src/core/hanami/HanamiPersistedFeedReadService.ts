@@ -68,11 +68,13 @@ export class HanamiPersistedFeedReadService implements HanamiPersistedFeedReadPo
 
 	private async scanPersonal(queryRunner: QueryRunner, input: HanamiPersistedFeedScanInput): Promise<HanamiPersistedFeedScanResult> {
 		if (input.head.mode !== 'personalized') throw new TypeError('A personal Hanami head must use personalized mode');
+		// 利用者の行は FOR NO KEY UPDATE で取る。はなみ同士・休眠の切り替え・削除とは今までどおり直列になり、
+		// 本人の投稿やリアクションの INSERT（外部キーの確認は FOR KEY SHARE）は待たせない。
 		const users = await queryRunner.query(`
 			SELECT u."id" AS id, u."isHibernated" AS is_hibernated
 			FROM "user" u
 			WHERE u."id" = $1
-			FOR UPDATE OF u
+			FOR NO KEY UPDATE OF u
 		`, [input.requesterUserId]) as Array<{ id: string; is_hibernated: boolean }>;
 		const user = users.at(0);
 		if (user == null || user.is_hibernated) return { kind: 'cursorExpired' };
@@ -149,7 +151,7 @@ export class HanamiPersistedFeedReadService implements HanamiPersistedFeedReadPo
 			SELECT u."id" AS id
 			FROM "user" u
 			WHERE u."id" = $1
-			FOR UPDATE OF u
+			FOR NO KEY UPDATE OF u
 		`, [input.requesterUserId]) as Array<{ id: string }>;
 		if (users.length !== 1) return { kind: 'cursorExpired' };
 
@@ -207,7 +209,7 @@ export class HanamiPersistedFeedReadService implements HanamiPersistedFeedReadPo
 			SELECT u."id" AS id, u."isHibernated" AS is_hibernated
 			FROM "user" u
 			WHERE u."id" = $1
-			FOR UPDATE OF u
+			FOR NO KEY UPDATE OF u
 		`, [input.requesterUserId]) as Array<{ id: string; is_hibernated: boolean }>;
 		const user = users.at(0);
 		if (user == null || user.is_hibernated) return { kind: 'cursorExpired' };
@@ -283,7 +285,7 @@ export class HanamiPersistedFeedReadService implements HanamiPersistedFeedReadPo
 			SELECT u."id" AS id
 			FROM "user" u
 			WHERE u."id" = $1
-			FOR UPDATE OF u
+			FOR NO KEY UPDATE OF u
 		`, [input.requesterUserId]) as Array<{ id: string }>;
 		if (users.length !== 1) return { kind: 'cursorExpired' };
 

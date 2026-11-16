@@ -497,7 +497,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 			return await this.withDeadlineTransaction(budget, async (queryRunner) => {
 				const users = await this.deadlineQuery(queryRunner, budget, `
 					SELECT u."id" AS id, u."isHibernated" AS is_hibernated
-					FROM "user" u WHERE u."id" = $1 FOR UPDATE OF u
+					FROM "user" u WHERE u."id" = $1 FOR NO KEY UPDATE OF u
 				`, [claim.userId]) as Array<{ id: string; is_hibernated: boolean }>;
 				const user = users.at(0);
 				if (user == null || user.is_hibernated) throw new HanamiUserFeedLeaseLostError();
@@ -664,7 +664,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 			return await this.withDeadlineTransaction(budget, async (queryRunner) => {
 				const users = await this.deadlineQuery(queryRunner, budget, `
 					SELECT u."id" AS id, u."isHibernated" AS is_hibernated
-					FROM "user" u WHERE u."id" = $1 FOR UPDATE OF u
+					FROM "user" u WHERE u."id" = $1 FOR NO KEY UPDATE OF u
 				`, [claim.userId]) as Array<{ id: string; is_hibernated: boolean }>;
 				const user = users.at(0);
 				if (user == null || user.is_hibernated) return { kind: 'stale' } as const;
@@ -738,7 +738,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 		return await this.withTransaction(async (queryRunner) => {
 			const users = await queryRunner.query(`
 				SELECT u."id" AS id, u."isHibernated" AS is_hibernated
-				FROM "user" u WHERE u."id" = $1 FOR UPDATE OF u
+				FROM "user" u WHERE u."id" = $1 FOR NO KEY UPDATE OF u
 			`, [candidate.user_id]) as Array<{ id: string; is_hibernated: boolean }>;
 			const user = users.at(0);
 			if (user == null) return null;

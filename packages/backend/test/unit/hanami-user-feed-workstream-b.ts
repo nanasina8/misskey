@@ -288,7 +288,7 @@ describe('Hanami Phase 5 workstream B unit contracts', () => {
 			scanLimit: 1,
 		})).resolves.toMatchObject({ kind: 'page', hasMore: true, lastScannedSequence: '9' });
 		expect(calls.map((call) => call.sql)).toEqual([
-			expect.stringMatching(/FROM "user" u .*FOR UPDATE OF u/),
+			expect.stringMatching(/FROM "user" u .*FOR NO KEY UPDATE OF u/),
 			expect.stringMatching(/FROM "hanami_user_feed_state" s .*FOR UPDATE OF s/),
 			expect.stringMatching(/FROM "hanami_user_feed_epoch" e .*FOR UPDATE OF e/),
 			expect.stringMatching(/FROM "hanami_user_feed_batch" b .*FOR UPDATE OF b/),
@@ -343,7 +343,7 @@ describe('Hanami Phase 5 workstream B unit contracts', () => {
 			hasMore: true,
 		});
 		expect(calls.map((call) => call.sql)).toEqual([
-			expect.stringMatching(/FROM "user" u .*FOR UPDATE OF u/),
+			expect.stringMatching(/FROM "user" u .*FOR NO KEY UPDATE OF u/),
 			expect.stringMatching(/FROM "hanami_user_feed_state" s .*FOR UPDATE OF s/),
 			expect.stringMatching(/FROM "hanami_user_feed_epoch" e .*FOR UPDATE OF e/),
 			expect.stringMatching(/FROM "hanami_user_feed_batch" b .*b\."status" = 'ready'.*FOR UPDATE OF b/),
