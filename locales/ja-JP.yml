@@ -1802,6 +1802,8 @@ _aiModeration:
   gpuKindTrial: "試す"
   gpuKindJudge: "いつもの判定"
   gpuKindScan: "全体スキャン"
+  gpuKindNote: "はなみTLの投稿の判定"
+  gpuKindTopic: "いま話題の判定"
   tickLabel: "定期実行（2分ごと）"
   tickNever: "まだ一度も動いていません"
   lastJudged: "最後の判定"

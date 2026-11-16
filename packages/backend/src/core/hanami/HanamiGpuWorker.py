@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """常駐の判定係。Qwen3-4B を 1 回だけ読み込み、標準入出力で 1 行 1 件の JSON をやり取りする。
 
-段1では AI投稿チェックの spamJudge だけを扱う。判定のプロンプト・トークン・4択の確率の出し方は
-HanamiSpamJudge.py の PROMPT / one_token / judge_one と同じ値になるようにする（1回の forward で
-まとめて判定する点だけが違う）。ログは stderr、JSON の行は stdout にだけ書く。
+扱う仕事は 3 種類:
+- spamJudge: AI投稿チェック。判定のプロンプト・トークン・4択の確率の出し方は HanamiSpamJudge.py の
+  PROMPT / one_token / judge_one と同じ値になるようにする（1回の forward でまとめて判定する点だけが違う）。
+- noteJudge: はなみTL の投稿の判定。HanamiNoteJudgeCpu.py の judge_one をそのまま 1 件ずつ呼ぶ。
+- topicJudge: いま話題の判定（日常か・同じ話題か・見出し）。HanamiTrendTopicJudge.py の judge_topic_job を呼ぶ。
+どれも、ジョブごとにモデルを読み込み直していた処理を、読み込み済みのモデルで行うだけで、判定の中身は変えない。
+ログは stderr、JSON の行は stdout にだけ書く。
 """
 import json
 import sys
 import time
 
-from HanamiNoteJudgeCpu import MODEL, configure_torch_threads, resolve_runtime
+from HanamiNoteJudgeCpu import MODEL, configure_torch_threads, judge_one as judge_note_one, resolve_runtime
 from HanamiSpamJudge import MAX_TEXT_LENGTH, PROMPT, one_token
+from HanamiTrendTopicJudge import judge_topic_job
 
 MAX_ITEMS = 32
 # GPU では同じ種類をまとめて1回の forward にする。CPU（確認用）はまとめると遅くなるので1件ずつ
@@ -175,6 +180,70 @@ def handle_spam_judge(torch, tokenizer, model, device, request):
     })
 
 
+def handle_note_judge(torch, tokenizer, model, request):
+    """items: [{itemId, noteId, cleanedText, hasFiles, settings}]。1 件ずつ判定し、失敗した項目は errors に入れる。"""
+    global processed
+    request_id = request.get("requestId")
+    items = request.get("items", [])
+    if not isinstance(items, list) or len(items) > MAX_ITEMS:
+        emit({"op": "error", "requestId": request_id, "error": "items must be an array of at most %d items" % MAX_ITEMS})
+        return
+    started = time.time()
+    results = []
+    errors = []
+    for item in items:
+        item_id = item.get("itemId") if isinstance(item, dict) else None
+        if not isinstance(item_id, str):
+            emit({"op": "error", "requestId": request_id, "error": "each item requires a string itemId"})
+            return
+        try:
+            settings = item.get("settings")
+            if not isinstance(item.get("noteId"), str) or not isinstance(item.get("cleanedText"), str):
+                raise ValueError("noteId and cleanedText must be strings")
+            if not isinstance(settings, dict) or not isinstance(settings.get("basis"), dict):
+                raise ValueError("settings.basis is required")
+            note = {"noteId": item["noteId"], "cleanedText": item["cleanedText"], "hasFiles": bool(item.get("hasFiles"))}
+            results.append({"itemId": item_id, "output": judge_note_one(torch, tokenizer, model, note, settings)})
+        except Exception as exc:
+            if "CUDA out of memory" in str(exc):
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+            errors.append({"itemId": item_id, "error": "%s: %s" % (type(exc).__name__, exc)})
+    processed += len(results)
+    emit({"op": "result", "requestId": request_id, "results": results, "errors": errors, "durationMs": int((time.time() - started) * 1000)})
+
+
+def handle_topic_judge(torch, tokenizer, model, device, request):
+    """items: [{itemId, job}]。job は話題の判定 1 回分。途中で失敗しても、済んだ分は status=partial で返す。"""
+    global processed
+    request_id = request.get("requestId")
+    items = request.get("items", [])
+    if not isinstance(items, list) or len(items) > MAX_ITEMS:
+        emit({"op": "error", "requestId": request_id, "error": "items must be an array of at most %d items" % MAX_ITEMS})
+        return
+    started = time.time()
+    results = []
+    errors = []
+    for item in items:
+        item_id = item.get("itemId") if isinstance(item, dict) else None
+        if not isinstance(item_id, str):
+            emit({"op": "error", "requestId": request_id, "error": "each item requires a string itemId"})
+            return
+        if device != "cuda":
+            errors.append({"itemId": item_id, "error": "RuntimeError: GPU (CUDA) is required for trend topic judging"})
+            continue
+        try:
+            judgements, titles = judge_topic_job(torch, tokenizer, model, item.get("job"))
+            results.append({"itemId": item_id, "output": {"status": "ok", "judgements": judgements, "titles": titles}})
+        except Exception as exc:
+            judgements, titles = getattr(exc, "partial", ([], []))
+            results.append({"itemId": item_id, "output": {"status": "partial", "judgements": judgements, "titles": titles, "error": "%s: %s" % (type(exc).__name__, exc)}})
+    processed += len(results)
+    emit({"op": "result", "requestId": request_id, "results": results, "errors": errors, "durationMs": int((time.time() - started) * 1000)})
+
+
 def handle_ping(torch, device):
     vram = None
     if device == "cuda":
@@ -217,6 +286,10 @@ def main():
         op = request.get("op")
         if op == "spamJudge":
             handle_spam_judge(torch, tokenizer, model, device, request)
+        elif op == "noteJudge":
+            handle_note_judge(torch, tokenizer, model, request)
+        elif op == "topicJudge":
+            handle_topic_judge(torch, tokenizer, model, device, request)
         elif op == "ping":
             handle_ping(torch, device)
         elif op == "exit":

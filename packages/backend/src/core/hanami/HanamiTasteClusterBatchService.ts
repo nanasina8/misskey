@@ -21,7 +21,7 @@ import { HANAMI_TASTE_MATCH_KEY_PREFIX, HANAMI_TASTE_MATCH_META_KEY_PREFIX, HANA
 import { pureRenoteSql } from '@/misc/is-renote.js';
 import { resolveHanamiRepoRoot } from '@/core/hanami/HanamiPythonRuntime.js';
 import type Logger from '@/logger.js';
-import { acquireHanamiLocalLlmLock, recordHanamiLlmEvent, HANAMI_LOCAL_LLM_LOCK_KEY, type HanamiLocalLlmLock } from './HanamiLocalLlmLock.js';
+import { acquireHanamiLocalLlmLock, recordHanamiLlmEvent, HANAMI_LOCAL_CPU_LOCK_KEY, type HanamiLocalLlmLock } from './HanamiLocalLlmLock.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -280,7 +280,7 @@ export class HanamiTasteClusterBatchService {
 	}
 
 	private async acquireTasteTickLock(): Promise<HanamiLocalLlmLock | null> {
-		return await acquireHanamiLocalLlmLock(this.redisClient, 'tasteTick', { keys: [TASTE_TICK_LEGACY_LOCK_KEY, HANAMI_LOCAL_LLM_LOCK_KEY] });
+		return await acquireHanamiLocalLlmLock(this.redisClient, 'tasteTick', { keys: [TASTE_TICK_LEGACY_LOCK_KEY, HANAMI_LOCAL_CPU_LOCK_KEY] });
 	}
 
 	private tastePythonMaxThreads(): number {

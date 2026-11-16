@@ -24,6 +24,51 @@ def answer_probability(torch, tokenizer, model, prompt, choices, index):
     return float(torch.softmax(logits, dim=0)[index].item())
 
 
+def judge_topic_job(torch, tokenizer, model, job, on_progress=None):
+    """話題の判定 1 回分（日常か・同じ話題か・見出し）を、読み込み済みのモデルで行う。
+
+    1 件終わるごとに on_progress(judgements, titles) を呼ぶ（途中で止められても済んだ分を残すため）。
+    入力がおかしい・途中で失敗した場合は例外を投げる。そこまでの結果は例外の partial に入れる。
+    """
+    judgements = []
+    titles = []
+
+    def progress():
+        if on_progress is not None:
+            on_progress(judgements, titles)
+
+    try:
+        topics = job['topics']
+        if not isinstance(topics, list) or len(topics) > 15 * 2 + 10:
+            raise ValueError('too many topics')
+        by_id = {topic['topicId']: topic['text'] for topic in topics}
+        if len(by_id) != len(topics) or any(not isinstance(text, str) for text in by_id.values()):
+            raise ValueError('topics require unique IDs and text')
+        for topic_id in job['dailyIds']:
+            probability = answer_probability(torch, tokenizer, model, DAILY_PROMPT.format(X=by_id[topic_id]), ['話題', '日常'], 1)
+            judgements.append({'kind': 'daily', 'topicId': topic_id, 'probability': probability})
+            progress()
+        for pair in job['pairs']:
+            probability = answer_probability(torch, tokenizer, model, SAME_PROMPT.format(A=by_id[pair['a']], B=by_id[pair['b']]), ['はい', 'いいえ'], 0)
+            judgements.append({'kind': 'same', 'a': pair['a'], 'b': pair['b'], 'probability': probability})
+            progress()
+        for topic in job.get('titles', []):
+            if topic['topicId'] not in by_id or not 3 <= len(topic['posts']) <= 10:
+                raise ValueError('invalid title input')
+            prompt = TITLE_PROMPT.format(posts='\n'.join('- ' + post for post in topic['posts']))
+            text = tokenizer.apply_chat_template([{'role': 'user', 'content': prompt}], tokenize=False, add_generation_prompt=True, enable_thinking=False)
+            inputs = tokenizer(text, add_special_tokens=False, return_tensors='pt').to(model.device)
+            with torch.no_grad():
+                generated = model.generate(**inputs, do_sample=False, max_new_tokens=24)
+            title = tokenizer.decode(generated[0, inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+            titles.append({'topicId': topic['topicId'], 'title': title})
+            progress()
+    except Exception as exc:
+        exc.partial = (judgements, titles)
+        raise
+    return judgements, titles
+
+
 def main():
     if len(sys.argv) == 2 and sys.argv[1] == '--probe':
         probe()
@@ -37,12 +82,6 @@ def main():
     try:
         with open(input_path, encoding='utf8') as handle:
             job = json.load(handle)
-        topics = job['topics']
-        if not isinstance(topics, list) or len(topics) > 15 * 2 + 10:
-            raise ValueError('too many topics')
-        by_id = {topic['topicId']: topic['text'] for topic in topics}
-        if len(by_id) != len(topics) or any(not isinstance(text, str) for text in by_id.values()):
-            raise ValueError('topics require unique IDs and text')
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
         device, dtype, runtime = resolve_runtime(torch)
@@ -52,27 +91,16 @@ def main():
         model = AutoModelForCausalLM.from_pretrained(MODEL, local_files_only=True, torch_dtype=dtype)
         model.to(device)
         model.eval()
-        for topic_id in job['dailyIds']:
-            probability = answer_probability(torch, tokenizer, model, DAILY_PROMPT.format(X=by_id[topic_id]), ['話題', '日常'], 1)
-            judgements.append({'kind': 'daily', 'topicId': topic_id, 'probability': probability})
-            output({'model': MODEL, 'status': 'partial', 'runtime': runtime, 'judgements': judgements, 'titles': titles}, output_path)
-        for pair in job['pairs']:
-            probability = answer_probability(torch, tokenizer, model, SAME_PROMPT.format(A=by_id[pair['a']], B=by_id[pair['b']]), ['はい', 'いいえ'], 0)
-            judgements.append({'kind': 'same', 'a': pair['a'], 'b': pair['b'], 'probability': probability})
-            output({'model': MODEL, 'status': 'partial', 'runtime': runtime, 'judgements': judgements, 'titles': titles}, output_path)
-        for topic in job.get('titles', []):
-            if topic['topicId'] not in by_id or not 3 <= len(topic['posts']) <= 10:
-                raise ValueError('invalid title input')
-            prompt = TITLE_PROMPT.format(posts='\n'.join('- ' + post for post in topic['posts']))
-            text = tokenizer.apply_chat_template([{'role': 'user', 'content': prompt}], tokenize=False, add_generation_prompt=True, enable_thinking=False)
-            inputs = tokenizer(text, add_special_tokens=False, return_tensors='pt').to(model.device)
-            with torch.no_grad():
-                generated = model.generate(**inputs, do_sample=False, max_new_tokens=24)
-            title = tokenizer.decode(generated[0, inputs['input_ids'].shape[1]:], skip_special_tokens=True)
-            titles.append({'topicId': topic['topicId'], 'title': title})
-            output({'model': MODEL, 'status': 'partial', 'runtime': runtime, 'judgements': judgements, 'titles': titles}, output_path)
+
+        def flush(done_judgements, done_titles):
+            output({'model': MODEL, 'status': 'partial', 'runtime': runtime, 'judgements': done_judgements, 'titles': done_titles}, output_path)
+
+        judgements, titles = judge_topic_job(torch, tokenizer, model, job, flush)
         output({'model': MODEL, 'status': 'ok', 'runtime': runtime, 'judgements': judgements, 'titles': titles}, output_path)
     except Exception as exc:
+        partial = getattr(exc, 'partial', None)
+        if partial is not None:
+            judgements, titles = partial
         output({'model': MODEL, 'status': 'unavailable', 'judgements': judgements, 'titles': titles, 'error': f'{type(exc).__name__}: {exc}'}, output_path)
 
 

@@ -236,26 +236,44 @@ describe('順番待ち（HanamiGpuQueueService）', () => {
 	});
 });
 
-describe('今までどおりのジョブに GPU を譲るか', () => {
-	test('こちらに仕事が無ければ、待っている相手に譲る', () => {
-		expect(shouldYieldHanamiGpu(['noteJudge'], null)).toBe(true);
+describe('自分でモデルを読み込むジョブに GPU を譲るか', () => {
+	// 譲る相手は、はなみの管理画面の「判定の試し」（100）だけ。投稿の判定・話題の判定は順番待ちに載せ替えた。
+	test('こちらに仕事が無ければ、待っている「判定の試し」に譲る', () => {
+		expect(shouldYieldHanamiGpu(['judgeTrial'], null)).toBe(true);
 	});
 
 	test('誰も待っていなければ譲らない', () => {
 		expect(shouldYieldHanamiGpu([], null)).toBe(false);
 	});
 
-	test('新しい投稿の AI投稿チェック（90）は、投稿の判定（50）に譲らない', () => {
-		expect(shouldYieldHanamiGpu(['noteJudge'], 90)).toBe(false);
+	test('GPU を使わないジョブ（おすすめの計算・好みの学習）が待っていても譲らない＝判定係を降ろさない', () => {
+		expect(shouldYieldHanamiGpu(['als'], null)).toBe(false);
+		expect(shouldYieldHanamiGpu(['tasteTick', 'als'], 10)).toBe(false);
 	});
 
-	test('全体スキャン（10）は投稿の判定（50）に譲る。同点ならこちらを続ける', () => {
-		expect(shouldYieldHanamiGpu(['noteJudge'], 10)).toBe(true);
-		expect(shouldYieldHanamiGpu(['noteJudge'], 50)).toBe(false);
+	test('載せ替えた種類（投稿の判定・話題の判定）の古い目印が残っていても譲らない', () => {
+		expect(shouldYieldHanamiGpu(['noteJudge'], null)).toBe(false);
+		expect(shouldYieldHanamiGpu(['topicJudge'], 10)).toBe(false);
 	});
 
-	test('いま話題の判定（70）が待っていれば、全体スキャンは譲るが、AI投稿チェックは続ける', () => {
-		expect(shouldYieldHanamiGpu(['topicJudge', 'als'], 30)).toBe(true);
-		expect(shouldYieldHanamiGpu(['topicJudge'], 90)).toBe(false);
+	test('「判定の試し」（100）には、AI投稿チェック（90）も譲る。同点以上ならこちらを続ける', () => {
+		expect(shouldYieldHanamiGpu(['judgeTrial', 'als'], 90)).toBe(true);
+		expect(shouldYieldHanamiGpu(['judgeTrial'], 100)).toBe(false);
+		expect(shouldYieldHanamiGpu(['judgeTrial'], 115)).toBe(false);
+	});
+});
+
+describe('載せ替えた種類の順番', () => {
+	test('話題の判定は投稿の判定より先。20 分の締め切りが近づくと AI投稿チェックに並ぶ', () => {
+		expect(chooseHanamiGpuQueueKind([
+			{ kind: 'noteJudge', enqueuedAt: NOW - MIN, deadlineAt: null },
+			{ kind: 'topicJudge', enqueuedAt: NOW, deadlineAt: NOW + 20 * MIN },
+		], NOW)).toBe('topicJudge');
+		// 70 + 待ち 19 + 締め切り 28.5 = 117.5 > 90
+		expect(hanamiGpuQueueEffectivePriority({ kind: 'topicJudge', enqueuedAt: NOW - 19 * MIN, deadlineAt: NOW + MIN }, NOW)).toBeCloseTo(117.5, 5);
+	});
+
+	test('投稿の判定は長く待つと上がるが、来たばかりの AI投稿チェックは追い越さない（50 + 40 = 90 の同点は先に来たほう）', () => {
+		expect(hanamiGpuQueueEffectivePriority({ kind: 'noteJudge', enqueuedAt: NOW - 600 * MIN, deadlineAt: null }, NOW)).toBe(90);
 	});
 });

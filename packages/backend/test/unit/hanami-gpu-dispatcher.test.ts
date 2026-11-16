@@ -45,6 +45,21 @@ while True:
         emit({"op": "result", "requestId": request.get("requestId"),
               "results": [{"itemId": item["itemId"], "scores": {"normal": 1, "spam": 0, "scam": 0, "abuse": 0}} for item in request["items"]],
               "errors": [], "durationMs": 1})
+    elif op == "noteJudge":
+        handled += 1
+        results, errors = [], []
+        for item in request["items"]:
+            if item["cleanedText"] == "boom":
+                errors.append({"itemId": item["itemId"], "error": "RuntimeError: inference failed"})
+            else:
+                results.append({"itemId": item["itemId"], "output": {"noteId": item["noteId"], "ephemeralScore": 0.5, "interest": 4, "interestDist": [0, 0, 0, 1, 0], "contentType": 2,
+                                                                     "sawBasis": item["settings"]["basis"]["interest5"], "hasFiles": item["hasFiles"]}})
+        emit({"op": "result", "requestId": request.get("requestId"), "results": results, "errors": errors, "durationMs": 3})
+    elif op == "topicJudge":
+        handled += 1
+        emit({"op": "result", "requestId": request.get("requestId"),
+              "results": [{"itemId": item["itemId"], "output": {"status": "ok", "titles": [], "judgements": [{"kind": "daily", "topicId": topic, "probability": 0.9} for topic in item["job"]["dailyIds"]]}} for item in request["items"]],
+              "errors": [], "durationMs": 5})
     elif op == "ping":
         emit({"op": "pong", "processed": handled, "uptimeSec": 0, "vramGiB": None})
     elif op == "exit":
@@ -214,5 +229,69 @@ describe('はなみ GPU の配り役（HanamiGpuDispatcherService）', () => {
 		// 間隔あけ（30 秒）の途中でも、止めるとすぐ終わる。
 		expect(Date.now() - startedAt).toBeLessThan(15_000);
 		expect((await dispatcher.getStatus())?.state).toBe('stopped');
+	}, 40_000);
+	test('投稿の判定・話題の判定を同じ判定係に渡し、種類ごとの形の結果を受け取り係に届ける。重要度の順は 話題 → 投稿', async () => {
+		const queue = new HanamiGpuQueueService(redis);
+		const dispatcher = new HanamiGpuDispatcherService(redis, queue, loggerService as never);
+		const order: string[] = [];
+		const notes: Array<{ itemId: string; output: unknown; error: string | undefined }> = [];
+		const topics: unknown[] = [];
+		dispatcher.registerHandler<Record<string, unknown>>('noteJudge', async (items, results, errors) => {
+			order.push('noteJudge');
+			for (const item of items) notes.push({ itemId: item.itemId, output: results.get(item.itemId), error: errors.get(item.itemId) });
+		});
+		dispatcher.registerHandler<Record<string, unknown>>('topicJudge', async (items, results) => {
+			order.push('topicJudge');
+			for (const item of items) topics.push(results.get(item.itemId));
+		});
+		const settings = { basis: { interest5: 'とても興味深い' }, examples: [] };
+		await queue.enqueue('noteJudge', '1:n1', { noteId: 'n1', promptVersion: 1, cleanedText: '役立つ運用メモです。', hasFiles: true, settings });
+		await queue.enqueue('noteJudge', '1:n2', { noteId: 'n2', promptVersion: 1, cleanedText: 'boom', hasFiles: false, settings });
+		await queue.enqueue('topicJudge', 'current', { job: { topics: [{ topicId: 'a', text: 'A' }], dailyIds: ['a'], pairs: [], titles: [] } });
+
+		dispatcher.start();
+		try {
+			await waitFor(() => notes.length === 2 && topics.length === 1);
+			expect(order).toEqual(['topicJudge', 'noteJudge']);
+			expect(topics).toEqual([{ status: 'ok', titles: [], judgements: [{ kind: 'daily', topicId: 'a', probability: 0.9 }] }]);
+			// 判定係には、投稿の本文・画像の有無・判定の基準がそのまま渡っている。
+			expect(notes.find(note => note.itemId === '1:n1')).toEqual({ itemId: '1:n1', error: undefined, output: { noteId: 'n1', ephemeralScore: 0.5, interest: 4, interestDist: [0, 0, 0, 1, 0], contentType: 2, sawBasis: 'とても興味深い', hasFiles: true } });
+			// 判定係が失敗を返した投稿は、結果なし・理由つきで届く。
+			expect(notes.find(note => note.itemId === '1:n2')).toEqual({ itemId: '1:n2', output: undefined, error: 'RuntimeError: inference failed' });
+			await waitFor(async () => await queue.pending('noteJudge') === 0 && await queue.pending('topicJudge') === 0);
+		} finally {
+			await dispatcher.stop();
+		}
+	}, 30_000);
+
+	test('CPU の処理（おすすめの計算・好みの学習）が待っていても判定係を降ろさない。「判定の試し」が待っていれば降ろして譲る', async () => {
+		const { queue, dispatcher, judged } = makeDispatcher();
+		await queue.enqueue('spamJudge', 'n1', { text: 'a' });
+
+		dispatcher.start();
+		try {
+			await waitFor(() => judged.length === 1);
+			const workerPid = (await dispatcher.getStatus())?.workerPid;
+			expect(workerPid).toEqual(expect.any(Number));
+
+			// 以前は、これらの目印が立つと仕事の無い判定係を降ろしていた（次の判定でモデルを読み込み直す）。
+			await redis.set('hanami:llm:wanted:als', String(Date.now()), 'EX', 150);
+			await redis.set('hanami:llm:wanted:tasteTick', String(Date.now()), 'EX', 150);
+			await redis.set('hanami:llm:wanted:noteJudge', String(Date.now()), 'EX', 150);
+			await new Promise(resolve => setTimeout(resolve, 2500));
+			expect((await dispatcher.getStatus())?.workerPid).toBe(workerPid);
+			await queue.enqueue('spamJudge', 'n2', { text: 'b' });
+			await waitFor(() => judged.length === 2);
+			expect((await dispatcher.getStatus())?.workerPid).toBe(workerPid);
+			expect(await redis.get('hanami:llm:exclusive:v1')).toMatch(/^gpuWorker:/);
+
+			// 自分でモデルを読み込む「判定の試し」（管理画面）には、今までどおり譲る。
+			await redis.set('hanami:llm:wanted:judgeTrial', String(Date.now()), 'EX', 150);
+			await waitFor(async () => (await dispatcher.getStatus())?.state === 'yielded', 10_000);
+			expect((await dispatcher.getStatus())?.workerPid).toBeNull();
+			expect(await redis.get('hanami:llm:exclusive:v1')).toBeNull();
+		} finally {
+			await dispatcher.stop();
+		}
 	}, 40_000);
 });

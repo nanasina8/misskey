@@ -21,8 +21,10 @@ function fixture() {
 	const query = vi.fn(async (_sql: string, _params?: unknown[]): Promise<unknown[]> => []);
 	const redis = { eval: vi.fn(async () => [null, -2]), get: vi.fn(async () => null as string | null), lrange: vi.fn(async () => [] as string[]) };
 	const queue = { getHanamiJobsStatus: vi.fn(async () => ({ jobs: [{ name: 'hanamiNoteJudge', active: 0, wait: 0, delayed: 0, failed: 0, oldestWaitingAt: null }], truncated: false })) };
-	const endpoint = new JobsStatusEndpoint({ query } as never, redis as never, queue as never);
-	return { query, redis, queue, endpoint, read: (params = {}): Promise<SchemaType<typeof meta.res>> => endpoint.exec(params, admin, null) };
+	// 話題の判定が順番待ちにあるか（常駐の判定係の順番待ち）
+	const gpuQueue = { pending: vi.fn(async (_kind: string) => 0) };
+	const endpoint = new JobsStatusEndpoint({ query } as never, redis as never, queue as never, gpuQueue as never);
+	return { query, redis, queue, gpuQueue, endpoint, read: (params = {}): Promise<SchemaType<typeof meta.res>> => endpoint.exec(params, admin, null) };
 }
 
 beforeEach(() => { vi.spyOn(Date, 'now').mockReturnValue(now); judge.mockResolvedValue(status()); });
@@ -46,11 +48,17 @@ describe('Hanami jobs diagnostics', () => {
 		expect(await f.read()).toMatchObject({ gpu: status().runtime, noteJudge: { backlog: 12, secPerNote: 2.5 }, lock: { held: false, kind: null, acquiredAt: null, expiresInMs: null }, warnings: [], topicJudgeWaiting: false });
 		expect(f.redis.eval).toHaveBeenCalledWith(expect.stringContaining('pttl'), 1, 'hanami:llm:exclusive:v1');
 	});
-	test.each(['noteJudge', 'topicJudge', 'als', 'tasteTick', 'judgeTrial'])('reads %s lock metadata and waiting marker', async kind => {
+	test.each(['gpuWorker', 'noteJudge', 'topicJudge', 'als', 'tasteTick', 'judgeTrial'])('reads %s lock metadata, and whether a topic judge waits in the GPU queue', async kind => {
 		const f = fixture();
 		f.redis.eval.mockResolvedValue([`${kind}:${now - 1000}:123:nonce`, 89000] as never);
-		f.redis.get.mockResolvedValue('1');
+		f.gpuQueue.pending.mockResolvedValue(1);
 		expect(await f.read()).toMatchObject({ lock: { held: true, kind, acquiredAt: iso(now - 1000), expiresInMs: 89000 }, topicJudgeWaiting: true });
+		expect(f.gpuQueue.pending).toHaveBeenCalledWith('topicJudge');
+	});
+	test('a failing GPU queue read reports no waiting topic judge instead of failing the status', async () => {
+		const f = fixture();
+		f.gpuQueue.pending.mockRejectedValue(new Error('redis is down'));
+		expect(await f.read()).toMatchObject({ topicJudgeWaiting: false });
 	});
 	test.each(['old-uuid-token', 'other:1:123:nonce', 'noteJudge:NaN:123:nonce', `noteJudge:${now + 1}:123:nonce`, 'noteJudge:1:pid:nonce'])('keeps unreadable owner held: %s', async token => {
 		const f = fixture();

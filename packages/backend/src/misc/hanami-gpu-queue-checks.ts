@@ -62,6 +62,8 @@ const INFLIGHT_STALE_MS = 6 * MIN;
 const STUCK_AFTER_SEC: Record<HanamiGpuQueueKind, number> = {
 	judgeTrial: 90,
 	spamJudge: 15 * 60,
+	topicJudge: 15 * 60,
+	noteJudge: 30 * 60,
 	spamScan: 6 * 60 * 60,
 };
 /** 判定係が載っている（はずの）状態 */

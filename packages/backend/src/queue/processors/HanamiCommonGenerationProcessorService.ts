@@ -7,7 +7,7 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import * as Bull from 'bullmq';
 import * as Redis from 'ioredis';
 import { DI } from '@/di-symbols.js';
-import { HANAMI_LLM_EVENT_THROTTLE_MS, recordHanamiLlmEvent, type HanamiLlmEvent } from '@/core/hanami/HanamiLocalLlmLock.js';
+import { recordHanamiLlmEvent, type HanamiLlmEvent } from '@/core/hanami/HanamiLocalLlmLock.js';
 import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import {
@@ -18,7 +18,7 @@ import {
 	type HanamiCommonGenerationRunResult,
 } from '@/core/hanami/HanamiCommonGenerationContracts.js';
 import { QueueService } from '@/core/QueueService.js';
-import { HanamiForYouBatchService, HanamiNoteJudgeLockContentionError } from '@/core/hanami/HanamiForYouBatchService.js';
+import { HanamiForYouBatchService } from '@/core/hanami/HanamiForYouBatchService.js';
 import { TREND_CONTENT_JUDGE_EXTRA, TREND_TITLE_SAMPLE_POSTS, TREND_TITLE_TOP } from '@/core/hanami/HanamiTrendService.js';
 import type {
 	HanamiCommonGenerationJobData,
@@ -35,11 +35,8 @@ type HanamiGenerationReconcileJob = Bull.Job<HanamiGenerationReconcileJobData, u
 type HanamiTrendTopicJudgeJob = Bull.Job<HanamiTrendTopicJudgeJobData, unknown, 'hanamiTrendTopicJudge'>;
 type HanamiNoteJudgeJob = Bull.Job<HanamiNoteJudgeJobData, unknown, 'hanamiNoteJudge'>;
 
-const NOTE_JUDGE_LOCK_CONTENTION_DELAY_MS = 60_000;
 // prepareTrendTopicJudgeJob sends the ranked top, extra content topics and title targets (the Python side has the same cap).
 const TREND_TOPIC_JUDGE_MAX_TOPICS = TREND_TITLE_TOP * 2 + TREND_CONTENT_JUDGE_EXTRA;
-const TREND_TOPIC_JUDGE_RETRY_DELAY_MS = 30_000;
-const TREND_TOPIC_JUDGE_MAX_WAIT_MS = 20 * 60 * 1000;
 
 function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
 	if (typeof value !== 'object' || value == null || Array.isArray(value)) return false;
@@ -197,44 +194,28 @@ export class HanamiCommonGenerationProcessorService {
 			await this.hanamiForYouBatchService?.recordTrendTopicJudgeResult(job.data, 'rejected', { error: String(error) });
 			throw error;
 		}
+		// 順番待ちに入れるだけ（判定は常駐の判定係が行う）。GPU の空き待ちで遅らせることは無くなった。
 		try {
 			await this.hanamiForYouBatchService?.runTrendTopicJudgeJob(job.data, this.logger, job.id);
 		} catch (error) {
-			if (!(error instanceof HanamiNoteJudgeLockContentionError)) {
-				await this.recordEvent({ job: 'topicJudge', event: 'failed', jobId: job.id, error });
-				await this.hanamiForYouBatchService?.recordTrendTopicJudgeResult(job.data, 'failed', { error: String(error) });
-				throw error;
-			}
-			// Wait for the shared local-LLM lock instead of skipping the generation, until the topics are stale.
-			if (Date.now() - job.timestamp > TREND_TOPIC_JUDGE_MAX_WAIT_MS) {
-				await this.recordEvent({ job: 'topicJudge', event: 'gaveUp', jobId: job.id, durationMs: Date.now() - job.timestamp });
-				await this.hanamiForYouBatchService?.recordTrendTopicJudgeResult(job.data, 'gaveUp', { waitedMs: Date.now() - job.timestamp });
-				this.logger.warn('hanami trend topic judge: gave up waiting for the local LLM', { waitedMs: Date.now() - job.timestamp });
-				return;
-			}
-			await job.moveToDelayed(Date.now() + TREND_TOPIC_JUDGE_RETRY_DELAY_MS, job.token);
-			await this.recordEvent({ job: 'topicJudge', event: 'waiting', jobId: job.id, durationMs: Date.now() - job.timestamp, throttleMs: HANAMI_LLM_EVENT_THROTTLE_MS });
-			await this.hanamiForYouBatchService?.recordTrendTopicJudgeResult(job.data, 'waiting', { waitedMs: Date.now() - job.timestamp });
-			throw new Bull.DelayedError(error.message);
+			await this.recordEvent({ job: 'topicJudge', event: 'failed', jobId: job.id, error });
+			await this.hanamiForYouBatchService?.recordTrendTopicJudgeResult(job.data, 'failed', { error: String(error) });
+			throw error;
 		}
 		await job.updateProgress(100);
 	}
 
 	@bindThis
-	public async processNoteJudge(job: HanamiNoteJudgeJob): Promise<{ runId: string; status: 'ready' | 'failed'; processedCount: number }> {
+	public async processNoteJudge(job: HanamiNoteJudgeJob): Promise<{ runId: string | null; status: 'ready' | 'failed'; processedCount: number; queuedCount: number }> {
 		try {
 			if (!hasExactKeys(job.data, ['noteIds', 'promptVersion']) || !Array.isArray(job.data.noteIds) || job.data.noteIds.length === 0 || job.data.noteIds.length > 64 || !job.data.noteIds.every(noteId => typeof noteId === 'string' && noteId.length > 0) || !Number.isSafeInteger(job.data.promptVersion) || job.data.promptVersion < 1) malformedPayload(job.name, 'expected 1..64 nonempty noteIds and a positive integer promptVersion');
 			if (this.hanamiForYouBatchService == null) throw new Error('Hanami note judge service is unavailable');
+			// 順番待ちに入れるだけ（判定は常駐の判定係が行う）
 			const result = await this.hanamiForYouBatchService.runNoteJudgeJob(job.data, this.logger, job.id);
-			await job.log(`note judge ${result.status}: ${result.processedCount}`);
+			await job.log(`note judge ${result.status}: queued ${result.queuedCount}`);
 			await job.updateProgress(100);
 			return result;
 		} catch (error) {
-			if (error instanceof HanamiNoteJudgeLockContentionError) {
-				await job.moveToDelayed(Date.now() + NOTE_JUDGE_LOCK_CONTENTION_DELAY_MS, job.token);
-				await this.recordEvent({ job: 'noteJudge', event: 'waiting', jobId: job.id, throttleMs: HANAMI_LLM_EVENT_THROTTLE_MS });
-				throw new Bull.DelayedError(error.message);
-			}
 			if (error instanceof Bull.UnrecoverableError) await this.recordEvent({ job: 'noteJudge', event: 'rejected', jobId: job.id, error });
 			throw normalizeBullRejection(error);
 		}

@@ -7132,6 +7132,14 @@ export interface Locale extends ILocale {
          */
         "gpuKindScan": string;
         /**
+         * はなみTLの投稿の判定
+         */
+        "gpuKindNote": string;
+        /**
+         * いま話題の判定
+         */
+        "gpuKindTopic": string;
+        /**
          * 定期実行（2分ごと）
          */
         "tickLabel": string;

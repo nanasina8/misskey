@@ -20,7 +20,7 @@ import TopicNotesEndpoint, { meta as topicNotesMeta } from '@/server/api/endpoin
 import TrendsEndpoint from '@/server/api/endpoints/notes/hanami-trends.js';
 import HistoryEndpoint from '@/server/api/endpoints/notes/hanami-trend-history.js';
 
-import { HanamiForYouBatchService, HanamiNoteJudgeLockContentionError, type HanamiTrendTopicJudgeJobData } from '@/core/hanami/HanamiForYouBatchService.js';
+import { HanamiForYouBatchService, type HanamiTrendTopicJudgeJobData } from '@/core/hanami/HanamiForYouBatchService.js';
 import { probeHanamiNoteJudgeRuntime } from '@/core/hanami/HanamiPythonRuntime.js';
 import { HanamiTrendService, trendDailyKey, trendSameKey, trendSameSetKey, trendTitleKey } from '@/core/hanami/HanamiTrendService.js';
 import { HanamiCommonGenerationProcessorService } from '@/queue/processors/HanamiCommonGenerationProcessorService.js';
@@ -274,8 +274,13 @@ async function withRuntime(cuda: boolean, operation: (dir: string) => Promise<vo
 	}
 }
 
-function topicBatch(redis: unknown, query = jest.fn(async (..._args: unknown[]) => [] as { id: string; text: string; replyId: string | null }[]), scores = new Map<string, number>()) {
-	return new HanamiForYouBatchService({ query } as never, {} as never, { eval: async () => 1, ...(redis as object) } as never, { gen: () => 'id' } as never, { getGlobalNotesScoresWithCache: async () => scores } as never);
+function topicBatch(redis: unknown, query = jest.fn(async (..._args: unknown[]) => [] as { id: string; text: string; replyId: string | null }[]), scores = new Map<string, number>(), queue: unknown = undefined) {
+	return new HanamiForYouBatchService({ query } as never, {} as never, { eval: async () => 1, ...(redis as object) } as never, { gen: () => 'id' } as never, { getGlobalNotesScoresWithCache: async () => scores } as never, queue as never);
+}
+
+/** 常駐の判定係から返ってきた 1 回分（順番待ちから取り出した形）。判定係・配り役は動かさない */
+function judgedTopicItem(job: Required<HanamiTrendTopicJudgeJobData>) {
+	return { itemId: 'current', payload: { job }, enqueuedAt: Date.now() - 1000, attempts: 0 };
 }
 
 const jobData: HanamiTrendTopicJudgeJobData = { topics: [{ topicId: 'a', text: 'A' }, { topicId: 'b', text: 'B' }], dailyIds: ['a', 'b'], pairs: [{ a: 'a', b: 'b' }] };
@@ -292,16 +297,25 @@ describe('GPU topic judge jobs (U-7)', () => {
 			expect(get).not.toHaveBeenCalled(); expect(set).not.toHaveBeenCalled(); expect(query).not.toHaveBeenCalled();
 		});
 	});
-	test('waits instead of skipping while the shared lock is busy, and asks note judges to step aside', async () => {
+	test('hands the job to the resident GPU worker queue instead of taking the GPU lock, even while another job holds it', async () => {
 		await withRuntime(true, async () => {
 			const set = jest.fn(async (..._args: unknown[]) => null);
-			const get = jest.fn(async (..._args: unknown[]) => null);
-			await expect(topicBatch({ get, set }).runTrendTopicJudgeJob(jobData, {} as never)).rejects.toBeInstanceOf(HanamiNoteJudgeLockContentionError);
-			expect(set).toHaveBeenCalledWith('hanami:llm:exclusive:v1', expect.any(String), 'EX', 90, 'NX');
-			expect(set).toHaveBeenCalledWith('hanami:llm:topic-judge-waiting:v1', '1', 'EX', 600);
-			expect(get).not.toHaveBeenCalled();
+			const enqueue = jest.fn(async (..._args: unknown[]) => true);
+			await topicBatch({ mget: async (...keys: string[]) => keys.map(() => null), set }, undefined, undefined, { enqueue }).runTrendTopicJudgeJob(jobData, { warn: jest.fn() } as never, 'job-7');
+			expect(enqueue).toHaveBeenCalledWith('topicJudge', 'current', { job: { topics: jobData.topics, dailyIds: ['a', 'b'], pairs: [{ a: 'a', b: 'b' }], titles: [] }, jobId: 'job-7' });
+			expect(set).not.toHaveBeenCalled();
 		});
 	});
+
+	test('does not queue verdicts that were already saved after the job was prepared', async () => {
+		await withRuntime(true, async () => {
+			const enqueue = jest.fn(async (..._args: unknown[]) => true);
+			// どの判定も既にある → 順番待ちには入れない。
+			await topicBatch({ mget: async (...keys: string[]) => keys.map(() => '1') }, undefined, undefined, { enqueue }).runTrendTopicJudgeJob(jobData, { warn: jest.fn() } as never);
+			expect(enqueue).not.toHaveBeenCalled();
+		});
+	});
+
 	test('selects up to fifteen daily topics, ten pair topics, non-replies, ten texts and eight terms', async () => {
 		await withRuntime(true, async () => {
 			const topics = Array.from({ length: 11 }, (_, i) => ({ topicId: String(i), terms: Array.from({ length: 9 }, (_, j) => `語${j}`), noteIds: Array.from({ length: 12 }, (_, j) => `${i}-${String(j).padStart(2, '0')}`) }));
@@ -321,47 +335,58 @@ describe('GPU topic judge jobs (U-7)', () => {
 			expect(result.topics[0].text.split('\n')[2]).toBe('- ' + 'あ'.repeat(120));
 		});
 	});
-	test('reads probabilities at the specified thresholds, stores six-hour verdicts, logs P and releases the lock', async () => {
-		await withRuntime(true, async dir => {
-			const script = join(dir, 'judge.py');
-			writeFileSync(script, 'import json,sys\njson.dump({\'status\':\'ok\',\'judgements\':[{\'kind\':\'daily\',\'topicId\':\'a\',\'probability\':0.6},{\'kind\':\'daily\',\'topicId\':\'b\',\'probability\':0.59},{\'kind\':\'same\',\'a\':\'a\',\'b\':\'b\',\'probability\':0.7},{\'kind\':\'same\',\'a\':\'a\',\'b\':\'c\',\'probability\':0.69}]},open(sys.argv[2],\'w\'))');
-			process.env.HANAMI_TREND_TOPIC_JUDGE_SCRIPT = script;
-			const set = jest.fn(async (..._args: unknown[]) => 'OK');
-			const sets = new Map([[trendSameSetKey('a'), new Set(['c'])], [trendSameSetKey('c'), new Set(['a'])]]);
-			const sadd = jest.fn();
-			const srem = jest.fn((key: string, member: string) => sets.get(key)?.delete(member));
-			const expire = jest.fn();
-			const multi = () => {
-				const pending: (() => unknown)[] = [];
-				const pipe = {
-					set: (...args: unknown[]) => { pending.push(() => set(...args)); return pipe; },
-					sadd: (...args: unknown[]) => { pending.push(() => sadd(...args)); return pipe; },
-					srem: (key: string, member: string) => { pending.push(() => srem(key, member)); return pipe; },
-					expire: (...args: unknown[]) => { pending.push(() => expire(...args)); return pipe; },
-					exec: async () => Promise.all(pending.map(async run => [null, await run()])),
-				};
-				return pipe;
+	test('the handler reads probabilities at the specified thresholds and stores six-hour verdicts', async () => {
+		const set = jest.fn(async (..._args: unknown[]) => 'OK');
+		const sets = new Map([[trendSameSetKey('a'), new Set(['c'])], [trendSameSetKey('c'), new Set(['a'])]]);
+		const sadd = jest.fn();
+		const srem = jest.fn((key: string, member: string) => sets.get(key)?.delete(member));
+		const expire = jest.fn();
+		const multi = () => {
+			const pending: (() => unknown)[] = [];
+			const pipe = {
+				set: (...args: unknown[]) => { pending.push(() => set(...args)); return pipe; },
+				sadd: (...args: unknown[]) => { pending.push(() => sadd(...args)); return pipe; },
+				srem: (key: string, member: string) => { pending.push(() => srem(key, member)); return pipe; },
+				expire: (...args: unknown[]) => { pending.push(() => expire(...args)); return pipe; },
+				// 出来事の記録（lpush/ltrim）もこの multi を通る。
+				lpush: () => pipe,
+				ltrim: () => pipe,
+				exec: async () => Promise.all(pending.map(async run => [null, await run()])),
 			};
-			const release = jest.fn(async (..._args: unknown[]) => 1);
-			const del = jest.fn(async (..._args: unknown[]) => 1);
-			const logger = { info: jest.fn(), warn: jest.fn() };
-			const data = { ...jobData, topics: [...jobData.topics, { topicId: 'c', text: 'C' }], pairs: [...jobData.pairs, { a: 'a', b: 'c' }] };
-			await topicBatch({ mget: async (...keys: string[]) => keys.map(() => null), set, del, multi, eval: release }).runTrendTopicJudgeJob(data, logger as never);
-			expect(del).toHaveBeenCalledWith('hanami:llm:topic-judge-waiting:v1');
-			expect(set).toHaveBeenCalledWith(trendDailyKey('a'), '1', 'EX', 21600);
-			expect(set).toHaveBeenCalledWith(trendDailyKey('b'), '0', 'EX', 21600);
-			expect(set).toHaveBeenCalledWith(trendSameKey('a', 'b'), '1', 'EX', 21600);
-			expect(set).toHaveBeenCalledWith(trendSameKey('a', 'c'), '0', 'EX', 21600);
-			expect(srem.mock.calls).toEqual([[trendSameSetKey('a'), 'c'], [trendSameSetKey('c'), 'a']]);
-			expect(sets.get(trendSameSetKey('a'))?.has('c')).toBe(false);
-			expect(sets.get(trendSameSetKey('c'))?.has('a')).toBe(false);
-			expect(logger.warn).not.toHaveBeenCalled();
-			expect(sadd.mock.calls).toEqual([[trendSameSetKey('a'), 'b'], [trendSameSetKey('b'), 'a']]);
-			expect(expire.mock.calls).toEqual([[trendSameSetKey('a'), 21600], [trendSameSetKey('b'), 21600]]);
-			expect(logger.info).toHaveBeenCalledWith('hanami trend topic judgement', expect.objectContaining({ probability: 0.7, verdict: true }));
-			expect(release).toHaveBeenCalledWith(expect.any(String), 1, 'hanami:llm:exclusive:v1', expect.any(String));
-		});
+			return pipe;
+		};
+		const evalRedis = jest.fn(async (..._args: unknown[]) => 1);
+		const job = { topics: [...jobData.topics, { topicId: 'c', text: 'C' }], dailyIds: ['a', 'b'], pairs: [{ a: 'a', b: 'b' }, { a: 'a', b: 'c' }], titles: [] };
+		const output = { status: 'ok', titles: [], judgements: [
+			{ kind: 'daily' as const, topicId: 'a', probability: 0.6 }, { kind: 'daily' as const, topicId: 'b', probability: 0.59 },
+			{ kind: 'same' as const, a: 'a', b: 'b', probability: 0.7 }, { kind: 'same' as const, a: 'a', b: 'c', probability: 0.69 },
+		] };
+
+		await topicBatch({ set, multi, eval: evalRedis }).handleTrendTopicJudged([judgedTopicItem(job)], new Map([['current', output]]), new Map(), 1200);
+
+		expect(set).toHaveBeenCalledWith(trendDailyKey('a'), '1', 'EX', 21600);
+		expect(set).toHaveBeenCalledWith(trendDailyKey('b'), '0', 'EX', 21600);
+		expect(set).toHaveBeenCalledWith(trendSameKey('a', 'b'), '1', 'EX', 21600);
+		expect(set).toHaveBeenCalledWith(trendSameKey('a', 'c'), '0', 'EX', 21600);
+		expect(srem.mock.calls).toEqual([[trendSameSetKey('a'), 'c'], [trendSameSetKey('c'), 'a']]);
+		expect(sets.get(trendSameSetKey('a'))?.has('c')).toBe(false);
+		expect(sets.get(trendSameSetKey('c'))?.has('a')).toBe(false);
+		expect(sadd.mock.calls).toEqual([[trendSameSetKey('a'), 'b'], [trendSameSetKey('b'), 'a']]);
+		// 最後の結果として「ok・保存 2 件ずつ」を記録する（GPU の鍵は取りも返しもしない）。
+		const recorded = JSON.parse(evalRedis.mock.calls.at(-1)![3] as string);
+		expect(recorded).toMatchObject({ outcome: 'ok', requested: { daily: 2, pairs: 2, titles: 0 }, saved: { daily: 2, same: 2, titles: 0 } });
+		expect(evalRedis.mock.calls.some(args => args[2] === 'hanami:llm:exclusive:v1')).toBe(false);
 	});
+
+	test('the handler records a failure when the worker returned nothing for the job', async () => {
+		const evalRedis = jest.fn(async (..._args: unknown[]) => 1);
+		const job = { topics: jobData.topics, dailyIds: ['a'], pairs: [], titles: [] };
+		await topicBatch({ eval: evalRedis }).handleTrendTopicJudged([judgedTopicItem(job)], new Map(), new Map([['current', 'RuntimeError: CUDA out of memory']]), null);
+		const recorded = JSON.parse(evalRedis.mock.calls.at(-1)![3] as string);
+		expect(recorded).toMatchObject({ outcome: 'failed', saved: { daily: 0, same: 0, titles: 0 } });
+		expect(recorded.error).toContain('CUDA out of memory');
+	});
+
 	test('dispatches the new job after publication and runs it through the common generation processor', async () => {
 		const queue = { enqueueHanamiTrendTopicJudge: jest.fn(async (..._args: unknown[]) => undefined), enqueueHanamiNoteJudge: jest.fn() };
 		const batch = { prepareTrendTopicJudgeJob: async () => jobData, prepareNoteJudgeJobs: async () => [], recordTrendTopicJudgeResult: jest.fn(async (..._args: unknown[]) => undefined), runTrendTopicJudgeJob: jest.fn(async (..._args: unknown[]) => undefined) };
@@ -409,21 +434,22 @@ describe('GPU topic judge jobs (U-7)', () => {
 		]) await expect(run(bad)).rejects.toThrow('Invalid payload');
 		expect(batch.runTrendTopicJudgeJob).toHaveBeenCalledTimes(2);
 	});
-	test('the processor retries a topic judge that lost the lock, and gives up once the topics are stale', async () => {
-		const batch = { recordTrendTopicJudgeResult: jest.fn(async (..._args: unknown[]) => undefined), runTrendTopicJudgeJob: jest.fn(async (..._args: unknown[]) => { throw new HanamiNoteJudgeLockContentionError(); }) };
-		const warn = jest.fn();
-		const processor = new HanamiCommonGenerationProcessorService({} as never, {} as never, { logger: { createSubLogger: () => ({ warn }) } } as never, batch as never);
-		const job = (timestamp: number) => ({ name: 'hanamiTrendTopicJudge', data: jobData, timestamp, token: 'worker-token', updateProgress: jest.fn(async () => undefined), moveToDelayed: jest.fn(async (..._args: unknown[]) => undefined) });
-		const fresh = job(Date.now() - 60_000);
-		await expect(processor.processTrendTopicJudge(fresh as never)).rejects.toBeInstanceOf(Bull.DelayedError);
-		expect(fresh.moveToDelayed).toHaveBeenCalledWith(expect.any(Number), 'worker-token');
-		const delay = (fresh.moveToDelayed.mock.calls[0][0] as number) - Date.now();
-		expect(delay).toBeGreaterThan(25_000);
-		expect(delay).toBeLessThanOrEqual(30_000);
-		const stale = job(Date.now() - 21 * 60_000);
-		await processor.processTrendTopicJudge(stale as never);
-		expect(stale.moveToDelayed).not.toHaveBeenCalled();
-		expect(warn).toHaveBeenCalledWith('hanami trend topic judge: gave up waiting for the local LLM', expect.anything());
+	test('the processor no longer delays for the GPU: it hands off once, and records and rethrows a failed hand-off', async () => {
+		const ok = { recordTrendTopicJudgeResult: jest.fn(async (..._args: unknown[]) => undefined), runTrendTopicJudgeJob: jest.fn(async (..._args: unknown[]) => undefined) };
+		const processor = new HanamiCommonGenerationProcessorService({} as never, {} as never, { logger: { createSubLogger: () => ({ warn: jest.fn() }) } } as never, ok as never);
+		const job = () => ({ name: 'hanamiTrendTopicJudge', id: 'job-1', data: jobData, timestamp: Date.now() - 21 * 60_000, token: 'worker-token', updateProgress: jest.fn(async () => undefined), moveToDelayed: jest.fn(async (..._args: unknown[]) => undefined) });
+		const handedOff = job();
+		await processor.processTrendTopicJudge(handedOff as never);
+		expect(ok.runTrendTopicJudgeJob).toHaveBeenCalledTimes(1);
+		expect(handedOff.moveToDelayed).not.toHaveBeenCalled();
+		expect(handedOff.updateProgress).toHaveBeenCalledWith(100);
+
+		const failing = { recordTrendTopicJudgeResult: jest.fn(async (..._args: unknown[]) => undefined), runTrendTopicJudgeJob: jest.fn(async (..._args: unknown[]) => { throw new Error('redis is down'); }) };
+		const failingProcessor = new HanamiCommonGenerationProcessorService({} as never, {} as never, { logger: { createSubLogger: () => ({ warn: jest.fn() }) } } as never, failing as never);
+		const failed = job();
+		await expect(failingProcessor.processTrendTopicJudge(failed as never)).rejects.toThrow('redis is down');
+		expect(failing.recordTrendTopicJudgeResult).toHaveBeenCalledWith(jobData, 'failed', { error: 'Error: redis is down' });
+		expect(failed.moveToDelayed).not.toHaveBeenCalled();
 	});
 	test('uses the same durable queue and note judge options', async () => {
 		const queue = { add: jest.fn(async (..._args: unknown[]) => undefined) };
@@ -665,19 +691,16 @@ describe('V-19: topic expansion collection', () => {
 	});
 });
 
-test('R2: ignores an unrequested title and saves the following requested titles', async () => {
-	await withRuntime(true, async dir => {
-		const script = join(dir, 'judge.py');
-		writeFileSync(script, `import json,sys
-json.dump({'status':'ok','judgements':[],'titles':[{'topicId':'unexpected','title':'古い題'},{'topicId':'a','title':'寒波'}]},open(sys.argv[2],'w'))`);
-		process.env.HANAMI_TREND_TOPIC_JUDGE_SCRIPT = script;
-		const set = jest.fn(async (..._args: unknown[]) => 'OK');
-		const logger = { info: jest.fn(), warn: jest.fn() };
-		await topicBatch({ mget: async (...keys: string[]) => keys.map(() => null), set, del: async () => 1, eval: async () => 1 }).runTrendTopicJudgeJob({
-			topics: [], dailyIds: [], pairs: [], titles: [{ topicId: 'a', posts: ['投稿甲', '投稿乙', '投稿丙'], noteIds: ['n1', 'n2', 'n3'] }],
-		}, logger as never);
-		expect(set).toHaveBeenCalledWith(trendTitleKey('a'), JSON.stringify({ title: '寒波', noteIds: ['n1', 'n2', 'n3'] }), 'EX', 48 * 60 * 60);
-		expect(set.mock.calls.some(args => args[0] === trendTitleKey('unexpected'))).toBe(false);
-		expect(logger.warn).toHaveBeenCalledWith('hanami trend topic judge: ignoring unexpected title', { topicId: 'unexpected' });
-	});
+test('R2: the handler ignores an unrequested title and saves the following requested titles', async () => {
+	const set = jest.fn(async (..._args: unknown[]) => 'OK');
+	const evalRedis = jest.fn(async (..._args: unknown[]) => 1);
+	const job = { topics: [], dailyIds: [], pairs: [], titles: [{ topicId: 'a', posts: ['投稿甲', '投稿乙', '投稿丙'], noteIds: ['n1', 'n2', 'n3'] }] };
+	const output = { status: 'ok', judgements: [], titles: [{ topicId: 'unexpected', title: '古い題' }, { topicId: 'a', title: '寒波' }] };
+
+	await topicBatch({ set, del: async () => 1, eval: evalRedis }).handleTrendTopicJudged([judgedTopicItem(job)], new Map([['current', output]]), new Map(), 900);
+
+	expect(set).toHaveBeenCalledWith(trendTitleKey('a'), JSON.stringify({ title: '寒波', noteIds: ['n1', 'n2', 'n3'] }), 'EX', 48 * 60 * 60);
+	expect(set.mock.calls.some(args => args[0] === trendTitleKey('unexpected'))).toBe(false);
+	// 頼んでいない見出しが 1 つあったので「一部」。
+	expect(JSON.parse(evalRedis.mock.calls.at(-1)![3] as string)).toMatchObject({ outcome: 'partial', saved: { titles: 1 }, rejectedTitles: 1 });
 });

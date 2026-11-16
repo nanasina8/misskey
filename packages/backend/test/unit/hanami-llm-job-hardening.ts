@@ -12,8 +12,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi 
 import { Redis } from 'ioredis';
 import { Client } from 'pg';
 import * as Bull from 'bullmq';
-import { acquireHanamiLocalLlmLock, clearHanamiLlmEventThrottle, HANAMI_LOCAL_LLM_LOCK_KEY, HANAMI_LLM_EVENTS_KEY, recordHanamiLlmEvent, type HanamiLlmEvent } from '@/core/hanami/HanamiLocalLlmLock.js';
-import { HanamiForYouBatchService, HANAMI_TREND_TOPIC_JUDGE_LAST_KEY, type HanamiTrendTopicJudgeResult } from '@/core/hanami/HanamiForYouBatchService.js';
+import { acquireHanamiLocalLlmLock, clearHanamiLlmEventThrottle, HANAMI_LOCAL_CPU_LOCK_KEY, HANAMI_LOCAL_LLM_LOCK_KEY, HANAMI_LLM_EVENTS_KEY, recordHanamiLlmEvent, type HanamiLlmEvent } from '@/core/hanami/HanamiLocalLlmLock.js';
+import { HanamiForYouBatchService, HANAMI_TREND_TOPIC_JUDGE_LAST_KEY, type HanamiNoteJudgeGpuOutput, type HanamiTrendTopicJudgeGpuOutput, type HanamiTrendTopicJudgeResult } from '@/core/hanami/HanamiForYouBatchService.js';
+import { HanamiGpuQueueService } from '@/core/hanami/HanamiGpuQueueService.js';
 import { HanamiTasteClusterBatchService } from '@/core/hanami/HanamiTasteClusterBatchService.js';
 import { createDefaultHanamiNoteJudgeSettings } from '@/core/hanami/HanamiNoteJudgeContracts.js';
 import { HanamiCommonGenerationProcessorService } from '@/queue/processors/HanamiCommonGenerationProcessorService.js';
@@ -73,8 +74,10 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 function batch(rows: unknown[] = []) {
 	const query = vi.fn(async (sql: string, _parameters?: unknown[]) => sql.includes('AS settings') ? [{ settings }] : sql.includes('SELECT') ? rows : []);
 	const runs = { insert: vi.fn(async () => undefined), update: vi.fn(async () => undefined) };
-	const service = new HanamiForYouBatchService({ query } as never, runs as never, redis, { gen: () => 'run' } as never, {} as never);
-	return { service, query, runs };
+	// 順番待ちは本物（この隔離した Redis の上）。判定係・配り役は動かさず、取り出しと受け取り係の呼び出しをテストが行う。
+	const gpuQueue = new HanamiGpuQueueService(redis);
+	const service = new HanamiForYouBatchService({ query } as never, runs as never, redis, { gen: () => 'run' } as never, {} as never, gpuQueue);
+	return { service, query, runs, gpuQueue };
 }
 
 function processor(service: HanamiForYouBatchService, queue = {}) {
@@ -88,24 +91,30 @@ const topicJob = (data: unknown = topicData, age = 60_000) => ({
 	moveToDelayed: vi.fn(async () => undefined), updateProgress: vi.fn(async () => undefined),
 });
 const lastResult = async () => JSON.parse((await redis.get(HANAMI_TREND_TOPIC_JUDGE_LAST_KEY))!) as HanamiTrendTopicJudgeResult;
+const events = async () => (await redis.lrange(HANAMI_LLM_EVENTS_KEY, 0, -1)).map(raw => JSON.parse(raw) as HanamiLlmEvent);
 
 describe('local LLM lease', () => {
-	test('ALS uses the shared lease and releases it when Python fails', async () => {
+	test('ALS uses the CPU lease (not the GPU one the resident worker holds) and releases it when Python fails', async () => {
 		const { service, query } = batch();
 		query.mockImplementation(async sql => sql.includes('SELECT r."userId" AS u') ? [{ u: 'user', a: 'author', c: 5 }] : []);
-		await redis.set(HANAMI_LOCAL_LLM_LOCK_KEY, 'busy');
+		await redis.set(HANAMI_LOCAL_CPU_LOCK_KEY, 'busy');
 		await expect(service.runAlsBatch(log as never)).resolves.toMatchObject({ status: 'failed' });
 		expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('local LLM is busy'));
-		expect(await redis.get(HANAMI_LOCAL_LLM_LOCK_KEY)).toBe('busy');
-		await redis.del(HANAMI_LOCAL_LLM_LOCK_KEY);
+		expect(await redis.get(HANAMI_LOCAL_CPU_LOCK_KEY)).toBe('busy');
+		// CPU の鍵の取り合いでは「GPU を待っている」目印を立てない（立てると判定係が降ろされる）。
+		expect(await redis.exists('hanami:llm:wanted:als')).toBe(0);
+		await redis.del(HANAMI_LOCAL_CPU_LOCK_KEY);
+		// 常駐の判定係が GPU の鍵を持ったままでも、ALS は走れる。
+		await redis.set(HANAMI_LOCAL_LLM_LOCK_KEY, 'gpuWorker:1:1:token');
 		const script = join(directory, 'als.py');
 		await writeFile(script, 'raise RuntimeError("ALS failed")\n');
 		vi.stubEnv('HANAMI_FORYOU_ALS_SCRIPT', script);
 		const set = vi.spyOn(redis, 'set');
 		await expect(service.runAlsBatch(log as never)).resolves.toMatchObject({ status: 'failed' });
-		expect(set).toHaveBeenCalledWith(HANAMI_LOCAL_LLM_LOCK_KEY, expect.any(String), 'EX', 90, 'NX');
+		expect(set).toHaveBeenCalledWith(HANAMI_LOCAL_CPU_LOCK_KEY, expect.any(String), 'EX', 90, 'NX');
 		expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('ALS failed'));
-		expect(await redis.get(HANAMI_LOCAL_LLM_LOCK_KEY)).toBeNull();
+		expect(await redis.get(HANAMI_LOCAL_CPU_LOCK_KEY)).toBeNull();
+		expect(await redis.get(HANAMI_LOCAL_LLM_LOCK_KEY)).toBe('gpuWorker:1:1:token');
 	});
 	test('acquires for 90 seconds, contends, renews every 30 seconds and stops in finally', async () => {
 		vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
@@ -216,24 +225,33 @@ describe('note judge queue reservations and interrupted runs', () => {
 		expect(enqueue).toHaveBeenCalledTimes(1);
 		expect(await redis.zcard(queuedKey)).toBe(0);
 	});
-	test.each(['empty', 'failed', 'noGpu', 'waiting'])('run clears reservations on %s, retaining a delayed job', async outcome => {
-		const { service, query, runs } = batch();
+	test.each(['empty', 'failed', 'noGpu', 'handedOff'])('the job clears reservations on %s, and keeps them only for notes handed to the GPU queue', async outcome => {
+		const { service, query, runs, gpuQueue } = batch(outcome === 'handedOff' ? [{ id: 'n1', text: '役立つ運用情報です。', hasFiles: false, isBot: false, isReply: false }] : []);
 		await service.reserveNoteJudgeNotes(['n1']);
 		if (outcome === 'failed') query.mockRejectedValueOnce(new Error('DB unavailable'));
 		if (outcome === 'noGpu') runtime.mockReturnValue({ available: false, device: 'cuda' });
-		if (outcome === 'waiting') await redis.set('hanami:llm:topic-judge-waiting:v1', '1');
+		// 以前は GPU の鍵や「話題の判定が待っている」目印があると待たされた。いまは関係しない。
+		await redis.set(HANAMI_LOCAL_LLM_LOCK_KEY, 'gpuWorker:1:1:token');
+		await redis.set('hanami:llm:topic-judge-waiting:v1', '1');
 		const run = service.runNoteJudgeJob({ noteIds: ['n1'], promptVersion: 1 }, log as never);
-		if (outcome === 'failed' || outcome === 'waiting') await expect(run).rejects.toThrow();
-		else await expect(run).resolves.toMatchObject({ status: 'ready', processedCount: 0 });
-		expect(await redis.zcard(queuedKey)).toBe(outcome === 'waiting' ? 1 : 0);
-		if (outcome === 'empty') {
-			const [sql, parameters] = query.mock.calls.find(([sql]) => sql.startsWith('UPDATE "hanami_foryou_model_run"'))!;
-			expect(sql).toContain('WHERE kind = \'note-judge\' AND status = \'pending\' AND "startedAt" < $2');
-			expect(sql).toContain('COALESCE(params, \'{}\'::jsonb) || \'{"interrupted":true}\'::jsonb');
-			expect(sql).toContain('"finishedAt" = $1');
-			expect((parameters![0] as Date).getTime() - (parameters![1] as Date).getTime()).toBe(10 * 60_000);
-			expect(query.mock.invocationCallOrder[query.mock.calls.findIndex(([sql]) => sql.startsWith('UPDATE'))]).toBeLessThan(runs.insert.mock.invocationCallOrder[0]);
-		} else if (outcome === 'waiting') expect(runs.insert).not.toHaveBeenCalled();
+		if (outcome === 'failed') await expect(run).rejects.toThrow('DB unavailable');
+		else await expect(run).resolves.toMatchObject({ status: 'ready', processedCount: 0, queuedCount: outcome === 'handedOff' ? 1 : 0 });
+		expect(await redis.zcard(queuedKey)).toBe(outcome === 'handedOff' ? 1 : 0);
+		expect(await gpuQueue.pending('noteJudge')).toBe(outcome === 'handedOff' ? 1 : 0);
+		// ジョブはモデルを動かさない。実行の記録を作るのは「GPU なし」で飛ばしたときだけ。
+		expect(runs.insert).toHaveBeenCalledTimes(outcome === 'noGpu' ? 1 : 0);
+		expect(query.mock.calls.some(([sql]) => sql.startsWith('UPDATE "hanami_foryou_model_run"'))).toBe(false);
+	});
+	test('the handler closes interrupted runs before recording its own, with the exact ten-minute boundary', async () => {
+		vi.spyOn(Date, 'now').mockReturnValue(now);
+		const { service, query, runs } = batch();
+		await service.handleNoteJudged([{ itemId: '1:n1', payload: { noteId: 'n1', promptVersion: 1 }, enqueuedAt: now - 1000, attempts: 0 }], new Map(), new Map(), 0);
+		const [sql, parameters] = query.mock.calls.find(([sql]) => sql.startsWith('UPDATE "hanami_foryou_model_run"'))!;
+		expect(sql).toContain('WHERE kind = \'note-judge\' AND status = \'pending\' AND "startedAt" < $2');
+		expect(sql).toContain('COALESCE(params, \'{}\'::jsonb) || \'{"interrupted":true}\'::jsonb');
+		expect(sql).toContain('"finishedAt" = $1');
+		expect((parameters![0] as Date).getTime() - (parameters![1] as Date).getTime()).toBe(10 * 60_000);
+		expect(query.mock.invocationCallOrder[query.mock.calls.findIndex(([sql]) => sql.startsWith('UPDATE'))]).toBeLessThan(runs.insert.mock.invocationCallOrder[0]);
 	});
 	test.skipIf(!process.env.HANAMI_ADMIN_TEST_DATABASE_URL)('only older pending note runs are interrupted, preserving params and the exact ten-minute boundary', async () => {
 		const client = new Client({ connectionString: process.env.HANAMI_ADMIN_TEST_DATABASE_URL });
@@ -249,13 +267,10 @@ describe('note judge queue reservations and interrupted runs', () => {
 			vi.spyOn(Date, 'now').mockReturnValue(now);
 			const { service, query } = batch();
 			query.mockImplementation(async (sql, parameters) => {
-				if (sql.startsWith('UPDATE "hanami_foryou_model_run"')) {
-					expect(await redis.get(HANAMI_LOCAL_LLM_LOCK_KEY)).not.toBeNull();
-					return (await client.query(sql, parameters)).rows;
-				}
+				if (sql.startsWith('UPDATE "hanami_foryou_model_run"')) return (await client.query(sql, parameters)).rows;
 				return sql.includes('AS settings') ? [{ settings }] : [];
 			});
-			await service.runNoteJudgeJob({ noteIds: ['n1'], promptVersion: 1 }, log as never);
+			await service.handleNoteJudged([{ itemId: '1:n1', payload: { noteId: 'n1', promptVersion: 1 }, enqueuedAt: now - 1000, attempts: 0 }], new Map(), new Map(), 0);
 			const rows = (await client.query('SELECT * FROM hanami_foryou_model_run ORDER BY id')).rows;
 			expect(rows.find(row => row.id === 'old')).toMatchObject({ status: 'failed', finishedAt: new Date(now), params: { model: 'preserved', interrupted: true } });
 			for (const row of rows.filter(row => row.id !== 'old')) {
@@ -265,19 +280,27 @@ describe('note judge queue reservations and interrupted runs', () => {
 			}
 		} finally { await client.end(); }
 	});
-	test('successful Python work clears its queued notes; a crashed process also releases the lease', async () => {
-		const { service } = batch([{ id: 'n1', text: '役立つ運用情報です。', hasFiles: false, isBot: false, isReply: false }]);
-		const script = join(directory, 'note-judge.py');
-		vi.stubEnv('HANAMI_NOTE_JUDGE_SCRIPT', script);
-		await writeFile(script, 'import json,sys\njson.dump({\'status\':\'ok\',\'promptVersion\':1,\'judgements\':[{\'noteId\':\'n1\',\'ephemeralScore\':0.1,\'interest\':4,\'interestDist\':[0,0,0,1,0],\'contentType\':2}]},open(sys.argv[2],\'w\'))\n');
+	test('a handed-off note is judged through the real queue: the handler saves it and only then frees the reservation', async () => {
+		const { service, query, gpuQueue } = batch([{ id: 'n1', text: '役立つ運用情報です。', hasFiles: false, isBot: false, isReply: false }]);
 		await service.reserveNoteJudgeNotes(['n1']);
-		await expect(service.runNoteJudgeJob({ noteIds: ['n1'], promptVersion: 1 }, log as never)).resolves.toMatchObject({ status: 'ready', processedCount: 1 });
+		await expect(service.runNoteJudgeJob({ noteIds: ['n1'], promptVersion: 1 }, log as never)).resolves.toMatchObject({ status: 'ready', queuedCount: 1 });
+		// 同じ投稿をもう一度頼んでも、順番待ちには 1 件だけ。
+		await expect(service.runNoteJudgeJob({ noteIds: ['n1'], promptVersion: 1 }, log as never)).resolves.toMatchObject({ queuedCount: 0 });
+		expect(await gpuQueue.pending('noteJudge')).toBe(1);
+		expect(await redis.zcard(queuedKey)).toBe(1);
+
+		// 配り役の代わりに取り出して、判定係の返事を受け取り係に渡す。
+		const items = await gpuQueue.take('noteJudge', 8);
+		expect(items).toEqual([expect.objectContaining({ itemId: '1:n1', payload: expect.objectContaining({ noteId: 'n1', promptVersion: 1, cleanedText: '役立つ運用情報です。', settings: { basis: settings.basis, examples: settings.examples } }) })]);
+		const results = new Map<string, HanamiNoteJudgeGpuOutput>([['1:n1', { noteId: 'n1', ephemeralScore: 0.1, interest: 4, interestDist: [0, 0, 0, 1, 0], contentType: 2 }]]);
+		await service.handleNoteJudged(items, results, new Map(), 500);
+		await gpuQueue.complete('noteJudge', items.map(item => item.itemId));
+
+		const upsert = query.mock.calls.find(([sql]) => sql.includes('INSERT INTO "hanami_note_judgement"'))!;
+		expect(upsert[1]).toEqual(['n1', 'Qwen/Qwen3-4B-Instruct-2507', 1, 0.1, 4, [0, 0, 0, 1, 0], 2]);
 		expect(await redis.zcard(queuedKey)).toBe(0);
-		await writeFile(script, 'raise RuntimeError("process crashed")\n');
-		await service.reserveNoteJudgeNotes(['n1']);
-		await expect(service.runNoteJudgeJob({ noteIds: ['n1'], promptVersion: 1 }, log as never)).rejects.toThrow('process crashed');
-		expect(await redis.zcard(queuedKey)).toBe(0);
-		expect(await redis.get(HANAMI_LOCAL_LLM_LOCK_KEY)).toBeNull();
+		expect(await gpuQueue.pending('noteJudge')).toBe(0);
+		expect((await events()).filter(row => row.job === 'noteJudge').map(row => row.event)).toEqual(expect.arrayContaining(['dispatched', 'finished']));
 	});
 });
 
@@ -306,17 +329,19 @@ describe('topic judge history and admin status', () => {
 		await expect(processor(service).processTrendTopicJudge(topicJob(null) as never)).rejects.toBeInstanceOf(Bull.UnrecoverableError);
 		expect(await lastResult()).toMatchObject({ outcome: 'rejected', requested: { daily: 0, pairs: 0, titles: 0 }, lastSuccessAt: null, error: expect.stringContaining('Invalid payload') });
 	});
-	test('lock contention records waiting/gaveUp without changing the retry schedule', async () => {
-		const { service } = batch();
-		await redis.set(HANAMI_LOCAL_LLM_LOCK_KEY, 'busy');
+	test('a busy GPU lock no longer delays the job: it is handed to the queue and reported as waiting', async () => {
+		const { service, gpuQueue } = batch();
+		await redis.set(HANAMI_LOCAL_LLM_LOCK_KEY, 'gpuWorker:1:1:token');
 		const job = topicJob();
-		await expect(processor(service).processTrendTopicJudge(job as never)).rejects.toBeInstanceOf(Bull.DelayedError);
-		expect(job.moveToDelayed).toHaveBeenCalledTimes(1);
-		expect(await lastResult()).toMatchObject({ outcome: 'waiting', waitedMs: expect.any(Number) });
-		const stale = topicJob(topicData, 21 * 60_000);
-		await processor(service).processTrendTopicJudge(stale as never);
-		expect(stale.moveToDelayed).not.toHaveBeenCalled();
-		expect(await lastResult()).toMatchObject({ outcome: 'gaveUp' });
+		await processor(service).processTrendTopicJudge(job as never);
+		expect(job.moveToDelayed).not.toHaveBeenCalled();
+		expect(await lastResult()).toMatchObject({ outcome: 'waiting', requested: { daily: 2, pairs: 1, titles: 1 } });
+		expect(await gpuQueue.pending('topicJudge')).toBe(1);
+		// 前の回が待っている間は、次の回を重ねて入れない。
+		await processor(service).processTrendTopicJudge(topicJob() as never);
+		expect(await gpuQueue.pending('topicJudge')).toBe(1);
+		expect(await redis.get(HANAMI_LOCAL_LLM_LOCK_KEY)).toBe('gpuWorker:1:1:token');
+		expect(await redis.exists('hanami:llm:wanted:topicJudge', 'hanami:llm:topic-judge-waiting:v1')).toBe(0);
 	});
 	test('records noGpu and cached/empty work without starting Python', async () => {
 		const { service } = batch();
@@ -328,19 +353,21 @@ describe('topic judge history and admin status', () => {
 		expect(await lastResult()).toMatchObject({ outcome: 'nothingToDo', requested: { daily: 0, pairs: 0, titles: 0 } });
 		expect(await redis.get(HANAMI_LOCAL_LLM_LOCK_KEY)).toBeNull();
 	});
-	test.each(['ok', 'partial', 'failed', 'invalidTitle'] as const)('records actual Python %s results and saved/rejected counts', async mode => {
-		const output = {
-			status: mode === 'failed' ? 'unavailable' : 'ok', error: mode === 'failed' ? 'model failed' : undefined,
+	test.each(['ok', 'partial', 'failed', 'invalidTitle'] as const)('the handler records the worker\'s %s results and saved/rejected counts', async mode => {
+		const output: HanamiTrendTopicJudgeGpuOutput = {
+			status: mode === 'failed' ? 'partial' : 'ok', error: mode === 'failed' ? 'model failed' : undefined,
 			judgements: mode === 'failed' ? [] : [
 				{ kind: 'daily', topicId: 'a', probability: 0.1 },
-				...(mode === 'partial' ? [] : [{ kind: 'daily', topicId: 'b', probability: 0.7 }, { kind: 'same', a: 'a', b: 'b', probability: 0.8 }]),
+				...(mode === 'partial' ? [] : [{ kind: 'daily' as const, topicId: 'b', probability: 0.7 }, { kind: 'same' as const, a: 'a', b: 'b', probability: 0.8 }]),
 			],
 			titles: mode === 'failed' ? [] : [{ topicId: 'a', title: mode === 'invalidTitle' ? '' : 'パン屋' }],
 		};
-		const script = join(directory, 'judge.py');
-		await writeFile(script, `import json,sys\njson.dump(json.loads(${JSON.stringify(JSON.stringify(output))}),open(sys.argv[2],'w'))\n`);
-		vi.stubEnv('HANAMI_TREND_TOPIC_JUDGE_SCRIPT', script);
-		await batch().service.runTrendTopicJudgeJob(topicData, log as never);
+		const { service, gpuQueue } = batch();
+		await service.runTrendTopicJudgeJob(topicData, log as never, 'topic-job');
+		expect(await lastResult()).toMatchObject({ outcome: 'waiting' });
+		const items = await gpuQueue.take('topicJudge', 1);
+		expect(items).toHaveLength(1);
+		await service.handleTrendTopicJudged(items, new Map([[items[0].itemId, output]]), new Map(), 1500);
 		const record = await lastResult();
 		expect(record.outcome).toBe(mode === 'invalidTitle' ? 'partial' : mode);
 		expect(record.requested).toEqual({ daily: 2, pairs: 1, titles: 1 });
@@ -348,11 +375,11 @@ describe('topic judge history and admin status', () => {
 		expect(record.rejectedTitles).toBe(mode === 'invalidTitle' ? 1 : 0);
 		expect(record.lastSuccessAt).toBe(mode === 'failed' ? null : record.at);
 		expect(await redis.get(HANAMI_LOCAL_LLM_LOCK_KEY)).toBeNull();
+		expect((await events()).filter(row => row.job === 'topicJudge').map(row => [row.event, row.jobId])).toEqual(expect.arrayContaining([['dispatched', 'topic-job'], [mode === 'failed' ? 'failed' : 'finished', 'topic-job']]));
 	});
 });
 
 describe('LLM event history', () => {
-	const events = async () => (await redis.lrange(HANAMI_LLM_EVENTS_KEY, 0, -1)).map(raw => JSON.parse(raw) as HanamiLlmEvent);
 	test('records repeated contention at most once per job family and event within the throttle window', async () => {
 		await recordHanamiLlmEvent(redis, { job: 'noteJudge', event: 'waiting', jobId: '1', throttleMs: 200 });
 		await recordHanamiLlmEvent(redis, { job: 'noteJudge', event: 'waiting', jobId: '2', throttleMs: 200 });
@@ -415,14 +442,13 @@ describe('LLM event history', () => {
 		expect((await events()).filter(row => row.event === 'failed')).toEqual([expect.objectContaining({ job: 'tasteTick', error: { name: 'Error', message: `${failureAt} failed`, stderrTail: 'taste stderr' } })]);
 		expect(await redis.get(HANAMI_LOCAL_LLM_LOCK_KEY)).toBeNull();
 	});
-	test('stores Python stderr when topic output cannot be read', async () => {
-		const { service } = batch();
-		const script = join(directory, 'crash-topic.py');
-		await writeFile(script, 'raise RuntimeError("topic process crashed")\n');
-		vi.stubEnv('HANAMI_TREND_TOPIC_JUDGE_SCRIPT', script);
+	test('records the worker error for a topic job that returned nothing', async () => {
+		const { service, gpuQueue } = batch();
 		await service.runTrendTopicJudgeJob(topicData, log as never, 'topic-job');
+		const items = await gpuQueue.take('topicJudge', 1);
+		await service.handleTrendTopicJudged(items, new Map(), new Map([[items[0].itemId, 'RuntimeError: topic judge crashed']]), null);
 		const failed = (await events()).filter(row => row.event === 'failed');
 		expect(failed).toHaveLength(1);
-		expect(failed[0]).toMatchObject({ job: 'topicJudge', jobId: 'topic-job', error: { stderrTail: expect.stringContaining('topic process crashed') } });
+		expect(failed[0]).toMatchObject({ job: 'topicJudge', jobId: 'topic-job', error: { message: expect.stringContaining('topic judge crashed') } });
 	});
 });

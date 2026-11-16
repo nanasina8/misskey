@@ -152,7 +152,7 @@ class FakeRedis {
 
 	public async set(...args: unknown[]): Promise<'OK' | null> {
 		this.setCalls.push(args);
-		return this.lockOk && (args[0] !== 'hanami:llm:exclusive:v1' || this.sharedLockOk) ? 'OK' : null;
+		return this.lockOk && (args[0] !== 'hanami:cpu:exclusive:v1' || this.sharedLockOk) ? 'OK' : null;
 	}
 
 	public async eval(...args: unknown[]): Promise<number> {
@@ -431,7 +431,8 @@ describe('HanamiTasteClusterBatchService reactionSimilar match', () => {
 		expect(db.query).toHaveBeenCalledTimes(4);
 		expect(redis.setCalls).toEqual([
 			['hanami:taste:tick:lock', expect.any(String), 'EX', 90, 'NX'],
-			['hanami:llm:exclusive:v1', expect.any(String), 'EX', 90, 'NX'],
+			// 重い CPU の処理どうしの鍵。GPU の鍵（常駐の判定係が持ち続ける）は取らない。
+			['hanami:cpu:exclusive:v1', expect.any(String), 'EX', 90, 'NX'],
 		]);
 		expect(redis.evalCalls).toHaveLength(1);
 
@@ -885,7 +886,7 @@ describe('HanamiForYouService taste cosNorm', () => {
 });
 
 describe('HanamiTasteClusterBatchService daily cluster', () => {
-	test('shared LLM lock held: skips before either embedding or k-means Python work', async () => {
+	test('shared CPU lock held: skips before either embedding or k-means Python work, without asking the GPU worker to yield', async () => {
 		const redis = new FakeRedis();
 		redis.sharedLockOk = false;
 		const db = { query: jest.fn(async (..._args: unknown[]) => []) };
@@ -899,9 +900,8 @@ describe('HanamiTasteClusterBatchService daily cluster', () => {
 
 		expect(redis.setCalls).toEqual([
 			['hanami:taste:tick:lock', expect.any(String), 'EX', 90, 'NX'],
-			['hanami:llm:exclusive:v1', expect.any(String), 'EX', 90, 'NX'],
-			// 取れなかったので「GPU を待っている」目印を立てる（配り役が譲るかどうかの判断に使う）。
-			['hanami:llm:wanted:tasteTick', expect.any(String), 'EX', 150],
+			['hanami:cpu:exclusive:v1', expect.any(String), 'EX', 90, 'NX'],
+			// CPU の鍵を取れなかっただけなので「GPU を待っている」目印は立てない（立てると判定係が降ろされ、モデルを読み込み直す）。
 		]);
 		expect(db.query).not.toHaveBeenCalled();
 		expect(embedTexts).not.toHaveBeenCalled();

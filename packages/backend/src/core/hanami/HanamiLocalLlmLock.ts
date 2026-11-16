@@ -8,6 +8,12 @@ import { randomUUID } from 'node:crypto';
 import Logger from '@/logger.js';
 
 export const HANAMI_LOCAL_LLM_LOCK_KEY = 'hanami:llm:exclusive:v1';
+/**
+ * 重い CPU の処理（おすすめの計算・好みの学習）どうしが同時に走らないための鍵。
+ * GPU の鍵とは別にする: 常駐の判定係は GPU の鍵を持ち続けるので、同じ鍵だと CPU の処理が永久に待つか、
+ * 判定係を降ろしてモデルを読み込み直すことになる。
+ */
+export const HANAMI_LOCAL_CPU_LOCK_KEY = 'hanami:cpu:exclusive:v1';
 export const HANAMI_LLM_EVENTS_KEY = 'hanami:llm:events:v1';
 // Large enough to keep about a day of normal runs even while a backlog retries every minute.
 export const HANAMI_LLM_EVENTS_MAX = 2000;
@@ -128,7 +134,8 @@ export async function acquireHanamiLocalLlmLock(
 			if (await redis.set(key, token, 'EX', LOCK_TTL_MS / 1000, 'NX') == null) {
 				await release();
 				await event('lockBusy', undefined, HANAMI_LLM_EVENT_THROTTLE_MS);
-				if (!BACKGROUND_GPU_JOBS.has(kind)) await redis.set(`${HANAMI_LLM_WANTED_PREFIX}${kind}`, String(Date.now()), 'EX', WANTED_TTL_SECONDS).catch(() => {});
+				// 「GPU を待っている」目印は、GPU の鍵を取れなかったときだけ立てる（CPU の鍵の取り合いで判定係を降ろさせない）
+				if (key === HANAMI_LOCAL_LLM_LOCK_KEY && !BACKGROUND_GPU_JOBS.has(kind)) await redis.set(`${HANAMI_LLM_WANTED_PREFIX}${kind}`, String(Date.now()), 'EX', WANTED_TTL_SECONDS).catch(() => {});
 				return null;
 			}
 			acquired.push(key);

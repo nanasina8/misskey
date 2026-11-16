@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { DataSource } from 'typeorm';
+import { HanamiGpuQueueService } from '@/core/hanami/HanamiGpuQueueService.js';
 import { DI } from '@/di-symbols.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { QueueService } from '@/core/QueueService.js';
@@ -50,7 +51,7 @@ export const meta = {
 				acquiredAt: { ...date('UTC acquisition time encoded in the owner token; null if unreadable.'), nullable: true },
 				expiresInMs: { ...count('Remaining Redis lock TTL in milliseconds; null if absent or without expiry.'), nullable: true },
 			} },
-			topicJudgeWaiting: flag('Whether the Redis topic-judge-waiting marker asks note judges to yield.'),
+			topicJudgeWaiting: flag('Whether a topic judge request is waiting in (or being processed from) the resident GPU worker queue.'),
 			queue: { type: 'object', optional: false, nullable: false, description: 'hanamiGeneration jobs read from the same BullMQ getJobs source as admin/queue/jobs.', properties: {
 				truncated: flag('True if any state contains more than 500 jobs; counts and oldest timestamps then cover the scanned subset.'),
 				jobs: { type: 'array', optional: false, nullable: false, description: 'Job-name groups, including the five primary generation/judge names even when empty.', items: {
@@ -133,14 +134,14 @@ function packRun(row: RunRow | null) {
 
 @Injectable()
 export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-disable-line import/no-default-export
-	constructor(@Inject(DI.db) private db: DataSource, @Inject(DI.redis) private redisClient: Redis.Redis, private queueService: QueueService) {
+	constructor(@Inject(DI.db) private db: DataSource, @Inject(DI.redis) private redisClient: Redis.Redis, private queueService: QueueService, @Optional() private hanamiGpuQueueService?: HanamiGpuQueueService) {
 		super(meta, paramDef, async ps => {
 			const now = Date.now();
 			const dayAgo = new Date(now - 24 * 60 * 60 * 1000);
 			const [judge, queue, lockSnapshot, waiting, summaries, failures, conditions, rawEvents] = await Promise.all([
 				getHanamiJudgeStatus(this.db, this.redisClient), this.queueService.getHanamiJobsStatus(),
 				this.redisClient.eval('return {redis.call("get", KEYS[1]), redis.call("pttl", KEYS[1])}', 1, HANAMI_LOCAL_LLM_LOCK_KEY) as Promise<[string | null, number]>,
-				this.redisClient.get('hanami:llm:topic-judge-waiting:v1'),
+				this.hanamiGpuQueueService?.pending('topicJudge').catch(() => 0) ?? Promise.resolve(0),
 				this.db.query<Array<{ kind: typeof RUN_KINDS[number]; latest: RunRow | null; latestWork: RunRow | null; ready: number; failed: number; interrupted: number; empty: number }>>(`SELECT k.kind, row_to_json(latest) AS latest, row_to_json(work) AS "latestWork", stats.*
 					FROM unnest($1::varchar[]) AS k(kind)
 					LEFT JOIN LATERAL (SELECT status, "startedAt", "finishedAt", params FROM hanami_foryou_model_run WHERE kind = k.kind ORDER BY "startedAt" DESC, id DESC LIMIT 1) latest ON true
@@ -177,7 +178,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					return ps.eventJobs == null || ps.eventJobs.includes(event.job) ? [event] : [];
 				} catch { return []; }
 			}).slice(0, ps.eventsLimit);
-			return { gpu: judge.runtime, lock, topicJudgeWaiting: waiting != null, queue,
+			return { gpu: judge.runtime, lock, topicJudgeWaiting: waiting > 0, queue,
 				runs: summaries.map(row => ({ kind: row.kind, latest: packRun(row.latest), latestWork: packRun(row.latestWork), last24h: { ready: row.ready, failed: row.failed, interrupted: row.interrupted, empty: row.empty } })),
 				noteJudge: { backlog: judge.backlog, secPerNote: judge.secPerNote ?? null }, topicJudge: judge.trendTopicJudge,
 				recentFailures: failures.map(row => ({ ...row, startedAt: new Date(row.startedAt).toISOString() })), warnings, events };

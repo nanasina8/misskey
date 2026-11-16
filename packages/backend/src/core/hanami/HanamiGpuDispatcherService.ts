@@ -24,6 +24,7 @@ import {
 	shouldYieldHanamiGpu,
 	type HanamiGpuQueueKind,
 	type HanamiGpuSpamScores,
+	type HanamiGpuWorkerOp,
 } from '@/misc/hanami-gpu-queue.js';
 
 const LEADER_KEY = 'hanami:gpuq:v1:leader';
@@ -58,9 +59,13 @@ export type HanamiGpuDispatcherStatus = {
 	workerPid: number | null;
 };
 
-export type HanamiGpuQueueHandler = (
+/**
+ * 受け取り係。results の値は種類ごとに形が違う（AI投稿チェックは 4 択の確率、投稿の判定は判定 1 件、話題の判定は 1 回分の結果）。
+ * 判定係が返した値をそのまま渡すので、受け取り係の側で形を確かめること。
+ */
+export type HanamiGpuQueueHandler<T = HanamiGpuSpamScores> = (
 	items: readonly HanamiGpuQueueTakenItem[],
-	results: ReadonlyMap<string, HanamiGpuSpamScores>,
+	results: ReadonlyMap<string, T>,
 	errors: ReadonlyMap<string, string>,
 	durationMs: number | null,
 ) => Promise<void>;
@@ -72,7 +77,7 @@ type PendingRequest = {
 };
 
 type WorkerResponse =
-	| { op: 'result'; requestId: string; results: Array<{ itemId: string; scores: HanamiGpuSpamScores }>; errors: Array<{ itemId: string; error: string }>; durationMs: number }
+	| { op: 'result'; requestId: string; results: Array<{ itemId: string; scores?: unknown; output?: unknown }>; errors: Array<{ itemId: string; error: string }>; durationMs: number }
 	| { op: 'error'; error: string };
 
 /**
@@ -83,7 +88,7 @@ type WorkerResponse =
 @Injectable()
 export class HanamiGpuDispatcherService {
 	private logger: Logger;
-	private handlers = new Map<HanamiGpuQueueKind, HanamiGpuQueueHandler>();
+	private handlers = new Map<HanamiGpuQueueKind, HanamiGpuQueueHandler<unknown>>();
 	private refills = new Map<HanamiGpuQueueKind, () => Promise<void>>();
 
 	private running = false;
@@ -128,8 +133,8 @@ export class HanamiGpuDispatcherService {
 	}
 
 	@bindThis
-	public registerHandler(kind: HanamiGpuQueueKind, handler: HanamiGpuQueueHandler): void {
-		this.handlers.set(kind, handler);
+	public registerHandler<T = HanamiGpuSpamScores>(kind: HanamiGpuQueueKind, handler: HanamiGpuQueueHandler<T>): void {
+		this.handlers.set(kind, handler as HanamiGpuQueueHandler<unknown>);
 	}
 
 	@bindThis
@@ -356,7 +361,7 @@ export class HanamiGpuDispatcherService {
 					pending.resolve({
 						op: 'result',
 						requestId,
-						results: (Array.isArray(msg.results) ? msg.results : []) as Array<{ itemId: string; scores: HanamiGpuSpamScores }>,
+						results: (Array.isArray(msg.results) ? msg.results : []) as Array<{ itemId: string; scores?: unknown; output?: unknown }>,
 						errors: (Array.isArray(msg.errors) ? msg.errors : []) as Array<{ itemId: string; error: string }>,
 						durationMs: typeof msg.durationMs === 'number' ? msg.durationMs : 0,
 					});
@@ -505,7 +510,7 @@ export class HanamiGpuDispatcherService {
 		const head = heads.find(h => h != null && h.kind === kind) ?? null;
 		const bestPriority = head != null ? hanamiGpuQueueEffectivePriority(head, now) : null;
 
-		// 2. 譲る: 今までどおりのジョブ（自分でモデルを読み込む noteJudge など）が GPU を待っていて、
+		// 2. 譲る: 自分でモデルを GPU に読み込むジョブ（管理画面の「判定の試し」）が GPU を待っていて、
 		//    その重要度がこちらの次の仕事より高ければ（こちらに仕事が無ければ）、判定係を止めてロックを返す。
 		//    低ければ譲らない（ロックが空いたらこちらが取る）。相手が待っている間に取り直すと相手が取れないので、
 		//    譲ると決めている間はロックを取り直さない
@@ -601,18 +606,17 @@ export class HanamiGpuDispatcherService {
 	private async judgeTaken(kind: HanamiGpuQueueKind, items: HanamiGpuQueueTakenItem[]): Promise<number> {
 		const policy = HANAMI_GPU_QUEUE_POLICIES[kind];
 
-		const scores = new Map<string, HanamiGpuSpamScores>();
+		const scores = new Map<string, unknown>();
 		const errors = new Map<string, string>();
 		let durationMs: number | null = null;
 		let judgeFailed = false;
 
 		try {
-			const response = await this.sendRequest(policy.op, {
-				items: items.map(item => ({ itemId: item.itemId, text: String((item.payload as { text?: unknown })?.text ?? '') })),
-			});
+			const response = await this.sendRequest(policy.op, { items: items.map(item => this.workerItem(policy.op, item)) });
 			if (response.op === 'result') {
 				durationMs = response.durationMs;
-				for (const result of response.results) scores.set(result.itemId, result.scores);
+				// AI投稿チェックは scores、投稿の判定・話題の判定は output に入って返る
+				for (const result of response.results) scores.set(result.itemId, result.output ?? result.scores);
 				for (const error of response.errors) errors.set(error.itemId, error.error);
 			} else {
 				judgeFailed = true;
@@ -672,6 +676,16 @@ export class HanamiGpuDispatcherService {
 
 		// 8. 続きがあればすぐ次へ（譲るかどうかは次の回の最初に見る）
 		return 0;
+	}
+
+	/** 順番待ちの 1 項目を、判定係に送る形にする（種類ごとに中身が違う） */
+	private workerItem(op: HanamiGpuWorkerOp, item: HanamiGpuQueueTakenItem): Record<string, unknown> {
+		const payload = (item.payload ?? {}) as Record<string, unknown>;
+		switch (op) {
+			case 'spamJudge': return { itemId: item.itemId, text: String(payload.text ?? '') };
+			case 'noteJudge': return { itemId: item.itemId, noteId: payload.noteId, cleanedText: payload.cleanedText, hasFiles: payload.hasFiles === true, settings: payload.settings };
+			case 'topicJudge': return { itemId: item.itemId, job: payload.job };
+		}
 	}
 
 	private async callRefill(kind: HanamiGpuQueueKind): Promise<void> {

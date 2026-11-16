@@ -17,7 +17,7 @@ function input(overrides: Partial<HanamiGpuQueueCheckInput> = {}): HanamiGpuQueu
 		leaderPid: '42',
 		lockHolder: 'gpuWorker',
 		waiters: [],
-		kinds: { judgeTrial: { ...emptyKind }, spamJudge: { ...emptyKind }, spamScan: { ...emptyKind } },
+		kinds: { judgeTrial: { ...emptyKind }, spamJudge: { ...emptyKind }, spamScan: { ...emptyKind }, topicJudge: { ...emptyKind }, noteJudge: { ...emptyKind } },
 		nextBestPriority: null,
 		runtimeAvailable: true,
 		scan: { running: false, exhausted: false },
@@ -40,23 +40,24 @@ describe('GPU キューの見張り', () => {
 	});
 
 	test('待ちがあるのにリーダーがいなければ error', () => {
-		const kinds = { judgeTrial: { ...emptyKind }, spamJudge: { ...emptyKind, length: 3, oldestWaitSec: 10 }, spamScan: { ...emptyKind } };
+		const kinds = { judgeTrial: { ...emptyKind }, spamJudge: { ...emptyKind, length: 3, oldestWaitSec: 10 }, spamScan: { ...emptyKind }, topicJudge: { ...emptyKind }, noteJudge: { ...emptyKind } };
 		expect(level(checkHanamiGpuQueue(input({ leaderPid: null, kinds })), 'leader')).toBe('error');
 	});
 
 	test('判定係が載っているのにロックがほかの判定のものなら error（GPU に2つ載る）', () => {
-		expect(level(checkHanamiGpuQueue(input({ lockHolder: 'noteJudge' })), 'lockConsistency')).toBe('error');
+		expect(level(checkHanamiGpuQueue(input({ lockHolder: 'judgeTrial' })), 'lockConsistency')).toBe('error');
 	});
 
 	test('判定係が降りているのに gpuWorker のロックが残っていれば warn', () => {
-		expect(level(checkHanamiGpuQueue(input({ status: { state: 'yielded', since: NOW - 60 * MIN, updatedAt: NOW, workerPid: null, inflight: null }, waiters: ['noteJudge'] })), 'lockConsistency')).toBe('warn');
+		expect(level(checkHanamiGpuQueue(input({ status: { state: 'yielded', since: NOW - 60 * MIN, updatedAt: NOW, workerPid: null, inflight: null }, waiters: ['judgeTrial'] })), 'lockConsistency')).toBe('warn');
 	});
 
 	test('重要度の低い判定に譲っていれば error（優先度の逆転）', () => {
+		// おすすめの計算は CPU の処理で、GPU を譲る相手ではない（重要度 0 として扱う）
 		const checks = checkHanamiGpuQueue(input({
 			status: { state: 'yielded', since: NOW - 60 * MIN, updatedAt: NOW, workerPid: null, inflight: null },
-			lockHolder: 'noteJudge',
-			waiters: ['noteJudge'],
+			lockHolder: 'als',
+			waiters: ['als'],
 			nextBestPriority: 90,
 		}));
 		expect(level(checks, 'priorityInversion')).toBe('error');
@@ -65,34 +66,34 @@ describe('GPU キューの見張り', () => {
 	test('重要度の高い判定に譲っているのは ok', () => {
 		const checks = checkHanamiGpuQueue(input({
 			status: { state: 'yielded', since: NOW - 60 * MIN, updatedAt: NOW, workerPid: null, inflight: null },
-			lockHolder: 'noteJudge',
-			waiters: ['noteJudge'],
+			lockHolder: 'judgeTrial',
+			waiters: ['judgeTrial'],
 			nextBestPriority: 10,
 		}));
 		expect(level(checks, 'priorityInversion')).toBe('ok');
 	});
 
 	test('判定係が載っていて待ちがあるのに10分判定していなければ error', () => {
-		const kinds = { judgeTrial: { ...emptyKind }, spamJudge: { ...emptyKind, length: 5, oldestWaitSec: 700 }, spamScan: { ...emptyKind } };
+		const kinds = { judgeTrial: { ...emptyKind }, spamJudge: { ...emptyKind, length: 5, oldestWaitSec: 700 }, spamScan: { ...emptyKind }, topicJudge: { ...emptyKind }, noteJudge: { ...emptyKind } };
 		const checks = checkHanamiGpuQueue(input({ kinds, events: [{ at: NOW - 20 * MIN, type: 'batch' }] }));
 		expect(level(checks, 'throughput')).toBe('error');
 		expect(level(checks, 'stuck:spamJudge')).toBeUndefined(); // 15分未満なので待ちすぎではない
 	});
 
 	test('判定係に渡したばかり（判定中）なら、判定が無くても「進んでいない」とは言わない', () => {
-		const kinds = { judgeTrial: { ...emptyKind }, spamJudge: { ...emptyKind, length: 0, inflight: 1 }, spamScan: { ...emptyKind } };
+		const kinds = { judgeTrial: { ...emptyKind }, spamJudge: { ...emptyKind, length: 0, inflight: 1 }, spamScan: { ...emptyKind }, topicJudge: { ...emptyKind }, noteJudge: { ...emptyKind } };
 		const checks = checkHanamiGpuQueue(input({ kinds, status: { state: 'idle', since: NOW - 60 * MIN, updatedAt: NOW, workerPid: 1, inflight: { kind: 'spamJudge', count: 1, startedAt: NOW - 9_000 } } }));
 		expect(level(checks, 'throughput')).toBe('ok');
 	});
 
 	test('判定係が使えるようになってから10分たっていなければ「進んでいない」とは言わない', () => {
-		const kinds = { judgeTrial: { ...emptyKind }, spamJudge: { ...emptyKind, length: 2, oldestWaitSec: 60 }, spamScan: { ...emptyKind } };
+		const kinds = { judgeTrial: { ...emptyKind }, spamJudge: { ...emptyKind, length: 2, oldestWaitSec: 60 }, spamScan: { ...emptyKind }, topicJudge: { ...emptyKind }, noteJudge: { ...emptyKind } };
 		const checks = checkHanamiGpuQueue(input({ kinds, events: [{ at: NOW - 2 * MIN, type: 'workerReady' }] }));
 		expect(level(checks, 'throughput')).toBe('ok');
 	});
 
 	test('列と本体の食い違い（迷子）を warn で出す', () => {
-		const kinds = { judgeTrial: { ...emptyKind }, spamJudge: { ...emptyKind, bodyOnly: 2 }, spamScan: { ...emptyKind } };
+		const kinds = { judgeTrial: { ...emptyKind }, spamJudge: { ...emptyKind, bodyOnly: 2 }, spamScan: { ...emptyKind }, topicJudge: { ...emptyKind }, noteJudge: { ...emptyKind } };
 		expect(level(checkHanamiGpuQueue(input({ kinds })), 'consistency')).toBe('warn');
 	});
 
@@ -121,12 +122,29 @@ describe('GPU キューの見張り', () => {
 	});
 });
 
+describe('次にやる順のなぞり（投稿の判定・話題の判定）', () => {
+	test('話題の判定（70）は投稿の判定（50）より先、AI投稿チェック（90）より後。投稿の判定は 1 回 8 件まで', () => {
+		const notes = Array.from({ length: 10 }, (_, i) => ({ itemId: `n${i}`, enqueuedAt: NOW - 1000 + i, deadlineAt: null, attempts: 0 }));
+		const order = simulateHanamiGpuQueueOrder({
+			judgeTrial: [],
+			spamJudge: [{ itemId: 'j1', enqueuedAt: NOW - 100, deadlineAt: null, attempts: 0 }],
+			spamScan: [],
+			topicJudge: [{ itemId: 'current', enqueuedAt: NOW - 100, deadlineAt: NOW + 20 * MIN, attempts: 0 }],
+			noteJudge: notes,
+		}, NOW, 20);
+		expect(order.map(o => o.itemId).slice(0, 3)).toEqual(['j1', 'current', 'n0']);
+		expect(order.filter(o => o.kind === 'noteJudge').map(o => o.round)).toEqual([3, 3, 3, 3, 3, 3, 3, 3, 4, 4]);
+	});
+});
+
 describe('次にやる順のなぞり', () => {
 	test('先頭どうしを比べて種類を選び、その種類から1回分ずつ取る', () => {
 		const order = simulateHanamiGpuQueueOrder({
 			judgeTrial: [],
 			spamJudge: [{ itemId: 'j1', enqueuedAt: NOW - 1000, deadlineAt: null, attempts: 0 }, { itemId: 'j2', enqueuedAt: NOW - 500, deadlineAt: null, attempts: 0 }],
 			spamScan: [{ itemId: 's1', enqueuedAt: NOW - 30 * MIN, deadlineAt: null, attempts: 1 }],
+			topicJudge: [],
+			noteJudge: [],
 		}, NOW, 10);
 		expect(order.map(o => o.itemId)).toEqual(['j1', 'j2', 's1']);
 		expect(order[0]).toMatchObject({ round: 1, priority: { base: 90, aging: 0, total: 90 } });
@@ -138,6 +156,8 @@ describe('次にやる順のなぞり', () => {
 			judgeTrial: [{ itemId: 't1', enqueuedAt: NOW - 30_000, deadlineAt: NOW + 30_000, attempts: 0 }, { itemId: 't2', enqueuedAt: NOW, deadlineAt: NOW + 60_000, attempts: 0 }],
 			spamJudge: [],
 			spamScan: [],
+			topicJudge: [],
+			noteJudge: [],
 		}, NOW, 10);
 		expect(order.map(o => [o.itemId, o.round])).toEqual([['t1', 1], ['t2', 2]]);
 		expect(order[0].priority.deadline).toBe(15);

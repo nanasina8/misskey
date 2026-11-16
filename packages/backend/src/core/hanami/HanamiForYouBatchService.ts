@@ -6,9 +6,9 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
-import { cpus, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import * as Path from 'node:path';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional, type OnModuleInit } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { DataSource, type QueryRunner } from 'typeorm';
 import { DI } from '@/di-symbols.js';
@@ -16,7 +16,7 @@ import { bindThis } from '@/decorators.js';
 import { IdService } from '@/core/IdService.js';
 import { FeaturedService } from '@/core/FeaturedService.js';
 import { pureRenoteSql } from '@/misc/is-renote.js';
-import type Logger from '@/logger.js';
+import Logger from '@/logger.js';
 import { MiHanamiForYouRelation } from '@/models/HanamiForYouRelation.js';
 import { MiHanamiForYouUserFactor } from '@/models/HanamiForYouUserFactor.js';
 import { MiHanamiForYouAuthorFactor } from '@/models/HanamiForYouAuthorFactor.js';
@@ -27,7 +27,7 @@ import {
 	HANAMI_EVENT_TTL_SERVED_SEEN_MS,
 	HANAMI_EVENT_TTL_PERSONAL_MS,
 } from './HanamiForYouKeys.js';
-import { HANAMI_PYTHON_THREAD_ENV, prepareHanamiPythonCommand, peekHanamiNoteJudgeRuntime, probeHanamiNoteJudgeRuntime, resolveHanamiTrendTopicJudgeScript, resolveHanamiNoteJudgeScript, resolveHanamiRepoRoot } from './HanamiPythonRuntime.js';
+import { HANAMI_PYTHON_THREAD_ENV, prepareHanamiPythonCommand, peekHanamiNoteJudgeRuntime, probeHanamiNoteJudgeRuntime, resolveHanamiRepoRoot } from './HanamiPythonRuntime.js';
 import {
 	HANAMI_NOTE_JUDGE_MAX_BATCH_SIZE,
 	HANAMI_NOTE_JUDGE_MODEL,
@@ -39,7 +39,9 @@ import {
 } from './HanamiNoteJudgeContracts.js';
 import { trendDailyKey, trendSameKey, trendSameSetKey, trendTitleKey, readTrendTitle, trendTitleNeedsRename, trendTitlePosts, validateTrendTitle, trendTopicVisible, TREND_TITLE_TOP, TREND_CONTENT_JUDGE_EXTRA, type HanamiTrendPreviousTopics } from './HanamiTrendService.js';
 import { hanamiReturningRows } from './HanamiReturningRows.js';
-import { acquireHanamiLocalLlmLock, HANAMI_LLM_EVENT_THROTTLE_MS, recordHanamiLlmEvent, type HanamiGpuJob, type HanamiLlmEvent } from './HanamiLocalLlmLock.js';
+import { acquireHanamiLocalLlmLock, HANAMI_LOCAL_CPU_LOCK_KEY, recordHanamiLlmEvent, type HanamiGpuJob, type HanamiLlmEvent } from './HanamiLocalLlmLock.js';
+import { HanamiGpuQueueService, type HanamiGpuQueueTakenItem } from './HanamiGpuQueueService.js';
+import { HanamiGpuDispatcherService } from './HanamiGpuDispatcherService.js';
 import { applyHanamiNoteJudgeRules } from './HanamiNoteJudgeRules.js';
 
 const execFileAsync = promisify(execFile);
@@ -86,10 +88,9 @@ const EMBEDDING_PROCESS_TIMEOUT_MS = 30 * 60 * 1000;
 const NOTE_JUDGE_QUEUED_KEY = 'hanami:note-judge:queued:v1';
 const NOTE_JUDGE_QUEUED_WINDOW_MS = 30 * 60 * 1000;
 export const HANAMI_TREND_TOPIC_JUDGE_LAST_KEY = 'hanami:trend:topic-judge:last:v1';
-// The topic judge is dispatched once per generation, so note judges step aside while it waits for the shared lock.
-const TREND_TOPIC_JUDGE_WAITING_KEY = 'hanami:llm:topic-judge-waiting:v1';
-const TREND_TOPIC_JUDGE_WAITING_TTL_SEC = 10 * 60;
-const NOTE_JUDGE_TIMEOUT_MS = 35 * 60 * 1000;
+/** 話題の判定は「いまの話題」1 回分を 1 項目として順番待ちに入れる。前の回がまだ待っていれば新しい回は入れない（古い回が終われば次の生成でまた入る） */
+const TREND_TOPIC_JUDGE_QUEUE_ITEM_ID = 'current';
+const batchLogger = new Logger('hanami-foryou-batch');
 /**
  * 判定の結果を入れる文。判定（LLM）には分単位かかり、その間に消された投稿を VALUES でそのまま入れると
  * 外部キー違反でジョブ全体が失敗し、残りの結果も捨てられる。$1 の投稿が note に今あるときだけ入れる
@@ -103,15 +104,21 @@ export const HANAMI_NOTE_JUDGEMENT_UPSERT_SQL = noteJudgementUpsertSql('$2::varc
 /** 決まりで除外した投稿の記録。引数: noteId, model（rule:理由）, promptVersion, interestDist */
 export const HANAMI_NOTE_JUDGEMENT_RULE_UPSERT_SQL = noteJudgementUpsertSql('$2::varchar,$3::integer,999,1,$4::real[],0');
 const NOTE_JUDGE_WINDOW_MS = 72 * 60 * 60 * 1000;
-export const HANAMI_NOTE_JUDGE_LOCK_DELAY_MS = 60_000;
 
-/** Queue processors move this to delayed without consuming a Bull attempt. */
-export class HanamiNoteJudgeLockContentionError extends Error {
-	public constructor() {
-		super('Hanami local LLM is busy with taste processing');
-		this.name = 'HanamiNoteJudgeLockContentionError';
-	}
-}
+/** 常駐の判定係が返す、投稿 1 件の判定（HanamiNoteJudgeCpu.py の judge_one の戻り値） */
+export type HanamiNoteJudgeGpuOutput = { noteId: string; ephemeralScore: number; interest: number; interestDist: number[]; contentType: number };
+/** 順番待ちに入れる、投稿 1 件の判定の依頼 */
+export type HanamiNoteJudgeGpuPayload = { noteId: string; promptVersion: number; cleanedText: string; hasFiles: boolean; settings: Pick<HanamiNoteJudgeSettings, 'basis' | 'examples'> };
+/** 常駐の判定係が返す、話題の判定 1 回分（HanamiTrendTopicJudge.py の judge_topic_job の結果） */
+export type HanamiTrendTopicJudgeGpuOutput = {
+	status: string;
+	error?: string;
+	titles?: { topicId: string; title: string }[];
+	judgements: ({ kind: 'daily'; topicId: string; probability: number } | { kind: 'same'; a: string; b: string; probability: number })[];
+};
+/** 順番待ちに入れる、話題の判定 1 回分の依頼 */
+export type HanamiTrendTopicJudgeGpuPayload = { job: Required<HanamiTrendTopicJudgeJobData>; jobId?: string };
+type TrendTopicJudgeStats = Pick<HanamiTrendTopicJudgeResult, 'outcome' | 'requested' | 'saved' | 'rejectedTitles' | 'error'> & { diagnosticError?: unknown };
 
 export type HanamiNoteJudgeJobData = Readonly<{ noteIds: readonly string[]; promptVersion: number }>;
 
@@ -175,7 +182,7 @@ type AlsOutput = {
  * 各ステップは独立 guard。1つ失敗しても他は走る。serve は status='ready' の最新 run だけを読む。
  */
 @Injectable()
-export class HanamiForYouBatchService {
+export class HanamiForYouBatchService implements OnModuleInit {
 	private interactionRollupReady = false;
 
 	constructor(
@@ -190,7 +197,24 @@ export class HanamiForYouBatchService {
 
 		private idService: IdService,
 		private featuredService: FeaturedService,
+
+		@Optional()
+		private hanamiGpuQueueService?: HanamiGpuQueueService,
+
+		@Optional()
+		private hanamiGpuDispatcherService?: HanamiGpuDispatcherService,
 	) {
+	}
+
+	/** 配り役に受け取り係を登録する（投稿の判定と、話題の判定）。判定そのものは常駐の判定係が行う */
+	@bindThis
+	public onModuleInit(): void {
+		this.hanamiGpuDispatcherService?.registerHandler<HanamiNoteJudgeGpuOutput>('noteJudge', async (items, results, errors, durationMs) => {
+			await this.handleNoteJudged(items, results, errors, durationMs);
+		});
+		this.hanamiGpuDispatcherService?.registerHandler<HanamiTrendTopicJudgeGpuOutput>('topicJudge', async (items, results, errors, durationMs) => {
+			await this.handleTrendTopicJudged(items, results, errors, durationMs);
+		});
 	}
 
 	// ───────────────────────── エントリポイント ─────────────────────────
@@ -673,10 +697,10 @@ export class HanamiForYouBatchService {
 	// ───────────────────────── model_run ヘルパ ─────────────────────────
 
 	@bindThis
-	public async createRun(kind: string, params: Record<string, unknown>): Promise<string> {
+	public async createRun(kind: string, params: Record<string, unknown>, startedAt: Date = new Date()): Promise<string> {
 		const id = this.idService.gen();
 		// params は jsonb。TypeORM の QueryDeepPartialEntity が jsonb object を deep-partial 展開して誤判定するため局所 cast。
-		await this.hanamiForYouModelRunsRepository.insert({ id, kind, params: params as never, status: 'pending', startedAt: new Date(), finishedAt: null });
+		await this.hanamiForYouModelRunsRepository.insert({ id, kind, params: params as never, status: 'pending', startedAt, finishedAt: null });
 		return id;
 	}
 
@@ -735,15 +759,12 @@ export class HanamiForYouBatchService {
 		await this.db.query(`DELETE FROM "hanami_trend_topic_note" WHERE "addedAt" < $1::timestamptz`, [cutoff]);
 	}
 
-	private noteJudgePythonEnv(): NodeJS.ProcessEnv {
-		const configured = Number(process.env.HANAMI_LLM_MAX_THREADS);
-		const maximum = Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : Math.max(1, Math.floor(cpus().length / 2));
-		return { ...process.env, ...HANAMI_PYTHON_THREAD_ENV, HANAMI_LLM_MAX_THREADS: String(maximum) };
-	}
-
-	/** Serializes every local Python model invocation with taste and note judging. */
+	/**
+	 * 重い CPU の処理（おすすめの計算・好みの学習）どうしを 1 つずつにする。
+	 * GPU の鍵は使わない: 常駐の判定係が持ち続けているので、同じ鍵だと判定係を降ろさせることになる。
+	 */
 	private async withLocalLlmLock<T>(kind: HanamiGpuJob, operation: () => Promise<T>): Promise<T> {
-		const token = await acquireHanamiLocalLlmLock(this.redisClient, kind);
+		const token = await acquireHanamiLocalLlmLock(this.redisClient, kind, { keys: [HANAMI_LOCAL_CPU_LOCK_KEY] });
 		if (token == null) throw new Error('Hanami local LLM is busy with taste processing');
 		try {
 			return await operation();
@@ -922,234 +943,237 @@ export class HanamiForYouBatchService {
 		})) };
 	}
 
-	/** While the shared local-LLM lock is busy this throws contention (the processor retries) and asks note judges to step aside. */
+	/**
+	 * 話題の判定 1 回分を、常駐の判定係の順番待ちに入れる。ここではモデルを動かさない
+	 * （以前はジョブごとに Python を起動してモデルを読み込み直していた）。結果の保存は handleTrendTopicJudged が行う。
+	 */
 	@bindThis
 	public async runTrendTopicJudgeJob(data: HanamiTrendTopicJudgeJobData, logger: Logger, jobId?: string): Promise<void> {
 		const startedAt = Date.now();
-		const result = { outcome: 'failed' as HanamiTrendTopicJudgeResult['outcome'],
+		const result: TrendTopicJudgeStats = { outcome: 'failed',
 			requested: { daily: data.dailyIds.length, pairs: data.pairs.length, titles: data.titles?.length ?? 0 },
-			saved: { daily: 0, same: 0, titles: 0 }, rejectedTitles: 0, error: undefined as string | undefined, diagnosticError: undefined as unknown };
+			saved: { daily: 0, same: 0, titles: 0 }, rejectedTitles: 0, error: undefined, diagnosticError: undefined };
 		try {
-			await this.executeTrendTopicJudgeJob(data, logger, result, jobId);
+			await this.enqueueTrendTopicJudgeJob(data, result, jobId);
 		} catch (error) {
-			if (error instanceof HanamiNoteJudgeLockContentionError) throw error;
-			result.outcome = Object.values(result.saved).some(count => count > 0) ? 'partial' : 'failed';
+			result.outcome = 'failed';
 			result.error = String(error);
 			logger.warn('hanami trend topic judge failed', { error: result.error });
 			result.diagnosticError ??= error;
 		}
 		const { outcome, diagnosticError, ...details } = result;
 		await this.recordTrendTopicJudgeResult(data, outcome, details);
-		await this.recordLlmEvent({ job: 'topicJudge', event: outcome === 'noGpu' ? 'noGpu' : outcome === 'nothingToDo' ? 'empty' : outcome === 'failed' ? 'failed' : 'finished', jobId, durationMs: Date.now() - startedAt,
-			counts: { requestedDaily: details.requested.daily, requestedPairs: details.requested.pairs, requestedTitles: details.requested.titles, savedDaily: details.saved.daily, savedSame: details.saved.same, savedTitles: details.saved.titles, rejectedTitles: details.rejectedTitles }, error: diagnosticError ?? details.error });
+		await this.recordLlmEvent({ job: 'topicJudge', event: outcome === 'noGpu' ? 'noGpu' : outcome === 'nothingToDo' ? 'empty' : outcome === 'failed' ? 'failed' : 'dispatched', jobId, durationMs: Date.now() - startedAt,
+			counts: { requestedDaily: details.requested.daily, requestedPairs: details.requested.pairs, requestedTitles: details.requested.titles }, error: diagnosticError ?? details.error });
 	}
 
-	private async executeTrendTopicJudgeJob(data: HanamiTrendTopicJudgeJobData, logger: Logger,
-		stats: Pick<HanamiTrendTopicJudgeResult, 'outcome' | 'requested' | 'saved' | 'rejectedTitles' | 'error'> & { diagnosticError?: unknown }, jobId?: string): Promise<void> {
+	private async enqueueTrendTopicJudgeJob(data: HanamiTrendTopicJudgeJobData, stats: TrendTopicJudgeStats, jobId?: string): Promise<void> {
 		const runtime = peekHanamiNoteJudgeRuntime() ?? await probeHanamiNoteJudgeRuntime();
 		if (!runtime.available || runtime.device !== 'cuda') { stats.outcome = 'noGpu'; return; }
-		const token = await acquireHanamiLocalLlmLock(this.redisClient, 'topicJudge', { jobId });
-		if (token == null) {
-			await this.redisClient.set(TREND_TOPIC_JUDGE_WAITING_KEY, '1', 'EX', TREND_TOPIC_JUDGE_WAITING_TTL_SEC);
-			throw new HanamiNoteJudgeLockContentionError();
-		}
-		let dir: string | null = null;
-		try {
-			await this.redisClient.del(TREND_TOPIC_JUDGE_WAITING_KEY);
-			const daily = data.dailyIds.length === 0 ? [] : await this.redisClient.mget(...data.dailyIds.map(id => trendDailyKey(id)));
-			const dailyIds = data.dailyIds.filter((_, i) => daily[i] == null);
-			const same = data.pairs.length === 0 ? [] : await this.redisClient.mget(...data.pairs.map(pair => trendSameKey(pair.a, pair.b)));
-			const pairs = data.pairs.filter((_, i) => same[i] == null);
-			const cachedTitles = data.titles?.length ? await this.redisClient.mget(...data.titles.map(topic => trendTitleKey(topic.topicId))) : [];
-			const titles = (data.titles ?? []).filter((topic, i) => trendTitleNeedsRename(readTrendTitle(cachedTitles[i]), topic.noteIds));
-			stats.requested = { daily: dailyIds.length, pairs: pairs.length, titles: titles.length };
-			if (dailyIds.length === 0 && pairs.length === 0 && titles.length === 0) { stats.outcome = 'nothingToDo'; return; }
-			await this.recordLlmEvent({ job: 'topicJudge', event: 'started', jobId, counts: { daily: dailyIds.length, pairs: pairs.length, titles: titles.length } });
-			dir = await mkdtemp(Path.join(tmpdir(), 'hanami-trend-topic-judge-'));
-			const inputPath = Path.join(dir, 'input.json');
-			const outputPath = Path.join(dir, 'output.json');
-			await writeFile(inputPath, JSON.stringify({ topics: data.topics, dailyIds, pairs, titles }));
-			const command = prepareHanamiPythonCommand([resolveHanamiTrendTopicJudgeScript(), inputPath, outputPath], { env: this.noteJudgePythonEnv() });
-			let failure: unknown;
+		// 生成のあとで既に判定が付いたものは頼まない
+		const daily = data.dailyIds.length === 0 ? [] : await this.redisClient.mget(...data.dailyIds.map(id => trendDailyKey(id)));
+		const dailyIds = data.dailyIds.filter((_, i) => daily[i] == null);
+		const same = data.pairs.length === 0 ? [] : await this.redisClient.mget(...data.pairs.map(pair => trendSameKey(pair.a, pair.b)));
+		const pairs = data.pairs.filter((_, i) => same[i] == null);
+		const cachedTitles = data.titles?.length ? await this.redisClient.mget(...data.titles.map(topic => trendTitleKey(topic.topicId))) : [];
+		const titles = (data.titles ?? []).filter((topic, i) => trendTitleNeedsRename(readTrendTitle(cachedTitles[i]), topic.noteIds));
+		stats.requested = { daily: dailyIds.length, pairs: pairs.length, titles: titles.length };
+		if (dailyIds.length === 0 && pairs.length === 0 && titles.length === 0) { stats.outcome = 'nothingToDo'; return; }
+		if (this.hanamiGpuQueueService == null) throw new Error('Hanami GPU queue is unavailable');
+		const payload: HanamiTrendTopicJudgeGpuPayload = { job: { topics: data.topics, dailyIds, pairs, titles }, ...(jobId == null ? {} : { jobId }) };
+		// 前の回がまだ順番待ちにあれば入らない（false）。どちらでも「待っている」状態
+		await this.hanamiGpuQueueService.enqueue('topicJudge', TREND_TOPIC_JUDGE_QUEUE_ITEM_ID, payload);
+		stats.outcome = 'waiting';
+	}
+
+	/** 受け取り係: 常駐の判定係が返した話題の判定を保存する。保存の決まりは以前のジョブと同じ */
+	@bindThis
+	public async handleTrendTopicJudged(items: readonly HanamiGpuQueueTakenItem[], results: ReadonlyMap<string, HanamiTrendTopicJudgeGpuOutput>, errors: ReadonlyMap<string, string>, durationMs: number | null): Promise<void> {
+		for (const item of items) {
+			const payload = item.payload as Partial<HanamiTrendTopicJudgeGpuPayload> | null;
+			const job = payload?.job;
+			if (job == null || !Array.isArray(job.dailyIds) || !Array.isArray(job.pairs) || !Array.isArray(job.titles)) continue;
+			const stats: TrendTopicJudgeStats = { outcome: 'failed',
+				requested: { daily: job.dailyIds.length, pairs: job.pairs.length, titles: job.titles.length },
+				saved: { daily: 0, same: 0, titles: 0 }, rejectedTitles: 0, error: undefined, diagnosticError: undefined };
+			const output = results.get(item.itemId);
 			try {
-				await execFileAsync(command.file, command.args, { env: command.env, timeout: NOTE_JUDGE_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
+				if (output == null || !Array.isArray(output.judgements)) throw new Error(errors.get(item.itemId) ?? 'Hanami GPU worker returned no topic judgement');
+				await this.saveTrendTopicJudgeOutput(job, output, stats);
 			} catch (error) {
-				failure = error;
-				stats.diagnosticError = error;
+				stats.outcome = Object.values(stats.saved).some(count => count > 0) ? 'partial' : 'failed';
+				stats.error = String(error);
+				batchLogger.warn('hanami trend topic judge failed', { error: stats.error });
+				stats.diagnosticError ??= error;
 			}
-			const result = JSON.parse(await readFile(outputPath, 'utf8')) as {
-				status: string; error?: string; titles?: { topicId: string; title: string }[];
-				judgements: ({ kind: 'daily'; topicId: string; probability: number } | { kind: 'same'; a: string; b: string; probability: number })[];
-			};
-			for (const judgement of result.judgements) {
-				if (!Number.isFinite(judgement.probability) || judgement.probability < 0 || judgement.probability > 1) throw new Error('Invalid topic judge probability');
-				let key: string;
-				let verdict: boolean;
-				if (judgement.kind === 'daily' && dailyIds.includes(judgement.topicId)) {
-					key = trendDailyKey(judgement.topicId); verdict = judgement.probability >= 0.6;
-				} else if (judgement.kind === 'same' && pairs.some(pair => pair.a === judgement.a && pair.b === judgement.b)) {
-					key = trendSameKey(judgement.a, judgement.b); verdict = judgement.probability >= 0.7;
-				} else throw new Error('Unexpected topic judgement');
-				const pipe = this.redisClient.multi().set(key, verdict ? '1' : '0', 'EX', 6 * 60 * 60);
-				if (judgement.kind === 'same') {
-					if (verdict) {
-						pipe.sadd(trendSameSetKey(judgement.a), judgement.b).expire(trendSameSetKey(judgement.a), 6 * 60 * 60);
-						pipe.sadd(trendSameSetKey(judgement.b), judgement.a).expire(trendSameSetKey(judgement.b), 6 * 60 * 60);
-					} else {
-						pipe.srem(trendSameSetKey(judgement.a), judgement.b);
-						pipe.srem(trendSameSetKey(judgement.b), judgement.a);
-					}
-				}
-				const replies = await pipe.exec();
-				const writeError = replies?.find(([error]) => error != null)?.[0];
-				if (writeError != null) throw writeError;
-				if (replies == null) throw new Error('Topic judgement transaction aborted');
-				if (judgement.kind === 'daily') stats.saved.daily++;
-				else stats.saved.same++;
-				logger.info('hanami trend topic judgement', { ...judgement, verdict });
-			}
-			for (const title of result.titles ?? []) {
-				const requested = titles.find(topic => topic.topicId === title.topicId);
-				if (requested == null || typeof title.title !== 'string') {
-					stats.rejectedTitles++;
-					logger.warn('hanami trend topic judge: ignoring unexpected title', { topicId: title.topicId });
-					continue;
-				}
-				const valid = validateTrendTitle(title.title);
-				if (valid == null) {
-					stats.rejectedTitles++;
-					await this.redisClient.del(trendTitleKey(title.topicId));
-					continue;
-				}
-				await this.redisClient.set(trendTitleKey(title.topicId), JSON.stringify({ title: valid, noteIds: requested.noteIds.slice(0, 50) }), 'EX', 48 * 60 * 60);
-				stats.saved.titles++;
-			}
-			if (failure != null || result.status !== 'ok') logger.warn('hanami trend topic judge: partial/unavailable', { error: String(failure ?? result.error ?? result.status) });
-			const complete = stats.saved.daily === dailyIds.length && stats.saved.same === pairs.length && stats.saved.titles === titles.length;
-			stats.outcome = failure == null && result.status === 'ok' && complete && stats.rejectedTitles === 0 ? 'ok'
-				: Object.values(stats.saved).some(count => count > 0) ? 'partial' : 'failed';
-			if (failure != null || result.error != null || result.status !== 'ok') stats.error = String(failure ?? result.error ?? result.status);
-		} finally {
-			if (dir != null) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-			await token.release();
+			const { outcome, diagnosticError, ...details } = stats;
+			await this.recordTrendTopicJudgeResult(job, outcome, details);
+			await this.recordLlmEvent({ job: 'topicJudge', event: outcome === 'failed' ? 'failed' : 'finished', jobId: payload?.jobId, durationMs: durationMs ?? undefined,
+				counts: { requestedDaily: details.requested.daily, requestedPairs: details.requested.pairs, requestedTitles: details.requested.titles, savedDaily: details.saved.daily, savedSame: details.saved.same, savedTitles: details.saved.titles, rejectedTitles: details.rejectedTitles }, error: diagnosticError ?? details.error });
 		}
 	}
 
-	/** Executes one durable local-Qwen job; transient runtime failures are rethrown for Bull retry, while interrupted runs salvage judgements already flushed by the Python side. */
+	private async saveTrendTopicJudgeOutput(job: Required<HanamiTrendTopicJudgeJobData>, result: HanamiTrendTopicJudgeGpuOutput, stats: TrendTopicJudgeStats): Promise<void> {
+		const { dailyIds, pairs, titles } = job;
+		for (const judgement of result.judgements) {
+			if (!Number.isFinite(judgement.probability) || judgement.probability < 0 || judgement.probability > 1) throw new Error('Invalid topic judge probability');
+			let key: string;
+			let verdict: boolean;
+			if (judgement.kind === 'daily' && dailyIds.includes(judgement.topicId)) {
+				key = trendDailyKey(judgement.topicId); verdict = judgement.probability >= 0.6;
+			} else if (judgement.kind === 'same' && pairs.some(pair => pair.a === judgement.a && pair.b === judgement.b)) {
+				key = trendSameKey(judgement.a, judgement.b); verdict = judgement.probability >= 0.7;
+			} else throw new Error('Unexpected topic judgement');
+			const pipe = this.redisClient.multi().set(key, verdict ? '1' : '0', 'EX', 6 * 60 * 60);
+			if (judgement.kind === 'same') {
+				if (verdict) {
+					pipe.sadd(trendSameSetKey(judgement.a), judgement.b).expire(trendSameSetKey(judgement.a), 6 * 60 * 60);
+					pipe.sadd(trendSameSetKey(judgement.b), judgement.a).expire(trendSameSetKey(judgement.b), 6 * 60 * 60);
+				} else {
+					pipe.srem(trendSameSetKey(judgement.a), judgement.b);
+					pipe.srem(trendSameSetKey(judgement.b), judgement.a);
+				}
+			}
+			const replies = await pipe.exec();
+			const writeError = replies?.find(([error]) => error != null)?.[0];
+			if (writeError != null) throw writeError;
+			if (replies == null) throw new Error('Topic judgement transaction aborted');
+			if (judgement.kind === 'daily') stats.saved.daily++;
+			else stats.saved.same++;
+			batchLogger.info('hanami trend topic judgement', { ...judgement, verdict });
+		}
+		for (const title of result.titles ?? []) {
+			const requested = titles.find(topic => topic.topicId === title.topicId);
+			if (requested == null || typeof title.title !== 'string') {
+				stats.rejectedTitles++;
+				batchLogger.warn('hanami trend topic judge: ignoring unexpected title', { topicId: title.topicId });
+				continue;
+			}
+			const valid = validateTrendTitle(title.title);
+			if (valid == null) {
+				stats.rejectedTitles++;
+				await this.redisClient.del(trendTitleKey(title.topicId));
+				continue;
+			}
+			await this.redisClient.set(trendTitleKey(title.topicId), JSON.stringify({ title: valid, noteIds: requested.noteIds.slice(0, 50) }), 'EX', 48 * 60 * 60);
+			stats.saved.titles++;
+		}
+		if (result.status !== 'ok') batchLogger.warn('hanami trend topic judge: partial/unavailable', { error: String(result.error ?? result.status) });
+		const complete = stats.saved.daily === dailyIds.length && stats.saved.same === pairs.length && stats.saved.titles === titles.length;
+		stats.outcome = result.status === 'ok' && complete && stats.rejectedTitles === 0 ? 'ok'
+			: Object.values(stats.saved).some(count => count > 0) ? 'partial' : 'failed';
+		if (result.error != null || result.status !== 'ok') stats.error = String(result.error ?? result.status);
+	}
+
+	/**
+	 * 投稿の判定のジョブ。決まり（短文・定型など）で落とした残りを、1 投稿ずつ常駐の判定係の順番待ちに入れる。
+	 * ここではモデルを動かさない（以前はジョブごとに Python を起動してモデルを読み込み直していた）。
+	 * 結果の保存と実行の記録（hanami_foryou_model_run）は handleNoteJudged が行う。
+	 */
 	@bindThis
-	public async runNoteJudgeJob(data: HanamiNoteJudgeJobData, logger: Logger, jobId?: string): Promise<{ runId: string; status: 'ready' | 'failed'; processedCount: number }> {
-		let waiting = false;
+	public async runNoteJudgeJob(data: HanamiNoteJudgeJobData, logger: Logger, jobId?: string): Promise<{ runId: string | null; status: 'ready' | 'failed'; processedCount: number; queuedCount: number }> {
 		const startedAt = Date.now();
 		try {
-			const result = await this.executeNoteJudgeJob(data, logger, jobId);
-			await this.recordLlmEvent({ job: 'noteJudge', event: result.processedCount > 0 ? 'finished' : 'empty', jobId, durationMs: Date.now() - startedAt, counts: { requested: data.noteIds.length, saved: result.processedCount } });
-			return result;
+			return await this.enqueueNoteJudgeJob(data, logger, jobId);
 		} catch (error) {
-			waiting = error instanceof HanamiNoteJudgeLockContentionError;
-			if (!waiting) await this.recordLlmEvent({ job: 'noteJudge', event: 'failed', jobId, durationMs: Date.now() - startedAt, error });
+			await this.recordLlmEvent({ job: 'noteJudge', event: 'failed', jobId, durationMs: Date.now() - startedAt, error });
+			// 予約を外して、次の見回りでまた拾えるようにする
+			await this.clearQueuedNoteJudgeNotes(data.noteIds);
 			throw error;
-		} finally {
-			if (!waiting) await this.clearQueuedNoteJudgeNotes(data.noteIds);
 		}
 	}
 
-	private async executeNoteJudgeJob(data: HanamiNoteJudgeJobData, logger: Logger, jobId?: string): Promise<{ runId: string; status: 'ready' | 'failed'; processedCount: number }> {
+	private async enqueueNoteJudgeJob(data: HanamiNoteJudgeJobData, logger: Logger, jobId?: string): Promise<{ runId: string | null; status: 'ready' | 'failed'; processedCount: number; queuedCount: number }> {
 		if (data.noteIds.length === 0 || data.noteIds.length > HANAMI_NOTE_JUDGE_MAX_BATCH_SIZE) throw new RangeError(`Hanami note judge job must contain 1..${HANAMI_NOTE_JUDGE_MAX_BATCH_SIZE} notes`);
 		const startedAt = Date.now();
 		const startedCpu = process.cpuUsage();
 		const settings = await this.noteJudgeSettingsForVersion(data.promptVersion);
 		const runtime = await probeHanamiNoteJudgeRuntime();
 		if (!runtime.available) {
-			// 投入後に GPU が無くなった/無い環境に残っていたジョブ。モデルはロードせず記録だけ残す。
+			// 投入後に GPU が無くなった/無い環境に残っていたジョブ。順番待ちには入れず記録だけ残す。
 			logger.warn(`hanami note judge skipped: ${runtime.reason ?? 'runtime unavailable'}`);
 			await this.recordLlmEvent({ job: 'noteJudge', event: 'noGpu', jobId, error: runtime.reason ?? undefined });
 			const runId = await this.createRun('note-judge', { model: HANAMI_NOTE_JUDGE_MODEL, promptVersion: data.promptVersion, requestedCount: data.noteIds.length });
 			await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, processedCount: 0, skippedReason: runtime.reason, backlog: data.noteIds.length }));
-			return { runId, status: 'ready', processedCount: 0 };
+			await this.clearQueuedNoteJudgeNotes(data.noteIds);
+			return { runId, status: 'ready', processedCount: 0, queuedCount: 0 };
 		}
-		if (await this.redisClient.get(TREND_TOPIC_JUDGE_WAITING_KEY) != null) {
-			await this.recordLlmEvent({ job: 'noteJudge', event: 'lockBusy', jobId, error: 'Giving priority to the waiting topic judge', throttleMs: HANAMI_LLM_EVENT_THROTTLE_MS });
-			throw new HanamiNoteJudgeLockContentionError();
+		// 履歴に無い版のジョブは何もしない。履歴にある古い版のジョブは、そのときの設定で判定する。
+		if (settings == null) {
+			await this.clearQueuedNoteJudgeNotes(data.noteIds);
+			return { runId: null, status: 'ready', processedCount: 0, queuedCount: 0 };
 		}
-		const lockToken = await acquireHanamiLocalLlmLock(this.redisClient, 'noteJudge', { jobId });
-		if (lockToken == null) throw new HanamiNoteJudgeLockContentionError();
-		let runId: string | null = null;
-		let tmpDir: string | null = null;
+		if (this.hanamiGpuQueueService == null) throw new Error('Hanami GPU queue is unavailable');
+		const rows = await this.db.query(`SELECT n.id, COALESCE(n.text, '') AS text, n."fileIds" <> '{}' AS "hasFiles", u."isBot" AS "isBot", (n."replyId" IS NOT NULL) AS "isReply" FROM note n JOIN "user" u ON u.id = n."userId" LEFT JOIN "hanami_note_judgement" j ON j."noteId" = n.id AND j."promptVersion" = $2 WHERE n.id = ANY($1::varchar[]) AND j."noteId" IS NULL`, [data.noteIds, data.promptVersion]) as Array<{ id: string; text: string; hasFiles: boolean; isBot: boolean; isReply: boolean }>;
+		const handedOff = new Set<string>();
+		let queuedCount = 0;
+		for (const row of rows) {
+			const rule = applyHanamiNoteJudgeRules({ text: row.text, isBot: row.isBot, isReply: row.isReply, templatePatterns: settings.templatePatterns });
+			if (!rule.shouldJudge) continue;
+			const payload: HanamiNoteJudgeGpuPayload = { noteId: row.id, promptVersion: data.promptVersion, cleanedText: rule.cleanedText, hasFiles: row.hasFiles, settings: { basis: settings.basis, examples: settings.examples } };
+			// 同じ投稿が既に順番待ちにあれば入らない（false）。どちらでも、結果が出るまで予約は残す
+			if (await this.hanamiGpuQueueService.enqueue('noteJudge', `${data.promptVersion}:${row.id}`, payload)) queuedCount++;
+			handedOff.add(row.id);
+		}
+		// 判定に回さなかった投稿（判定済み・決まりで除外・消された）の予約はここで外す。回した分は受け取り係が外す。
+		await this.clearQueuedNoteJudgeNotes(data.noteIds.filter(noteId => !handedOff.has(noteId)));
+		await this.recordLlmEvent({ job: 'noteJudge', event: queuedCount > 0 ? 'dispatched' : 'empty', jobId, durationMs: Date.now() - startedAt, counts: { requested: data.noteIds.length, queued: queuedCount } });
+		return { runId: null, status: 'ready', processedCount: 0, queuedCount };
+	}
+
+	/**
+	 * 受け取り係: 常駐の判定係が返した投稿の判定を保存し、1 回分を実行の記録（note-judge の run）として残す。
+	 * 判定係が失敗を返した投稿は保存せず予約だけ外す（次の見回りでまた順番待ちに入る）。
+	 */
+	@bindThis
+	public async handleNoteJudged(items: readonly HanamiGpuQueueTakenItem[], results: ReadonlyMap<string, HanamiNoteJudgeGpuOutput>, errors: ReadonlyMap<string, string>, durationMs: number | null): Promise<void> {
+		if (items.length === 0) return;
+		const startedCpu = process.cpuUsage();
+		const receivedAt = Date.now();
+		const startedAt = receivedAt - (durationMs ?? 0);
+		const payloads = items.flatMap(item => {
+			const payload = item.payload as Partial<HanamiNoteJudgeGpuPayload> | null;
+			return payload != null && typeof payload.noteId === 'string' && Number.isSafeInteger(payload.promptVersion)
+				? [{ itemId: item.itemId, noteId: payload.noteId, promptVersion: payload.promptVersion as number }] : [];
+		});
+		const runtime = peekHanamiNoteJudgeRuntime();
+		// 保存の途中でプロセスが止まると「実行中」のまま残る。10 分以上前のものは中断として閉じる。
+		const interrupted = hanamiReturningRows(await this.db.query(`UPDATE "hanami_foryou_model_run"
+			SET status = 'failed', "finishedAt" = $1, params = COALESCE(params, '{}'::jsonb) || '{"interrupted":true}'::jsonb
+			WHERE kind = 'note-judge' AND status = 'pending' AND "startedAt" < $2 RETURNING id`,
+		[new Date(receivedAt), new Date(receivedAt - 10 * 60 * 1000)]) as Array<{ id: string }> | [Array<{ id: string }>, number]);
+		if (interrupted.length > 0) await this.recordLlmEvent({ job: 'noteJudge', event: 'interrupted', counts: { runs: interrupted.length } });
+		// 開始時刻は判定係が判定を始めた時刻にする（指標の「判定 1 回の時間」は開始〜終了で出しているため）。
+		const runId = await this.createRun('note-judge', { model: HANAMI_NOTE_JUDGE_MODEL, promptVersion: payloads[0]?.promptVersion ?? null, requestedCount: items.length }, new Date(startedAt));
+		let saved = 0;
 		try {
-			const acquiredAt = Date.now();
-			await this.recordLlmEvent({ job: 'noteJudge', event: 'started', jobId, counts: { requested: data.noteIds.length } });
-			const interrupted = hanamiReturningRows(await this.db.query(`UPDATE "hanami_foryou_model_run"
-				SET status = 'failed', "finishedAt" = $1, params = COALESCE(params, '{}'::jsonb) || '{"interrupted":true}'::jsonb
-				WHERE kind = 'note-judge' AND status = 'pending' AND "startedAt" < $2 RETURNING id`,
-			[new Date(acquiredAt), new Date(acquiredAt - 10 * 60 * 1000)]) as Array<{ id: string }> | [Array<{ id: string }>, number]);
-			const interruptedCount = interrupted.length;
-			if (interruptedCount > 0) await this.recordLlmEvent({ job: 'noteJudge', event: 'interrupted', jobId, counts: { runs: interruptedCount } });
-			runId = await this.createRun('note-judge', { model: HANAMI_NOTE_JUDGE_MODEL, promptVersion: data.promptVersion, requestedCount: data.noteIds.length });
-			// Pre-history jobs are harmless stale no-ops. History-backed older jobs run
-			// with their own immutable snapshot rather than the current Meta setting.
-			if (settings == null) {
-				await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, processedCount: 0, stalePromptVersion: true }));
-				return { runId, status: 'ready', processedCount: 0 };
+			for (const payload of payloads) {
+				const judgement = results.get(payload.itemId);
+				if (judgement == null || !Number.isFinite(judgement.ephemeralScore) || !Number.isFinite(judgement.interest)
+					|| !Array.isArray(judgement.interestDist) || judgement.interestDist.length !== 5 || !judgement.interestDist.every(value => Number.isFinite(value))
+					|| !Number.isInteger(judgement.contentType)) continue;
+				await this.db.query(HANAMI_NOTE_JUDGEMENT_UPSERT_SQL, [payload.noteId, HANAMI_NOTE_JUDGE_MODEL, payload.promptVersion, judgement.ephemeralScore, judgement.interest, judgement.interestDist, judgement.contentType]);
+				saved++;
 			}
-			const rows = await this.db.query(`SELECT n.id, COALESCE(n.text, '') AS text, n."fileIds" <> '{}' AS "hasFiles", u."isBot" AS "isBot", (n."replyId" IS NOT NULL) AS "isReply" FROM note n JOIN "user" u ON u.id = n."userId" LEFT JOIN "hanami_note_judgement" j ON j."noteId" = n.id AND j."promptVersion" = $2 WHERE n.id = ANY($1::varchar[]) AND j."noteId" IS NULL`, [data.noteIds, data.promptVersion]) as Array<{ id: string; text: string; hasFiles: boolean; isBot: boolean; isReply: boolean }>;
-			const notes = rows.flatMap(row => {
-				const rule = applyHanamiNoteJudgeRules({ text: row.text, isBot: row.isBot, isReply: row.isReply, templatePatterns: settings.templatePatterns });
-				return rule.shouldJudge ? [{ noteId: row.id, cleanedText: rule.cleanedText, hasFiles: row.hasFiles }] : [];
-			});
-			if (notes.length === 0) {
-				await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, processedCount: 0, backlog: 0 }));
-				return { runId, status: 'ready', processedCount: 0 };
-			}
-			tmpDir = await mkdtemp(Path.join(tmpdir(), 'hanami-note-judge-'));
-			const inputPath = Path.join(tmpDir, 'input.json');
-			const outputPath = Path.join(tmpDir, 'output.json');
-			await writeFile(inputPath, JSON.stringify({ settings, notes }), 'utf8');
-			const command = prepareHanamiPythonCommand([resolveHanamiNoteJudgeScript(), inputPath, outputPath], { env: this.noteJudgePythonEnv() });
-			const judgeEnv = this.noteJudgePythonEnv();
-			type JudgeOutput = { status?: string; error?: string; promptVersion?: number; runtime?: { device?: string; dtype?: string; deviceName?: string }; judgements?: Array<{ noteId: string; ephemeralScore: number; interest: number; interestDist: number[]; contentType: number }> };
-			let output: JudgeOutput;
-			let salvaged = false;
-			try {
-				await execFileAsync(command.file, command.args, { env: { ...command.env, OMP_NUM_THREADS: judgeEnv.HANAMI_LLM_MAX_THREADS, MKL_NUM_THREADS: judgeEnv.HANAMI_LLM_MAX_THREADS, OPENBLAS_NUM_THREADS: judgeEnv.HANAMI_LLM_MAX_THREADS, NUMEXPR_NUM_THREADS: judgeEnv.HANAMI_LLM_MAX_THREADS }, timeout: NOTE_JUDGE_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
-				output = JSON.parse(await readFile(outputPath, 'utf8')) as JudgeOutput;
-			} catch (error) {
-				// タイムアウト kill / クラッシュでも、Python 側が1件ごとに書き出した部分結果は救済する。
-				// 残りのノートは未判定のまま残り、reconcile が後続ジョブとして再投入する。
-				const recovered = await readFile(outputPath, 'utf8')
-					.then(text => JSON.parse(text) as JudgeOutput)
-					.catch(() => null);
-				if (recovered == null || recovered.promptVersion !== data.promptVersion || !Array.isArray(recovered.judgements) || recovered.judgements.length === 0) throw error;
-				output = recovered;
-				salvaged = true;
-				await this.recordLlmEvent({ job: 'noteJudge', event: 'failed', jobId, error });
-			}
-			if (output.status === 'unavailable') throw new Error(`Hanami note judge unavailable: ${output.error ?? 'unknown error'}`);
-			if (output.status !== 'ok' && output.status !== 'partial') throw new Error(`Hanami note judge returned invalid status: ${String(output.status)}`);
-			if (output.promptVersion !== data.promptVersion) throw new Error('Hanami note judge returned a mismatched promptVersion');
-			const judgements = output.judgements ?? [];
-			const accepted = new Set<string>();
-			for (const judgement of judgements) {
-				if (!data.noteIds.includes(judgement.noteId) || !Number.isFinite(judgement.ephemeralScore) || !Number.isFinite(judgement.interest) || judgement.interestDist.length !== 5 || !Number.isInteger(judgement.contentType)) continue;
-				accepted.add(judgement.noteId);
-				await this.db.query(HANAMI_NOTE_JUDGEMENT_UPSERT_SQL, [judgement.noteId, HANAMI_NOTE_JUDGE_MODEL, data.promptVersion, judgement.ephemeralScore, judgement.interest, judgement.interestDist, judgement.contentType]);
-			}
-			if (salvaged) {
-				logger.warn(`hanami note judge: runtime interrupted; salvaged ${accepted.size}/${notes.length} judgements, remainder will be re-enqueued`);
-				await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, runtime: output.runtime ?? null, processedCount: accepted.size, secondsPerItem: accepted.size === 0 ? null : (Date.now() - startedAt) / 1000 / accepted.size, backlog: Math.max(0, notes.length - accepted.size), salvagedPartial: true }));
-				return { runId, status: 'ready', processedCount: accepted.size };
-			}
-			if (output.status === 'partial' || accepted.size !== notes.length) throw new Error(`Hanami note judge returned ${accepted.size}/${notes.length} judgements; pending notes will retry`);
-			await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, runtime: output.runtime ?? null, processedCount: judgements.length, secondsPerItem: judgements.length === 0 ? null : (Date.now() - startedAt) / 1000 / judgements.length, backlog: Math.max(0, notes.length - judgements.length) }));
-			return { runId, status: 'ready', processedCount: accepted.size };
+			const firstError = [...errors.values()][0];
+			await this.markRun(runId, 'ready', this.runMetrics(startedAt, startedCpu, {
+				model: HANAMI_NOTE_JUDGE_MODEL,
+				runtime: runtime == null ? null : { device: runtime.device, deviceName: runtime.deviceName },
+				processedCount: saved,
+				secondsPerItem: saved === 0 || durationMs == null ? null : durationMs / 1000 / saved,
+				backlog: await this.hanamiGpuQueueService?.length('noteJudge').catch(() => null) ?? null,
+				residentWorker: true,
+				...(firstError == null ? {} : { itemErrors: errors.size, firstItemError: firstError.slice(0, 300) }),
+			}));
+			await this.recordLlmEvent({ job: 'noteJudge', event: saved > 0 ? 'finished' : 'empty', durationMs: durationMs ?? undefined, counts: { requested: items.length, saved } });
 		} catch (error) {
-			logger.warn(`hanami note judge unavailable/failed: ${(error as Error).message}`);
-			if (runId != null) {
-				await this.markRun(runId, 'failed', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, processedCount: 0, secondsPerItem: null, failure: (error as Error).message })).catch(() => undefined);
-			}
+			batchLogger.warn(`hanami note judge could not be saved: ${(error as Error).message}`);
+			await this.markRun(runId, 'failed', this.runMetrics(startedAt, startedCpu, { model: HANAMI_NOTE_JUDGE_MODEL, processedCount: saved, secondsPerItem: null, failure: (error as Error).message })).catch(() => undefined);
+			await this.recordLlmEvent({ job: 'noteJudge', event: 'failed', durationMs: durationMs ?? undefined, error });
+			// 配り役がこの回の項目を順番待ちに戻す
 			throw error;
 		} finally {
-			await lockToken.release();
-			if (tmpDir != null) await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+			await this.clearQueuedNoteJudgeNotes(payloads.map(payload => payload.noteId)).catch(() => undefined);
 		}
 	}
 

@@ -12979,7 +12979,7 @@ export interface operations {
                         }[];
                         kinds: {
                             /** @enum {string} */
-                            kind: 'judgeTrial' | 'spamJudge' | 'spamScan';
+                            kind: 'judgeTrial' | 'spamJudge' | 'topicJudge' | 'noteJudge' | 'spamScan';
                             base: number;
                             maxBatch: number;
                             deadlineSec: number | null;
@@ -12996,7 +12996,7 @@ export interface operations {
                         }[];
                         next: {
                             /** @enum {string} */
-                            kind: 'judgeTrial' | 'spamJudge' | 'spamScan';
+                            kind: 'judgeTrial' | 'spamJudge' | 'topicJudge' | 'noteJudge' | 'spamScan';
                             itemId: string;
                             waitSec: number;
                             base: number;
@@ -13133,7 +13133,7 @@ export interface operations {
                             /** @description Remaining Redis lock TTL in milliseconds; null if absent or without expiry. */
                             expiresInMs: number | null;
                         };
-                        /** @description Whether the Redis topic-judge-waiting marker asks note judges to yield. */
+                        /** @description Whether a topic judge request is waiting in (or being processed from) the resident GPU worker queue. */
                         topicJudgeWaiting: boolean;
                         /** @description hanamiGeneration jobs read from the same BullMQ getJobs source as admin/queue/jobs. */
                         queue: {
