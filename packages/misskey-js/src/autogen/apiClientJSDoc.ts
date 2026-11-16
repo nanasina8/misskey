@@ -811,6 +811,17 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
+     * Estimate what a new or changed Hanami timeline axis could draw on, from data the timeline metrics do not cover: what local users react to anywhere on the server, and how many candidates each axis idea would collect per user. Returns counts and distributions only (no user or note ids). Every section is read-only with a 20 second statement timeout; a failed section is null and named in errors. All timestamps are UTC ISO 8601.
+     * 
+     * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+     */
+    request<E extends 'admin/hanami/axis-outlook', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
      * Inspect whether the Hanami feed stock is working, where it is made to wait, and whether its invariants hold, without reading logs or the database directly. All timestamps are UTC ISO 8601.
      * 
      * **Credential required**: *Yes* / **Permission**: *read:admin:queue*

@@ -49,6 +49,8 @@ const calls: Call[] = [
 
 	// はなみの管理 API
 	{ endpoint: 'admin/hanami/feed-status', params: {}, adminOnly: true },
+	{ endpoint: 'admin/hanami/axis-outlook', params: {}, adminOnly: true },
+	{ endpoint: 'admin/hanami/axis-outlook', params: { days: 30, poolHours: 168, maxUsers: 200 }, adminOnly: true },
 	{ endpoint: 'admin/hanami/jobs-status', params: {}, adminOnly: true },
 	{ endpoint: 'admin/hanami/jobs-status', params: { eventsLimit: 300 }, adminOnly: true },
 	{ endpoint: 'admin/hanami/judge-status', params: {}, adminOnly: true },

@@ -665,6 +665,15 @@ export type paths = {
          */
         post: operations['admin___get-user-ips'];
     };
+    '/admin/hanami/axis-outlook': {
+        /**
+         * admin/hanami/axis-outlook
+         * @description Estimate what a new or changed Hanami timeline axis could draw on, from data the timeline metrics do not cover: what local users react to anywhere on the server, and how many candidates each axis idea would collect per user. Returns counts and distributions only (no user or note ids). Every section is read-only with a 20 second statement timeout; a failed section is null and named in errors. All timestamps are UTC ISO 8601.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['admin___hanami___axis-outlook'];
+    };
     '/admin/hanami/feed-status': {
         /**
          * admin/hanami/feed-status
@@ -11981,6 +11990,388 @@ export interface operations {
                         /** Format: date-time */
                         createdAt: string;
                     }[];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___hanami___axis-outlook': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /**
+                     * @description Reaction window in days.
+                     * @default 14
+                     */
+                    days?: number;
+                    /**
+                     * @description Candidate-pool window in hours.
+                     * @default 48
+                     */
+                    poolHours?: number;
+                    /**
+                     * @description How many recently active users to measure candidate pools for.
+                     * @default 50
+                     */
+                    maxUsers?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        /** @description Measured windows. */
+                        range: {
+                            /**
+                             * Format: date-time
+                             * @description Start of the reaction window.
+                             */
+                            from: string;
+                            /**
+                             * Format: date-time
+                             * @description End of both windows (now).
+                             */
+                            to: string;
+                            /** @description Length of the reaction window in days. */
+                            days: number;
+                            /**
+                             * Format: date-time
+                             * @description Start of the candidate-pool window.
+                             */
+                            poolFrom: string;
+                            /** @description Length of the candidate-pool window in hours. */
+                            poolHours: number;
+                        };
+                        /** @description Who could be served by axes that need followees, ALS neighbors or relation scores. "active" = local, not suspended or deleted, lastActiveDate inside the reaction window. "hanami" = had a Hanami timeline page served inside the reaction window. */
+                        population: {
+                            /** @description Active local users. */
+                            activeLocalUsers: number;
+                            /** @description Active local users following 5 or more accounts. */
+                            activeWithFollowees5: number;
+                            /** @description Active local users with neighbors in the latest ready ALS run (what neighborTrending needs). */
+                            activeWithAlsNeighbors: number;
+                            /** @description Active local users with at least one relation-score row. */
+                            activeWithRelation: number;
+                            /** @description Users served by the Hanami timeline. */
+                            hanamiUsers: number;
+                            /** @description Hanami users following 5 or more accounts. */
+                            hanamiWithFollowees5: number;
+                            /** @description Hanami users with neighbors in the latest ready ALS run. */
+                            hanamiWithAlsNeighbors: number;
+                            /** @description Hanami users with at least one relation-score row. */
+                            hanamiWithRelation: number;
+                        } | null;
+                        /** @description Reactions local users gave to other people's notes inside the reaction window, on any surface (not only the Hanami timeline). */
+                        reactions: {
+                            /** @description Reactions counted (newest first, capped at 50000). */
+                            total: number;
+                            /** @description True when more than 50000 reactions exist in the window and the oldest were left out. */
+                            truncated: boolean;
+                            /** @description Distinct reacting users. */
+                            users: number;
+                            /** @description Share of the counted reactions given by the single most active user; null when total is 0. */
+                            largestUserShare: number | null;
+                            /** @description Reactions to a note whose author the reacting user follows. */
+                            toFollowee: number;
+                            /** @description Reactions to a note by a local author. */
+                            toLocalAuthor: number;
+                            /** @description Reactions to a note that is a reply. */
+                            onReply: number;
+                            /** @description Reactions to a note with attached files. */
+                            withFiles: number;
+                            /** @description All counted reactions. Bucketed by (reaction time - note time). */
+                            age: {
+                                /** @description Less than 1 hour. */
+                                under1h: number;
+                                /** @description 1 hour to less than 6 hours. */
+                                h1to6: number;
+                                /** @description 6 hours to less than 24 hours. */
+                                h6to24: number;
+                                /** @description 1 day to less than 3 days. */
+                                d1to3: number;
+                                /** @description 3 days or more. */
+                                over3d: number;
+                            };
+                            /** @description Reactions to followees' notes. Bucketed by (reaction time - note time). */
+                            followeeAge: {
+                                /** @description Less than 1 hour. */
+                                under1h: number;
+                                /** @description 1 hour to less than 6 hours. */
+                                h1to6: number;
+                                /** @description 6 hours to less than 24 hours. */
+                                h6to24: number;
+                                /** @description 1 day to less than 3 days. */
+                                d1to3: number;
+                                /** @description 3 days or more. */
+                                over3d: number;
+                            };
+                            /** @description Reactions to notes whose author the reacting user does not follow. The "before" fields look only at events earlier than the reaction itself. */
+                            nonFollowee: {
+                                /** @description Reactions to non-followee authors. */
+                                total: number;
+                                /** @description Distinct users who reacted to a non-followee author. */
+                                users: number;
+                                /** @description At least one followee had already reacted to the note. */
+                                followeeReactedBefore: number;
+                                /** @description At least two followees had already reacted to the note. */
+                                twoFolloweesReactedBefore: number;
+                                /** @description A followee had already renoted or quoted the note. */
+                                followeeRenotedBefore: number;
+                                /** @description A followee had already replied to the note. */
+                                followeeRepliedBefore: number;
+                                /** @description The author follows the reacting user. */
+                                authorFollowsMe: number;
+                                /** @description The author had reacted to one of the reacting user's notes earlier inside the window. */
+                                authorReactedToMe: number;
+                                /** @description Any of the five social signals above. */
+                                anySocial: number;
+                                /** @description Nobody had reacted to the note before. */
+                                noPriorReaction: number;
+                                /** @description The author is local. */
+                                localAuthor: number;
+                                /** @description Reactions to non-followee authors. Bucketed by (reaction time - note time). */
+                                age: {
+                                    /** @description Less than 1 hour. */
+                                    under1h: number;
+                                    /** @description 1 hour to less than 6 hours. */
+                                    h1to6: number;
+                                    /** @description 6 hours to less than 24 hours. */
+                                    h6to24: number;
+                                    /** @description 1 day to less than 3 days. */
+                                    d1to3: number;
+                                    /** @description 3 days or more. */
+                                    over3d: number;
+                                };
+                            };
+                        } | null;
+                        /** @description Per-user candidate counts from notes posted inside the candidate-pool window, for the most recently active local users who follow at least one account. */
+                        pools: {
+                            /** @description Users measured. */
+                            measuredUsers: number;
+                            /** @description True when more users qualified than maxUsers. */
+                            measuredUsersTruncated: boolean;
+                            /** @description Notes by non-followee authors that at least one followee reacted to. Distribution over the measured users of the per-user count; percentiles are actual values (no interpolation). */
+                            followeeReacted1: {
+                                /** @description Number of measured users. */
+                                users: number;
+                                /** @description Measured users whose count is 0. */
+                                zero: number;
+                                /** @description 25th percentile; null when no user was measured. */
+                                p25: number | null;
+                                /** @description Median; null when no user was measured. */
+                                p50: number | null;
+                                /** @description 75th percentile; null when no user was measured. */
+                                p75: number | null;
+                                /** @description Maximum; null when no user was measured. */
+                                max: number | null;
+                            };
+                            /** @description Notes by non-followee authors that at least two followees reacted to. Distribution over the measured users of the per-user count; percentiles are actual values (no interpolation). */
+                            followeeReacted2: {
+                                /** @description Number of measured users. */
+                                users: number;
+                                /** @description Measured users whose count is 0. */
+                                zero: number;
+                                /** @description 25th percentile; null when no user was measured. */
+                                p25: number | null;
+                                /** @description Median; null when no user was measured. */
+                                p50: number | null;
+                                /** @description 75th percentile; null when no user was measured. */
+                                p75: number | null;
+                                /** @description Maximum; null when no user was measured. */
+                                max: number | null;
+                            };
+                            /** @description Notes by non-followee authors that at least three followees reacted to. Distribution over the measured users of the per-user count; percentiles are actual values (no interpolation). */
+                            followeeReacted3: {
+                                /** @description Number of measured users. */
+                                users: number;
+                                /** @description Measured users whose count is 0. */
+                                zero: number;
+                                /** @description 25th percentile; null when no user was measured. */
+                                p25: number | null;
+                                /** @description Median; null when no user was measured. */
+                                p50: number | null;
+                                /** @description 75th percentile; null when no user was measured. */
+                                p75: number | null;
+                                /** @description Maximum; null when no user was measured. */
+                                max: number | null;
+                            };
+                            /** @description Replies from one followee to another followee. Distribution over the measured users of the per-user count; percentiles are actual values (no interpolation). */
+                            conversationReplies: {
+                                /** @description Number of measured users. */
+                                users: number;
+                                /** @description Measured users whose count is 0. */
+                                zero: number;
+                                /** @description 25th percentile; null when no user was measured. */
+                                p25: number | null;
+                                /** @description Median; null when no user was measured. */
+                                p50: number | null;
+                                /** @description 75th percentile; null when no user was measured. */
+                                p75: number | null;
+                                /** @description Maximum; null when no user was measured. */
+                                max: number | null;
+                            };
+                            /** @description Threads holding three or more such replies. Distribution over the measured users of the per-user count; percentiles are actual values (no interpolation). */
+                            conversationThreads3: {
+                                /** @description Number of measured users. */
+                                users: number;
+                                /** @description Measured users whose count is 0. */
+                                zero: number;
+                                /** @description 25th percentile; null when no user was measured. */
+                                p25: number | null;
+                                /** @description Median; null when no user was measured. */
+                                p50: number | null;
+                                /** @description 75th percentile; null when no user was measured. */
+                                p75: number | null;
+                                /** @description Maximum; null when no user was measured. */
+                                max: number | null;
+                            };
+                            /** @description Original notes by the 30 accounts with the highest relation score (same note filter as the catchup axis). Distribution over the measured users of the per-user count; percentiles are actual values (no interpolation). */
+                            closeAuthorNotes: {
+                                /** @description Number of measured users. */
+                                users: number;
+                                /** @description Measured users whose count is 0. */
+                                zero: number;
+                                /** @description 25th percentile; null when no user was measured. */
+                                p25: number | null;
+                                /** @description Median; null when no user was measured. */
+                                p50: number | null;
+                                /** @description 75th percentile; null when no user was measured. */
+                                p75: number | null;
+                                /** @description Maximum; null when no user was measured. */
+                                max: number | null;
+                            };
+                            /** @description Of those, notes nobody reacted to (the catchup axis requires a reaction, so it cannot show them today). Distribution over the measured users of the per-user count; percentiles are actual values (no interpolation). */
+                            closeAuthorNotesNoReaction: {
+                                /** @description Number of measured users. */
+                                users: number;
+                                /** @description Measured users whose count is 0. */
+                                zero: number;
+                                /** @description 25th percentile; null when no user was measured. */
+                                p25: number | null;
+                                /** @description Median; null when no user was measured. */
+                                p50: number | null;
+                                /** @description 75th percentile; null when no user was measured. */
+                                p75: number | null;
+                                /** @description Maximum; null when no user was measured. */
+                                max: number | null;
+                            };
+                            /** @description Of those, notes the user has not reacted to. Distribution over the measured users of the per-user count; percentiles are actual values (no interpolation). */
+                            closeAuthorNotesUnreacted: {
+                                /** @description Number of measured users. */
+                                users: number;
+                                /** @description Measured users whose count is 0. */
+                                zero: number;
+                                /** @description 25th percentile; null when no user was measured. */
+                                p25: number | null;
+                                /** @description Median; null when no user was measured. */
+                                p50: number | null;
+                                /** @description 75th percentile; null when no user was measured. */
+                                p75: number | null;
+                                /** @description Maximum; null when no user was measured. */
+                                max: number | null;
+                            };
+                            /** @description Original notes by local authors the user does not follow. Distribution over the measured users of the per-user count; percentiles are actual values (no interpolation). */
+                            localNonFolloweeNotes: {
+                                /** @description Number of measured users. */
+                                users: number;
+                                /** @description Measured users whose count is 0. */
+                                zero: number;
+                                /** @description 25th percentile; null when no user was measured. */
+                                p25: number | null;
+                                /** @description Median; null when no user was measured. */
+                                p50: number | null;
+                                /** @description 75th percentile; null when no user was measured. */
+                                p75: number | null;
+                                /** @description Maximum; null when no user was measured. */
+                                max: number | null;
+                            };
+                        } | null;
+                        /** @description People each user used to interact with but has not recently (same calculation as the lapsed-users widget), for at most the 30 most recently active measured users. */
+                        lapsed: {
+                            /** @description Users measured. */
+                            measuredUsers: number;
+                            /** @description Lapsed people with a recent public note. Distribution over the measured users of the per-user count; percentiles are actual values (no interpolation). */
+                            people: {
+                                /** @description Number of measured users. */
+                                users: number;
+                                /** @description Measured users whose count is 0. */
+                                zero: number;
+                                /** @description 25th percentile; null when no user was measured. */
+                                p25: number | null;
+                                /** @description Median; null when no user was measured. */
+                                p50: number | null;
+                                /** @description 75th percentile; null when no user was measured. */
+                                p75: number | null;
+                                /** @description Maximum; null when no user was measured. */
+                                max: number | null;
+                            };
+                        } | null;
+                        /** @description Server-wide stock of local original notes inside the candidate-pool window. */
+                        local: {
+                            /** @description Local public/home notes that are neither replies nor plain renotes. */
+                            originals: number;
+                            /** @description Distinct authors of those notes. */
+                            authors: number;
+                            /** @description Of those notes, how many have at least one reaction. */
+                            withReaction: number;
+                        } | null;
+                        /** @description Sections that failed or timed out; their value above is null. */
+                        errors: {
+                            /** @description Section name. */
+                            section: string;
+                            /** @description Error message, truncated to 300 characters. */
+                            message: string;
+                        }[];
+                    };
                 };
             };
             /** @description Client error */
