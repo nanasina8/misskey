@@ -12364,6 +12364,67 @@ export interface operations {
                             /** @description Of those notes, how many have at least one reaction. */
                             withReaction: number;
                         } | null;
+                        /** @description Stock of remote original notes inside the candidate-pool window, and how much of it popularity signals and the note judge can see. Reaction counts of remote notes only include reactions that were delivered to this server. */
+                        strangerSupply: {
+                            /** @description Remote public/home notes that are neither replies nor plain renotes. */
+                            originals: number;
+                            /** @description Distinct authors of those notes. */
+                            authors: number;
+                            /** @description Notes with at least 1 reaction known to this server. */
+                            visibleReaction1: number;
+                            /** @description Notes with at least 5 reactions known to this server. */
+                            visibleReaction5: number;
+                            /** @description Notes with at least 10 reactions known to this server. */
+                            visibleReaction10: number;
+                            /** @description Notes whose text is 140 characters or longer. */
+                            long: number;
+                            /** @description Of the long notes, how many have no reaction known to this server. */
+                            longNoReaction: number;
+                            /** @description Notes with attached files. */
+                            withFiles: number;
+                            /** @description Notes the LLM note judge has scored (rule-only rows excluded). */
+                            judged: number;
+                            /** @description Judged notes with interest 4 or higher. */
+                            interest4: number;
+                            /** @description Of those, how many have no reaction known to this server. */
+                            interest4NoReaction: number;
+                        } | null;
+                        /** @description What happened after a user first saw an author on the Hanami timeline as an unknown author inside the reaction window. One pair = one (user, author). Pairs the user already followed before that first view are left out. */
+                        strangerConversion: {
+                            /** @description All sources. Counts of (user, author) pairs. */
+                            total: {
+                                /** @description Pairs first seen as an unknown author. */
+                                pairs: number;
+                                /** @description Pairs where the user followed the author after that first view. */
+                                followedAfter: number;
+                                /** @description Pairs where the user later reacted to, replied to or renoted any note of the author. */
+                                engagedAfter: number;
+                                /** @description Pairs where such a later engagement happened on a note that was not served by the Hanami timeline. */
+                                engagedElsewhereAfter: number;
+                            };
+                            /** @description Grouped by the axis of the first view, largest first. */
+                            bySource: {
+                                /** @description Axis of the first view. */
+                                source: string;
+                                /** @description Pairs first seen as an unknown author. */
+                                pairs: number;
+                                /** @description Pairs where the user followed the author after that first view. */
+                                followedAfter: number;
+                                /** @description Pairs where the user later reacted to, replied to or renoted any note of the author. */
+                                engagedAfter: number;
+                                /** @description Pairs where such a later engagement happened on a note that was not served by the Hanami timeline. */
+                                engagedElsewhereAfter: number;
+                            }[];
+                        } | null;
+                        /** @description Seen Hanami timeline notes by unknown authors inside the reaction window, grouped by the note judge's interest score (1 to 5). Buckets: under3, 3to3.5, 3.5to4, 4to4.5, 4.5plus. */
+                        strangerInterest: {
+                            /** @description Bucket name. */
+                            bucket: string;
+                            /** @description Seen notes in the bucket. */
+                            seen: number;
+                            /** @description Of those, notes the same user reacted to, replied to or renoted. */
+                            engaged: number;
+                        }[] | null;
                         /** @description Sections that failed or timed out; their value above is null. */
                         errors: {
                             /** @description Section name. */

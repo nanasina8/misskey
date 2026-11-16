@@ -38,6 +38,17 @@ const age = (description: string) => ({
 	},
 } as const);
 
+const conversion = (description: string) => ({
+	type: 'object', optional: false, nullable: false,
+	description: `${description} Counts of (user, author) pairs.`,
+	properties: {
+		pairs: count('Pairs first seen as an unknown author.'),
+		followedAfter: count('Pairs where the user followed the author after that first view.'),
+		engagedAfter: count('Pairs where the user later reacted to, replied to or renoted any note of the author.'),
+		engagedElsewhereAfter: count('Pairs where such a later engagement happened on a note that was not served by the Hanami timeline.'),
+	},
+} as const);
+
 export const meta = {
 	tags: ['admin'],
 	requireCredential: true,
@@ -138,6 +149,50 @@ export const meta = {
 					originals: count('Local public/home notes that are neither replies nor plain renotes.'),
 					authors: count('Distinct authors of those notes.'),
 					withReaction: count('Of those notes, how many have at least one reaction.'),
+				},
+			},
+			strangerSupply: {
+				type: 'object', optional: false, nullable: true,
+				description: 'Stock of remote original notes inside the candidate-pool window, and how much of it popularity signals and the note judge can see. Reaction counts of remote notes only include reactions that were delivered to this server.',
+				properties: {
+					originals: count('Remote public/home notes that are neither replies nor plain renotes.'),
+					authors: count('Distinct authors of those notes.'),
+					visibleReaction1: count('Notes with at least 1 reaction known to this server.'),
+					visibleReaction5: count('Notes with at least 5 reactions known to this server.'),
+					visibleReaction10: count('Notes with at least 10 reactions known to this server.'),
+					long: count('Notes whose text is 140 characters or longer.'),
+					longNoReaction: count('Of the long notes, how many have no reaction known to this server.'),
+					withFiles: count('Notes with attached files.'),
+					judged: count('Notes the LLM note judge has scored (rule-only rows excluded).'),
+					interest4: count('Judged notes with interest 4 or higher.'),
+					interest4NoReaction: count('Of those, how many have no reaction known to this server.'),
+				},
+			},
+			strangerConversion: {
+				type: 'object', optional: false, nullable: true,
+				description: 'What happened after a user first saw an author on the Hanami timeline as an unknown author inside the reaction window. One pair = one (user, author). Pairs the user already followed before that first view are left out.',
+				properties: {
+					total: conversion('All sources.'),
+					bySource: {
+						type: 'array', optional: false, nullable: false,
+						description: 'Grouped by the axis of the first view, largest first.',
+						items: {
+							type: 'object', optional: false, nullable: false, description: 'One axis.',
+							properties: { source: text('Axis of the first view.'), ...conversion('').properties },
+						},
+					},
+				},
+			},
+			strangerInterest: {
+				type: 'array', optional: false, nullable: true,
+				description: 'Seen Hanami timeline notes by unknown authors inside the reaction window, grouped by the note judge\'s interest score (1 to 5). Buckets: under3, 3to3.5, 3.5to4, 4to4.5, 4.5plus.',
+				items: {
+					type: 'object', optional: false, nullable: false, description: 'One interest bucket.',
+					properties: {
+						bucket: text('Bucket name.'),
+						seen: count('Seen notes in the bucket.'),
+						engaged: count('Of those, notes the same user reacted to, replied to or renoted.'),
+					},
 				},
 			},
 			errors: {

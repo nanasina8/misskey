@@ -104,6 +104,18 @@ describe('はなみの軸の見込み（admin/hanami/axis-outlook）', () => {
 		assert.strictEqual(body.lapsed.measuredUsers, 1);
 		assert.strictEqual(body.lapsed.people.max, 0);
 
+		// リモートの投稿も、はなみTL で見た記録も無いサーバーでは、知らない人の集計は 0 で返る（null や失敗にならない）。
+		assert.deepStrictEqual(body.strangerSupply, {
+			originals: 0, authors: 0, visibleReaction1: 0, visibleReaction5: 0, visibleReaction10: 0,
+			long: 0, longNoReaction: 0, withFiles: 0, judged: 0, interest4: 0, interest4NoReaction: 0,
+		});
+		assert.deepStrictEqual(body.strangerConversion, {
+			total: { pairs: 0, followedAfter: 0, engagedAfter: 0, engagedElsewhereAfter: 0 },
+			bySource: [],
+		});
+		assert.deepStrictEqual(body.strangerInterest?.map(row => row.bucket), ['under3', '3to3.5', '3.5to4', '4to4.5', '4.5plus']);
+		assert.ok(body.strangerInterest?.every(row => row.seen === 0 && row.engaged === 0));
+
 		assert.strictEqual(body.range.days, 1);
 		assert.strictEqual(body.range.poolHours, 6);
 	});

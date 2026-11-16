@@ -107,6 +107,34 @@ export type HanamiAxisOutlookLocal = {
 	withReaction: number;
 };
 
+export type HanamiAxisOutlookStrangerSupply = {
+	originals: number;
+	authors: number;
+	visibleReaction1: number;
+	visibleReaction5: number;
+	visibleReaction10: number;
+	long: number;
+	longNoReaction: number;
+	withFiles: number;
+	judged: number;
+	interest4: number;
+	interest4NoReaction: number;
+};
+
+export type HanamiAxisOutlookConversion = {
+	pairs: number;
+	followedAfter: number;
+	engagedAfter: number;
+	engagedElsewhereAfter: number;
+};
+
+export type HanamiAxisOutlookStrangerConversion = {
+	total: HanamiAxisOutlookConversion;
+	bySource: Array<HanamiAxisOutlookConversion & { source: string }>;
+};
+
+export type HanamiAxisOutlookInterestBucket = { bucket: string; seen: number; engaged: number };
+
 export type HanamiAxisOutlook = {
 	range: { from: string; to: string; days: number; poolFrom: string; poolHours: number };
 	population: HanamiAxisOutlookPopulation | null;
@@ -114,6 +142,9 @@ export type HanamiAxisOutlook = {
 	pools: HanamiAxisOutlookPools | null;
 	lapsed: { measuredUsers: number; people: HanamiAxisOutlookDistribution } | null;
 	local: HanamiAxisOutlookLocal | null;
+	strangerSupply: HanamiAxisOutlookStrangerSupply | null;
+	strangerConversion: HanamiAxisOutlookStrangerConversion | null;
+	strangerInterest: HanamiAxisOutlookInterestBucket[] | null;
 	errors: Array<{ section: string; message: string }>;
 };
 
@@ -146,6 +177,10 @@ type PoolRow = {
 	close_unreacted: number;
 	local_notes: number;
 };
+
+type ConversionRow = { source: string; at: Date | string; follow_id: string | null; engaged_after: boolean; engaged_elsewhere: boolean };
+
+const INTEREST_BUCKETS = ['under3', '3to3.5', '3.5to4', '4to4.5', '4.5plus'] as const;
 
 /** 投稿として TL に出せるもの（公開範囲・チャンネル外）。 */
 const VISIBLE_NOTE_SQL = (alias: string) => `${alias}.visibility IN ('public', 'home') AND ${alias}."channelId" IS NULL`;
@@ -281,6 +316,80 @@ const LOCAL_SQL = `
 		AND n."replyId" IS NULL AND (n."renoteId" IS NULL OR n.text IS NOT NULL)
 `;
 
+/**
+ * 知らない人の投稿の在庫。リモートの投稿は、こちらに届いた反応しか数えられない（連合の仕組み上、相手サーバーでの反応は見えない）。
+ * 「反応が見えない投稿がどれだけあるか」「判定がどこまで読めているか」を数える。
+ */
+const STRANGER_SUPPLY_SQL = `
+	SELECT count(*)::int AS originals, count(DISTINCT x."userId")::int AS authors,
+		count(*) FILTER (WHERE x.rc >= 1)::int AS visible_reaction1,
+		count(*) FILTER (WHERE x.rc >= 5)::int AS visible_reaction5,
+		count(*) FILTER (WHERE x.rc >= 10)::int AS visible_reaction10,
+		count(*) FILTER (WHERE x.len >= 140)::int AS long,
+		count(*) FILTER (WHERE x.len >= 140 AND x.rc = 0)::int AS long_no_reaction,
+		count(*) FILTER (WHERE x.files)::int AS with_files,
+		count(*) FILTER (WHERE x.judged)::int AS judged,
+		count(*) FILTER (WHERE x.interest >= 4)::int AS interest4,
+		count(*) FILTER (WHERE x.interest >= 4 AND x.rc = 0)::int AS interest4_no_reaction
+	FROM (
+		SELECT n."userId",
+			COALESCE((SELECT sum(t.v::int) FROM jsonb_each_text(n.reactions) AS t(k, v)), 0) AS rc,
+			char_length(COALESCE(n.text, '')) AS len,
+			(n."fileIds" <> '{}') AS files,
+			(j."noteId" IS NOT NULL) AS judged,
+			j.interest
+		FROM note n
+		LEFT JOIN "hanami_note_judgement" j ON j."noteId" = n.id AND j.model NOT LIKE 'rule:%'
+		WHERE n.id >= $1 AND n."userHost" IS NOT NULL AND ${VISIBLE_NOTE_SQL('n')}
+			AND n."replyId" IS NULL AND (n."renoteId" IS NULL OR n.text IS NOT NULL)
+	) x
+`;
+
+/**
+ * はなみTL で「知らない人」として初めて見た作者ごとに、そのあとフォローしたか・その人の投稿に反応したか。
+ * 見た記録は長期保管の表（hanami_metrics_event）から、反応は TL の外も含む記録（hanami_recommendation_event）から読む。
+ */
+const STRANGER_CONVERSION_SQL = `
+	WITH seen AS (
+		SELECT e."userId" AS uid, n."userId" AS aid,
+			COALESCE(NULLIF(e.dimensions ->> 'source', ''), 'unknown') AS source,
+			COALESCE(e."occurredAt", e."createdAt") AS at
+		FROM "hanami_metrics_event" e
+		JOIN note n ON n.id = e."noteId"
+		WHERE e."eventType" = 'seen' AND e."createdAt" >= $1
+			AND e.dimensions ->> 'relationshipClass' = 'unknown' AND n."userId" <> e."userId"
+	),
+	first AS (
+		SELECT DISTINCT ON (uid, aid) uid, aid, source, at FROM seen ORDER BY uid, aid, at ASC
+	)
+	SELECT f.source, f.at, fo.id AS follow_id,
+		EXISTS (SELECT 1 FROM "hanami_recommendation_event" e2
+			JOIN note n2 ON n2.id = e2."noteId"
+			WHERE e2."userId" = f.uid AND e2."eventType" IN ('reaction', 'reply', 'renote')
+				AND e2."createdAt" > f.at AND n2."userId" = f.aid) AS engaged_after,
+		EXISTS (SELECT 1 FROM "hanami_recommendation_event" e2
+			JOIN note n2 ON n2.id = e2."noteId"
+			WHERE e2."userId" = f.uid AND e2."eventType" IN ('reaction', 'reply', 'renote')
+				AND e2."createdAt" > f.at AND n2."userId" = f.aid AND e2.source = 'normal') AS engaged_elsewhere
+	FROM first f
+	LEFT JOIN following fo ON fo."followerId" = f.uid AND fo."followeeId" = f.aid
+`;
+
+/** 知らない人の投稿を「見た」うち、判定の興味の点数ごとに何件に反応したか。 */
+const STRANGER_INTEREST_SQL = `
+	SELECT CASE WHEN j.interest < 3 THEN 'under3' WHEN j.interest < 3.5 THEN '3to3.5'
+			WHEN j.interest < 4 THEN '3.5to4' WHEN j.interest < 4.5 THEN '4to4.5' ELSE '4.5plus' END AS bucket,
+		count(*)::int AS seen,
+		count(*) FILTER (WHERE EXISTS (SELECT 1 FROM "hanami_recommendation_event" e2
+			WHERE e2."userId" = e."userId" AND e2."noteId" = e."noteId"
+				AND e2."eventType" IN ('reaction', 'reply', 'renote')))::int AS engaged
+	FROM "hanami_metrics_event" e
+	JOIN "hanami_note_judgement" j ON j."noteId" = e."noteId" AND j.model NOT LIKE 'rule:%'
+	WHERE e."eventType" = 'seen' AND e."createdAt" >= $1
+		AND e.dimensions ->> 'relationshipClass' = 'unknown'
+	GROUP BY 1
+`;
+
 export function hanamiAxisOutlookDistribution(values: readonly number[]): HanamiAxisOutlookDistribution {
 	const sorted = [...values].sort((a, b) => a - b);
 	// 人数が少ないので補間はせず、実際にある値（下側）を返す。
@@ -337,6 +446,9 @@ export class HanamiAxisOutlookService {
 		));
 		const lapsed = measuredIds == null ? null : await this.section('lapsed', errors, async () => this.lapsed(measuredIds.slice(0, LAPSED_USER_LIMIT)));
 		const local = await this.section('local', errors, async () => this.local(poolFromId));
+		const strangerSupply = await this.section('strangerSupply', errors, async () => this.strangerSupply(poolFromId));
+		const strangerConversion = await this.section('strangerConversion', errors, async () => this.strangerConversion(from));
+		const strangerInterest = await this.section('strangerInterest', errors, async () => this.strangerInterest(from));
 
 		return {
 			range: { from: from.toISOString(), to: now.toISOString(), days: input.days, poolFrom: poolFrom.toISOString(), poolHours: input.poolHours },
@@ -345,6 +457,9 @@ export class HanamiAxisOutlookService {
 			pools,
 			lapsed,
 			local,
+			strangerSupply,
+			strangerConversion,
+			strangerInterest,
 			errors,
 		};
 	}
@@ -454,6 +569,62 @@ export class HanamiAxisOutlookService {
 			authors: Number(row?.authors ?? 0),
 			withReaction: Number(row?.with_reaction ?? 0),
 		};
+	}
+
+	private async strangerSupply(poolFromId: string): Promise<HanamiAxisOutlookStrangerSupply> {
+		const [row] = await this.query<Record<string, number>>(STRANGER_SUPPLY_SQL, [poolFromId]);
+		const value = (key: string): number => Number(row?.[key] ?? 0);
+		return {
+			originals: value('originals'),
+			authors: value('authors'),
+			visibleReaction1: value('visible_reaction1'),
+			visibleReaction5: value('visible_reaction5'),
+			visibleReaction10: value('visible_reaction10'),
+			long: value('long'),
+			longNoReaction: value('long_no_reaction'),
+			withFiles: value('with_files'),
+			judged: value('judged'),
+			interest4: value('interest4'),
+			interest4NoReaction: value('interest4_no_reaction'),
+		};
+	}
+
+	private async strangerConversion(from: Date): Promise<HanamiAxisOutlookStrangerConversion> {
+		const rows = await this.query<ConversionRow>(STRANGER_CONVERSION_SQL, [from]);
+		const empty = (): HanamiAxisOutlookConversion => ({ pairs: 0, followedAfter: 0, engagedAfter: 0, engagedElsewhereAfter: 0 });
+		const total = empty();
+		const bySource = new Map<string, HanamiAxisOutlookConversion>();
+		for (const row of rows) {
+			const at = new Date(row.at).getTime();
+			// フォローの時刻は ID から読む。初めて見たあとにフォローした組だけを数える。
+			const followedAfter = row.follow_id != null && this.idService.parse(row.follow_id).date.getTime() > at;
+			// 見る前からフォローしていた組は「知らない人」ではないので外す（記録時の分類の遅れ）。
+			if (row.follow_id != null && !followedAfter) continue;
+			const source = bySource.get(row.source) ?? empty();
+			bySource.set(row.source, source);
+			for (const target of [total, source]) {
+				target.pairs++;
+				if (followedAfter) target.followedAfter++;
+				if (row.engaged_after) target.engagedAfter++;
+				if (row.engaged_elsewhere) target.engagedElsewhereAfter++;
+			}
+		}
+		return {
+			total,
+			bySource: [...bySource.entries()]
+				.map(([source, value]) => ({ source, ...value }))
+				.sort((a, b) => b.pairs - a.pairs || (a.source < b.source ? -1 : 1)),
+		};
+	}
+
+	private async strangerInterest(from: Date): Promise<HanamiAxisOutlookInterestBucket[]> {
+		const rows = await this.query<{ bucket: string; seen: number; engaged: number }>(STRANGER_INTEREST_SQL, [from]);
+		const byBucket = new Map(rows.map(row => [row.bucket, row]));
+		return INTEREST_BUCKETS.map(bucket => ({
+			bucket,
+			seen: Number(byBucket.get(bucket)?.seen ?? 0),
+			engaged: Number(byBucket.get(bucket)?.engaged ?? 0),
+		}));
 	}
 
 	/** 1 つの集計が失敗・時間切れになっても、残りは返す。失敗は errors に名前つきで残す。 */
