@@ -117,7 +117,7 @@ const tasteTsx = (i18n.tsx._hana as unknown as { _tasteClusters: { count: (args:
 
 const exploreMediaFilter = ref<ExploreMediaFilter>($i.exploreMediaFilter ?? 'all');
 const enabled = ref($i.hanamiRecommendationEnabled ?? true);
-const showReason = ref($i.hanamiShowRecommendationReason ?? false);
+const showReason = ref($i.hanamiShowRecommendationReason ?? true);
 const flagsSaving = ref(false);
 const exploreMediaFilterSaving = ref(false);
 
@@ -136,7 +136,7 @@ async function saveFlags(): Promise<void> {
 		refreshHanamiTuning();
 	} catch (error) {
 		enabled.value = $i.hanamiRecommendationEnabled ?? true;
-		showReason.value = $i.hanamiShowRecommendationReason ?? false;
+		showReason.value = $i.hanamiShowRecommendationReason ?? true;
 		showSaveError(error);
 	} finally {
 		flagsSaving.value = false;

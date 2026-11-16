@@ -232,7 +232,7 @@ export class MiUserProfile {
 	public hanamiTuning: Partial<import('../core/hanami/HanamiTuning.js').HanamiTuning>;
 
 	@Column('boolean', {
-		default: false,
+		default: true,
 		comment: 'はなみTLおすすめに理由ラベルを表示するか（ユーザー設定）',
 	})
 	public hanamiShowRecommendationReason: boolean;
