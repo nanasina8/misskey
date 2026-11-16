@@ -354,10 +354,13 @@ export class ReactionService {
 
 		// 興味学習（taste cluster）からも外す: 取り消した反応を嗜好として残さない。
 		// 純RNが残っている場合は evidence の根拠がまだあるので消さない。best-effort。
-		if (user.host == null) {
+		// 別の絵文字への付け替え（skipHanamiRecentAct）は反応が続いているので外さない。
+		// 待たずに流すので、付け替えと前後しても残った反応があれば消さないよう note_reaction も確かめる。
+		if (user.host == null && !opts.skipHanamiRecentAct) {
 			void this.notesRepository.query(
 				`DELETE FROM "hanami_foryou_taste_evidence" ev
 				 WHERE ev."userId" = $1 AND ev."noteId" = $2 AND ev.src = 'R'
+				   AND NOT EXISTS (SELECT 1 FROM note_reaction r WHERE r."userId" = $1 AND r."noteId" = $2)
 				   AND NOT EXISTS (
 				     SELECT 1 FROM note rn
 				     WHERE rn."userId" = $1 AND rn."renoteId" = $2 AND ${pureRenoteSql('rn')}

@@ -9,6 +9,7 @@ import { describe, expect, test } from 'vitest';
 import { HanamiNoteJudge1789344000000 } from '../../migration/1789344000000-hanamiNoteJudge.js';
 import { HanamiReduceEphemeralPosts1789430400000 } from '../../migration/1789430400000-hanamiReduceEphemeralPosts.js';
 import { HanamiNoteJudgeSettingsHistory1789516800000 } from '../../migration/1789516800000-hanamiNoteJudgeSettingsHistory.js';
+import { HANAMI_NOTE_JUDGEMENT_RULE_UPSERT_SQL, HANAMI_NOTE_JUDGEMENT_UPSERT_SQL } from '@/core/hanami/HanamiForYouBatchService.js';
 
 const databaseUrl = process.env.HANAMI_SCHEMA_TEST_DATABASE_URL;
 
@@ -59,6 +60,19 @@ describe('Hanami judge migration DB-backed contracts', () => {
 			await expect(query('INSERT INTO "hanami_note_judgement" VALUES ($1, $2, $3, $4, $5, $6, $7, $8)', ['missing', 'model', 1, 0, 3, [0, 0, 0, 0, 0], 1, new Date()])).rejects.toMatchObject({ code: '23503' });
 			await expect(query('INSERT INTO "hanami_note_judgement" VALUES ($1, $2, $3, $4, $5, $6, $7, $8)', ['note-2', 'model', 1, 0, 6, [0, 0, 0, 0, 0], 1, new Date()])).rejects.toMatchObject({ code: '23514' });
 			await expect(query('INSERT INTO "hanami_note_judgement" VALUES ($1, $2, $3, $4, $5, $6, $7, $8)', ['note-1', 'model', 1, 0, 3, [0, 0, 0, 0, 0], 1, new Date()])).rejects.toMatchObject({ code: '23505' });
+
+			// 判定している間に消された投稿は、外部キー違反にせず黙って飛ばす（ジョブ全体を落とさない）。
+			await expect(query(HANAMI_NOTE_JUDGEMENT_UPSERT_SQL, ['missing', 'model', 2, 0.1, 4, [0, 0, 0, 1, 0], 3])).resolves.toEqual([]);
+			await expect(query(HANAMI_NOTE_JUDGEMENT_RULE_UPSERT_SQL, ['missing', 'rule:reply', 2, [1, 0, 0, 0, 0]])).resolves.toEqual([]);
+			// 残っている投稿は入り、同じ投稿の 2 回目は上書きになる。
+			await query(HANAMI_NOTE_JUDGEMENT_UPSERT_SQL, ['note-2', 'model', 2, 0.1, 4, [0, 0, 0, 1, 0], 3]);
+			await query(HANAMI_NOTE_JUDGEMENT_RULE_UPSERT_SQL, ['note-1', 'rule:reply', 2, [1, 0, 0, 0, 0]]);
+			expect(await query<{ noteId: string; model: string; promptVersion: number; ephemeralScore: number; interest: number; contentType: number }>(
+				'SELECT "noteId", model, "promptVersion", "ephemeralScore", interest, "contentType" FROM "hanami_note_judgement" ORDER BY "noteId"',
+			)).toEqual([
+				{ noteId: 'note-1', model: 'rule:reply', promptVersion: 2, ephemeralScore: 999, interest: 1, contentType: 0 },
+				{ noteId: 'note-2', model: 'model', promptVersion: 2, ephemeralScore: expect.closeTo(0.1, 5), interest: 4, contentType: 3 },
+			]);
 
 			await new HanamiReduceEphemeralPosts1789430400000().down(runner);
 			await new HanamiNoteJudgeSettingsHistory1789516800000().down(runner);

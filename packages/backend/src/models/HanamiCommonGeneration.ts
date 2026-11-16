@@ -36,4 +36,8 @@ export class MiHanamiCommonGeneration {
 
 	@Column('bigint', { transformer: hanamiBigintTransformer })
 	public generationFence: string;
+
+	/** 失敗した理由（短い 1 行）。成功した生成では null。 */
+	@Column('varchar', { length: 512, nullable: true })
+	public failureReason: string | null;
 }

@@ -90,6 +90,18 @@ export const HANAMI_TREND_TOPIC_JUDGE_LAST_KEY = 'hanami:trend:topic-judge:last:
 const TREND_TOPIC_JUDGE_WAITING_KEY = 'hanami:llm:topic-judge-waiting:v1';
 const TREND_TOPIC_JUDGE_WAITING_TTL_SEC = 10 * 60;
 const NOTE_JUDGE_TIMEOUT_MS = 35 * 60 * 1000;
+/**
+ * 判定の結果を入れる文。判定（LLM）には分単位かかり、その間に消された投稿を VALUES でそのまま入れると
+ * 外部キー違反でジョブ全体が失敗し、残りの結果も捨てられる。$1 の投稿が note に今あるときだけ入れる
+ * （無ければ何も入れずに成功する）。FOR KEY SHARE でこの文の間の削除も防ぐ。
+ */
+const noteJudgementUpsertSql = (columns: string): string => `INSERT INTO "hanami_note_judgement" ("noteId",model,"promptVersion","ephemeralScore",interest,"interestDist","contentType","judgedAt")
+	SELECT n.id,${columns},clock_timestamp() FROM note n WHERE n.id = $1 FOR KEY SHARE OF n
+	ON CONFLICT ("noteId") DO UPDATE SET model=EXCLUDED.model,"promptVersion"=EXCLUDED."promptVersion","ephemeralScore"=EXCLUDED."ephemeralScore",interest=EXCLUDED.interest,"interestDist"=EXCLUDED."interestDist","contentType"=EXCLUDED."contentType","judgedAt"=EXCLUDED."judgedAt"`;
+/** LLM の判定結果。引数: noteId, model, promptVersion, ephemeralScore, interest, interestDist, contentType */
+export const HANAMI_NOTE_JUDGEMENT_UPSERT_SQL = noteJudgementUpsertSql('$2::varchar,$3::integer,$4::real,$5::real,$6::real[],$7::smallint');
+/** 決まりで除外した投稿の記録。引数: noteId, model（rule:理由）, promptVersion, interestDist */
+export const HANAMI_NOTE_JUDGEMENT_RULE_UPSERT_SQL = noteJudgementUpsertSql('$2::varchar,$3::integer,999,1,$4::real[],0');
 const NOTE_JUDGE_WINDOW_MS = 72 * 60 * 60 * 1000;
 export const HANAMI_NOTE_JUDGE_LOCK_DELAY_MS = 60_000;
 
@@ -786,7 +798,7 @@ export class HanamiForYouBatchService {
 			} else {
 				// Keep the deterministic exclusion reason in the existing cache field so
 				// serving can distinguish it from an LLM ephemeral judgement.
-				await this.db.query(`INSERT INTO "hanami_note_judgement" ("noteId",model,"promptVersion","ephemeralScore",interest,"interestDist","contentType","judgedAt") VALUES ($1,$2,$3,999,1,$4::real[],0,clock_timestamp()) ON CONFLICT ("noteId") DO UPDATE SET model=EXCLUDED.model,"promptVersion"=EXCLUDED."promptVersion","ephemeralScore"=EXCLUDED."ephemeralScore",interest=EXCLUDED.interest,"interestDist"=EXCLUDED."interestDist","contentType"=EXCLUDED."contentType","judgedAt"=EXCLUDED."judgedAt"`, [row.id, `rule:${rule.reason}`, settings.promptVersion, [1, 0, 0, 0, 0]]);
+				await this.db.query(HANAMI_NOTE_JUDGEMENT_RULE_UPSERT_SQL, [row.id, `rule:${rule.reason}`, settings.promptVersion, [1, 0, 0, 0, 0]]);
 			}
 		}
 		// GPU が無ければ LLM ジョブは投入しない（ルール除外の記録だけ残す）。CPU 強制は HANAMI_NOTE_JUDGE_DEVICE=cpu。
@@ -1119,7 +1131,7 @@ export class HanamiForYouBatchService {
 			for (const judgement of judgements) {
 				if (!data.noteIds.includes(judgement.noteId) || !Number.isFinite(judgement.ephemeralScore) || !Number.isFinite(judgement.interest) || judgement.interestDist.length !== 5 || !Number.isInteger(judgement.contentType)) continue;
 				accepted.add(judgement.noteId);
-				await this.db.query(`INSERT INTO "hanami_note_judgement" ("noteId",model,"promptVersion","ephemeralScore",interest,"interestDist","contentType","judgedAt") VALUES ($1,$2,$3,$4,$5,$6::real[],$7,clock_timestamp()) ON CONFLICT ("noteId") DO UPDATE SET model=EXCLUDED.model,"promptVersion"=EXCLUDED."promptVersion","ephemeralScore"=EXCLUDED."ephemeralScore",interest=EXCLUDED.interest,"interestDist"=EXCLUDED."interestDist","contentType"=EXCLUDED."contentType","judgedAt"=EXCLUDED."judgedAt"`, [judgement.noteId, HANAMI_NOTE_JUDGE_MODEL, data.promptVersion, judgement.ephemeralScore, judgement.interest, judgement.interestDist, judgement.contentType]);
+				await this.db.query(HANAMI_NOTE_JUDGEMENT_UPSERT_SQL, [judgement.noteId, HANAMI_NOTE_JUDGE_MODEL, data.promptVersion, judgement.ephemeralScore, judgement.interest, judgement.interestDist, judgement.contentType]);
 			}
 			if (salvaged) {
 				logger.warn(`hanami note judge: runtime interrupted; salvaged ${accepted.size}/${notes.length} judgements, remainder will be re-enqueued`);

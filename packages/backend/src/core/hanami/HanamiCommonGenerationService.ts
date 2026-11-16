@@ -123,6 +123,19 @@ class HanamiCommonLeaseLostError extends Error {
 	}
 }
 
+/** 候補を集めたあとで、話題の代表の投稿が消された・出せなくなった。候補を絞り直せば続けられる。 */
+class HanamiCommonRepresentativeIneligibleError extends Error {
+	constructor(noteId: string) {
+		super(`Hanami common trend representative Note ${noteId} is missing or not common-eligible`);
+	}
+}
+
+// 候補を集めてから保存するまでの間に投稿が消されたときに、候補を絞り直してやり直す回数（最初の 1 回を含む）。
+const VANISHED_NOTE_MAX_ATTEMPTS = 3;
+const FAILURE_REASON_MAX_LENGTH = 500;
+// PostgreSQL の foreign_key_violation。
+const PG_FOREIGN_KEY_VIOLATION = '23503';
+
 @Injectable()
 export class HanamiCommonGenerationService implements HanamiCommonGenerationLifecyclePort, HanamiCommonGenerationReadPort {
 	constructor(
@@ -264,7 +277,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 			}));
 			this.assertOperationBudget(workerLease);
 
-			const source = await this.runWithOperationBudget(workerLease, () => this.computation.buildSourceBundle({
+			let source = await this.runWithOperationBudget(workerLease, () => this.computation.buildSourceBundle({
 				generationId,
 				generationFence: activeClaim.generationFence,
 				generatedAt: activeClaim.startedAt,
@@ -272,29 +285,45 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 				signal: workerLease.controller.signal,
 			}));
 			this.assertOperationBudget(workerLease);
-			const candidateRows = this.validateSourceBundle(source);
-			await this.runWithOperationBudget(workerLease, () => this.validateSnapshotRepresentativeEligibility(source));
-			this.assertOperationBudget(workerLease);
 
-			const recentCommonNoteIds = await this.runWithOperationBudget(workerLease, () => this.loadRecentCommonNoteIds(activeClaim.startedAt));
-			this.assertOperationBudget(workerLease);
-			const materialization = this.computation.materializeFeed({ source, recentCommonNoteIds });
-			this.assertOperationBudget(workerLease);
-			this.validateMaterialization(source, materialization);
+			// 候補を集めてから保存するまでの間に投稿が消される（投稿し直しなど）と、外部キー違反や
+			// 代表の投稿の確かめ直しで生成が丸ごと失敗していた。消えた投稿だけを候補から外してやり直す。
+			for (let attempt = 1; ; attempt++) {
+				try {
+					const candidateRows = this.validateSourceBundle(source);
+					const currentSource = source;
+					await this.runWithOperationBudget(workerLease, () => this.validateSnapshotRepresentativeEligibility(currentSource));
+					this.assertOperationBudget(workerLease);
 
-			await this.stageCandidates(activeClaim, generatedMonth, source, candidateRows, workerLease);
-			this.assertOperationBudget(workerLease);
+					const recentCommonNoteIds = await this.runWithOperationBudget(workerLease, () => this.loadRecentCommonNoteIds(activeClaim.startedAt));
+					this.assertOperationBudget(workerLease);
+					const materialization = this.computation.materializeFeed({ source, recentCommonNoteIds });
+					this.assertOperationBudget(workerLease);
+					this.validateMaterialization(source, materialization);
 
-			const prepared = this.preparePublication(activeClaim, source, materialization);
-			const publication = await this.publishGeneration(activeClaim, generatedMonth, source, materialization, candidateRows, prepared, workerLease);
-			if (publication.kind === 'obsolete') return { kind: 'stale', generationId };
+					await this.stageCandidates(activeClaim, generatedMonth, source, candidateRows, workerLease);
+					this.assertOperationBudget(workerLease);
 
-			return {
-				kind: 'published',
-				generationId,
-				generationFence: activeClaim.generationFence,
-				itemCount: materialization.items.length,
-			};
+					const prepared = this.preparePublication(activeClaim, source, materialization);
+					const publication = await this.publishGeneration(activeClaim, generatedMonth, source, materialization, candidateRows, prepared, workerLease);
+					if (publication.kind === 'obsolete') return { kind: 'stale', generationId };
+
+					return {
+						kind: 'published',
+						generationId,
+						generationFence: activeClaim.generationFence,
+						itemCount: materialization.items.length,
+					};
+				} catch (error) {
+					if (attempt >= VANISHED_NOTE_MAX_ATTEMPTS || !this.isVanishedNoteError(error)) throw error;
+					this.assertOperationBudget(workerLease);
+					const staleSource = source;
+					const pruned = await this.runWithOperationBudget(workerLease, () => this.pruneVanishedNotes(staleSource));
+					// 消えた投稿が見つからないなら別の原因なので、元の失敗をそのまま返す。
+					if (pruned == null) throw error;
+					source = pruned;
+				}
+			}
 		} catch (primaryError) {
 			workerLease.stopHeartbeat();
 			if (claim == null) throw primaryError;
@@ -306,7 +335,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 			if (failureBudget == null) throw primaryError;
 			let resolution: FailureResolution;
 			try {
-				resolution = await this.resolveFailure(claim, failureBudget);
+				resolution = await this.resolveFailure(claim, failureBudget, this.describeFailure(primaryError));
 			} catch (failureError) {
 				this.attachCleanupError(primaryError, failureError);
 				throw primaryError;
@@ -695,9 +724,59 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 		for (const noteId of noteIds) {
 			const authorId = eligibleAuthors.get(noteId);
 			if (typeof authorId !== 'string' || authorId.trim().length === 0) {
-				throw new Error(`Hanami common trend representative Note ${noteId} is missing or not common-eligible`);
+				throw new HanamiCommonRepresentativeIneligibleError(noteId);
 			}
 		}
+	}
+
+	/** 候補を集めたあとに投稿が消された・出せなくなったことによる失敗か。 */
+	private isVanishedNoteError(error: unknown): boolean {
+		if (error instanceof HanamiCommonRepresentativeIneligibleError) return true;
+		if (error == null || typeof error !== 'object') return false;
+		const candidate = error as { code?: unknown; driverError?: { code?: unknown } | null };
+		return candidate.code === PG_FOREIGN_KEY_VIOLATION || candidate.driverError?.code === PG_FOREIGN_KEY_VIOLATION;
+	}
+
+	/**
+	 * 今も共通 TL に出せる投稿だけを残した候補を作る。外す投稿が無ければ null。
+	 * 並び・点数・話題はそのまま（話題の計算はやり直さない）。
+	 */
+	private async pruneVanishedNotes(source: HanamiCommonSourceBundle): Promise<HanamiCommonSourceBundle | null> {
+		const noteIds = [...new Set([
+			...HANAMI_COMMON_AXES.flatMap((axis) => source.candidates[axis].map((candidate) => candidate.noteId)),
+			...source.trendSnapshot.terms.flatMap((term) => term.representativeNoteIds),
+		])];
+		if (noteIds.length === 0) return null;
+
+		const eligibleAuthors = await this.safetyService.filterCommonEligibleNotes(noteIds);
+		const alive = (noteId: string): boolean => {
+			const authorId = eligibleAuthors.get(noteId);
+			return typeof authorId === 'string' && authorId.trim().length > 0;
+		};
+		if (noteIds.every(alive)) return null;
+
+		const keep = <T extends { readonly noteId: string }>(candidates: readonly T[]): readonly T[] => Object.freeze(candidates.filter((candidate) => alive(candidate.noteId)));
+		return Object.freeze({
+			...source,
+			candidates: Object.freeze({
+				globalPopular: keep(source.candidates.globalPopular),
+				trending: keep(source.candidates.trending),
+				exploration: keep(source.candidates.exploration),
+			}),
+			trendSnapshot: Object.freeze({
+				terms: Object.freeze(source.trendSnapshot.terms.map((term) => Object.freeze({
+					...term,
+					representativeNoteIds: Object.freeze(term.representativeNoteIds.filter(alive)),
+				}))),
+			}),
+		});
+	}
+
+	/** 失敗の理由を管理 API で見られる短い 1 行にする。 */
+	private describeFailure(error: unknown): string {
+		const name = error instanceof Error && error.name.length > 0 ? error.name : 'Error';
+		const message = error instanceof Error ? error.message : String(error);
+		return Array.from(`${name}: ${message}`.replace(/\s+/g, ' ').trim()).slice(0, FAILURE_REASON_MAX_LENGTH).join('');
 	}
 
 	private validateMaterialization(source: HanamiCommonSourceBundle, materialization: ReturnType<HanamiCommonComputationPort['materializeFeed']>): void {
@@ -1126,7 +1205,7 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 		});
 	}
 
-	private async resolveFailure(claim: Extract<ClaimResult, { kind: 'claimed' }>, budget: GenerationBudget): Promise<FailureResolution> {
+	private async resolveFailure(claim: Extract<ClaimResult, { kind: 'claimed' }>, budget: GenerationBudget, failureReason: string | null = null): Promise<FailureResolution> {
 		try {
 			return await this.withDeadlineTransaction(budget, async (queryRunner) => {
 				const state = await this.lockCommonState(queryRunner, budget);
@@ -1166,10 +1245,10 @@ export class HanamiCommonGenerationService implements HanamiCommonGenerationLife
 
 				const failedGenerationRows = hanamiReturningRows(await this.deadlineQuery<Array<{ generation_fence: string }>>(queryRunner, budget, `
 					UPDATE "hanami_common_generation"
-					SET "status" = 'failed', "finishedAt" = clock_timestamp()
+					SET "status" = 'failed', "finishedAt" = clock_timestamp(), "failureReason" = $3
 					WHERE "id" = $1 AND "status" = 'generating' AND "generationFence" = $2::bigint
 					RETURNING "generationFence"::text AS generation_fence
-				`, [claim.generationId, claim.generationFence]));
+				`, [claim.generationId, claim.generationFence, failureReason]));
 				const failedSnapshotRows = hanamiReturningRows(await this.deadlineQuery<Array<{ ordinal: string }>>(queryRunner, budget, `
 					UPDATE "hanami_trend_snapshot"
 					SET "status" = 'failed'

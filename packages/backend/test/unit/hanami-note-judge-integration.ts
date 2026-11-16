@@ -18,7 +18,7 @@ type PersonalJudgeInternals = {
 	applyJudgeSelection(context: HanamiPersonalFeedGenerationContext, candidates: readonly HanamiPersonalFeedCandidate[], judgeContext: { settings: ReturnType<typeof createDefaultHanamiNoteJudgeSettings>; reduceEphemeralPosts: boolean }): Promise<readonly HanamiPersonalFeedCandidate[]>;
 };
 
-function batchService(query: unknown, redis: unknown = { zrem: jest.fn(async (..._args: unknown[]) => 0), zremrangebyscore: jest.fn(async (..._args: unknown[]) => 0), zrangebyscore: jest.fn(async (..._args: unknown[]) => []), get: jest.fn(async (..._args: unknown[]) => null), set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: jest.fn(async (..._args: unknown[]) => 1) }, idService: Pick<IdService, 'gen'> = { gen: () => 'run-id' }): HanamiForYouBatchService {
+function batchService(query: unknown, redis: unknown = { zrem: jest.fn(async (..._args: unknown[]) => 0), zremrangebyscore: jest.fn(async (..._args: unknown[]) => 0), zrangebyscore: jest.fn(async (..._args: unknown[]) => []), get: jest.fn(async (..._args: unknown[]) => null), set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: jest.fn(async (..._args: unknown[]) => 1), del: jest.fn(async (..._args: unknown[]) => 0) }, idService: Pick<IdService, 'gen'> = { gen: () => 'run-id' }): HanamiForYouBatchService {
 	return new HanamiForYouBatchService({ query } as never, { insert: jest.fn(async (..._args: unknown[]) => undefined), update: jest.fn(async (..._args: unknown[]) => undefined) } as never, redis as never, idService as never, {} as never);
 }
 
@@ -164,7 +164,7 @@ describe('Hanami note judge integration', () => {
 		const service = new HanamiForYouBatchService(
 			{ query } as never,
 			modelRuns as never,
-			{ zrem: jest.fn(async (..._args: unknown[]) => 0), zremrangebyscore: jest.fn(async (..._args: unknown[]) => 0), zrangebyscore: jest.fn(async (..._args: unknown[]) => []), get: jest.fn(async (..._args: unknown[]) => null), set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: jest.fn(async (..._args: unknown[]) => 1) } as never,
+			{ zrem: jest.fn(async (..._args: unknown[]) => 0), zremrangebyscore: jest.fn(async (..._args: unknown[]) => 0), zrangebyscore: jest.fn(async (..._args: unknown[]) => []), get: jest.fn(async (..._args: unknown[]) => null), set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: jest.fn(async (..._args: unknown[]) => 1), del: jest.fn(async (..._args: unknown[]) => 0) } as never,
 			{ gen: () => 'run-id' } as never,
 			{} as never,
 		);
@@ -205,7 +205,7 @@ describe('Hanami note judge integration', () => {
 		const service = new HanamiForYouBatchService(
 			{ query } as never,
 			modelRuns as never,
-			{ zrem: jest.fn(async (..._args: unknown[]) => 0), zremrangebyscore: jest.fn(async (..._args: unknown[]) => 0), zrangebyscore: jest.fn(async (..._args: unknown[]) => []), get: jest.fn(async (..._args: unknown[]) => null), set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: jest.fn(async (..._args: unknown[]) => 1) } as never,
+			{ zrem: jest.fn(async (..._args: unknown[]) => 0), zremrangebyscore: jest.fn(async (..._args: unknown[]) => 0), zrangebyscore: jest.fn(async (..._args: unknown[]) => []), get: jest.fn(async (..._args: unknown[]) => null), set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: jest.fn(async (..._args: unknown[]) => 1), del: jest.fn(async (..._args: unknown[]) => 0) } as never,
 			{ gen: () => 'run-id' } as never,
 			{} as never,
 		);
@@ -346,7 +346,7 @@ describe('Hanami note judge integration', () => {
 			return [];
 		});
 		const insert = jest.fn(async (..._args: unknown[]) => undefined);
-		const service = new HanamiForYouBatchService({ query } as never, { insert, update: jest.fn() } as never, { zrem: jest.fn(async (..._args: unknown[]) => 0), zremrangebyscore: jest.fn(async (..._args: unknown[]) => 0), zrangebyscore: jest.fn(async (..._args: unknown[]) => []), get: jest.fn(async (..._args: unknown[]) => null), set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: jest.fn(async (..._args: unknown[]) => 1) } as never, { gen: () => sinceId } as never, {} as never);
+		const service = new HanamiForYouBatchService({ query } as never, { insert, update: jest.fn() } as never, { zrem: jest.fn(async (..._args: unknown[]) => 0), zremrangebyscore: jest.fn(async (..._args: unknown[]) => 0), zrangebyscore: jest.fn(async (..._args: unknown[]) => []), get: jest.fn(async (..._args: unknown[]) => null), set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: jest.fn(async (..._args: unknown[]) => 1), del: jest.fn(async (..._args: unknown[]) => 0) } as never, { gen: () => sinceId } as never, {} as never);
 
 		await expect(service.cleanupNoteJudgements()).resolves.toBe(1);
 		await expect(service.reconcileNoteJudgeJobs()).resolves.toEqual([]);
@@ -400,7 +400,7 @@ describe('Hanami note judge integration', () => {
 		const service = new HanamiForYouBatchService(
 			{ query } as never,
 			{ insert: jest.fn(async (..._args: unknown[]) => { throw new Error('createRun failed'); }), update: jest.fn() } as never,
-			{ zrem: jest.fn(async (..._args: unknown[]) => 0), zremrangebyscore: jest.fn(async (..._args: unknown[]) => 0), zrangebyscore: jest.fn(async (..._args: unknown[]) => []), get: jest.fn(async (..._args: unknown[]) => null), set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: evalRedis } as never,
+			{ zrem: jest.fn(async (..._args: unknown[]) => 0), zremrangebyscore: jest.fn(async (..._args: unknown[]) => 0), zrangebyscore: jest.fn(async (..._args: unknown[]) => []), get: jest.fn(async (..._args: unknown[]) => null), set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: evalRedis, del: jest.fn(async (..._args: unknown[]) => 0) } as never,
 			{ gen: () => 'run-id' } as never,
 			{} as never,
 		);
@@ -495,7 +495,7 @@ describe('Hanami note judge GPU gate', () => {
 			});
 			const insert = jest.fn(async (..._args: unknown[]) => undefined);
 			const update = jest.fn(async (..._args: unknown[]) => undefined);
-			const service = new HanamiForYouBatchService({ query } as never, { insert, update } as never, { zrem: jest.fn(async (..._args: unknown[]) => 0), zremrangebyscore: jest.fn(async (..._args: unknown[]) => 0), zrangebyscore: jest.fn(async (..._args: unknown[]) => []), get: jest.fn(async (..._args: unknown[]) => null), set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: jest.fn(async (..._args: unknown[]) => 1) } as never, { gen: () => 'run-id' } as never, {} as never);
+			const service = new HanamiForYouBatchService({ query } as never, { insert, update } as never, { zrem: jest.fn(async (..._args: unknown[]) => 0), zremrangebyscore: jest.fn(async (..._args: unknown[]) => 0), zrangebyscore: jest.fn(async (..._args: unknown[]) => []), get: jest.fn(async (..._args: unknown[]) => null), set: jest.fn(async (..._args: unknown[]) => 'OK'), eval: jest.fn(async (..._args: unknown[]) => 1), del: jest.fn(async (..._args: unknown[]) => 0) } as never, { gen: () => 'run-id' } as never, {} as never);
 
 			await expect(service.prepareNoteJudgeJobs('generation-1')).resolves.toEqual([]);
 			const calls = query.mock.calls as unknown as Array<[string, unknown[] | undefined]>;
@@ -505,7 +505,8 @@ describe('Hanami note judge GPU gate', () => {
 			await expect(service.runNoteJudgeJob({ noteIds: ['text-1'], promptVersion: 1 }, logger)).resolves.toEqual({ runId: 'run-id', status: 'ready', processedCount: 0 });
 			expect(update).toHaveBeenCalledWith({ id: 'run-id' }, expect.objectContaining({ status: 'ready', params: expect.objectContaining({ processedCount: 0, skippedReason: expect.stringContaining('GPU') }) }));
 			expect(calls.some(([sql]) => sql.includes('INSERT INTO "hanami_note_judgement"') && sql.includes('$4'))).toBe(true);
-			expect(calls.filter(([sql]) => sql.includes('FROM note n')).length).toBe(0);
+			// 判定に回す投稿の読み出しは行われない（除外の記録の INSERT も「今ある投稿だけ」のために note を見るので、それは除く）。
+			expect(calls.filter(([sql]) => sql.includes('FROM note n') && !sql.includes('INSERT INTO "hanami_note_judgement"')).length).toBe(0);
 		} finally {
 			if (previousDevice == null) delete process.env.HANAMI_NOTE_JUDGE_DEVICE; else process.env.HANAMI_NOTE_JUDGE_DEVICE = previousDevice;
 			if (previousScript == null) delete process.env.HANAMI_NOTE_JUDGE_SCRIPT; else process.env.HANAMI_NOTE_JUDGE_SCRIPT = previousScript;

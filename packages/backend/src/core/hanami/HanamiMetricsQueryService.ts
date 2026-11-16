@@ -274,8 +274,9 @@ export class HanamiMetricsQueryService {
 			}
 		}
 		const [common, judge] = await Promise.all([
-			this.db.query<{ at: Date | string }[]>('SELECT COALESCE("finishedAt", "startedAt") AS at FROM hanami_common_generation WHERE status = \'failed\' AND "startedAt" >= $1::timestamptz AND "startedAt" < $2::timestamptz ORDER BY at DESC LIMIT 20', bounds),
-			this.db.query<{ at: Date | string }[]>('SELECT COALESCE("finishedAt", "startedAt") AS at FROM hanami_foryou_model_run WHERE kind = \'note-judge\' AND status = \'failed\' AND "startedAt" >= $1::timestamptz AND "startedAt" < $2::timestamptz ORDER BY at DESC LIMIT 20', bounds),
+			this.db.query<{ at: Date | string; reason: string | null }[]>('SELECT COALESCE("finishedAt", "startedAt") AS at, "failureReason" AS reason FROM hanami_common_generation WHERE status = \'failed\' AND "startedAt" >= $1::timestamptz AND "startedAt" < $2::timestamptz ORDER BY at DESC LIMIT 20', bounds),
+			// 失敗の理由は run の params に残っている（途中で止まった run は interrupted）。
+			this.db.query<{ at: Date | string; reason: string | null }[]>('SELECT COALESCE("finishedAt", "startedAt") AS at, COALESCE(left(params->>\'failure\', 500), CASE WHEN params->>\'interrupted\' = \'true\' THEN \'Interrupted before finishing\' END) AS reason FROM hanami_foryou_model_run WHERE kind = \'note-judge\' AND status = \'failed\' AND "startedAt" >= $1::timestamptz AND "startedAt" < $2::timestamptz ORDER BY at DESC LIMIT 20', bounds),
 		]);
 		const byDay = rangeDays(range).map(day => {
 			const row = daily.find(item => item.key === 'personal' && item.day === day);
@@ -285,8 +286,9 @@ export class HanamiMetricsQueryService {
 		if (limited.some(row => row.count === null)) coverage.unavailable.push('rateLimited');
 		return {
 			range, personal: { byKind: generation.personal.failedByKind, byDay, recent },
-			common: { recent: common.map(row => ({ at: new Date(row.at).toISOString(), status: 'failed', message: 'Common generation failed' })) },
-			judge: { recent: judge.map(row => ({ at: new Date(row.at).toISOString(), status: 'failed', message: 'Note judgement failed' })), backlog },
+			// 理由を残す前の失敗（failureReason が null）は、今までどおりの決まり文句で出す。
+			common: { recent: common.map(row => ({ at: new Date(row.at).toISOString(), status: 'failed', message: row.reason ?? 'Common generation failed' })) },
+			judge: { recent: judge.map(row => ({ at: new Date(row.at).toISOString(), status: 'failed', message: row.reason ?? 'Note judgement failed' })), backlog },
 			rateLimited: { byDay: limited }, suppressed: [...new Set(suppressed)], coverage,
 		};
 	}

@@ -21,6 +21,8 @@ import { HanamiPersistedTimelinePhase11787097600000 } from '../../migration/1787
 import { HanamiTrendTopics1791244800000 } from '../../migration/1791244800000-hanamiTrendTopics.js';
 import { HanamiTrendTopicNotes1791331200000 } from '../../migration/1791331200000-hanamiTrendTopicNotes.js';
 import { HanamiTopicMembers1791331201000 } from '../../migration/1791331201000-hanamiTopicMembers.js';
+import { HanamiTrendTitle1793197452559 } from '../../migration/1793197452559-hanamiTrendTitle.js';
+import { HanamiCommonGenerationFailureReason1794753581080 } from '../../migration/1794753581080-hanamiCommonGenerationFailureReason.js';
 
 type DbRow = Record<string, unknown>;
 type DbQuery = <T extends DbRow = DbRow>(sql: string, values?: unknown[]) => Promise<T[]>;
@@ -257,6 +259,8 @@ const withMigratedSchema = async (run: (context: { schema: string; query: DbQuer
 		await new HanamiTrendTopics1791244800000().up({ query } as never);
 		await new HanamiTrendTopicNotes1791331200000().up({ query } as never);
 		await new HanamiTopicMembers1791331201000().up({ query } as never);
+		await new HanamiTrendTitle1793197452559().up({ query } as never);
+		await new HanamiCommonGenerationFailureReason1794753581080().up({ query } as never);
 		await run({ schema, query });
 	} catch (error) {
 		if (isDbConnectionError(error)) {
@@ -1311,6 +1315,109 @@ describe('Hanami common generation PostgreSQL contracts', () => {
 				FROM "hanami_common_generation" g WHERE g."id" = $1
 			`, [rollbackFailureId]);
 			expect(rolledBackRows).toEqual([{ feed_entries: '0', trend_entries: '0', checksum: null }]);
+
+			// 失敗した理由は生成の行に残り、管理 API がそのまま出す。
+			const reasons = await query<{ id: string; reason: string | null }>(`
+				SELECT g."id" AS id, g."failureReason" AS reason FROM "hanami_common_generation" g WHERE g."id" = ANY($1::varchar[])
+			`, [[sourceFailureId, zeroFailureId, rollbackFailureId, baselineRequest.generationId]]);
+			const reasonOf = (id: string) => reasons.find((row) => row.id === id)?.reason;
+			expect(reasonOf(sourceFailureId)).toBe('Error: source failure');
+			expect(reasonOf(zeroFailureId)).toContain('1..210 items');
+			expect(reasonOf(rollbackFailureId)).toContain('forced publication rollback');
+			expect(reasonOf(baselineRequest.generationId)).toBeNull();
+		});
+	}, 20_000);
+
+	// 候補を集めてから保存するまでの間に投稿が消されると、外部キー違反で生成が丸ごと失敗していた。
+	const materializeFromSource = (input: HanamiCommonFeedBuildInput): HanamiCommonFeedMaterialization => {
+		const items = (['globalPopular', 'trending', 'exploration'] as const).flatMap((axis) => input.source.candidates[axis].map((candidate) => ({
+			noteId: candidate.noteId, authorId: candidate.authorId, source: axis, sources: [axis],
+		})));
+		return { items, segmentLengths: [items.length] };
+	};
+	const bundleWithLiveAuthors = (): HanamiCommonSourceBundle => {
+		const bundle = makeBundle();
+		const withAuthor = <T extends { noteId: string }>(candidates: readonly T[]) => candidates.map((candidate) => ({ ...candidate, authorId: `author:${candidate.noteId}` }));
+		return { ...bundle, candidates: {
+			globalPopular: withAuthor(bundle.candidates.globalPopular),
+			trending: withAuthor(bundle.candidates.trending),
+			exploration: withAuthor(bundle.candidates.exploration),
+		} };
+	};
+
+	test('publishes without a candidate note that was deleted after the candidates were collected', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await insertNotes(query, ['note-global', 'note-trend', 'note-explore']);
+			const computation = new FakeComputation(bundleWithLiveAuthors(), makeMaterialization());
+			computation.build = async () => {
+				// 候補を集め終えた直後に、探索枠の投稿が消される（投稿し直しなど）。
+				await query(`DELETE FROM "note" WHERE "id" = 'note-explore'`);
+				return bundleWithLiveAuthors();
+			};
+			computation.materialize = materializeFromSource;
+			const { service } = makeRuntime(schema, { prefix: 'va', computation });
+			const request = await service.requestCommonGeneration('seed');
+			if (request.kind !== 'dispatch') throw new Error('expected dispatch');
+
+			await expect(service.runCommonGeneration(request.generationId)).resolves.toMatchObject({ kind: 'published', itemCount: 2 });
+
+			// 話題の計算（候補集め）はやり直さず、消えた投稿だけを外して作り直す。
+			expect(computation.buildInputs).toHaveLength(1);
+			expect(computation.feedInputs).toHaveLength(2);
+			const rows = await query<{ status: string; reason: string | null; candidates: string[]; entries: string[] }>(`
+				SELECT g."status" AS status, g."failureReason" AS reason,
+					ARRAY(SELECT c."noteId" FROM "hanami_common_candidate" c WHERE c."generationId" = g."id" ORDER BY c."noteId") AS candidates,
+					ARRAY(SELECT e."noteId" FROM "hanami_common_feed_entry" e WHERE e."generationId" = g."id" ORDER BY e."position") AS entries
+				FROM "hanami_common_generation" g WHERE g."id" = $1
+			`, [request.generationId]);
+			expect(rows).toEqual([{ status: 'ready', reason: null, candidates: ['note-global', 'note-trend'], entries: ['note-global', 'note-trend'] }]);
+		});
+	}, 20_000);
+
+	test('publishes without a trend representative note that was deleted after the candidates were collected', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await insertNotes(query, ['note-global', 'note-trend', 'note-explore']);
+			const computation = new FakeComputation(bundleWithLiveAuthors(), makeMaterialization());
+			computation.build = async () => {
+				await query(`DELETE FROM "note" WHERE "id" = 'note-trend'`);
+				return bundleWithLiveAuthors();
+			};
+			computation.materialize = materializeFromSource;
+			const { service } = makeRuntime(schema, { prefix: 'vb', computation });
+			const request = await service.requestCommonGeneration('seed');
+			if (request.kind !== 'dispatch') throw new Error('expected dispatch');
+
+			await expect(service.runCommonGeneration(request.generationId)).resolves.toMatchObject({ kind: 'published', itemCount: 2 });
+
+			const rows = await query<{ entries: string[]; terms: string[]; representatives: string }>(`
+				SELECT
+					ARRAY(SELECT e."noteId" FROM "hanami_common_feed_entry" e WHERE e."generationId" = g."id" ORDER BY e."position") AS entries,
+					ARRAY(SELECT e."term" FROM "hanami_trend_snapshot_entry" e JOIN "hanami_trend_snapshot" t ON t."id" = e."snapshotId" WHERE t."commonGenerationId" = g."id") AS terms,
+					(SELECT COUNT(*)::text FROM "hanami_trend_snapshot_representative_note" r JOIN "hanami_trend_snapshot" t ON t."id" = r."snapshotId" WHERE t."commonGenerationId" = g."id") AS representatives
+				FROM "hanami_common_generation" g WHERE g."id" = $1
+			`, [request.generationId]);
+			// 話題そのものは残り、消えた代表の投稿だけが外れる。
+			expect(rows).toEqual([{ entries: ['note-global', 'note-explore'], terms: ['term'], representatives: '0' }]);
+		});
+	}, 20_000);
+
+	test('still fails with the original error when no candidate note vanished', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await insertNotes(query, ['note-global', 'note-trend']);
+			// note-explore は最初から無いのに safety が「ある」と答える＝消えた投稿ではない別の不整合。やり直しても直らない。
+			const computation = new FakeComputation(bundleWithLiveAuthors(), makeMaterialization());
+			computation.materialize = materializeFromSource;
+			const runtime = makeRuntime(schema, { prefix: 'vc', computation });
+			const service = runtime.service as unknown as { safetyService: { filterCommonEligibleNotes(noteIds: readonly string[]): Promise<ReadonlyMap<string, string>> } };
+			service.safetyService = { filterCommonEligibleNotes: async (noteIds) => new Map(noteIds.map((noteId) => [noteId, `author:${noteId}`])) };
+			const request = await runtime.service.requestCommonGeneration('seed');
+			if (request.kind !== 'dispatch') throw new Error('expected dispatch');
+
+			await expect(runtime.service.runCommonGeneration(request.generationId)).rejects.toMatchObject({ code: '23503' });
+			expect(computation.feedInputs).toHaveLength(1);
+			const rows = await query<{ status: string; reason: string | null }>(`SELECT "status" AS status, "failureReason" AS reason FROM "hanami_common_generation" WHERE "id" = $1`, [request.generationId]);
+			expect(rows[0]!.status).toBe('failed');
+			expect(rows[0]!.reason).toContain('foreign key');
 		});
 	}, 20_000);
 });

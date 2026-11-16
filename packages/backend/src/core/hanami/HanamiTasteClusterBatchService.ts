@@ -620,12 +620,18 @@ export class HanamiTasteClusterBatchService {
 			const params: unknown[] = [];
 			for (const [noteId, vec] of slice) {
 				const base = params.length;
-				values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5})`);
+				values.push(`($${base + 1}::varchar, $${base + 2}::varchar, $${base + 3}::integer, $${base + 4}::real[], $${base + 5}::timestamptz)`);
 				params.push(noteId, TASTE_EMBED_MODEL, dim, `{${vec.join(',')}}`, updatedAt);
 			}
+			// 埋め込みの計算（Python）には分単位かかるので、その間に消された投稿が混ざる。
+			// VALUES をそのまま入れると 1 件の外部キー違反でまとまり全体（最大 200 件）が失われるため、
+			// note に今ある行だけを入れる。FOR KEY SHARE でこの文の間に消されるのも防ぐ。
 			await this.db.query(
 				`INSERT INTO "hanami_note_embedding" ("noteId", model, dim, embedding, "updatedAt")
-				 VALUES ${values.join(',')}
+				 SELECT n.id, v.model, v.dim, v.embedding, v."updatedAt"
+				 FROM (VALUES ${values.join(',')}) AS v("noteId", model, dim, embedding, "updatedAt")
+				 JOIN note n ON n.id = v."noteId"
+				 FOR KEY SHARE OF n
 				 ON CONFLICT ("noteId", model) DO ${updateExisting ? 'UPDATE SET dim = EXCLUDED.dim, embedding = EXCLUDED.embedding, "updatedAt" = EXCLUDED."updatedAt"' : 'NOTHING'}`,
 				params,
 			);
@@ -1334,12 +1340,17 @@ export class HanamiTasteClusterBatchService {
 				const params: unknown[] = [];
 				for (const r of slice) {
 					const base = params.length;
-					values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6})`);
+					values.push(`($${base + 1}::varchar, $${base + 2}::varchar, $${base + 3}::bytea, $${base + 4}::varchar, $${base + 5}::timestamptz, $${base + 6}::varchar)`);
 					params.push(r.uid, r.nid, encodeFp16(r.emb), src, this.idService.parse(r.actid).date, TASTE_EMBED_MODEL);
 				}
+				// 行を集めてから入れるまでの間に消された投稿が 1 件でも混ざると、外部キー違反で
+				// まとまり全体が落ちて日次のクラスタ計算ごと失敗する。note に今ある行だけを入れる。
 				await this.db.query(
 					`INSERT INTO "hanami_foryou_taste_evidence" ("userId", "noteId", vector, src, "createdAt", model)
-					 VALUES ${values.join(',')}
+					 SELECT v."userId", n.id, v.vector, v.src, v."createdAt", v.model
+					 FROM (VALUES ${values.join(',')}) AS v("userId", "noteId", vector, src, "createdAt", model)
+					 JOIN note n ON n.id = v."noteId"
+					 FOR KEY SHARE OF n
 					 ON CONFLICT ("userId", "noteId") DO NOTHING`,
 					params,
 				);
