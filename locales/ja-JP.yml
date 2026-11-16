@@ -4513,7 +4513,7 @@ _hana:
         hanamiRecommendationEventCacheReplay: "反応記録の再送"
       _warning:
         gpuUnavailable: "GPU が使えません。判定と見出しは止まっています"
-        lockLong: "GPU のロックを同じ処理が10分以上持っています"
+        lockLong: "常駐の判定係ではない処理が、GPU のロックを10分以上持っています"
         topicJudgeStale: "話題の判定が40分以上成功していません（見出し・日常判定が古いままです）"
         queueBacklog: "遅延しているジョブが30件以上あります（ロック待ちのやり直しなど）"
         recentFailures: "直近1時間に失敗したジョブがあります"

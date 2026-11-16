@@ -17007,7 +17007,7 @@ export interface Locale extends ILocale {
                      */
                     "gpuUnavailable": string;
                     /**
-                     * GPU のロックを同じ処理が10分以上持っています
+                     * 常駐の判定係ではない処理が、GPU のロックを10分以上持っています
                      */
                     "lockLong": string;
                     /**

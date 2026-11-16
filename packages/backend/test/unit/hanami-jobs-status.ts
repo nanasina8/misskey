@@ -67,9 +67,16 @@ describe('Hanami jobs diagnostics', () => {
 	});
 	test.each([-1, 0, 1])('lock and topic warning boundaries offset %i ms', async offset => {
 		const f = fixture();
-		f.redis.eval.mockResolvedValue([`noteJudge:${now - 600000 + offset}:123:nonce`, 90000] as never);
+		f.redis.eval.mockResolvedValue([`judgeTrial:${now - 600000 + offset}:123:nonce`, 90000] as never);
 		const input = status(); input.trendTopicJudge.lastSuccessAt = iso(now - 2400000 + offset); judge.mockResolvedValue(input);
 		expect((await f.read()).warnings).toEqual(offset < 0 ? ['lockLong', 'topicJudgeStale'] : []);
+	});
+	test('the resident GPU worker holding the lock for hours is normal and raises no lockLong warning', async () => {
+		const f = fixture();
+		f.redis.eval.mockResolvedValue([`gpuWorker:${now - 6 * 60 * 60 * 1000}:123:nonce`, 60000] as never);
+		const read = await f.read();
+		expect(read.lock).toMatchObject({ held: true, kind: 'gpuWorker', acquiredAt: iso(now - 6 * 60 * 60 * 1000) });
+		expect(read.warnings).toEqual([]);
 	});
 	test.each([{ available: false, device: null }, { available: true, device: 'cpu' }, { available: true, device: 'cuda' }])('missing topic success respects GPU probe %o', async runtime => {
 		judge.mockResolvedValue({ ...status(), runtime: { ...status().runtime, ...runtime }, trendTopicJudge: null });

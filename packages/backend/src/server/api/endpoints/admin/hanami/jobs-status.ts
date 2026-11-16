@@ -166,7 +166,9 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			const lastSuccess = judge.trendTopicJudge?.lastSuccessAt == null ? NaN : Date.parse(judge.trendTopicJudge.lastSuccessAt);
 			const warnings: typeof WARNINGS[number][] = [];
 			if (!gpuAvailable) warnings.push('gpuUnavailable');
-			if (knownOwner && acquiredMs < now - 10 * 60 * 1000) warnings.push('lockLong');
+			// 常駐の判定係（gpuWorker）は GPU の鍵を持ち続けるのが正常なので、長く持っていても警告しない。
+			// 警告するのは、自分でモデルを読み込むジョブ（判定の試しなど）が持ったままのとき。
+			if (knownOwner && parts[0] !== 'gpuWorker' && acquiredMs < now - 10 * 60 * 1000) warnings.push('lockLong');
 			if (gpuAvailable && (!Number.isFinite(lastSuccess) || lastSuccess < now - 40 * 60 * 1000)) warnings.push('topicJudgeStale');
 			if (queue.jobs.reduce((n, job) => n + job.delayed, 0) >= 30) warnings.push('queueBacklog');
 			if (conditions[0]?.recentFailures) warnings.push('recentFailures');
