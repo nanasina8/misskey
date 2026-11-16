@@ -82,9 +82,9 @@ const axisLabel = (axis: string) => sourceLabel(axis, i18n.ts._hana._recommendat
 // Six ordinary caps and the independent exploration quota must stay separate.
 // These are base shares (all levels normal), not guaranteed delivery percentages.
 const AXIS_MAX_SHARE = {
-	high: { globalPopular: 0.30, neighborTrending: 0.25, reactionSimilar: 0.15, catchup: 0.07, trending: 0.12, fof: 0.03 },
-	low: { globalPopular: 0.55, neighborTrending: 0.12, reactionSimilar: 0.08, catchup: 0.03, trending: 0.12, fof: 0.02 },
-	none: { globalPopular: 0.75, neighborTrending: 0.00, reactionSimilar: 0.00, catchup: 0.00, trending: 0.12, fof: 0.03 },
+	high: { globalPopular: 0.20, neighborTrending: 0.42, reactionSimilar: 0.03, catchup: 0.14, trending: 0.03, fof: 0.10 },
+	low: { globalPopular: 0.47, neighborTrending: 0.24, reactionSimilar: 0.02, catchup: 0.07, trending: 0.04, fof: 0.08 },
+	none: { globalPopular: 0.73, neighborTrending: 0.00, reactionSimilar: 0.00, catchup: 0.00, trending: 0.05, fof: 0.12 },
 } as const;
 const EXPLORATION_SHARE = { high: 0.08, low: 0.08, none: 0.10 } as const;
 const AXIS_LEVEL_WEIGHT = { off: 0, low: 0.55, normal: 1.0, high: 1.6 } as const;

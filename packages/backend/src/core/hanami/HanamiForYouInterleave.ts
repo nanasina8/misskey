@@ -64,10 +64,14 @@ const AXIS_ORDER: Record<HanamiConfidence, HanamiAxis[]> = {
 // 2026-10-31 本番30日（10/02〜10/31、18人・見た1,999件・反応153件）の「見た投稿あたりの反応率」で直した。
 // 式は「あなたの反応から」と同じ: 倍率 = √(軸の率 / 全体の率) を 0.5〜2 倍に収め、発見（exploration）は減らさない。
 // 各 confidence で発見以外の合計は据え置き。旧値 high: gp .30 / nt .25 / rs .15 / cu .07 / tr .12 / fof .03。
+// 2026-11-16 本番30日（10/18〜11/16、22人・見た2,597件・反応191件）でもう一度直した。見た投稿あたりの反応は
+// 友達の友達 19.1%（出した割合 3.8%）／近くで話題 14.3%／見逃し 10.6%／人気 6.5%／いま話題 1.6%／好みが近い 0.7%。
+// 反応の出ている種類へ寄せるが、少ない種類も 0 にはしない（件数が小さく、外したときに戻せるようにするため）。
+// 発見以外の合計は据え置き。直前の値 high: gp .22 / nt .38 / rs .09 / cu .12 / tr .07 / fof .04。
 export const AXIS_MAX_SHARE: Record<HanamiConfidence, Partial<Record<HanamiAxis, number>>> = {
-	high: { globalPopular: 0.22, neighborTrending: 0.38, reactionSimilar: 0.09, catchup: 0.12, trending: 0.07, fof: 0.04 },
-	low: { globalPopular: 0.47, neighborTrending: 0.22, reactionSimilar: 0.05, catchup: 0.06, trending: 0.09, fof: 0.03 },
-	none: { globalPopular: 0.74, neighborTrending: 0.00, reactionSimilar: 0.00, catchup: 0.00, trending: 0.10, fof: 0.06 },
+	high: { globalPopular: 0.20, neighborTrending: 0.42, reactionSimilar: 0.03, catchup: 0.14, trending: 0.03, fof: 0.10 },
+	low: { globalPopular: 0.47, neighborTrending: 0.24, reactionSimilar: 0.02, catchup: 0.07, trending: 0.04, fof: 0.08 },
+	none: { globalPopular: 0.73, neighborTrending: 0.00, reactionSimilar: 0.00, catchup: 0.00, trending: 0.05, fof: 0.12 },
 };
 
 // exploration の専用 quota（§10/§14-D1。score には混ぜない独立枠）。
