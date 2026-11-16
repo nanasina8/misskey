@@ -127,8 +127,15 @@ describe.skipIf(!process.env.HANAMI_ADMIN_TEST_DATABASE_URL)('model-run SQL agai
 	});
 	test.each([-1, 0, 1])('failure/pending warning boundaries offset %i ms', async offset => {
 		await insert('fail', 'als', 'failed', now - 3600000 + offset, { failure: 'test' });
-		await insert('pending', 'embedding', 'pending', now - 600000 + offset, {}, null);
+		// 投稿の判定は 10 分で「止まっている」とみなす（画面の文言どおり）。
+		await insert('pending', 'note-judge', 'pending', now - 600000 + offset, {}, null);
 		expect((await read()).warnings).toEqual([...(offset >= 0 ? ['recentFailures'] : []), ...(offset < 0 ? ['stuckPending'] : [])]);
+	});
+	test.each([-1, 0, 1])('other kinds are stuck only after 35 minutes, offset %i ms', async offset => {
+		// 好みの学習・ALS は 1 回が長いので 35 分。10 分を過ぎただけでは警告しない。
+		await insert('young', 'als', 'pending', now - 600000 - 1, {}, null);
+		await insert('pending', 'embedding', 'pending', now - 2100000 + offset, {}, null);
+		expect((await read()).warnings).toEqual(offset < 0 ? ['stuckPending'] : []);
 	});
 	test('returns only the ten newest failures and uses completion time for the time window', async () => {
 		for (let n = 0; n < 12; n++) await insert(String(n), 'note-judge', 'failed', now - 2 * 86400000, { failure: String(n) }, now - n * 1000);

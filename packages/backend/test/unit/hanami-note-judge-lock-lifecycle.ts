@@ -77,6 +77,7 @@ describe('Hanami note judge lock Bull lifecycle', () => {
 			zrem: jest.fn(async (..._args: unknown[]) => 0), zremrangebyscore: jest.fn(async (..._args: unknown[]) => 0), zrangebyscore: jest.fn(async (..._args: unknown[]) => []), get: jest.fn(async (..._args: unknown[]) => null),
 			set: jest.fn(async (..._args: unknown[]) => lockAvailable ? 'OK' : null),
 			eval: jest.fn(async (..._args: unknown[]) => 1),
+			del: jest.fn(async (..._args: unknown[]) => 0),
 		};
 		const batch = new HanamiForYouBatchService(
 			{ query } as never,

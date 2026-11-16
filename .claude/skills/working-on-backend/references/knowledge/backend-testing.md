@@ -40,6 +40,16 @@ cp .github/misskey/test.yml .config/test.yml
 - 配置: `packages/backend/test/` 配下
 - カバレッジ: `pnpm --filter backend test-and-coverage`
 
+### E2E は「migration で作った DB」で動く
+
+このフォークのテーブル (はなみ TL・計測・AI 投稿チェックなど) は migration でしか作られない。TypeORM の synchronize で作った DB では、起動時に必要な `hanami_metrics_collector` が無くテストサーバーが立ち上がらない。
+
+- `pnpm --filter backend test:e2e` は、テスト用 DB を空にして全 migration を当て直す [scripts/prepare_e2e_db.mjs](../../../../../packages/backend/scripts/prepare_e2e_db.mjs) を先に通し、`MISSKEY_TEST_DB_MIGRATIONS=1` (ファイルごとに TRUNCATE) で vitest を起動する。空の DB なら数秒
+- `vitest --config vitest.config.e2e.ts` を直接叩くときは、自分で `node packages/backend/scripts/prepare_e2e_db.mjs` を通してから `MISSKEY_TEST_DB_MIGRATIONS=1` を付ける (付けないと `Timeline metrics collector registration failed` で起動に失敗する)
+- スクリプトは DB 名に `test` が含まれないと止まる (本番・開発用ダンプの取り違え防止)
+- 単体テスト (`pnpm --filter backend test`) は同じ DB を synchronize で作り直す。**単体テストと E2E を同時に走らせない**
+- `*-db.contract.ts` (実 PostgreSQL に migration を当てて確かめる単体テスト) は `HANAMI_SCHEMA_TEST_DATABASE_URL` が無いとスキップされる。ローカルで回すときは `HANAMI_SCHEMA_TEST_DATABASE_URL=postgres://<user>:<pass>@127.0.0.1:<port>/test-misskey` を付ける (一部は `HANAMI_ADMIN_TEST_DATABASE_URL` / `HANAMI_TUNING_TEST_DATABASE_URL`)
+
 ## e2e テストの配置
 
 `packages/backend/test/e2e/` の現状ファイル例:

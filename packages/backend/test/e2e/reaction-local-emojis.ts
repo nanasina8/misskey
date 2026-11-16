@@ -8,8 +8,10 @@ import { describe, test, beforeAll } from 'vitest';
 process.env.NODE_ENV = 'test';
 
 import * as assert from 'node:assert';
+import { Redis } from 'ioredis';
 import type { Repository } from 'typeorm';
 import type * as misskey from 'misskey-js';
+import { loadConfig } from '@/config.js';
 import { MiEmoji } from '@/models/Emoji.js';
 import { MiNote } from '@/models/Note.js';
 import { MiNoteReaction } from '@/models/NoteReaction.js';
@@ -84,6 +86,15 @@ describe('reactionLocalEmojis', () => {
 			remarks: null,
 			imageFingerprint: `pix-v1:${'b'.repeat(64)}`,
 		}]);
+
+		// 絵文字は DB に直接入れたので、ローカル絵文字の一覧キャッシュ（Redis・30 分）が前のテストの内容のままだと
+		// サーバーが same_image_local を知らず、リアクションが ❤ に置き換わってしまう。入れ直した後で消しておく。
+		const redis = new Redis(loadConfig().redis);
+		try {
+			await redis.del('singlecache:localEmojis');
+		} finally {
+			await redis.quit();
+		}
 
 		const note = await post(author, { text: 'remote custom reaction mapping' });
 		noteId = note.id;

@@ -149,7 +149,8 @@ describe('local LLM lease', () => {
 		const set = vi.spyOn(redis, 'set');
 		const keys = [legacyKey, HANAMI_LOCAL_LLM_LOCK_KEY];
 		expect(await acquireHanamiLocalLlmLock(redis, 'noteJudge', { keys })).toBeNull();
-		expect(set.mock.calls.map(call => call[0])).toEqual(keys);
+		// 取れなかったので、最後に「GPU を待っている」目印を立てる。
+		expect(set.mock.calls.map(call => call[0])).toEqual([...keys, 'hanami:llm:wanted:noteJudge']);
 		expect(await redis.get(legacyKey)).toBeNull();
 		expect(await redis.get(HANAMI_LOCAL_LLM_LOCK_KEY)).toBe('busy');
 		await redis.del(HANAMI_LOCAL_LLM_LOCK_KEY);

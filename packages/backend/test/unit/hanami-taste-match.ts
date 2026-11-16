@@ -160,6 +160,14 @@ class FakeRedis {
 		return 1;
 	}
 
+	public delCalls: unknown[][] = [];
+
+	/** ロックを取れたとき「GPU を待っている」目印（hanami:llm:wanted:*）を消すのに使われる。 */
+	public async del(...args: unknown[]): Promise<number> {
+		this.delCalls.push(args);
+		return 0;
+	}
+
 	public async hset(key: string, fields: Record<string, string>): Promise<number> {
 		this.hsetCalls.push([key, fields]);
 		this.hashes.set(key, { ...(this.hashes.get(key) ?? {}), ...fields });
@@ -892,6 +900,8 @@ describe('HanamiTasteClusterBatchService daily cluster', () => {
 		expect(redis.setCalls).toEqual([
 			['hanami:taste:tick:lock', expect.any(String), 'EX', 90, 'NX'],
 			['hanami:llm:exclusive:v1', expect.any(String), 'EX', 90, 'NX'],
+			// 取れなかったので「GPU を待っている」目印を立てる（配り役が譲るかどうかの判断に使う）。
+			['hanami:llm:wanted:tasteTick', expect.any(String), 'EX', 150],
 		]);
 		expect(db.query).not.toHaveBeenCalled();
 		expect(embedTexts).not.toHaveBeenCalled();

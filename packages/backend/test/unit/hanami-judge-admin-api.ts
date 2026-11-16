@@ -192,6 +192,8 @@ describe('Hanami judge admin endpoint contracts', () => {
 		const redis = {
 			set: jest.fn(async (_key: string, _value: string, ..._options: unknown[]) => 'OK' as const),
 			eval: jest.fn(async (..._args: unknown[]) => 1),
+			// ロックを取れたとき「GPU を待っている」目印を消す。
+			del: jest.fn(async (..._args: unknown[]) => 0),
 		};
 		const directory = await mkdtemp(Path.join(tmpdir(), 'hanami-judge-trial-lock-'));
 		const scriptPath = Path.join(directory, 'judge.py');

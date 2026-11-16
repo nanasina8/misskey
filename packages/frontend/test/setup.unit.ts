@@ -8,6 +8,10 @@ import createFetchMock from 'vitest-fetch-mock';
 import type { Ref } from 'vue';
 import { ref } from 'vue';
 
+// 時刻の表示を確かめるテストが実行する機械のタイムゾーンで結果を変えないよう、backend のテストと同じく UTC に固定する
+// （CI は UTC。JST の開発機では「10:00〜」などの期待が 9 時間ずれて失敗していた）。
+process.env.TZ = 'UTC';
+
 const fetchMocker = createFetchMock(vi);
 fetchMocker.enableMocks();
 

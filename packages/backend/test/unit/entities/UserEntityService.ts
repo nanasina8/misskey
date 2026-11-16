@@ -54,6 +54,7 @@ import { NotificationService } from '@/core/NotificationService.js';
 import { ReactionsBufferingService } from '@/core/ReactionsBufferingService.js';
 import { HanaReactionMuteService } from '@/core/HanaReactionMuteService.js';
 import { ChatService } from '@/core/ChatService.js';
+import { AiModerationHiddenService } from '@/core/AiModerationHiddenService.js';
 
 process.env.NODE_ENV = 'test';
 
@@ -178,6 +179,7 @@ describe('UserEntityService', () => {
 				HanaReactionMuteService,
 				NotificationService,
 				ChatService,
+				AiModerationHiddenService,
 			];
 
 			app = await Test.createTestingModule({

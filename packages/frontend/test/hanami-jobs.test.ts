@@ -93,7 +93,7 @@ describe('Hanami jobs tab', () => {
 		// The shell polls a one-event status for its attention dot; only the jobs tab asks for 30 events.
 		const tabCalls = () => api.mock.calls.filter(call => (call[1] as { eventsLimit?: number }).eventsLimit === 30);
 		const tabs = Array.from(view.container.querySelectorAll('nav button')).map(el => el.textContent?.trim());
-		expect(tabs.slice(0, 4)).toEqual(['概要', '統計', 'ジョブ', 'トレンド']);
+		expect(tabs.slice(0, 5)).toEqual(['概要', '統計', 'ジョブ', 'GPU の順番待ち', 'トレンド']);
 		await fireEvent.click(view.getByRole('button', { name: 'ジョブ' })); await settle(); expect(tabCalls()).toHaveLength(1);
 		expect(view.getByRole('button', { name: 'ジョブ' }).getAttribute('aria-current')).toBe('page');
 		await vi.advanceTimersByTimeAsync(14999); expect(tabCalls()).toHaveLength(1);

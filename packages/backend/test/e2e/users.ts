@@ -161,6 +161,13 @@ describe('ユーザー', () => {
 			twoFactorEnabled: user.twoFactorEnabled,
 			usePasswordLessLogin: user.usePasswordLessLogin,
 			securityKeys: user.securityKeys,
+			// このフォークで足した本人向けの設定（みつけるの絞り込み・はなみ TL のおすすめ）
+			exploreMediaFilter: user.exploreMediaFilter,
+			hanamiRecommendationEnabled: user.hanamiRecommendationEnabled,
+			hanamiRecommendationAxes: user.hanamiRecommendationAxes,
+			hanamiTuning: user.hanamiTuning,
+			hanamiShowRecommendationReason: user.hanamiShowRecommendationReason,
+			hanamiReduceEphemeralPosts: user.hanamiReduceEphemeralPosts,
 			...(security ? {
 				email: user.email,
 				emailVerified: user.emailVerified,
@@ -418,6 +425,9 @@ describe('ユーザー', () => {
 		});
 		const expected = meDetailed(userNoNote, true);
 		expected.loggedInDays = 1; // iはloggedInDaysを更新する
+		// このフォークでは、ログインした API 呼び出しも「最後に活動した時刻」を更新する（休眠の判定に使う）。
+		// 作りたて（unknown）のユーザーでも、自分で i を呼んだ時点でオンライン扱いになる。
+		expected.onlineStatus = 'online';
 		assert.deepStrictEqual(response, expected);
 	});
 
@@ -491,7 +501,11 @@ describe('ユーザー', () => {
 		{ parameters: () => ({ emailNotificationTypes: [] }) },
 	] as const)('を書き換えることができる($#)', async ({ parameters }) => {
 		const response = await successfulApiCall({ endpoint: 'i/update', parameters: parameters(), user: alice });
-		const expected = { ...meDetailed(alice, true), ...parameters() };
+		const expected: Record<string, unknown> = { ...meDetailed(alice, true), ...parameters() };
+		// このフォークでは API を呼んだ本人は「オンライン」になる（本家は接続していなければ unknown のまま）。
+		// オンライン状態を隠す設定を切り替えたときは、その結果が onlineStatus にそのまま出る。
+		const updated = parameters() as { hideOnlineStatus?: boolean };
+		if (updated.hideOnlineStatus !== undefined) expected.onlineStatus = updated.hideOnlineStatus ? 'unknown' : 'online';
 		assert.deepStrictEqual(response, expected, inspect(parameters()));
 	});
 
