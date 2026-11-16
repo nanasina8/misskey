@@ -14,8 +14,12 @@ import {
 import {
 	HanamiPersonalFeedComputationService,
 	HANAMI_PERSONAL_FEED_ALGORITHM_VERSION,
+	boundHanamiCommonCandidates,
 } from '@/core/hanami/HanamiPersonalFeedComputationService.js';
+import { HANAMI_COMMON_CANDIDATE_LIMITS, HANAMI_MAX_COMMON_CANDIDATES } from '@/core/hanami/HanamiCommonGenerationContracts.js';
+import { HANAMI_GENERATION_CANDIDATE_LIMIT } from '@/core/hanami/HanamiRecommendationService.js';
 import {
+	HANAMI_PERSONAL_GENERATION_POOL_MAX,
 	HanamiForYouService,
 	type HanamiPersonalFeedCandidatePreparation,
 	type HanamiPersonalFeedGenerationContext,
@@ -260,12 +264,31 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		await fixture.service.computePersonalFeed(input());
 
 		expect(fixture.safety.filterCommonEligibleNotes.mock.calls[0]![0]).toHaveLength(1900);
-		const overLimit = createComputation({
-			commonRows: Array.from({ length: 501 }, (_, i) => commonRow('globalPopular', `global-${i}`)),
-		});
-		await expect(overLimit.service.computePersonalFeed(input())).rejects.toThrow('globalPopular candidate read exceeded 500 rows');
-		expect(overLimit.db.createQueryRunner).toHaveBeenCalledTimes(1);
-		expect(overLimit.safety.filterCommonEligibleNotes).not.toHaveBeenCalled();
+		expect(fixture.safety.filterCommonEligibleNotes.mock.calls[0]![0]).toEqual(commonRows.map(row => row.noteId));
+	});
+
+	test('共通候補が軸の上限を超えていても失敗せず、その軸の baseScore の低いものから捨てて続ける', async () => {
+		// globalPopular を 3 件多く入れる。低い順に捨てられるのは score 0（同点は noteId の大きいほう）と score 0.1。
+		const commonRows = [
+			...Array.from({ length: 500 }, (_, i) => ({ ...commonRow('globalPopular', `global-${String(i).padStart(3, '0')}`), baseScore: 1 + i })),
+			{ ...commonRow('globalPopular', 'global-low-b'), baseScore: 0 },
+			{ ...commonRow('globalPopular', 'global-low-a'), baseScore: 0 },
+			{ ...commonRow('globalPopular', 'global-low-c'), baseScore: 0.1 },
+			...Array.from({ length: 200 }, (_, i) => commonRow('trending', `trend-${i}`, { term: 'term' })),
+			...Array.from({ length: 1200 }, (_, i) => commonRow('exploration', `explore-${i}`)),
+		];
+		const overLimit = createComputation({ commonRows });
+
+		const result = await overLimit.service.computePersonalFeed(input());
+
+		const passed = overLimit.safety.filterCommonEligibleNotes.mock.calls[0]![0] as readonly string[];
+		expect(passed).toHaveLength(1900);
+		expect(passed).not.toContain('global-low-a');
+		expect(passed).not.toContain('global-low-b');
+		expect(passed).not.toContain('global-low-c');
+		// 残った行は読み込んだときの順のまま。
+		expect(passed).toEqual(commonRows.map(row => row.noteId).filter(noteId => !noteId.startsWith('global-low-')));
+		expect(result.items.length).toBeGreaterThan(0);
 	});
 
 	test.each(CONFIDENCE_CASES)('uses the current %s confidence axis order', async (confidence, expected) => {
@@ -1199,4 +1222,46 @@ test('persists social trend metadata through safety, ranking and interleave', as
 	fixture.provenance.buildReasonMetadata.mockImplementation(value => HanamiForYouProvenanceService.prototype.buildReasonMetadata(value));
 	const result = await fixture.service.computePersonalFeed({ ...input(), latestReadyBatchId: 'head' });
 	expect(result.items.find(item => item.noteId === 'social')?.reasonMetadata).toMatchObject({ version: 2, term: 'topic', socialCount: 3 });
+});
+
+describe('共通候補の読み込みの上限', () => {
+	test('上限内ならそのまま返し、捨てた件数は 0', () => {
+		const rows = [commonRow('globalPopular', 'a'), commonRow('trending', 'b', { term: 't' }), commonRow('exploration', 'c')];
+		const bounded = boundHanamiCommonCandidates(rows);
+		expect(bounded.candidates).toBe(rows);
+		expect(bounded.trimmed).toEqual({});
+		expect(bounded.trimmedTotal).toBe(0);
+	});
+
+	test('超えた軸だけを baseScore の高い順に残し、同点は noteId の小さいほうを残す', () => {
+		const rows = [
+			...Array.from({ length: 199 }, (_, i) => ({ ...commonRow('trending', `trend-${String(i).padStart(3, '0')}`, { term: 't' }), baseScore: 10 })),
+			{ ...commonRow('trending', 'tie-b', { term: 't' }), baseScore: 1 },
+			{ ...commonRow('trending', 'tie-a', { term: 't' }), baseScore: 1 },
+			{ ...commonRow('trending', 'not-finite', { term: 't' }), baseScore: Number.NaN },
+			{ ...commonRow('exploration', 'explore-kept'), baseScore: 0 },
+		];
+		const bounded = boundHanamiCommonCandidates(rows);
+		const kept = bounded.candidates.map(row => row.noteId);
+		expect(kept).toHaveLength(201);
+		expect(kept).toContain('tie-a');
+		expect(kept).not.toContain('tie-b');
+		expect(kept).not.toContain('not-finite');
+		expect(kept.at(-1)).toBe('explore-kept');
+		expect(bounded.trimmed).toEqual({ trending: 2 });
+		expect(bounded.trimmedTotal).toBe(2);
+	});
+
+	test('知らない軸の行は捨てて unknown に数える', () => {
+		const rows = [commonRow('globalPopular', 'a'), { ...commonRow('globalPopular', 'b'), axis: 'somethingElse' as never }];
+		const bounded = boundHanamiCommonCandidates(rows);
+		expect(bounded.candidates.map(row => row.noteId)).toEqual(['a']);
+		expect(bounded.trimmed).toEqual({ unknown: 1 });
+	});
+
+	test('書く側と読む側の上限が合い、共通と個人の候補を足しても生成の候補の上限を超えない', () => {
+		const axisSum = Object.values(HANAMI_COMMON_CANDIDATE_LIMITS).reduce((sum, limit) => sum + limit, 0);
+		expect(axisSum).toBe(HANAMI_MAX_COMMON_CANDIDATES);
+		expect(HANAMI_MAX_COMMON_CANDIDATES + HANAMI_PERSONAL_GENERATION_POOL_MAX).toBeLessThanOrEqual(HANAMI_GENERATION_CANDIDATE_LIMIT);
+	});
 });

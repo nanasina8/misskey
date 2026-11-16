@@ -9,6 +9,17 @@ export const HANAMI_COMMON_AXES = ['globalPopular', 'trending', 'exploration'] a
 
 export type HanamiCommonAxis = typeof HANAMI_COMMON_AXES[number];
 
+/**
+ * 共通候補の軸ごとの上限。共通の生成（書く側）と個人の生成（読む側）が同じ値を使う。
+ * 合計 HANAMI_MAX_COMMON_CANDIDATES は、個人の生成が一度に扱う共通候補の上限（メモリと時間を守るため）。
+ */
+export const HANAMI_COMMON_CANDIDATE_LIMITS: Readonly<Record<HanamiCommonAxis, number>> = Object.freeze({
+	globalPopular: 500,
+	trending: 200,
+	exploration: 1200,
+});
+export const HANAMI_MAX_COMMON_CANDIDATES = 1900;
+
 export type HanamiCommonTrigger = 'scheduled' | 'seed';
 
 export type HanamiCommonSourceAsOf = {

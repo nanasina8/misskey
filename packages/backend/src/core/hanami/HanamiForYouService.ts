@@ -72,6 +72,9 @@ const CATCHUP_NOTE_POOL = 250;
 // reactionSimilar（興味マッチ新着）: バッチ事前計算 zset（24h窓・cos≥τ）の取り出し。
 // zset score = cos×鮮度（バッチ側で焼き込み済み・毎10分更新）。人気条件なし＝埋もれた投稿でも内容が興味に合えば出る。
 const TASTE_MATCH_POOL = 300;
+// 個人の生成で、個人の軸（fof / neighborTrending / reactionSimilar / catchup）から集める候補の最大数。
+// 共通候補の上限と足して HANAMI_GENERATION_CANDIDATE_LIMIT を超えないことをテストで確かめる。
+export const HANAMI_PERSONAL_GENERATION_POOL_MAX = FOF_POOL + NEIGHBOR_NOTE_POOL + TASTE_MATCH_POOL + CATCHUP_NOTE_POOL;
 const TASTE_RECENT_SHARE_MAX = 0.5;
 const TASTE_HEAT_SAT = 12;
 const TASTE_HEAT_BETA = 2.0;

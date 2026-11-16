@@ -7,8 +7,12 @@ import type { DataSource, QueryRunner } from 'typeorm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
+import Logger from '@/logger.js';
 import {
+	HANAMI_COMMON_CANDIDATE_LIMITS,
 	HANAMI_COMMON_GENERATION_READ,
+	HANAMI_MAX_COMMON_CANDIDATES,
+	type HanamiCommonAxis,
 	type HanamiCommonGenerationReadPort,
 	type HanamiPersistedCommonCandidate,
 } from '@/core/hanami/HanamiCommonGenerationContracts.js';
@@ -35,9 +39,75 @@ import { createHanamiMetricsCandidateRows, type HanamiMetricsCandidateDecision }
 
 const MAX_SEGMENTS = 7;
 const SEGMENT_SIZE = 30;
-const MAX_COMMON_CANDIDATES = 1900;
-const COMMON_CANDIDATE_LIMITS = Object.freeze({ globalPopular: 500, trending: 200, exploration: 1200 });
 const GENERATION_LOCK_TIMEOUT_MS = 5000;
+
+export type HanamiBoundedCommonCandidates = Readonly<{
+	candidates: readonly HanamiPersistedCommonCandidate[];
+	/** 軸ごとの、上限を超えて捨てた件数（捨てた軸だけ載る）。知らない軸の行は unknown に数える。 */
+	trimmed: Readonly<Partial<Record<HanamiCommonAxis | 'unknown', number>>>;
+	trimmedTotal: number;
+}>;
+
+/**
+ * 読み込んだ共通候補を、軸ごとの上限と合計の上限に収める。
+ * 超えた分は失敗にせず、その軸の中で baseScore の低いものから捨てる（同点は noteId の大きいほうを捨てる）。
+ * 残した行は読み込んだときの順のまま返す。
+ */
+export function boundHanamiCommonCandidates(candidates: readonly HanamiPersistedCommonCandidate[]): HanamiBoundedCommonCandidates {
+	const byAxis = new Map<HanamiCommonAxis, number[]>();
+	const trimmed: Partial<Record<HanamiCommonAxis | 'unknown', number>> = {};
+	candidates.forEach((candidate, index) => {
+		if (!Object.hasOwn(HANAMI_COMMON_CANDIDATE_LIMITS, candidate.axis)) {
+			trimmed.unknown = (trimmed.unknown ?? 0) + 1;
+			return;
+		}
+		const axis = candidate.axis as HanamiCommonAxis;
+		const list = byAxis.get(axis) ?? [];
+		list.push(index);
+		byAxis.set(axis, list);
+	});
+
+	const score = (index: number): number => {
+		const value = candidates[index].baseScore;
+		return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+	};
+	const byScore = (a: number, b: number): number => {
+		const diff = score(b) - score(a);
+		if (diff !== 0 && !Number.isNaN(diff)) return diff;
+		const left = candidates[a].noteId;
+		const right = candidates[b].noteId;
+		return left < right ? -1 : left > right ? 1 : 0;
+	};
+
+	let kept: number[] = [];
+	for (const [axis, indexes] of byAxis) {
+		const limit = HANAMI_COMMON_CANDIDATE_LIMITS[axis];
+		if (indexes.length <= limit) {
+			kept.push(...indexes);
+			continue;
+		}
+		kept.push(...[...indexes].sort(byScore).slice(0, limit));
+		trimmed[axis] = indexes.length - limit;
+	}
+	// 軸ごとの上限の合計は合計の上限と同じなので、ここで削ることは普段ない。上限を変えたときの安全網。
+	if (kept.length > HANAMI_MAX_COMMON_CANDIDATES) {
+		const overflow = [...kept].sort(byScore).slice(HANAMI_MAX_COMMON_CANDIDATES);
+		const dropped = new Set(overflow);
+		for (const index of overflow) {
+			const axis = candidates[index].axis as HanamiCommonAxis;
+			trimmed[axis] = (trimmed[axis] ?? 0) + 1;
+		}
+		kept = kept.filter(index => !dropped.has(index));
+	}
+
+	kept.sort((a, b) => a - b);
+	const trimmedTotal = Object.values(trimmed).reduce((sum, count) => sum + (count ?? 0), 0);
+	return Object.freeze({
+		candidates: trimmedTotal === 0 ? candidates : Object.freeze(kept.map(index => candidates[index])),
+		trimmed: Object.freeze(trimmed),
+		trimmedTotal,
+	});
+}
 
 const CONFIGURE_DEADLINE_SQL = `
 	WITH budget AS (
@@ -84,6 +154,7 @@ export type HanamiPersonalFeedCapturedComputationResult = HanamiPersonalFeedComp
 @Injectable()
 export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedComputationPort {
 	public readonly algorithmVersion = HANAMI_PERSONAL_FEED_ALGORITHM_VERSION;
+	private readonly logger = new Logger('hanami');
 
 	constructor(
 		@Inject(DI.db)
@@ -456,15 +527,14 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 		return [...otherAxes, ...explorationOutput];
 	}
 
-	private validateCommonCandidates(candidates: readonly HanamiPersistedCommonCandidate[]): void {
-		if (candidates.length > MAX_COMMON_CANDIDATES) throw new Error(`Hanami common candidate read exceeded ${MAX_COMMON_CANDIDATES} rows`);
-		const count = { globalPopular: 0, trending: 0, exploration: 0 };
-		for (const candidate of candidates) {
-			count[candidate.axis]++;
-			if (count[candidate.axis] > COMMON_CANDIDATE_LIMITS[candidate.axis]) {
-				throw new Error(`Hanami common ${candidate.axis} candidate read exceeded ${COMMON_CANDIDATE_LIMITS[candidate.axis]} rows`);
-			}
+	private boundCommonCandidates(generationId: string, candidates: readonly HanamiPersistedCommonCandidate[]): readonly HanamiPersistedCommonCandidate[] {
+		const bounded = boundHanamiCommonCandidates(candidates);
+		if (bounded.trimmedTotal > 0) {
+			// 書く側も同じ上限を守るので、普段は起きない。起きたら共通生成の側を調べる手がかりにする。
+			const detail = Object.entries(bounded.trimmed).map(([axis, count]) => `${axis}=${count}`).join(' ');
+			this.logger.warn(`hanami personal: trimmed ${bounded.trimmedTotal} of ${candidates.length} common candidates over the read limit (generation=${generationId} ${detail})`);
 		}
+		return bounded.candidates;
 	}
 
 	private immutableItem(item: HanamiPersonalFeedItem): HanamiPersonalFeedItem {
@@ -488,8 +558,7 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 					databaseDeadlineAt: context.databaseDeadlineAt,
 				})
 			));
-			this.validateCommonCandidates(persistedCommon);
-			return await this.computeWithRunner(context, persistedCommon);
+			return await this.computeWithRunner(context, this.boundCommonCandidates(input.baseCommonGenerationId, persistedCommon));
 		});
 	}
 

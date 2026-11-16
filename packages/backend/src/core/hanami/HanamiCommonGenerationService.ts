@@ -13,6 +13,7 @@ import { hanamiReturningRows } from '@/core/hanami/HanamiReturningRows.js';
 import { IdService } from '@/core/IdService.js';
 import {
 	HANAMI_COMMON_AXES,
+	HANAMI_COMMON_CANDIDATE_LIMITS,
 	HANAMI_COMMON_COMPUTATION,
 	type HanamiCommonAxis,
 	type HanamiCommonComputationPort,
@@ -40,11 +41,8 @@ const MAX_SEGMENTS = 7;
 const MAX_SEGMENT_ITEMS = 30;
 const MAX_TREND_TERMS = 30;
 const MAX_TREND_REPRESENTATIVES = 20;
-const CANDIDATE_LIMITS: Readonly<Record<HanamiCommonAxis, number>> = {
-	globalPopular: 500,
-	trending: 200,
-	exploration: 1200,
-};
+// 個人の生成が読むときと同じ上限を守る（食い違うと、書けた候補を読む側が受け取れなくなる）。
+const CANDIDATE_LIMITS = HANAMI_COMMON_CANDIDATE_LIMITS;
 const AXIS_ORDER = new Map<HanamiCommonAxis, number>(HANAMI_COMMON_AXES.map((axis, index) => [axis, index]));
 
 type CommonStateRow = {
