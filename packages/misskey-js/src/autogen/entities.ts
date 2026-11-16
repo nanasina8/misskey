@@ -605,6 +605,7 @@ export type NotesGlobalTimelineRequest = operations['notes___global-timeline']['
 export type NotesGlobalTimelineResponse = operations['notes___global-timeline']['responses']['200']['content']['application/json'];
 export type NotesHanamiTimelineRequest = operations['notes___hanami-timeline']['requestBody']['content']['application/json'];
 export type NotesHanamiTimelineResponse = operations['notes___hanami-timeline']['responses']['200']['content']['application/json'];
+export type NotesHanamiTimelineHeadResponse = operations['notes___hanami-timeline-head']['responses']['200']['content']['application/json'];
 export type NotesHanamiTimelineSeenRequest = operations['notes___hanami-timeline-seen']['requestBody']['content']['application/json'];
 export type NotesHanamiTimelineSeenResponse = operations['notes___hanami-timeline-seen']['responses']['200']['content']['application/json'];
 export type NotesHanamiTopicRequest = operations['notes___hanami-topic']['requestBody']['content']['application/json'];

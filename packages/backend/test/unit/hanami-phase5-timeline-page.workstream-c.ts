@@ -101,6 +101,7 @@ function fixture(options: {
 } = {}) {
 	const requestPort = {
 		checkAvailability: jest.fn<HanamiUserFeedRequestPort['checkAvailability']>(async () => ({ kind: 'available' })),
+		readHead: jest.fn<HanamiUserFeedRequestPort['readHead']>(async () => ({ kind: 'head', head: personalHead, generationPending: false })),
 		evaluateCursorless: jest.fn<HanamiUserFeedRequestPort['evaluateCursorless']>(async () => ({
 			kind: 'serve', head: personalHead, generationPending: false, requestedBatchId: null,
 		})),

@@ -7,14 +7,18 @@ import { ref, shallowRef } from 'vue';
 import * as Misskey from 'misskey-js';
 import type { ComputedRef } from 'vue';
 import { misskeyApi } from '@/utility/misskey-api.js';
+import { useStream } from '@/stream.js';
+import { store } from '@/store.js';
 
 const INITIAL_LIMIT = 15;
 const OLDER_LIMIT = 30;
 const MAX_AUTOMATIC_EMPTY_PAGES = 3;
 const REFRESH_RATE_LIMIT_MS = 60_000;
 const SESSION_SNAPSHOT_MS = 30 * 60_000;
-const PENDING_POLL_INTERVAL_MS = 3000;
-const PENDING_POLL_MAX_ATTEMPTS = 20;
+// 裏の生成は中央 2〜3.4 秒で終わるので、最初の確認を詰める（1・2・3 秒後、以後 3 秒おき、およそ 60 秒まで）。
+const PENDING_CHECK_FIRST_DELAYS_MS = [1000, 1000, 1000];
+const PENDING_CHECK_INTERVAL_MS = 3000;
+const PENDING_CHECK_MAX_MS = 60_000;
 
 type HanamiTimelineRequest = Misskey.entities.NotesHanamiTimelineRequest;
 type HanamiTimelineResponse = Misskey.entities.NotesHanamiTimelineResponse;
@@ -60,6 +64,20 @@ type HanamiTimelineSnapshot = {
 
 let reloadRefreshConsumed = false;
 let lastSnapshot: HanamiTimelineSnapshot | null = null;
+
+// デッキで列が複数あっても、同じ新しい先頭を取りにいくのは 1 回にする（取りに行っている間は相乗り）。
+const headFetches = new Map<string, Promise<HanamiTimelineResponse>>();
+
+function fetchNewHead(withFiles: boolean | undefined, expectedHeadBatchId: string): Promise<HanamiTimelineResponse> {
+	const key = `${withFiles === undefined ? '' : String(withFiles)}:${expectedHeadBatchId}`;
+	const running = headFetches.get(key);
+	if (running != null) return running;
+	const request = misskeyApi('notes/hanami-timeline', { limit: INITIAL_LIMIT, refresh: false, ...(withFiles === undefined ? {} : { withFiles }) });
+	headFetches.set(key, request);
+	const forget = () => { if (headFetches.get(key) === request) headFetches.delete(key); };
+	request.then(forget, forget);
+	return request;
+}
 
 export class HanamiTimelineProtocolError extends Error {
 	constructor() {
@@ -123,6 +141,7 @@ export class HanamiTimelinePaginator {
 
 	private readyHead: HanamiTimelineResponse | null = null;
 	private pendingHeadTimer: number | null = null;
+	private pendingHeadConnection: Misskey.IChannelConnection<Misskey.Channels['main']> | null = null;
 	private headRevision = 0;
 	private disposed = false;
 	private inPlaceRefreshCount = 0;
@@ -221,48 +240,104 @@ export class HanamiTimelinePaginator {
 
 	private cancelPendingHead(): void {
 		this.headRevision++;
-		if (this.pendingHeadTimer != null) window.clearTimeout(this.pendingHeadTimer);
-		this.pendingHeadTimer = null;
+		this.stopPendingWatch();
 		this.readyHead = null;
 		this.newHeadReady.value = false;
 	}
 
+	/** 待つのをやめる（確認のタイマーとストリームの購読を片付ける）。できていた並びは残す。 */
+	private stopPendingWatch(): void {
+		if (this.pendingHeadTimer != null) window.clearTimeout(this.pendingHeadTimer);
+		this.pendingHeadTimer = null;
+		if (this.pendingHeadConnection != null) this.pendingHeadConnection.dispose();
+		this.pendingHeadConnection = null;
+	}
+
 	/**
-	 * 裏で作っている並びができるまで数秒おきに見に行く（サーバーは待たない）。
+	 * 裏で作っている並びができるのを待つ（サーバーは待たない）。
+	 * ストリームの hanamiFeedReady を受けたらすぐ本体を 1 回取る。取りこぼしやリアルタイムモードがオフの人のために、
+	 * 先頭だけの軽い API（notes/hanami-timeline-head）でも確かめ、先頭が変わったときだけ本体を取る。
+	 * 待っている間に本体を定期的には呼ばない。
 	 * 調整を変えたときは自動で入れ替え、それ以外は今の並びを残してボタンで知らせる。
 	 */
 	private schedulePendingHead(withFiles: boolean | undefined, autoReplace: boolean): void {
 		this.cancelPendingHead();
 		const revision = this.headRevision;
 		const previousHead = this.headBatchId.value;
-		let attempts = 0;
-		const poll = (): void => {
-			this.pendingHeadTimer = window.setTimeout(async () => {
-				this.pendingHeadTimer = null;
-				attempts++;
-				try {
-					const response = await misskeyApi('notes/hanami-timeline', { limit: INITIAL_LIMIT, refresh: false, ...(withFiles === undefined ? {} : { withFiles }) });
-					if (this.disposed || revision !== this.headRevision) return;
-					if (response.headBatchId !== previousHead && this.validCursorProgress(response, null)) {
-						if (autoReplace || this.items.value.length === 0) {
-							this.applyHead(response);
-						} else {
-							this.readyHead = response;
-							this.newHeadReady.value = true;
-							this.generationPending.value = false;
-						}
-						return;
-					}
-				} catch { /* 次の回でまた見る。ここで batch は作らない。 */ }
-				if (this.disposed || revision !== this.headRevision) return;
-				if (attempts < PENDING_POLL_MAX_ATTEMPTS) {
-					poll();
+		// 新しい並びを扱った・あきらめた後は、遅れて返ってきた確認の結果を使わない。
+		let settled = false;
+		const isCurrent = (): boolean => !settled && !this.disposed && revision === this.headRevision;
+		let checks = 0;
+		let waitedMs = 0;
+		let fetchingBody = false;
+
+		/** 新しい先頭の本体を 1 回取って扱う。扱えたら true（待ちは終わり）。 */
+		const takeNewHead = async (headBatchId: string): Promise<boolean> => {
+			// 今出している・ボタンで待たせている並びと同じなら取らない。同時に 2 回取りにいかない。
+			if (fetchingBody || headBatchId === previousHead || headBatchId === this.readyHead?.headBatchId) return false;
+			fetchingBody = true;
+			try {
+				const response = await fetchNewHead(withFiles, headBatchId);
+				if (!isCurrent()) return true;
+				if (response.headBatchId === previousHead || !this.validCursorProgress(response, null)) return false;
+				settled = true;
+				this.stopPendingWatch();
+				if (autoReplace || this.items.value.length === 0) {
+					this.applyHead(response);
 				} else {
+					this.readyHead = response;
+					this.newHeadReady.value = true;
 					this.generationPending.value = false;
 				}
-			}, PENDING_POLL_INTERVAL_MS);
+				return true;
+			} catch {
+				return false; // 次の確認でまた見る。ここで batch は作らない。
+			} finally {
+				fetchingBody = false;
+			}
 		};
-		poll();
+
+		const giveUp = (): void => {
+			settled = true;
+			this.stopPendingWatch();
+			this.generationPending.value = false;
+		};
+
+		const scheduleCheck = (): void => {
+			const delay = PENDING_CHECK_FIRST_DELAYS_MS[checks] ?? PENDING_CHECK_INTERVAL_MS;
+			if (waitedMs + delay > PENDING_CHECK_MAX_MS) {
+				giveUp();
+				return;
+			}
+			waitedMs += delay;
+			this.pendingHeadTimer = window.setTimeout(async () => {
+				this.pendingHeadTimer = null;
+				checks++;
+				try {
+					const head = await misskeyApi('notes/hanami-timeline-head', {});
+					if (!isCurrent()) return;
+					if (head.headBatchId !== previousHead) {
+						if (await takeNewHead(head.headBatchId)) return;
+					} else if (!head.generationPending) {
+						// 作っていた並びが無くなった（失敗など）。先頭は今のままなので待つのをやめる。
+						giveUp();
+						return;
+					}
+				} catch { /* 次の回でまた見る。 */ }
+				if (!isCurrent() || this.pendingHeadTimer != null) return;
+				scheduleCheck();
+			}, delay);
+		};
+
+		if (store.s.realtimeMode) {
+			const connection = useStream().useChannel('main');
+			connection.on('hanamiFeedReady', payload => {
+				if (!isCurrent()) return;
+				void takeNewHead(payload.headBatchId);
+			});
+			this.pendingHeadConnection = connection;
+		}
+		scheduleCheck();
 	}
 
 	private applyHead(response: HanamiTimelineResponse): void {

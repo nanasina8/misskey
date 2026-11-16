@@ -193,6 +193,9 @@ describe('このフォークで足した API を一通り呼ぶ', () => {
 		const open = await api('notes/hanami-timeline' as never, {} as never, member);
 		// 共通の TL がまだ作られていないサーバーでは 503 HANAMI_COMMON_NOT_READY（想定どおり）。
 		assert.ok(open.status === 200 || (open.status === 503 && (open.body as { error?: { code?: string } }).error?.code === 'HANAMI_COMMON_NOT_READY'), `${open.status} ${describeBody(open.body)}`);
+		// 先頭だけの軽い確認も同じ決まりで答える（裏の生成が進むので先頭の一致までは見ない）。
+		const head = await api('notes/hanami-timeline-head' as never, {} as never, member);
+		assert.strictEqual(head.status, open.status, `${head.status} ${describeBody(head.body)}`);
 		const tuned = await api('i/update' as never, { hanamiShowRecommendationReason: true } as never, member);
 		assert.strictEqual(tuned.status, 200, describeBody(tuned.body));
 		for (const endpoint of ['notes/timeline', 'notes/local-timeline', 'notes/hybrid-timeline', 'notes/global-timeline', 'notes/featured'] as const) {

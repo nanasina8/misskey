@@ -11,6 +11,7 @@ import type { Config } from '@/config.js';
 import { HanamiCommonHeadQueries } from '@/core/hanami/HanamiCommonHeadQueries.js';
 import { encodeHanamiPersonalFeedEntryLocator } from '@/core/hanami/HanamiFeedCodec.js';
 import { HanamiFeedLifecycleService } from '@/core/hanami/HanamiFeedLifecycleService.js';
+import { HANAMI_FEED_SEEN_KEY_PREFIX } from '@/core/hanami/HanamiFeedStockEvents.js';
 import { HanamiMetricsCaptureService } from '@/core/hanami/HanamiMetricsCaptureService.js';
 import type { HanamiMetricsTimelineHealthService } from '@/core/hanami/HanamiMetricsTimelineHealthService.js';
 import { HanamiPersistedFeedReadService } from '@/core/hanami/HanamiPersistedFeedReadService.js';
@@ -151,6 +152,7 @@ const makeRuntime = (schema: string, options: {
 	metricsCapture?: HanamiMetricsCaptureService;
 	metricsHealth?: Pick<HanamiMetricsTimelineHealthService, 'begin' | 'finish'>;
 	redis?: unknown;
+	events?: { publishMainStream: (...args: unknown[]) => void };
 } = {}) => {
 	const db = makeDataSource(schema);
 	const ids = makeIdService(options.idPrefix ?? 'wb');
@@ -173,6 +175,7 @@ const makeRuntime = (schema: string, options: {
 	const generation = new HanamiUserFeedGenerationService(
 		db as never, runtimeConfig, ids as never, computation, common,
 		options.metricsCapture, options.metricsHealth as HanamiMetricsTimelineHealthService | undefined,
+		undefined, options.events as never,
 	);
 	const request = new HanamiUserFeedRequestService(
 		db as never,
@@ -1657,6 +1660,129 @@ describe('Hanami Phase 5 workstream B PostgreSQL contracts', () => {
 			expect(broken.checks.find((check) => check.code === 'entryAboveHeadNotStock')).toMatchObject({ ok: false, count: 1, error: null });
 			expect(broken.checks.find((check) => check.code === 'stockShapeMismatch')).toMatchObject({ ok: false, count: 1, error: null });
 			expect(broken.issues.map((issue) => issue.code)).toEqual(expect.arrayContaining(['entryAboveHeadNotStock', 'stockShapeMismatch']));
+		});
+	}, 20_000);
+
+	// 軽い確認 API（notes/hanami-timeline-head）が読む先頭。書き込み・生成・目印の更新をしないことも確かめる。
+	const feedTables = ['hanami_user_feed_state', 'hanami_user_feed_epoch', 'hanami_user_feed_batch', 'hanami_user_feed_refresh', 'hanami_user_feed_entry', 'hanami_recommendation_event'];
+	const snapshotFeedTables = async (query: DbQuery): Promise<Record<string, string[]>> => {
+		const result: Record<string, string[]> = {};
+		for (const table of feedTables) {
+			const rows = await query<{ row: string }>(`SELECT to_jsonb(t)::text AS row FROM ${quoteIdent(table)} t ORDER BY 1`);
+			result[table] = rows.map((row) => row.row);
+		}
+		return result;
+	};
+
+	test('H1 readHead returns the head a cursorless open would show and the pending state without writing anything', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 'h1-head');
+			const redis = makeFakeRedis();
+			const runtime = makeRuntime(schema, { idPrefix: 'h1', redis });
+			const readOnly = async () => {
+				const before = await snapshotFeedTables(query);
+				const queueBefore = runtime.queueCalls.length;
+				const result = await runtime.request.readHead('h1-head');
+				expect(await snapshotFeedTables(query)).toEqual(before);
+				expect(runtime.queueCalls).toHaveLength(queueBefore);
+				return result;
+			};
+
+			// まだ一度も開いていない人: 最新の共通の先頭。状態も batch も作らない。
+			expect(await readOnly()).toEqual({
+				kind: 'head', generationPending: false,
+				head: { mode: 'common', kind: 'common', feedEpochId: 'common-epoch-1', headBatchId: 'common-generation-1', headSequence: '3' },
+			});
+			expect(await query(`SELECT COUNT(*)::text AS count FROM "hanami_user_feed_state" WHERE "userId" = 'h1-head'`)).toEqual([{ count: '0' }]);
+
+			// 初回の生成中: 共通の先頭のまま、作っている最中。
+			const initial = await runtime.request.evaluateCursorless('h1-head');
+			if (initial.kind !== 'serve' || !initial.generationPending) throw new Error('expected initial batch');
+			expect(await readOnly()).toMatchObject({ kind: 'head', generationPending: true, head: { mode: 'common', headBatchId: 'common-generation-1' } });
+
+			// できあがり: 個人の先頭、作っている最中ではない。
+			await runtime.generation.runUserFeedGeneration(initial.requestedBatchId);
+			expect(await readOnly()).toEqual({
+				kind: 'head', generationPending: false,
+				head: { mode: 'personalized', kind: 'personal', feedEpochId: expect.any(String), headBatchId: initial.requestedBatchId, headSequence: '1' },
+			});
+
+			// ストック用の生成中は「作っている最中」に数えない（先頭は変わらない）。
+			await query(`UPDATE "hanami_user_feed_batch" SET "finishedAt" = clock_timestamp() - INTERVAL '21 minutes' WHERE "id" = $1`, [initial.requestedBatchId]);
+			redis.store.set(`${HANAMI_FEED_SEEN_KEY_PREFIX}h1-head`, '1'); // 30 分以内に見ている
+			await runtime.request.evaluateCursorless('h1-head');
+			const prefetchId = runtime.queueCalls.at(-1)!;
+			expect(await query(`SELECT "trigger", "status" FROM "hanami_user_feed_batch" WHERE "id" = $1`, [prefetchId])).toEqual([{ trigger: 'prefetch', status: 'pending' }]);
+			expect(await readOnly()).toMatchObject({ kind: 'head', generationPending: false, head: { headBatchId: initial.requestedBatchId } });
+
+			// 更新でストック用を先頭用に切り替えたら「作っている最中」。できたら新しい先頭。
+			const refreshed = await runtime.request.requestRefresh('h1-head', token(101));
+			expect(refreshed).toMatchObject({ kind: 'serve', generationPending: true, requestedBatchId: prefetchId });
+			expect(await readOnly()).toMatchObject({ kind: 'head', generationPending: true, head: { headBatchId: initial.requestedBatchId } });
+			await runtime.generation.runUserFeedGeneration(prefetchId);
+			expect(await readOnly()).toMatchObject({ kind: 'head', generationPending: false, head: { mode: 'personalized', headBatchId: prefetchId, headSequence: '2' } });
+
+			// 「前回見た」の目印・先回りの目印には触れない。
+			const redisCallsBefore = redis.set.mock.calls.length + redis.exists.mock.calls.length;
+			await runtime.request.readHead('h1-head');
+			expect(redis.set.mock.calls.length + redis.exists.mock.calls.length).toBe(redisCallsBefore);
+		});
+	}, 20_000);
+
+	test('H2 readHead maps unavailable users like the timeline and never creates state for them', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 'h2-role');
+			await seedUser(query, 'h2-off', false);
+			const roleOff = makeRuntime(schema, { idPrefix: 'h2r', policy: false });
+			expect(await roleOff.request.readHead('h2-role')).toEqual({ kind: 'roleDisabled' });
+
+			const runtime = makeRuntime(schema, { idPrefix: 'h2' });
+			expect(await runtime.request.readHead('h2-off')).toMatchObject({ kind: 'head', generationPending: false, head: { mode: 'common', headBatchId: 'common-generation-1' } });
+			expect(await query(`SELECT COUNT(*)::text AS count FROM "hanami_user_feed_state"`)).toEqual([{ count: '0' }]);
+
+			// 共通の並びがまだ無ければ commonNotReady。
+			await query(`UPDATE "hanami_common_feed_state" SET "latestReadyGenerationId" = NULL, "epochId" = NULL, "latestSequence" = 0, "earliestRetainedSequence" = 0`);
+			expect(await runtime.request.readHead('h2-off')).toEqual({ kind: 'commonNotReady' });
+		});
+	}, 20_000);
+
+	test('N1 hanamiFeedReady is sent once when an initial or refresh batch becomes the head, never for a stock', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 'n1-ready');
+			const events = { publishMainStream: jest.fn() };
+			const runtime = makeRuntime(schema, { idPrefix: 'n1', events });
+
+			// 初回の生成が先頭になった。
+			const { headBatchId, stockBatchId } = await setupStock(runtime, 'n1-ready');
+			expect(events.publishMainStream.mock.calls).toEqual([['n1-ready', 'hanamiFeedReady', { headBatchId }]]);
+			// ストック用の完了（setupStock の後半）では送っていない。
+			expect(events.publishMainStream.mock.calls.flat()).not.toContainEqual({ headBatchId: stockBatchId });
+
+			// 調整はストックを捨てて作り直す。できあがりが先頭になったら 1 回だけ送る。
+			const tuned = await runtime.request.requestRefresh('n1-ready', token(102), 'tuning');
+			if (tuned.kind !== 'serve' || !tuned.generationPending) throw new Error('expected tuning batch');
+			events.publishMainStream.mockClear();
+			await runtime.generation.runUserFeedGeneration(tuned.requestedBatchId);
+			expect(events.publishMainStream.mock.calls).toEqual([['n1-ready', 'hanamiFeedReady', { headBatchId: tuned.requestedBatchId }]]);
+			// 同じ batch をもう一度回しても（ready 済み）送らない。
+			events.publishMainStream.mockClear();
+			await runtime.generation.runUserFeedGeneration(tuned.requestedBatchId);
+			expect(events.publishMainStream).not.toHaveBeenCalled();
+			expect(await query(`SELECT "latestReadyBatchId" FROM "hanami_user_feed_state" WHERE "userId" = 'n1-ready'`)).toEqual([{ latestReadyBatchId: tuned.requestedBatchId }]);
+		});
+	}, 20_000);
+
+	test('N2 a failing notification does not fail the generation', async () => {
+		await withMigratedSchema(async ({ schema, query }) => {
+			await seedUser(query, 'n2-ready');
+			const events = { publishMainStream: jest.fn(() => { throw new Error('redis down'); }) };
+			const runtime = makeRuntime(schema, { idPrefix: 'n2', events });
+			const initial = await runtime.request.evaluateCursorless('n2-ready');
+			if (initial.kind !== 'serve' || !initial.generationPending) throw new Error('expected initial batch');
+			await expect(runtime.generation.runUserFeedGeneration(initial.requestedBatchId)).resolves.toMatchObject({ kind: 'published' });
+			expect(events.publishMainStream).toHaveBeenCalledOnce();
+			expect(await query(`SELECT "latestReadyBatchId", "mode" FROM "hanami_user_feed_state" WHERE "userId" = 'n2-ready'`))
+				.toEqual([{ latestReadyBatchId: initial.requestedBatchId, mode: 'personalized' }]);
 		});
 	}, 20_000);
 });

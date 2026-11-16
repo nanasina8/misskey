@@ -91,6 +91,10 @@ export interface MainEventTypes {
 	announcementCreated: {
 		announcement: Packed<'Announcement'>;
 	};
+	// はなみTL: 裏で作っていた並び（初回・更新・調整）が新しい先頭になった。ストック用の完了では送らない。
+	hanamiFeedReady: {
+		headBatchId: string;
+	};
 }
 
 export interface DriveEventTypes {

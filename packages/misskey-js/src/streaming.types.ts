@@ -64,6 +64,7 @@ export type Channels = {
 			readAntenna: (payload: Antenna) => void;
 			receiveFollowRequest: (payload: User) => void;
 			announcementCreated: (payload: AnnouncementCreated) => void;
+			hanamiFeedReady: (payload: { headBatchId: string; }) => void;
 		};
 		receives: null;
 	};

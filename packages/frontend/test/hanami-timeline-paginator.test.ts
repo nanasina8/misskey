@@ -20,6 +20,34 @@ vi.mock('@/utility/misskey-api.js', () => ({
 	misskeyApi: misskeyApiMock,
 }));
 
+// メインのストリームの代わり。hanamiFeedReady を手で流せるようにする。
+const streamMock = vi.hoisted(() => {
+	type Listener = (payload: { headBatchId: string }) => void;
+	const connections: Array<{ name: string; listeners: Listener[]; disposed: boolean }> = [];
+	return {
+		realtimeMode: false,
+		connections,
+		emitFeedReady(headBatchId: string): void {
+			for (const connection of connections) {
+				if (!connection.disposed) for (const listener of connection.listeners) listener({ headBatchId });
+			}
+		},
+		useStream: () => ({
+			useChannel: (name: string) => {
+				const connection = { name, listeners: [] as Listener[], disposed: false };
+				connections.push(connection);
+				return {
+					on: (event: string, listener: Listener) => { if (event === 'hanamiFeedReady') connection.listeners.push(listener); },
+					dispose: () => { connection.disposed = true; },
+				};
+			},
+		}),
+	};
+});
+
+vi.mock('@/stream.js', () => ({ useStream: streamMock.useStream }));
+vi.mock('@/store.js', () => ({ store: { s: { get realtimeMode() { return streamMock.realtimeMode; } } } }));
+
 function note(id: string): Misskey.entities.Note {
 	return { id, createdAt: '2026-08-20T00:00:00.000Z' } as Misskey.entities.Note;
 }
@@ -254,6 +282,7 @@ describe('HanamiTimelinePaginator', () => {
 		expect('fetchNewer' in target).toBe(false);
 		expect('releaseQueue' in target).toBe(false);
 		expect('channel' in target).toBe(false);
+		target.dispose();
 	});
 
 	test('consumes browser reload refresh only for the first Hanami init', async () => {
@@ -279,60 +308,185 @@ describe('HanamiTimelinePaginator', () => {
 	});
 });
 
+type HeadResponse = Misskey.entities.NotesHanamiTimelineHeadResponse;
+
+function head(overrides: Partial<HeadResponse> = {}): HeadResponse {
+	return { mode: 'personalized', feedEpochId: 'epoch-1', headBatchId: 'head-1', generationPending: true, ...overrides };
+}
+
+/** 本体と軽い確認 API を別々のモックに振り分ける。 */
+function routeApi() {
+	const body = vi.fn<(params: unknown) => Promise<Misskey.entities.NotesHanamiTimelineResponse>>();
+	const headCheck = vi.fn<() => Promise<HeadResponse>>(async () => head());
+	misskeyApiMock.mockImplementation((endpoint: string, params: unknown) => endpoint === 'notes/hanami-timeline-head' ? headCheck() : body(params));
+	const bodyCalls = () => misskeyApiMock.mock.calls.filter(call => call[0] === 'notes/hanami-timeline').length;
+	const headCalls = () => misskeyApiMock.mock.calls.filter(call => call[0] === 'notes/hanami-timeline-head').length;
+	return { body, headCheck, bodyCalls, headCalls };
+}
+
 describe('Hanami H3 and tuning refresh', () => {
-	beforeEach(() => { vi.useFakeTimers(); misskeyApiMock.mockReset(); });
+	beforeEach(() => {
+		vi.useFakeTimers();
+		misskeyApiMock.mockReset();
+		streamMock.realtimeMode = false;
+		streamMock.connections.length = 0;
+	});
 	afterEach(() => { vi.useRealTimers(); });
-	test('tuning keeps existing items, uses its own reason, polls every 3s and replaces a changed head automatically', async () => {
-		misskeyApiMock.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ generationPending: true }))
-			.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ headBatchId: 'head-2', items: [item('new-entry')] }));
+
+	test('tuning keeps existing items, uses its own reason, checks the light head API and replaces a changed head automatically', async () => {
+		const api = routeApi();
+		api.body.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ generationPending: true }))
+			.mockResolvedValueOnce(response({ headBatchId: 'head-2', items: [item('new-entry')] }));
+		api.headCheck.mockResolvedValueOnce(head()).mockResolvedValueOnce(head({ headBatchId: 'head-2', generationPending: false }));
 		const p = paginator(); await p.init();
 		const refreshing = p.refreshTuning('new-token');
 		expect(p.items.value).toHaveLength(1); expect(p.generationPending.value).toBe(true); expect(p.fetching.value).toBe(false);
 		await refreshing;
 		expect(misskeyApiMock.mock.calls[1][1]).toMatchObject({ refresh: true, reason: 'tuning', refreshToken: 'new-token', limit: 15 });
-		await vi.advanceTimersByTimeAsync(2999); expect(misskeyApiMock).toHaveBeenCalledTimes(2);
+		await vi.advanceTimersByTimeAsync(999); expect(misskeyApiMock).toHaveBeenCalledTimes(2);
 		await vi.advanceTimersByTimeAsync(1);
-		expect(misskeyApiMock.mock.calls[2][1]).toEqual({ limit: 15, refresh: false, withFiles: false });
+		expect(misskeyApiMock.mock.calls[2]).toEqual(['notes/hanami-timeline-head', {}]);
 		expect(p.items.value[0].feedEntryId).toBe('entry-1'); expect(p.generationPending.value).toBe(true);
-		await vi.advanceTimersByTimeAsync(3000);
+		await vi.advanceTimersByTimeAsync(1000);
+		// 先頭が変わったときだけ、本体を今までと同じ引数で 1 回取る。
+		expect(misskeyApiMock.mock.calls[4]).toEqual(['notes/hanami-timeline', { limit: 15, refresh: false, withFiles: false }]);
 		expect(p.items.value[0].feedEntryId).toBe('new-entry'); expect(p.generationPending.value).toBe(false); expect(p.newHeadReady.value).toBe(false);
-		await vi.advanceTimersByTimeAsync(40000); expect(misskeyApiMock).toHaveBeenCalledTimes(4);
+		await vi.advanceTimersByTimeAsync(60_000); expect(misskeyApiMock).toHaveBeenCalledTimes(5);
 		p.dispose();
 	});
-	test('same head keeps items while polling and gives up the banner after 20 checks', async () => {
-		misskeyApiMock.mockResolvedValueOnce(response({ generationPending: true })).mockResolvedValue(response({ items: [item('should-not-replace')] }));
-		const p = paginator(); await p.init(); await vi.advanceTimersByTimeAsync(3000);
-		expect(p.items.value[0].feedEntryId).toBe('entry-1'); expect(p.generationPending.value).toBe(true);
-		await vi.advanceTimersByTimeAsync(57000); expect(misskeyApiMock).toHaveBeenCalledTimes(21);
+
+	test('checks at 1, 2 and 3 seconds then every 3 seconds, never calls the body while waiting, and gives up after about 60 seconds', async () => {
+		const api = routeApi();
+		api.body.mockResolvedValueOnce(response({ generationPending: true })).mockResolvedValue(response({ items: [item('should-not-replace')] }));
+		const p = paginator(); await p.init();
+		const checkedAt: number[] = [];
+		for (let elapsed = 1000; elapsed <= 70_000; elapsed += 1000) {
+			const before = api.headCalls();
+			await vi.advanceTimersByTimeAsync(1000);
+			if (api.headCalls() > before) checkedAt.push(elapsed / 1000);
+		}
+		expect(checkedAt).toEqual([1, 2, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57, 60]);
+		expect(api.bodyCalls()).toBe(1);
 		expect(p.generationPending.value).toBe(false); expect(p.items.value[0].feedEntryId).toBe('entry-1');
-		await vi.advanceTimersByTimeAsync(30000); expect(misskeyApiMock).toHaveBeenCalledTimes(21); p.dispose();
+		p.dispose();
 	});
-	test('a new refresh cancels the previous H3 timer and dispose cancels the next one', async () => {
-		misskeyApiMock.mockResolvedValue(response({ generationPending: true }));
-		const p = paginator(); await p.init(); await vi.advanceTimersByTimeAsync(2999);
-		await p.refreshTuning('next'); await vi.advanceTimersByTimeAsync(1000);
-		expect(misskeyApiMock).toHaveBeenCalledTimes(2);
-		p.dispose(); await vi.advanceTimersByTimeAsync(5000); expect(misskeyApiMock).toHaveBeenCalledTimes(2);
+
+	test('stops waiting when the head API reports the same head with nothing being generated', async () => {
+		const api = routeApi();
+		api.body.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ generationPending: true }));
+		api.headCheck.mockResolvedValueOnce(head()).mockResolvedValueOnce(head({ generationPending: false }));
+		const p = paginator(); await p.init(); await p.refresh();
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(p.generationPending.value).toBe(false); expect(p.newHeadReady.value).toBe(false);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(api.headCalls()).toBe(2); expect(api.bodyCalls()).toBe(2);
+		p.dispose();
 	});
-	test('a normal refresh without stock keeps the list and offers the new head through a button', async () => {
-		misskeyApiMock.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ generationPending: true }))
+
+	test('a hanamiFeedReady notification fetches the body once right away and is ignored for a head already taken', async () => {
+		streamMock.realtimeMode = true;
+		const api = routeApi();
+		api.body.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ generationPending: true }))
 			.mockResolvedValueOnce(response({ headBatchId: 'head-2', items: [item('new-entry')] }));
+		const p = paginator(); await p.init(); await p.refresh();
+		expect(streamMock.connections.map(c => [c.name, c.disposed])).toEqual([['main', false]]);
+		await vi.advanceTimersByTimeAsync(200);
+		streamMock.emitFeedReady('head-1'); // 今出している先頭と同じなら取らない
+		streamMock.emitFeedReady('head-2');
+		await vi.advanceTimersByTimeAsync(0);
+		expect(api.bodyCalls()).toBe(3); expect(api.headCalls()).toBe(0);
+		expect(p.newHeadReady.value).toBe(true); expect(p.generationPending.value).toBe(false);
+		expect(p.items.value[0].feedEntryId).toBe('entry-1');
+		expect(streamMock.connections[0].disposed).toBe(true);
+		streamMock.emitFeedReady('head-2');
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(api.bodyCalls()).toBe(3); expect(api.headCalls()).toBe(0);
+		p.showReadyHead(); expect(p.items.value[0].feedEntryId).toBe('new-entry');
+		p.dispose();
+	});
+
+	test('notices the new head through the light check when the notification never arrives', async () => {
+		streamMock.realtimeMode = true;
+		const api = routeApi();
+		api.body.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ generationPending: true }))
+			.mockResolvedValueOnce(response({ headBatchId: 'head-2', items: [item('new-entry')] }));
+		api.headCheck.mockResolvedValue(head({ headBatchId: 'head-2', generationPending: false }));
+		const p = paginator(); await p.init(); await p.refresh();
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(api.headCalls()).toBe(1); expect(api.bodyCalls()).toBe(3);
+		expect(p.newHeadReady.value).toBe(true);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(api.headCalls()).toBe(1); expect(api.bodyCalls()).toBe(3);
+		p.dispose();
+	});
+
+	test('does not open a stream when realtime mode is off', async () => {
+		const api = routeApi();
+		api.body.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ generationPending: true }));
+		const p = paginator(); await p.init(); await p.refresh();
+		expect(streamMock.connections).toHaveLength(0);
+		await vi.advanceTimersByTimeAsync(1000); expect(api.headCalls()).toBe(1);
+		p.dispose();
+	});
+
+	test('a new refresh cancels the previous wait, a late check result from the old wait is dropped, and dispose stops everything', async () => {
+		streamMock.realtimeMode = true;
+		const api = routeApi();
+		api.body.mockResolvedValue(response({ generationPending: true }));
+		let resolveOldCheck!: (value: HeadResponse) => void;
+		api.headCheck.mockReturnValueOnce(new Promise(resolve => { resolveOldCheck = resolve; }));
+		const p = paginator(); await p.init();
+		await vi.advanceTimersByTimeAsync(1000); expect(api.headCalls()).toBe(1);
+		await p.refreshTuning('next');
+		expect(streamMock.connections.map(c => c.disposed)).toEqual([true, false]);
+		resolveOldCheck(head({ headBatchId: 'head-old', generationPending: false }));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(api.bodyCalls()).toBe(2); expect(p.generationPending.value).toBe(true);
+		p.dispose();
+		expect(streamMock.connections.every(c => c.disposed)).toBe(true);
+		streamMock.emitFeedReady('head-2');
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(api.bodyCalls()).toBe(2); expect(api.headCalls()).toBe(1);
+	});
+
+	test('two deck columns waiting for the same new head share one body fetch', async () => {
+		streamMock.realtimeMode = true;
+		const api = routeApi();
+		api.body.mockResolvedValueOnce(response({ generationPending: true })).mockResolvedValueOnce(response({ generationPending: true }))
+			.mockResolvedValueOnce(response({ headBatchId: 'head-2', items: [item('new-entry')] }));
+		const left = paginator(); await left.init();
+		const right = paginator(); await right.init();
+		streamMock.emitFeedReady('head-2');
+		await vi.advanceTimersByTimeAsync(0);
+		expect(api.bodyCalls()).toBe(3);
+		expect(left.newHeadReady.value).toBe(true); expect(right.newHeadReady.value).toBe(true);
+		left.dispose(); right.dispose();
+	});
+
+	test('a normal refresh without stock keeps the list and offers the new head through a button', async () => {
+		const api = routeApi();
+		api.body.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ generationPending: true }))
+			.mockResolvedValueOnce(response({ headBatchId: 'head-2', items: [item('new-entry')] }));
+		api.headCheck.mockResolvedValue(head({ headBatchId: 'head-2', generationPending: false }));
 		const p = paginator(); await p.init();
 		await p.refresh();
 		expect(p.generationPending.value).toBe(true); expect(p.items.value[0].feedEntryId).toBe('entry-1');
-		await vi.advanceTimersByTimeAsync(3000);
+		await vi.advanceTimersByTimeAsync(1000);
 		expect(p.newHeadReady.value).toBe(true); expect(p.generationPending.value).toBe(false);
 		expect(p.items.value[0].feedEntryId).toBe('entry-1');
 		p.showReadyHead();
 		expect(p.items.value[0].feedEntryId).toBe('new-entry'); expect(p.headBatchId.value).toBe('head-2'); expect(p.newHeadReady.value).toBe(false);
 		p.dispose();
 	});
+
 	test('starting another refresh clears a ready-head button', async () => {
-		misskeyApiMock.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ generationPending: true }))
+		const api = routeApi();
+		api.body.mockResolvedValueOnce(response()).mockResolvedValueOnce(response({ generationPending: true }))
 			.mockResolvedValueOnce(response({ headBatchId: 'head-2', items: [item('new-entry')] }))
 			.mockResolvedValueOnce(response({ headBatchId: 'head-3', items: [item('third')] }));
+		api.headCheck.mockResolvedValue(head({ headBatchId: 'head-2', generationPending: false }));
 		const p = paginator(); await p.init();
-		await p.refresh(); await vi.advanceTimersByTimeAsync(3000);
+		await p.refresh(); await vi.advanceTimersByTimeAsync(1000);
 		expect(p.newHeadReady.value).toBe(true);
 		await p.refresh();
 		expect(p.newHeadReady.value).toBe(false); expect(p.items.value[0].feedEntryId).toBe('third');

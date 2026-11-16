@@ -3551,6 +3551,15 @@ export type paths = {
          */
         post: operations['notes___hanami-timeline'];
     };
+    '/notes/hanami-timeline-head': {
+        /**
+         * notes/hanami-timeline-head
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:account*
+         */
+        post: operations['notes___hanami-timeline-head'];
+    };
     '/notes/hanami-timeline-seen': {
         /**
          * notes/hanami-timeline-seen
@@ -36615,6 +36624,70 @@ export interface operations {
                         generationPending: boolean;
                         feedEpochId: string;
                         headBatchId: string;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'notes___hanami-timeline-head': {
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        /** @enum {string} */
+                        mode: 'personalized' | 'common';
+                        feedEpochId: string;
+                        headBatchId: string;
+                        generationPending: boolean;
                     };
                 };
             };

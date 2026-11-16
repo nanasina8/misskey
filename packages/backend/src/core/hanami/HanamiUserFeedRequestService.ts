@@ -23,6 +23,7 @@ import type {
 	HanamiCommonFeedHeadSnapshot,
 	HanamiFeedHeadSnapshot,
 	HanamiUserFeedAvailabilityResult,
+	HanamiUserFeedHeadReadResult,
 	HanamiUserFeedRequestPort,
 	HanamiUserFeedRequestResult,
 } from './HanamiUserFeedContracts.js';
@@ -143,6 +144,96 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 				kind: 'recommendationDisabled',
 				head: await this.recommendationDisabledHead(queryRunner, context.state, context.user.is_hibernated),
 			};
+		});
+	}
+
+	/**
+	 * 今見せる先頭と、先頭を動かす生成が進行中かを読むだけ（notes/hanami-timeline-head 用）。
+	 * 読み取り専用のトランザクションで読み、行のロック・書き込み・生成の開始・ストックの繰り上げはしない。
+	 * 先頭の選び方は evaluateCursorless が「開いた」ときに返す先頭に合わせる。
+	 */
+	@bindThis
+	public async readHead(userId: string): Promise<HanamiUserFeedHeadReadResult> {
+		return await this.withReadOnlyTransaction(async (queryRunner) => {
+			// 1 文で読み、状態・先頭のまとまり・進行中の生成の食い違いを避ける。
+			const rows = await queryRunner.query(`
+				SELECT u."isHibernated" AS is_hibernated,
+					s."userId" AS user_id, s."epochId" AS epoch_id, s."mode" AS mode,
+					s."initialGenerationState" AS initial_state,
+					s."latestReadyBatchId" AS latest_ready_batch_id,
+					s."generatingBatchId" AS generating_batch_id,
+					s."latestSequence"::text AS latest_sequence,
+					s."commonEpochId" AS common_epoch_id,
+					s."commonHeadGenerationId" AS common_generation_id,
+					s."commonHeadSequence"::text AS common_sequence,
+					hb."status" AS head_batch_status,
+					cg."status" AS common_generation_status,
+					ab."id" AS active_batch_id,
+					ab."trigger" AS active_trigger
+				FROM "user" u
+				LEFT JOIN "hanami_user_feed_state" s ON s."userId" = u."id"
+				LEFT JOIN "hanami_user_feed_batch" hb
+					ON hb."id" = s."latestReadyBatchId" AND hb."userId" = u."id" AND hb."epochId" = s."epochId"
+				LEFT JOIN "hanami_common_generation" cg ON cg."id" = s."commonHeadGenerationId"
+				LEFT JOIN "hanami_user_feed_batch" ab ON ab."userId" = u."id" AND ab."status" IN ('pending', 'generating')
+				WHERE u."id" = $1
+			`, [userId]) as Array<{
+				is_hibernated: boolean;
+				user_id: string | null;
+				epoch_id: string | null;
+				mode: StateRow['mode'] | null;
+				initial_state: StateRow['initial_state'] | null;
+				latest_ready_batch_id: string | null;
+				generating_batch_id: string | null;
+				latest_sequence: string | null;
+				common_epoch_id: string | null;
+				common_generation_id: string | null;
+				common_sequence: string | null;
+				head_batch_status: BatchRow['status'] | null;
+				common_generation_status: string | null;
+				active_batch_id: string | null;
+				active_trigger: BatchRow['trigger'] | null;
+			}>;
+			if (rows.length > 1) throw new Error(`Hanami user ${userId} has multiple active feed batches`);
+			const row = rows.at(0);
+			if (row == null) throw new Error(`Hanami user ${userId} does not exist`);
+			const hasState = row.user_id != null;
+
+			const stateCommonHead = (): HanamiFeedHeadSnapshot | null => {
+				if (row.common_epoch_id == null || row.common_generation_id == null || row.common_sequence == null) return null;
+				if (row.common_generation_status !== 'ready') throw new Error(`Hanami frozen common generation ${row.common_generation_id} is not ready`);
+				return { mode: 'common', kind: 'common', feedEpochId: row.common_epoch_id, headBatchId: row.common_generation_id, headSequence: row.common_sequence };
+			};
+			const latestCommonHead = async (): Promise<HanamiFeedHeadSnapshot | null> => {
+				const latest = await this.commonHeadQueries.readLatestReadyCommonHead(queryRunner);
+				return latest == null ? null : this.commonHead(latest);
+			};
+			const stateHead = (): HanamiFeedHeadSnapshot | null => {
+				if (row.mode !== 'personalized') return stateCommonHead();
+				if (row.latest_ready_batch_id == null || row.latest_sequence == null || !/^[1-9]\d*$/.test(row.latest_sequence)) {
+					throw new Error(`Hanami personalized state for user ${userId} has no valid ready head`);
+				}
+				if (row.head_batch_status !== 'ready') throw new Error(`Hanami personalized head batch ${row.latest_ready_batch_id} is not ready`);
+				return { mode: 'personalized', kind: 'personal', feedEpochId: row.epoch_id!, headBatchId: row.latest_ready_batch_id, headSequence: row.latest_sequence };
+			};
+			const found = (head: HanamiFeedHeadSnapshot | null, generationPending: boolean): HanamiUserFeedHeadReadResult =>
+				head == null ? { kind: 'commonNotReady' } : { kind: 'head', head, generationPending };
+
+			// 休眠中は止めたときの共通の先頭（無ければ最新の共通の先頭）。生成は動かない。
+			if (row.is_hibernated) return found(hasState ? stateCommonHead() : await latestCommonHead(), false);
+
+			const availability = await this.evaluateAvailability(queryRunner, userId);
+			if (availability.kind === 'roleDisabled') return { kind: 'roleDisabled' };
+			const notEvaluated = !hasState || row.initial_state === 'notEvaluated';
+			if (availability.kind === 'recommendationDisabled' || notEvaluated) {
+				// まだ一度も評価していない人は、開いたときに最新の共通の先頭から始まる。
+				return found(notEvaluated ? await latestCommonHead() : (stateHead() ?? await latestCommonHead()), false);
+			}
+
+			const generationPending = row.active_batch_id != null
+				&& row.active_batch_id === row.generating_batch_id
+				&& row.active_trigger !== 'prefetch';
+			return found(stateHead(), generationPending);
 		});
 	}
 
@@ -1453,6 +1544,22 @@ export class HanamiUserFeedRequestService implements HanamiUserFeedRequestPort {
 				reject(error);
 			});
 		});
+	}
+
+	/** 読むだけのトランザクション。READ ONLY にして、誤って書き込めば DB が拒むようにする。最後は必ず戻す。 */
+	private async withReadOnlyTransaction<T>(callback: (queryRunner: QueryRunner) => Promise<T>): Promise<T> {
+		const queryRunner = this.db.createQueryRunner();
+		let connected = false;
+		try {
+			await queryRunner.connect();
+			connected = true;
+			await queryRunner.startTransaction();
+			await queryRunner.query('SET TRANSACTION READ ONLY');
+			return await callback(queryRunner);
+		} finally {
+			if (queryRunner.isTransactionActive) await queryRunner.rollbackTransaction().catch(() => undefined);
+			if (connected) await queryRunner.release();
+		}
 	}
 
 	private async withTransaction<T>(callback: (queryRunner: QueryRunner) => Promise<T>): Promise<T> {

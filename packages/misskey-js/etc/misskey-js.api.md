@@ -912,6 +912,9 @@ export type Channels = {
             readAntenna: (payload: Antenna) => void;
             receiveFollowRequest: (payload: User) => void;
             announcementCreated: (payload: AnnouncementCreated) => void;
+            hanamiFeedReady: (payload: {
+                headBatchId: string;
+            }) => void;
         };
         receives: null;
     };
@@ -2374,6 +2377,7 @@ declare namespace entities {
         NotesGlobalTimelineResponse,
         NotesHanamiTimelineRequest,
         NotesHanamiTimelineResponse,
+        NotesHanamiTimelineHeadResponse,
         NotesHanamiTimelineSeenRequest,
         NotesHanamiTimelineSeenResponse,
         NotesHanamiTopicRequest,
@@ -3387,6 +3391,9 @@ type NotesHanamisearchV1Request = operations['notes___hanamisearch-v1']['request
 type NotesHanamisearchV1Response = operations['notes___hanamisearch-v1']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type NotesHanamiTimelineHeadResponse = operations['notes___hanami-timeline-head']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type NotesHanamiTimelineRequest = operations['notes___hanami-timeline']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -4197,8 +4204,8 @@ type VerifyEmailRequest = operations['verify-email']['requestBody']['content']['
 // Warnings were encountered during analysis:
 //
 // src/streaming.ts:57:3 - (ae-forgotten-export) The symbol "ReconnectingWebSocket" needs to be exported by the entry point index.d.ts
-// src/streaming.types.ts:236:4 - (ae-forgotten-export) The symbol "ReversiUpdateKey" needs to be exported by the entry point index.d.ts
-// src/streaming.types.ts:251:4 - (ae-forgotten-export) The symbol "ReversiUpdateSettings" needs to be exported by the entry point index.d.ts
+// src/streaming.types.ts:237:4 - (ae-forgotten-export) The symbol "ReversiUpdateKey" needs to be exported by the entry point index.d.ts
+// src/streaming.types.ts:252:4 - (ae-forgotten-export) The symbol "ReversiUpdateSettings" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)
 

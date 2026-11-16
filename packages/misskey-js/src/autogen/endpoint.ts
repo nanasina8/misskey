@@ -602,6 +602,7 @@ import type {
 	NotesGlobalTimelineResponse,
 	NotesHanamiTimelineRequest,
 	NotesHanamiTimelineResponse,
+	NotesHanamiTimelineHeadResponse,
 	NotesHanamiTimelineSeenRequest,
 	NotesHanamiTimelineSeenResponse,
 	NotesHanamiTopicRequest,
@@ -1158,6 +1159,7 @@ export type Endpoints = {
 	'notes/featured': { req: NotesFeaturedRequest; res: NotesFeaturedResponse };
 	'notes/global-timeline': { req: NotesGlobalTimelineRequest; res: NotesGlobalTimelineResponse };
 	'notes/hanami-timeline': { req: NotesHanamiTimelineRequest; res: NotesHanamiTimelineResponse };
+	'notes/hanami-timeline-head': { req: EmptyRequest; res: NotesHanamiTimelineHeadResponse };
 	'notes/hanami-timeline-seen': { req: NotesHanamiTimelineSeenRequest; res: NotesHanamiTimelineSeenResponse };
 	'notes/hanami-topic': { req: NotesHanamiTopicRequest; res: NotesHanamiTopicResponse };
 	'notes/hanami-topic-notes': { req: NotesHanamiTopicNotesRequest; res: NotesHanamiTopicNotesResponse };

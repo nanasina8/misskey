@@ -95,6 +95,21 @@ export type HanamiUserFeedRequestResult =
 		readonly kind: 'refreshRateLimited';
 	};
 
+/** 今見せる先頭だけを読んだ結果（readHead）。投稿・記録・生成には触れない。 */
+export type HanamiUserFeedHeadReadResult =
+	| {
+		readonly kind: 'head';
+		readonly head: HanamiFeedHeadSnapshot;
+		/** 先頭を動かす生成（初回・更新・調整）が裏で進んでいるか。ストック用の生成は含めない。 */
+		readonly generationPending: boolean;
+	}
+	| {
+		readonly kind: 'roleDisabled';
+	}
+	| {
+		readonly kind: 'commonNotReady';
+	};
+
 export const HANAMI_USER_FEED_REQUEST = Symbol('HANAMI_USER_FEED_REQUEST');
 
 export interface HanamiUserFeedRequestPort {
@@ -103,6 +118,12 @@ export interface HanamiUserFeedRequestPort {
 	 * refresh mappings, or queue work.
 	 */
 	checkAvailability(userId: string): Promise<HanamiUserFeedAvailabilityResult>;
+
+	/**
+	 * 今その利用者に見せる先頭と、先頭を動かす生成が進行中かを読むだけ。
+	 * 行のロック・書き込み・生成の開始・ストックの繰り上げ・「前回見た」の目印の更新はしない。
+	 */
+	readHead(userId: string): Promise<HanamiUserFeedHeadReadResult>;
 
 	/**
 	 * Evaluates a cursorless request. It may create the first durable batch only

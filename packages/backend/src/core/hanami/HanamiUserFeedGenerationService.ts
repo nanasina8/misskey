@@ -14,6 +14,8 @@ import type { Config } from '@/config.js';
 import { bindThis } from '@/decorators.js';
 import { hanamiReturningRows } from '@/core/hanami/HanamiReturningRows.js';
 import { IdService } from '@/core/IdService.js';
+import { GlobalEventService } from '@/core/GlobalEventService.js';
+import { LoggerService } from '@/core/LoggerService.js';
 import {
 	HANAMI_PERSONAL_FEED_COMPUTATION,
 	HANAMI_USER_FEED_AXES,
@@ -97,7 +99,7 @@ type BatchRow = {
 type FailureResolution =
 	| { kind: 'failed'; terminal: boolean; failureKind: HanamiMetricsFailureKind }
 	| { kind: 'stale' }
-	| { kind: 'published'; itemCount: number; feedEpochId: string; headSequence: string };
+	| { kind: 'published'; itemCount: number; feedEpochId: string; headSequence: string; toStock: boolean };
 
 type ReconcileCandidate = {
 	id: string;
@@ -129,6 +131,8 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 		@Optional() private metricsCapture?: HanamiMetricsCaptureService,
 		@Optional() private metricsHealth?: HanamiMetricsTimelineHealthService,
 		@Optional() @Inject(DI.redis) private metricsRedis?: Redis,
+		@Optional() private globalEventService?: GlobalEventService,
+		@Optional() private loggerService?: LoggerService,
 	) {}
 
 	@bindThis
@@ -170,6 +174,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 			}
 			// R4 で途中から refresh に変わることがあるので、claim 時ではなく publish 先で記録する。
 			this.recordPublishEvent(claim.userId, batchId, publication.toStock ? 'stock' : 'head', startedAt);
+			if (!publication.toStock) this.notifyFeedReady(claim.userId, batchId);
 			return {
 				kind: 'published',
 				batchId,
@@ -194,6 +199,7 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 				if (resolution.kind === 'stale') return { kind: 'stale', batchId, attempt: claim.attempt };
 				if (resolution.kind === 'published') {
 					this.recordPublishEvent(claim.userId, batchId, claim.trigger === 'prefetch' ? 'stock' : 'head', startedAt);
+					if (!resolution.toStock) this.notifyFeedReady(claim.userId, batchId);
 					return {
 						kind: 'published',
 						batchId,
@@ -681,9 +687,10 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 				if (batch?.status === 'ready' && batch.attempts === claim.attempt && state.epoch_id === claim.epochId
 					&& (state.latest_ready_batch_id === claim.batchId || state.stock_batch_id === claim.batchId)) {
 					// prefetch の publish 後は stock_batch_id が指すので、そちらも publish 済みとみなす。
-					const headSequence = state.stock_batch_id === claim.batchId && state.stock_sequence != null
+					const toStock = state.stock_batch_id === claim.batchId;
+					const headSequence = toStock && state.stock_sequence != null
 						? state.stock_sequence : state.latest_sequence;
-					return { kind: 'published', itemCount: batch.item_count, feedEpochId: claim.epochId, headSequence } as const;
+					return { kind: 'published', itemCount: batch.item_count, feedEpochId: claim.epochId, headSequence, toStock } as const;
 				}
 				if (!this.isExactLiveClaim(state, batch, claim)) return { kind: 'stale' } as const;
 
@@ -879,6 +886,20 @@ export class HanamiUserFeedGenerationService implements HanamiUserFeedGeneration
 			SET "status" = 'obsolete', "discardReason" = $3
 			WHERE "id" = $1 AND "userId" = $2 AND "status" = 'ready'
 		`, [stockBatchId, userId, reason]);
+	}
+
+	/**
+	 * 先頭を動かす publish（初回・更新・調整・しばらくぶり）がコミットされたら、本人のメインのストリームへ知らせる。
+	 * ストック用（prefetch）は昇格するまで見えないので送らない。送れなくても生成は成功のまま（ログだけ残す）。
+	 */
+	private notifyFeedReady(userId: string, batchId: string): void {
+		try {
+			this.globalEventService?.publishMainStream(userId, 'hanamiFeedReady', { headBatchId: batchId });
+		} catch (error) {
+			try {
+				this.loggerService?.getLogger('hanami-user-feed-generation').warn('Failed to notify a ready Hanami feed head', { userId, batchId, e: error });
+			} catch { /* 知らせの失敗で生成を失敗にしない */ }
+		}
 	}
 
 	private recordPublishEvent(userId: string, batchId: string, outcome: string, startedAt: number): void {
