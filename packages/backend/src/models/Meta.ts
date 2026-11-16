@@ -6,6 +6,7 @@
 import { Entity, Column, PrimaryColumn, ManyToOne } from 'typeorm';
 import { id } from './util/id.js';
 import { MiUser } from './User.js';
+import { HANAMI_NOTE_JUDGE_SETTINGS_COLUMN_DEFAULT } from './util/hanami-note-judge-settings-column-default.js';
 
 @Entity('meta')
 export class MiMeta {
@@ -619,6 +620,15 @@ export class MiMeta {
 		comment: 'はなみTLおすすめ軸のサーバー設定（軸ごとの available と default）',
 	})
 	public hanamiRecommendationAxisConfig: Record<string, { available?: boolean; default?: boolean }>;
+
+	/**
+	 * 投稿の判定（その場限り・興味）の設定。読み書きは HanamiNoteJudge* が生の SQL で行い、検証もそちらで行う。
+	 * ここは列定義を DB（migration 1789344000000）と一致させるための宣言。
+	 */
+	@Column('jsonb', {
+		default: HANAMI_NOTE_JUDGE_SETTINGS_COLUMN_DEFAULT,
+	})
+	public hanamiNoteJudgeSettings: import('../core/hanami/HanamiNoteJudgeContracts.js').HanamiNoteJudgeSettings;
 
 	@Column('integer', {
 		default: 300,

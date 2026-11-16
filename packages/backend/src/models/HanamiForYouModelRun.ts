@@ -11,7 +11,7 @@ import { id } from './util/id.js';
  * status='ready' の最新世代だけを serve が読む。途中失敗した半端な factor は配信に混ざらない。
  */
 @Entity('hanami_foryou_model_run')
-@Index(['kind', 'status', 'startedAt'])
+@Index('IDX_hanami_foryou_model_run_kind_status', ['kind', 'status', 'startedAt'])
 export class MiHanamiForYouModelRun {
 	@PrimaryColumn(id())
 	public id: string;

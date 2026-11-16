@@ -19,7 +19,7 @@ export class MiHanamiNoteEmbedding {
 	public noteId: MiNote['id'];
 
 	@ManyToOne(type => MiNote, { onDelete: 'CASCADE' })
-	@JoinColumn({ name: 'noteId' })
+	@JoinColumn({ name: 'noteId', foreignKeyConstraintName: 'FK_hanami_note_embedding_note' })
 	public note?: MiNote | null;
 
 	@PrimaryColumn('varchar', { length: 64 })

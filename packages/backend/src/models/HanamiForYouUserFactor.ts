@@ -3,8 +3,9 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { Entity, PrimaryColumn, Column } from 'typeorm';
+import { Entity, PrimaryColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
 import { id } from './util/id.js';
+import { MiHanamiForYouModelRun } from './HanamiForYouModelRun.js';
 import type { MiUser } from './User.js';
 
 /**
@@ -15,6 +16,11 @@ import type { MiUser } from './User.js';
 export class MiHanamiForYouUserFactor {
 	@PrimaryColumn(id())
 	public runId: string;
+
+	// 世代（run）を消すと一緒に消える。制約名は migration（hanamiForYouDataLayer）で付けた名前に合わせる。
+	@ManyToOne(() => MiHanamiForYouModelRun, { onDelete: 'CASCADE' })
+	@JoinColumn({ name: 'runId', foreignKeyConstraintName: 'FK_hanami_foryou_user_factor_run' })
+	public run?: MiHanamiForYouModelRun | null;
 
 	@PrimaryColumn(id())
 	public userId: MiUser['id'];

@@ -13,7 +13,7 @@ import type { MiUser } from './User.js';
  * catchup と全軸の「近さ」レイヤに使う。run に紐付かない per-user の現在状態。
  */
 @Entity('hanami_foryou_relation')
-@Index(['userId', 'relScore'])
+@Index('IDX_hanami_foryou_relation_user_rel', ['userId', 'relScore'])
 export class MiHanamiForYouRelation {
 	@PrimaryColumn(id())
 	public userId: MiUser['id'];
