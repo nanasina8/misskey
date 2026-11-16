@@ -229,7 +229,7 @@ export class MiUserProfile {
 	public hanamiRecommendationAxes: Record<string, string>;
 
 	@Column('jsonb', { default: {} })
-	public hanamiTuning: Partial<import('../core/hanami/HanamiTuning.js').HanamiTuning>;
+	public hanamiTuning: import('../core/hanami/HanamiTuning.js').HanamiTuningInput;
 
 	@Column('boolean', {
 		default: true,

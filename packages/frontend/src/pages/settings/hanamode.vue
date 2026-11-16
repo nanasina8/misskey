@@ -6,13 +6,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <SearchMarker path="/settings/hanamode" :label="i18n.ts._hana.hanamiTimelineShort" :keywords="['はなみTL', 'おすすめ', '調整', 'For You', 'hanami']" icon="ti ti-flower-filled">
 	<div class="_gaps">
-		<FormSection first>
-			<template #label>{{ i18n.ts._hana._tuning.settingsTitle }}</template>
-			<div class="_gaps_m">
-				<p v-if="!enabled" :class="$style.description">{{ i18n.ts._hana._tuning.enableForYou }}</p>
-				<MkHanamiTuningPanel :showTitle="false" :disabled="!enabled || flagsSaving"/>
-			</div>
-		</FormSection>
+		<!-- 調整はページのいちばん上に、折りたたまずに出す。 -->
+		<div class="_gaps_m">
+			<p v-if="!enabled" :class="$style.description">{{ i18n.ts._hana._tuning.enableForYou }}</p>
+			<MkHanamiTuningPanel :disabled="!enabled || flagsSaving"/>
+		</div>
 
 		<FormSection>
 			<template #label>{{ tasteI18n.title }}</template>

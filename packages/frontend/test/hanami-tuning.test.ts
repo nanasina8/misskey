@@ -4,9 +4,17 @@
  */
 
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { adjustHanamiAmount, createHanamiTuningUndo, getAvailableHanamiAxes, HanamiTuningSaveQueue, normalizeHanamiTuning, resetHanamiTuning, resolveHanamiTuning, switchHanamiMode } from '@/utility/hanami-tuning.js';
+import {
+	HANAMI_FOR_YOU_AXES, adjustHanamiAmount, applyHanamiSuggestedAmounts, createHanamiTuningUndo, getAvailableHanamiAxes,
+	HanamiTuningSaveQueue, hanamiDirectionBand, hanamiGroupComposition, hanamiGroupTrends, hanamiTenTiles, hanamiTilesSummary,
+	normalizeHanamiTuning, resetHanamiTuning, roundHanamiWeight, resolveHanamiTuning, switchHanamiMode, switchHanamiModeWithSuggestion,
+} from '@/utility/hanami-tuning.js';
+import type { HanamiAxis } from '@/utility/hanami-tuning.js';
 
 afterEach(() => vi.useRealTimers());
+
+/** 身近（close）に寄せる倍率。 */
+const closeFactors = new Map<HanamiAxis, number>(HANAMI_FOR_YOU_AXES.map(axis => [axis, ['neighborTrending', 'catchup', 'fof'].includes(axis) ? 1.6 : 0.6]));
 
 describe('Hanami tuning edits', () => {
 	test('server defaults mask auto and legacy missing values without disabling manual controls', () => {
@@ -23,22 +31,42 @@ describe('Hanami tuning edits', () => {
 		expect(normalizeHanamiTuning({ hanamiRecommendationAxes: { catchup: 'high' } }, config).manual?.amounts.trending).toBe(0);
 		expect(normalizeHanamiTuning({ hanamiRecommendationAxes: { trending: true } }, config).manual?.amounts.trending).toBe(1);
 	});
-	test('auto → manual copies current weights/amounts; returning to auto retains positions; re-entering copies again', () => {
-		const original = normalizeHanamiTuning({ hanamiTuning: { mode: 'auto', closeness: 0, freshness: 4, discovery: 3 } });
-		const resolved = resolveHanamiTuning({ hanamiTuning: original });
-		const manual = switchHanamiMode(original, 'manual');
-		expect(manual.manual).toEqual({ amounts: Object.fromEntries(resolved.amounts), freshWeights: resolved.freshWeights, closeWeights: resolved.closeWeights, authorCap: 2 });
-		const edited = adjustHanamiAmount(manual, 'globalPopular', .25);
-		const auto = switchHanamiMode(edited, 'auto');
-		expect(auto).toMatchObject(original);
-		expect(auto.manual).toEqual(edited.manual);
-		expect(switchHanamiMode(auto, 'manual').manual).toEqual(manual.manual);
+	test('legacy closeness moves into direction; old manual weights are dropped on read', () => {
+		expect(normalizeHanamiTuning({ hanamiTuning: { mode: 'auto', closeness: 0, freshness: 4, discovery: 3 } })).toMatchObject({ mode: 'direction', direction: 0 });
+		const legacy = normalizeHanamiTuning({ hanamiTuning: { mode: 'manual', manual: { amounts: { trending: 2 }, authorCap: 3, freshWeights: [1, 2, 3], closeWeights: [1, 1, 1] } } });
+		expect(legacy.manual).toEqual({ amounts: expect.objectContaining({ trending: 2 }), authorCap: 3 });
 	});
-	test('reset returns centered auto and enables ephemeral reduction', () => {
-		expect(resetHanamiTuning()).toEqual({ hanamiTuning: { mode: 'auto', closeness: 2, freshness: 2, discovery: 2 }, hanamiReduceEphemeralPosts: true });
+	test('switching between the four modes keeps the other settings, and manual starts from the current amounts', () => {
+		const direction = { ...normalizeHanamiTuning({}), mode: 'direction' as const, direction: 2, drift: 0 };
+		const manual = switchHanamiMode(direction, 'manual', {}, closeFactors);
+		expect(manual.manual?.amounts).toEqual(Object.fromEntries([...resolveHanamiTuning({ hanamiTuning: direction }, {}, closeFactors).amounts].map(([axis, amount]) => [axis, roundHanamiWeight(amount)])));
+		const recommend = switchHanamiMode(manual, 'recommend');
+		expect(recommend).toMatchObject({ mode: 'recommend', direction: 2, drift: 0, manual: manual.manual });
+		expect(switchHanamiMode(recommend, 'auto')).toMatchObject({ mode: 'auto', direction: 2, drift: 0 });
 	});
-	test('reason +/-25% enters manual, clamps 0..300%, and offers an expiring one-shot undo', () => {
+	test('switching to recommend from another mode takes the suggested groups once; it never overwrites while staying in recommend', () => {
+		const suggestion = { axes: [], groups: { close: 4, buzz: 0, fresh: 3 } };
+		const auto = { ...normalizeHanamiTuning({}), groups: { close: 1, buzz: 1, fresh: 1 } };
+		const recommend = switchHanamiModeWithSuggestion(auto, 'recommend', {}, suggestion);
+		expect(recommend).toMatchObject({ mode: 'recommend', groups: { close: 4, buzz: 0, fresh: 3 } });
+		const edited = { ...recommend, groups: { close: 2, buzz: 2, fresh: 2 } };
+		expect(switchHanamiModeWithSuggestion(edited, 'recommend', {}, suggestion)).toBe(edited);
+		// おすすめがまだ無いときは、いまの値のまま。
+		expect(switchHanamiModeWithSuggestion(auto, 'recommend', {}, null).groups).toEqual({ close: 1, buzz: 1, fresh: 1 });
+		// 「すべて自分で」へは、反応に合わせて寄せたあとの量から始める。
+		const manual = switchHanamiModeWithSuggestion(auto, 'manual', {}, { axes: [...closeFactors].map(([axis, factor]) => ({ axis, factor })), groups: suggestion.groups });
+		expect(manual.manual?.amounts.neighborTrending).toBeCloseTo(1.4);
+		expect(manual.manual?.amounts.globalPopular).toBeCloseTo(0.7);
+	});
+	test('reset returns auto with default levels and enables ephemeral reduction', () => {
+		expect(resetHanamiTuning()).toEqual({ hanamiTuning: { mode: 'auto', direction: 1, drift: 1, groups: { close: 2, buzz: 2, fresh: 2 } }, hanamiReduceEphemeralPosts: true });
+	});
+	test('reason +/-25% enters manual from any mode, clamps 0..300%, and offers an expiring one-shot undo', () => {
 		vi.useFakeTimers();
+		for (const mode of ['auto', 'direction', 'recommend'] as const) {
+			const original = { ...normalizeHanamiTuning({}), mode };
+			expect(adjustHanamiAmount(original, 'trending', .25).mode).toBe('manual');
+		}
 		const original = normalizeHanamiTuning({});
 		const added = adjustHanamiAmount(original, 'trending', .25);
 		expect(added).toMatchObject({ mode: 'manual', manual: { amounts: { trending: 1.25 } } });
@@ -53,6 +81,64 @@ describe('Hanami tuning edits', () => {
 		vi.advanceTimersByTime(8000);
 		expect(expired()).toBe(false);
 	});
+	test('suggested amounts scale the auto amounts, keep turned-off axes off, and are idempotent', () => {
+		const axes = HANAMI_FOR_YOU_AXES.map(axis => ({ axis, factor: axis === 'globalPopular' ? 0.95 : axis === 'trending' ? 1.05 : 1 }));
+		const manual = { ...switchHanamiMode(normalizeHanamiTuning({}), 'manual'), manual: { amounts: { ...Object.fromEntries(HANAMI_FOR_YOU_AXES.map(axis => [axis, 1])), trending: 3, catchup: 0 }, authorCap: 3 } };
+		const applied = applyHanamiSuggestedAmounts(manual, axes);
+		expect(applied.manual).toEqual({ amounts: expect.objectContaining({ globalPopular: 0.95, trending: 1.05, catchup: 0, neighborTrending: 1 }), authorCap: 3 });
+		expect(applyHanamiSuggestedAmounts(applied, axes).manual).toEqual(applied.manual);
+	});
+});
+
+describe('Hanami tuning view helpers', () => {
+	test('ten tiles always add up to 10 and follow the group composition', () => {
+		for (const tuning of [
+			normalizeHanamiTuning({}),
+			{ ...normalizeHanamiTuning({}), mode: 'direction' as const, direction: 0 },
+			{ ...normalizeHanamiTuning({}), mode: 'direction' as const, direction: 2 },
+			{ ...normalizeHanamiTuning({}), mode: 'recommend' as const, groups: { close: 0, buzz: 4, fresh: 4 } },
+		]) {
+			const counts = hanamiTenTiles(hanamiGroupComposition(tuning));
+			expect(counts.close + counts.buzz + counts.fresh).toBe(10);
+		}
+		const close = hanamiTenTiles(hanamiGroupComposition({ ...normalizeHanamiTuning({}), mode: 'direction', direction: 0 }));
+		const wide = hanamiTenTiles(hanamiGroupComposition({ ...normalizeHanamiTuning({}), mode: 'direction', direction: 2 }));
+		expect(close.close).toBeGreaterThan(wide.close);
+		expect(close.fresh).toBeLessThan(wide.fresh);
+	});
+	test('tiles summary reports which groups grew only for modes that move by themselves', () => {
+		const auto = hanamiTilesSummary(normalizeHanamiTuning({}), {}, closeFactors);
+		expect(auto.moving).toBe(true);
+		expect(auto.increased).toEqual(['close']);
+		expect(auto.counts).toEqual(hanamiTenTiles(hanamiGroupComposition(normalizeHanamiTuning({}), {}, closeFactors)));
+		const recommend = hanamiTilesSummary({ ...normalizeHanamiTuning({}), mode: 'recommend' }, {}, closeFactors);
+		expect(recommend).toMatchObject({ moving: false, increased: [] });
+		expect(recommend.counts).toEqual(recommend.base);
+		expect(hanamiTilesSummary(normalizeHanamiTuning({}), {}, null).increased).toEqual([]);
+	});
+	test('group trends follow the bounded factors and are null when nothing moves', () => {
+		expect(hanamiGroupTrends(normalizeHanamiTuning({}), {}, closeFactors)).toEqual({ close: 'up', buzz: 'down', fresh: expect.any(String) });
+		expect(hanamiGroupTrends({ ...normalizeHanamiTuning({}), mode: 'manual' }, {}, closeFactors)).toBeNull();
+		expect(hanamiGroupTrends(normalizeHanamiTuning({}), {}, null)).toBeNull();
+	});
+	test('direction band widens with the drift level and leans toward the side that grew', () => {
+		const base = { ...normalizeHanamiTuning({}), mode: 'direction' as const, direction: 1 };
+		const widths = [0, 1, 2].map(drift => { const band = hanamiDirectionBand({ ...base, drift }); return band.high - band.low; });
+		expect(widths[0]).toBeLessThan(widths[1]);
+		expect(widths[1]).toBeLessThan(widths[2]);
+		const still = hanamiDirectionBand(base);
+		expect(still).toMatchObject({ base: 50, now: 50, lean: 'none' });
+		const leaning = hanamiDirectionBand(base, {}, closeFactors);
+		expect(leaning.lean).toBe('close');
+		expect(leaning.now).toBeLessThan(leaning.base);
+		expect(leaning.now).toBeGreaterThanOrEqual(leaning.low);
+		const wider = new Map([...closeFactors].map(([axis, factor]) => [axis, 1 / factor]));
+		expect(hanamiDirectionBand(base, {}, wider).lean).toBe('wide');
+		expect(hanamiDirectionBand({ ...base, direction: 0 }).base).toBeLessThan(hanamiDirectionBand({ ...base, direction: 2 }).base);
+	});
+});
+
+describe('Hanami tuning save queue', () => {
 	test('600ms trailing debounce saves once before refreshing, including toggle state', async () => {
 		vi.useFakeTimers();
 		const order: string[] = [];
@@ -76,10 +162,10 @@ describe('Hanami tuning edits', () => {
 		const queue = new HanamiTuningSaveQueue(save, refresh, error);
 		queue.enqueue(resetHanamiTuning()); await vi.advanceTimersByTimeAsync(600);
 		queue.enqueue({ ...resetHanamiTuning(), hanamiReduceEphemeralPosts: false });
-		queue.enqueue({ ...resetHanamiTuning(), hanamiTuning: { mode: 'auto', closeness: 4, freshness: 2, discovery: 2 } });
+		queue.enqueue({ ...resetHanamiTuning(), hanamiTuning: { ...resetHanamiTuning().hanamiTuning, mode: 'direction', direction: 2 } });
 		await vi.advanceTimersByTimeAsync(600); expect(save).toHaveBeenCalledTimes(1);
 		resolve(); await vi.advanceTimersByTimeAsync(0);
-		expect(save).toHaveBeenCalledTimes(2); expect(save.mock.calls[1][0].hanamiTuning.closeness).toBe(4); expect(refresh).toHaveBeenCalledTimes(2);
+		expect(save).toHaveBeenCalledTimes(2); expect(save.mock.calls[1][0].hanamiTuning).toMatchObject({ mode: 'direction', direction: 2 }); expect(refresh).toHaveBeenCalledTimes(2);
 		save.mockRejectedValueOnce(new Error('offline')); queue.enqueue(resetHanamiTuning()); await vi.advanceTimersByTimeAsync(600);
 		expect(error).toHaveBeenCalledTimes(1); expect(refresh).toHaveBeenCalledTimes(2);
 	});

@@ -2992,7 +2992,7 @@ export type paths = {
     '/i/hanami-tuning-suggestion': {
         /**
          * i/hanami-tuning-suggestion
-         * @description Suggest Hanami timeline amounts from the authenticated user’s reactions over the last 14 days.
+         * @description Show how the authenticated user reacted to each kind of Hanami timeline post over the last 14 days, the multiplier derived from it, and the amounts suggested from it.
          *
          *     **Credential required**: *Yes* / **Permission**: *read:account*
          */
@@ -4661,7 +4661,14 @@ export type components = {
             hanamiRecommendationEnabled?: boolean;
             hanamiTuning: {
                 /** @enum {string} */
-                mode?: 'auto' | 'manual';
+                mode?: 'auto' | 'direction' | 'recommend' | 'manual';
+                direction?: number;
+                drift?: number;
+                groups?: {
+                    close?: number;
+                    buzz?: number;
+                    fresh?: number;
+                };
                 closeness?: number;
                 freshness?: number;
                 discovery?: number;
@@ -4675,8 +4682,8 @@ export type components = {
                         fof?: number;
                         exploration?: number;
                     };
-                    freshWeights: number[];
-                    closeWeights: number[];
+                    freshWeights?: number[];
+                    closeWeights?: number[];
                     authorCap: number;
                 };
             };
@@ -32064,9 +32071,15 @@ export interface operations {
                             seen: number;
                             reactions: number;
                             rate: number;
+                            factor: number;
                             current: number;
                             suggested: number;
                         }[];
+                        groups: {
+                            close: number;
+                            buzz: number;
+                            fresh: number;
+                        };
                     };
                 };
             };
@@ -33931,10 +33944,17 @@ export interface operations {
                     hanamiReduceEphemeralPosts?: boolean;
                     hanamiTuning?: {
                         /** @enum {string} */
-                        mode: 'auto' | 'manual';
-                        closeness: number;
-                        freshness: number;
-                        discovery: number;
+                        mode: 'auto' | 'direction' | 'recommend' | 'manual';
+                        direction?: number;
+                        drift?: number;
+                        groups?: {
+                            close?: number;
+                            buzz?: number;
+                            fresh?: number;
+                        };
+                        closeness?: number;
+                        freshness?: number;
+                        discovery?: number;
                         manual?: {
                             amounts: {
                                 globalPopular?: number;
@@ -33945,8 +33965,8 @@ export interface operations {
                                 fof?: number;
                                 exploration?: number;
                             };
-                            freshWeights: number[];
-                            closeWeights: number[];
+                            freshWeights?: number[];
+                            closeWeights?: number[];
                             authorCap: number;
                         };
                     };

@@ -203,4 +203,34 @@ describe('このフォークで足した API を一通り呼ぶ', () => {
 			assert.strictEqual(res.status, 200, `${endpoint} → ${res.status} ${describeBody(res.body)}`);
 		}
 	});
+
+	test('はなみ TL の調整: 4 つのしかたを保存でき、古い形の保存も新しい形に直る', async () => {
+		type Tuning = { mode: string; direction: number; drift: number; groups: Record<string, number>; manual?: { amounts: Record<string, number>; authorCap: number } };
+		const save = async (hanamiTuning: Record<string, unknown>): Promise<Tuning> => {
+			const res = await api('i/update' as never, { hanamiTuning } as never, member);
+			assert.strictEqual(res.status, 200, describeBody(res.body));
+			return (res.body as unknown as { hanamiTuning: Tuning }).hanamiTuning;
+		};
+		assert.deepStrictEqual(await save({ mode: 'direction', direction: 2, drift: 0 }), { mode: 'direction', direction: 2, drift: 0, groups: { close: 2, buzz: 2, fresh: 2 } });
+		assert.deepStrictEqual(await save({ mode: 'recommend', groups: { close: 3, buzz: 1, fresh: 2 } }), { mode: 'recommend', direction: 1, drift: 1, groups: { close: 3, buzz: 1, fresh: 2 } });
+		const manual = await save({ mode: 'manual', manual: { amounts: { fof: 1.5, trending: 0 }, authorCap: 3 } });
+		assert.strictEqual(manual.mode, 'manual');
+		assert.strictEqual(manual.manual?.amounts.fof, 1.5);
+		assert.strictEqual(manual.manual?.amounts.trending, 0);
+		assert.strictEqual(manual.manual?.authorCap, 3);
+		// 古い画面（スライダー 3 本）からの保存は、身近さを方向に引き継いで新しい形で残す。
+		assert.deepStrictEqual(await save({ mode: 'auto', closeness: 4, freshness: 0, discovery: 3 }), { mode: 'direction', direction: 2, drift: 1, groups: { close: 2, buzz: 2, fresh: 2 } });
+		for (const invalid of [{ direction: 1 }, { mode: 'other' }, { mode: 'direction', direction: 3 }, { mode: 'recommend', groups: { close: 5 } }]) {
+			const res = await api('i/update' as never, { hanamiTuning: invalid } as never, member);
+			assert.strictEqual(res.status, 400, `${JSON.stringify(invalid)} → ${res.status}`);
+		}
+		assert.deepStrictEqual(await save({ mode: 'auto' }), { mode: 'auto', direction: 1, drift: 1, groups: { close: 2, buzz: 2, fresh: 2 } });
+		const suggestion = await api('i/hanami-tuning-suggestion' as never, {} as never, member);
+		assert.strictEqual(suggestion.status, 200, describeBody(suggestion.body));
+		const body = suggestion.body as unknown as { eligible: boolean; groups: Record<string, number>; axes: Array<{ axis: string; factor: number; current: number; suggested: number }> };
+		assert.strictEqual(body.eligible, false);
+		assert.deepStrictEqual(Object.keys(body.groups).sort(), ['buzz', 'close', 'fresh']);
+		assert.strictEqual(body.axes.length, 7);
+		for (const axis of body.axes) assert.ok(axis.factor >= 0.5 && axis.factor <= 2, `${axis.axis} ${axis.factor}`);
+	});
 });

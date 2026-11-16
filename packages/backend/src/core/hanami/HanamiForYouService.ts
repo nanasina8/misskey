@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { resolveHanamiTuning, hanamiTuningScore, type ResolvedHanamiTuning } from '@/core/hanami/HanamiTuning.js';
+import { resolveHanamiTuning, normalizeHanamiTuning, hanamiDriftLevel, getAvailableHanamiAxes, hanamiTuningScore, type HanamiTuningProfile, type ResolvedHanamiTuning } from '@/core/hanami/HanamiTuning.js';
+import { HANAMI_TUNING_COUNTS_SQL, computeHanamiDriftFactors, type HanamiTuningCounts } from '@/core/hanami/HanamiTuningSuggestion.js';
 import { DataSource, type QueryRunner } from 'typeorm';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import * as Redis from 'ioredis';
@@ -294,6 +295,17 @@ export class HanamiForYouService {
 		));
 	}
 
+	/**
+	 * 調整を量に直す。おまかせ・方向だけ決める のときは、直近 14 日の反応から種類ごとの倍率を出して、決まった幅の中で寄せる。
+	 * おすすめから調整・すべて自分で は自動では動かさないので、集計も読まない。
+	 */
+	private async resolveTuningWithDrift(userId: string, profile: HanamiTuningProfile, generation?: HanamiPersonalFeedGenerationContext): Promise<ResolvedHanamiTuning> {
+		const axisConfig = this.meta.hanamiRecommendationAxisConfig;
+		if (hanamiDriftLevel(normalizeHanamiTuning(profile, axisConfig)) == null) return resolveHanamiTuning(profile, axisConfig);
+		const rows = await this.generationDbQuery<HanamiTuningCounts[]>(generation, HANAMI_TUNING_COUNTS_SQL, [userId, getAvailableHanamiAxes(axisConfig)]);
+		return resolveHanamiTuning(profile, axisConfig, computeHanamiDriftFactors(rows));
+	}
+
 	// ───────────────────────── エントリポイント ─────────────────────────
 
 	/**
@@ -306,7 +318,7 @@ export class HanamiForYouService {
 		const profile = await this.cacheService.userProfileCache.fetch(me.id);
 		if (!profile.hanamiRecommendationEnabled) return [];
 		const showReason = profile.hanamiShowRecommendationReason;
-		const tuning = resolveHanamiTuning(profile, this.meta.hanamiRecommendationAxisConfig);
+		const tuning = await this.resolveTuningWithDrift(me.id, profile);
 		const amounts = tuning.amounts;
 		if (![...amounts.values()].some(amount => amount > 0)) return [];
 
@@ -375,7 +387,7 @@ export class HanamiForYouService {
 		`, [input.userId]);
 		const profile = profiles[0];
 		if (profile == null) throw new Error(`Hanami personal-generation profile is missing for user ${input.userId}`);
-		const tuning = resolveHanamiTuning(profile, this.meta.hanamiRecommendationAxisConfig);
+		const tuning = await this.resolveTuningWithDrift(input.userId, profile, input);
 		const amounts = tuning.amounts;
 		if (!profile.hanamiRecommendationEnabled || ![...amounts.values()].some(amount => amount > 0)) {
 			return { confidence: 'none', tuning, candidates: Object.freeze([]) };

@@ -3645,7 +3645,7 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
-     * Suggest Hanami timeline amounts from the authenticated user’s reactions over the last 14 days.
+     * Show how the authenticated user reacted to each kind of Hanami timeline post over the last 14 days, the multiplier derived from it, and the amounts suggested from it.
      * 
      * **Credential required**: *Yes* / **Permission**: *read:account*
      */

@@ -8,6 +8,7 @@ import type * as Misskey from 'misskey-js';
 import { HANAMI_FOR_YOU_AXES, adjustHanamiAmount, createHanamiTuningUndo } from '@/utility/hanami-tuning.js';
 import type { HanamiAxis } from '@/utility/hanami-tuning.js';
 import { useHanamiTuning, refreshHanamiTuning } from '@/utility/hanami-tuning-client.js';
+import { useHanamiTuningSuggestion } from '@/utility/hanami-tuning-suggestion.js';
 import { getUserMenu } from '@/utility/get-user-menu.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
@@ -26,11 +27,12 @@ export function showHanamiReasonMenuForNote(note: Misskey.entities.Note, reason:
 
 	function adjust(delta: number): void {
 		const previous = client.state.value!.hanamiTuning;
-		const next = adjustHanamiAmount(previous, axis, delta, client.config);
+		// どのしかたからでも「すべて自分で」に切り替えて量を変える。読み込み済みなら、反応に合わせて寄せたあとの量から始める。
+		const next = adjustHanamiAmount(previous, axis, delta, client.config, useHanamiTuningSuggestion().factors.value);
 		client.update({ ...client.state.value!, hanamiTuning: next });
 		const undo = createHanamiTuningUndo(previous, restored => client.update({ ...client.state.value!, hanamiTuning: restored }));
 		const params = { axis: labels[axis], amount: Math.round((next.manual!.amounts[axis] ?? 1) * 100) };
-		const message = previous.mode === 'auto' ? i18n.tsx._hana._tuning.switchedAndAdjusted(params) : i18n.tsx._hana._tuning.adjusted(params);
+		const message = previous.mode !== 'manual' ? i18n.tsx._hana._tuning.switchedAndAdjusted(params) : i18n.tsx._hana._tuning.adjusted(params);
 		const { dispose } = os.popup(defineAsyncComponent(() => import('@/components/MkToast.vue')), { message, actionLabel: t.undo, duration: 8000 }, {
 			action: () => { if (client.state.value!.hanamiTuning === next) undo(); }, closed: () => dispose(),
 		});

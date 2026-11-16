@@ -15499,185 +15499,201 @@ export interface Locale extends ILocale {
              */
             "button": string;
             /**
-             * TLの並びを調整
+             * はなみTL の調整
              */
             "title": string;
-            /**
-             * 並びの調整
-             */
-            "settingsTitle": string;
             /**
              * 下の「表示」で For You を有効にすると調整できます
              */
             "enableForYou": string;
             /**
-             * おまかせ
-             */
-            "auto": string;
-            /**
-             * 手動
-             */
-            "manual": string;
-            /**
              * 調整のしかた
              */
             "mode": string;
             /**
-             * 身近 ⇄ 広く
+             * 自動
              */
-            "closeness": string;
+            "automatic": string;
             /**
-             * いま ⇄ じっくり
+             * 手動
              */
-            "freshness": string;
+            "manualSide": string;
+            "_modes": {
+                /**
+                 * おまかせ
+                 */
+                "auto": string;
+                /**
+                 * 方向だけ決める
+                 */
+                "direction": string;
+                /**
+                 * おすすめから調整
+                 */
+                "recommend": string;
+                /**
+                 * すべて自分で
+                 */
+                "manual": string;
+            };
+            "_modeShort": {
+                /**
+                 * おまかせ
+                 */
+                "auto": string;
+                /**
+                 * 方向
+                 */
+                "direction": string;
+                /**
+                 * おすすめ
+                 */
+                "recommend": string;
+                /**
+                 * 自分で
+                 */
+                "manual": string;
+            };
+            "_modeCaptions": {
+                /**
+                 * 反応を見て自動で変わります
+                 */
+                "auto": string;
+                /**
+                 * 方向を選ぶと、その近くで自動で動きます
+                 */
+                "direction": string;
+                /**
+                 * おすすめの量から、自分で動かします
+                 */
+                "recommend": string;
+                /**
+                 * 種類ごとの量を全部自分で決めます
+                 */
+                "manual": string;
+            };
             /**
-             * 人気 ⇄ 好み
+             * 何も決めなくて大丈夫です。あなたが反応した種類に、少しずつ寄っていきます。
              */
-            "discovery": string;
+            "autoDescription": string;
+            /**
+             * どんな投稿を多めにしますか
+             */
+            "directionTitle": string;
+            "_directions": {
+                /**
+                 * 身近な人中心
+                 */
+                "close": string;
+                /**
+                 * バランス
+                 */
+                "balanced": string;
+                /**
+                 * 広く出会う
+                 */
+                "wide": string;
+            };
+            /**
+             * 選んだ方向から、ここまで動きます
+             */
+            "rangeTitle": string;
             /**
              * 身近
              */
-            "closenessLeft": string;
+            "rangeClose": string;
             /**
              * 広く
              */
-            "closenessRight": string;
+            "rangeWide": string;
+            /**
+             * 選んだ方向
+             */
+            "rangeBase": string;
             /**
              * いま
              */
-            "freshnessLeft": string;
+            "rangeNow": string;
             /**
-             * じっくり
+             * 動ける幅
              */
-            "freshnessRight": string;
+            "rangeBand": string;
             /**
-             * 人気
+             * 選んだ方向を中心に、左右に動けます。いまは少し身近寄りです。
              */
-            "discoveryLeft": string;
+            "rangeNowClose": string;
             /**
-             * 好み
+             * 選んだ方向を中心に、左右に動けます。いまは少し広く寄りです。
              */
-            "discoveryRight": string;
+            "rangeNowWide": string;
             /**
-             * 知っている人の投稿を多めにするか、知らない人まで広げるか。
+             * 選んだ方向を中心に、左右に動けます。いまは選んだ方向のままです。
              */
-            "closenessDescription": string;
+            "rangeNowSame": string;
             /**
-             * 数時間以内の投稿を多めにするか、数日前のよい投稿も拾うか。
+             * 反応への寄せ方
              */
-            "freshnessDescription": string;
+            "drift": string;
+            "_drifts": {
+                /**
+                 * ひかえめ
+                 */
+                "gentle": string;
+                /**
+                 * ふつう
+                 */
+                "normal": string;
+                /**
+                 * しっかり
+                 */
+                "strong": string;
+            };
             /**
-             * 右に寄せるほど、あなたのリアクションや好みから選んだ投稿が増えます。左はサーバー全体で人気・話題の投稿が中心です。
+             * あなたの反応から出したおすすめの量が入っています。ここから自分で動かせます。自動では変わりません。
              */
-            "discoveryDescription": string;
+            "recommendDescription": string;
+            "_levels": {
+                /**
+                 * かなり少なめ
+                 */
+                "veryFew": string;
+                /**
+                 * 少なめ
+                 */
+                "few": string;
+                /**
+                 * ふつう
+                 */
+                "normal": string;
+                /**
+                 * 多め
+                 */
+                "many": string;
+                /**
+                 * かなり多め
+                 */
+                "veryMany": string;
+            };
             /**
-             * とても身近
+             * おすすめに戻す
              */
-            "closeness0": string;
+            "resetRecommend": string;
             /**
-             * やや身近
+             * 7 つの種類の量を、ひとつずつ自分で決めます。自動では変わりません。
              */
-            "closeness1": string;
+            "manualDescription": string;
             /**
-             * ふつう
+             * 100% がふつうの量、0% は出さない、です。
              */
-            "closeness2": string;
+            "manualHint": string;
             /**
-             * やや広く
+             * おすすめの量を入れる
              */
-            "closeness3": string;
+            "applySuggestion": string;
             /**
-             * とても広く
+             * 種類ごとの量を決める
              */
-            "closeness4": string;
-            /**
-             * いま重視
-             */
-            "freshness0": string;
-            /**
-             * やや新しめ
-             */
-            "freshness1": string;
-            /**
-             * ふつう
-             */
-            "freshness2": string;
-            /**
-             * ややじっくり
-             */
-            "freshness3": string;
-            /**
-             * じっくり
-             */
-            "freshness4": string;
-            /**
-             * 人気重視
-             */
-            "discovery0": string;
-            /**
-             * やや人気
-             */
-            "discovery1": string;
-            /**
-             * ふつう
-             */
-            "discovery2": string;
-            /**
-             * やや好み
-             */
-            "discovery3": string;
-            /**
-             * 好み重視
-             */
-            "discovery4": string;
-            /**
-             * 種類ごとの量
-             */
-            "amounts": string;
-            /**
-             * 100% がふつう
-             */
-            "amountsDescription": string;
-            /**
-             * 新しさの重み
-             */
-            "freshWeights": string;
-            /**
-             * 時間帯ごとに点数を何倍にするか
-             */
-            "freshWeightsDescription": string;
-            /**
-             * 6時間以内
-             */
-            "within6h": string;
-            /**
-             * 24時間以内
-             */
-            "within24h": string;
-            /**
-             * それ以前
-             */
-            "older": string;
-            /**
-             * 知り合いの重み
-             */
-            "closeWeights": string;
-            /**
-             * 人気・話題の中で、相手との関係ごとに何倍にするか
-             */
-            "closeWeightsDescription": string;
-            /**
-             * フォロー中
-             */
-            "following": string;
-            /**
-             * あなたをフォロー
-             */
-            "follower": string;
-            /**
-             * その他
-             */
-            "other": string;
+            "openManual": string;
             /**
              * 同じ人の投稿
              */
@@ -15690,14 +15706,156 @@ export interface Locale extends ILocale {
              * {n}件
              */
             "authorCount": ParameterizedString<"n">;
+            "_groups": {
+                /**
+                 * 身近な人から
+                 */
+                "close": string;
+                /**
+                 * みんなの話題
+                 */
+                "buzz": string;
+                /**
+                 * 新しい出会い
+                 */
+                "fresh": string;
+            };
+            "_groupShort": {
+                /**
+                 * 身近
+                 */
+                "close": string;
+                /**
+                 * 話題
+                 */
+                "buzz": string;
+                /**
+                 * 出会い
+                 */
+                "fresh": string;
+            };
+            "_groupCaptions": {
+                /**
+                 * あなたの周りの人を手がかりに選ぶ投稿
+                 */
+                "close": string;
+                /**
+                 * サーバー全体で盛り上がっている投稿
+                 */
+                "buzz": string;
+                /**
+                 * まだ知らない人の、よさそうな投稿
+                 */
+                "fresh": string;
+            };
             /**
-             * 種類ごとの配分
+             * いまは、10 件のうち
              */
-            "composition": string;
+            "tilesTitle": string;
             /**
-             * 約{n}%
+             * {n} 件
              */
-            "approxPercent": ParameterizedString<"n">;
+            "count": ParameterizedString<"n">;
+            /**
+             * 10 件のうち、身近な人から {close} 件、みんなの話題 {buzz} 件、新しい出会い {fresh} 件
+             */
+            "tilesLabel": ParameterizedString<"close" | "buzz" | "fresh">;
+            /**
+             * 反応に合わせて、{groups}が増えています。
+             */
+            "tilesDrifted": ParameterizedString<"groups">;
+            /**
+             * 自動では変わりません。
+             */
+            "tilesFixed": string;
+            /**
+             * 変えるとすぐに並びを作り直します。
+             */
+            "popupNote": string;
+            /**
+             * 詳しい設定と、あなたの反応
+             */
+            "openSettings": string;
+            /**
+             * あなたの反応から
+             */
+            "suggestion": string;
+            /**
+             * 直近 14 日。見た投稿と、反応した投稿の割合です。
+             */
+            "period": string;
+            /**
+             * 見た
+             */
+            "seenShare": string;
+            /**
+             * 反応した
+             */
+            "reactionShare": string;
+            /**
+             * 見た {seen}% ・ 反応した {reactions}%
+             */
+            "shares": ParameterizedString<"seen" | "reactions">;
+            /**
+             * 増やしています
+             */
+            "trendUp": string;
+            /**
+             * 減らしています
+             */
+            "trendDown": string;
+            /**
+             * そのまま
+             */
+            "trendFlat": string;
+            /**
+             * おすすめ: {level}
+             */
+            "recommendChip": ParameterizedString<"level">;
+            /**
+             * 参考
+             */
+            "referenceChip": string;
+            /**
+             * 反応した割合が見た割合より多い種類を、少しずつ増やします。動く幅には上限があります。
+             */
+            "reactionsNoteMoving": string;
+            /**
+             * この反応から、上の「おすすめ」の量を出しています。
+             */
+            "reactionsNoteRecommend": string;
+            /**
+             * 自動では使いません。量を決めるときの参考にしてください。
+             */
+            "reactionsNoteManual": string;
+            /**
+             * まだ反応が少ないので、サーバー全体の傾向で補っています（見た投稿 {seen} 件・反応 {reactions} 件から、あなたの反応だけで決めます）。
+             */
+            "ineligible": ParameterizedString<"seen" | "reactions">;
+            /**
+             * まだ見た投稿がありません。はなみTL を見ていると、ここに出てきます。
+             */
+            "noActivity": string;
+            /**
+             * 種類ごとに見る
+             */
+            "perAxis": string;
+            /**
+             * 見た {seen} 件・反応 {reactions} 件
+             */
+            "suggestionCounts": ParameterizedString<"seen" | "reactions">;
+            /**
+             * 内訳を見る
+             */
+            "breakdown": string;
+            /**
+             * 100 件あたりの目安です。投稿が足りない種類は、ほかの種類で埋まります。
+             */
+            "breakdownNote": string;
+            /**
+             * そのほか
+             */
+            "others": string;
             /**
              * その場限りの投稿を減らす
              */
@@ -15710,50 +15868,6 @@ export interface Locale extends ILocale {
              * はじめの状態に戻す
              */
             "reset": string;
-            /**
-             * あなたの反応から
-             */
-            "suggestion": string;
-            /**
-             * 直近14日
-             */
-            "period": string;
-            /**
-             * 見た投稿の割合と、反応した投稿の割合を種類ごとに比べています。反応が多い種類を増やし、少ない種類を減らすと、2つが揃っていきます。
-             */
-            "suggestionDescription": string;
-            /**
-             * 見た割合
-             */
-            "seenShare": string;
-            /**
-             * 反応した割合
-             */
-            "reactionShare": string;
-            /**
-             * 反応{reactions}件 / 見た{seen}件
-             */
-            "suggestionCounts": ParameterizedString<"reactions" | "seen">;
-            /**
-             * 提案：{changes}（見た{seen}件・反応{reactions}件。件数が少ない種類はサーバー全体の反応率に寄せて計算）
-             */
-            "suggestionSummary": ParameterizedString<"changes" | "seen" | "reactions">;
-            /**
-             * {axis} {current}→{suggested}%
-             */
-            "suggestionChange": ParameterizedString<"axis" | "current" | "suggested">;
-            /**
-             * いまの量で、見た割合と反応した割合はほぼ揃っています。
-             */
-            "suggestionUnchanged": string;
-            /**
-             * 反応に合わせた量にする
-             */
-            "applySuggestion": string;
-            /**
-             * まだ十分な反応がありません（見た投稿200件・反応10件から提案します）
-             */
-            "ineligible": string;
             /**
              * {axis}を増やす
              */
@@ -15775,7 +15889,7 @@ export interface Locale extends ILocale {
              */
             "adjusted": ParameterizedString<"axis" | "amount">;
             /**
-             * 手動に切り替えて、{axis}を {amount}% にしました
+             * 「すべて自分で」に切り替えて、{axis}を {amount}% にしました
              */
             "switchedAndAdjusted": ParameterizedString<"axis" | "amount">;
             /**
@@ -15813,6 +15927,36 @@ export interface Locale extends ILocale {
                 "fof": string;
                 /**
                  * 発見
+                 */
+                "exploration": string;
+            };
+            "_axisDescriptions": {
+                /**
+                 * サーバー全体で反応が多い投稿
+                 */
+                "globalPopular": string;
+                /**
+                 * フォロー中の人や、好みが近い人が反応した投稿
+                 */
+                "neighborTrending": string;
+                /**
+                 * あなたがよく反応する内容に近い、新しい投稿
+                 */
+                "reactionSimilar": string;
+                /**
+                 * いま多くの人が話している話題の投稿
+                 */
+                "trending": string;
+                /**
+                 * フォロー中の人や仲の良い人の、まだ見ていない投稿
+                 */
+                "catchup": string;
+                /**
+                 * フォロー中の人がフォローしている人の投稿
+                 */
+                "fof": string;
+                /**
+                 * まだ広まっていない、読みごたえのある投稿
                  */
                 "exploration": string;
             };

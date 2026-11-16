@@ -18,6 +18,6 @@ describe('Hanami ephemeral-post preference contract', () => {
 		expect(panel).toContain('hanamiReduceEphemeralPosts: $event');
 		expect(client).toContain('$i?.hanamiReduceEphemeralPosts ?? true');
 		expect(client).toContain("await misskeyApi('i/update', patch)");
-		expect(client).toContain('updateCurrentAccount(patch)');
+		expect(client).toContain('updateCurrentAccount(patch');
 	});
 });

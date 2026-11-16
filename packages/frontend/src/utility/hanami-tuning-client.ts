@@ -4,6 +4,7 @@
  */
 
 import { defineAsyncComponent, shallowRef } from 'vue';
+import type * as Misskey from 'misskey-js';
 import { $i } from '@/i.js';
 import { instance } from '@/instance.js';
 import { updateCurrentAccount } from '@/accounts.js';

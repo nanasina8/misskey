@@ -216,7 +216,7 @@ export const paramDef = {
 		hanamiRecommendationEnabled: { type: 'boolean' },
 		hanamiShowRecommendationReason: { type: 'boolean' },
 		hanamiReduceEphemeralPosts: { type: 'boolean' },
-		hanamiTuning: { ...hanamiTuningParamDef, required: ['mode', 'closeness', 'freshness', 'discovery'] },
+		hanamiTuning: { ...hanamiTuningParamDef, required: ['mode'] },
 		hanamiRecommendationAxes: {
 			type: 'object', nullable: false,
 			properties: {

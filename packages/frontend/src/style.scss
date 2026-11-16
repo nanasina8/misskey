@@ -52,6 +52,14 @@
 	@media (max-width: 500px) {
 		--MI-margin: var(--MI-marginHalf);
 	}
+
+	// はなみTL の調整で使う、3 つのまとまりの色（身近＝緑系 / 話題＝橙系 / 出会い＝青系）。
+	// テーマの文字色を混ぜて、明るいテーマでは沈んだ色、暗いテーマでは明るい色になるようにする。
+	--MI-hanamiGroupClose: color-mix(in oklab, #2f8a46 72%, var(--MI_THEME-fg));
+	--MI-hanamiGroupBuzz: color-mix(in oklab, #d9761c 72%, var(--MI_THEME-fg));
+	--MI-hanamiGroupFresh: color-mix(in oklab, #2f6fc4 72%, var(--MI_THEME-fg));
+	// 上の色の上に載せる文字・アイコンの色。
+	--MI-hanamiGroupOn: var(--MI_THEME-panel);
 }
 
 html {

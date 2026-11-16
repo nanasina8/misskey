@@ -29,7 +29,7 @@ vi.mock('@/preferences.js', async () => {
 });
 vi.mock('@/components/MkPreferenceContainer.vue', () => ({ default: { template: '<div><slot/></div>' } }));
 vi.mock('@/components/MkHanamiTuningPanel.vue', () => ({ default: {
-	props: ['showTitle', 'disabled'], template: '<div data-testid="tuning" :aria-disabled="disabled" :data-show-title="showTitle"/>',
+	props: ['disabled'], template: '<div data-testid="tuning" :aria-disabled="disabled"/>',
 } }));
 
 beforeEach(() => {
@@ -57,7 +57,8 @@ describe('Hanami timeline settings', () => {
 		expect(view.getByText(recommendation.description)).toBeTruthy();
 		expect(view.getByText(recommendation.enableDescription)).toBeTruthy();
 		expect(view.getByText(recommendation.showReasonDescription)).toBeTruthy();
-		expect(view.getByTestId('tuning').getAttribute('data-show-title')).toBe('false');
+		// 調整パネルはページのいちばん上（ほかの項目より前）に、折りたたまずに出る。
+		expect(view.getByTestId('tuning').compareDocumentPosition(view.getByText(taste.title)) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 		expect(view.getByTestId('tuning').getAttribute('aria-disabled')).toBe('true');
 		expect(view.getByText(i18n.ts._hana._tuning.enableForYou)).toBeTruthy();
 		await fireEvent.click(view.getByText(recommendation.enable));

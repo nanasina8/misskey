@@ -9,8 +9,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 	:aria-valuenow="modelValue" :aria-valuetext="valueText" :aria-disabled="disabled" :aria-describedby="captionId" :class="$style.root"
 	@keydown="onKeydown"
 >
-	<MkRange :modelValue="modelValue" :min="min" :max="max" :step="step" :disabled="disabled" :textConverter="textConverter" @update:modelValue="emit('update:modelValue', $event)">
-		<template #label><span :class="$style.label">{{ label }}<span>{{ valueText }}</span></span></template>
+	<MkRange :modelValue="modelValue" :min="min" :max="max" :step="step" :disabled="disabled" :showTicks="showTicks" :textConverter="textConverter" @update:modelValue="emit('update:modelValue', $event)">
+		<template #label>
+			<span :class="$style.label">
+				<span :class="$style.name"><span v-if="swatch" :class="$style.swatch" :style="{ background: swatch }" aria-hidden="true"></span>{{ label }}</span>
+				<span :class="$style.value">{{ valueText }}</span>
+			</span>
+		</template>
 		<template #caption><div :id="captionId"><slot name="caption"></slot></div></template>
 	</MkRange>
 </div>
@@ -22,7 +27,11 @@ import MkRange from '@/components/MkRange.vue';
 const props = withDefaults(defineProps<{
 	modelValue: number; min?: number; max: number; step?: number; label: string; valueText: string; disabled?: boolean;
 	textConverter?: (value: number) => string;
-}>(), { min: 0, step: 1, disabled: false });
+	/** 目盛りを出す（段階が少ないとき）。 */
+	showTicks?: boolean;
+	/** ラベルの前に出す小さな色見本（CSS の色）。 */
+	swatch?: string;
+}>(), { min: 0, step: 1, disabled: false, showTicks: false });
 const emit = defineEmits<{ (ev: 'update:modelValue', value: number): void }>();
 const captionId = useId();
 
@@ -39,4 +48,7 @@ function onKeydown(event: KeyboardEvent): void {
 <style lang="scss" module>
 .root { min-width: 0; }
 .label { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; font-variant-numeric: tabular-nums; }
+.name { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; }
+.swatch { flex: 0 0 auto; width: 12px; height: 12px; border-radius: 3px; }
+.value { opacity: 0.75; }
 </style>
