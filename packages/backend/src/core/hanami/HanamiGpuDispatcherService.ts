@@ -88,6 +88,8 @@ export class HanamiGpuDispatcherService {
 
 	private running = false;
 	private loopPromise: Promise<void> | null = null;
+	/** ループが次の回を待っている間だけ入る。呼ぶと待ちをすぐ終わらせる（停止を待たせないため） */
+	private wakeLoop: (() => void) | null = null;
 	private leaderToken: string | null = null;
 	private isLeader = false;
 	private lastLeaderRenewAt = 0;
@@ -98,6 +100,8 @@ export class HanamiGpuDispatcherService {
 	private stdoutLines: Interface | null = null;
 	private pending = new Map<string, PendingRequest>();
 	private workerReady = false;
+	/** 起動に失敗した（実行ファイルが無い等で 'exit' が来ない）。準備待ちをすぐ打ち切るための目印 */
+	private workerSpawnFailed = false;
 
 	private state: HanamiGpuQueueState = 'stopped';
 	private stateSince = Date.now();
@@ -165,6 +169,8 @@ export class HanamiGpuDispatcherService {
 		if (this.statusTimer != null) clearInterval(this.statusTimer);
 		this.statusTimer = null;
 		const wasLeader = this.isLeader;
+		// 待ち時間（最大5分の間隔あけ）の途中でも、すぐループを抜けさせる
+		this.wakeLoop?.();
 		if (this.loopPromise != null) {
 			await Promise.race([this.loopPromise, new Promise<void>(resolve => setTimeout(resolve, EXIT_GRACE_MS))]);
 			this.loopPromise = null;
@@ -194,9 +200,21 @@ export class HanamiGpuDispatcherService {
 		// モデルの読み込みや長い判定の間もリーダーを失わないよう、ループとは別に延長する
 		// （失うと別のプロセスが判定係を起動し、GPU にモデルが2つ載ってしまう）
 		this.leaderTimer = setInterval(() => {
-			void this.maybeRenewLeader();
+			this.maybeRenewLeader().catch(err => {
+				this.logger.warn('hanami GPU dispatcher leader renewal failed', { err });
+			});
 		}, LEADER_RENEW_INTERVAL_MS);
 		this.leaderTimer.unref();
+		// 前のリーダーが判定の途中で止まった（デプロイ・再起動）ときに取り出されたままの項目を列に戻す。
+		// 戻さないと本体だけが残り続け、その項目は二度と判定されない
+		for (const kind of HANAMI_GPU_QUEUE_KINDS) {
+			try {
+				const recovered = await this.hanamiGpuQueueService.recoverOrphans(kind);
+				if (recovered > 0) this.logger.info('hanami GPU queue recovered orphaned items', { kind, recovered });
+			} catch (err) {
+				this.logger.warn('hanami GPU queue orphan recovery failed', { kind, err });
+			}
+		}
 		return true;
 	}
 
@@ -245,29 +263,57 @@ export class HanamiGpuDispatcherService {
 		const command = prepareHanamiPythonCommand([resolveHanamiGpuWorkerScript()], {
 			env: { ...process.env, ...HANAMI_PYTHON_THREAD_ENV, HANAMI_LLM_MAX_THREADS: String(maxThreads) },
 		});
-		this.worker = spawn(command.file, [...command.args], {
+		const worker = spawn(command.file, [...command.args], {
 			env: command.env,
 			stdio: ['pipe', 'pipe', 'pipe'],
 		});
-		this.workerStdin = this.worker.stdin;
+		const spawnedAt = Date.now();
+		this.worker = worker;
+		this.workerStdin = worker.stdin;
 		this.workerReady = false;
-		this.spawnedAt = Date.now();
-		await this.hanamiGpuQueueService.recordEvent({ type: 'workerSpawn', detail: `pid=${this.worker.pid ?? '?'}` });
+		this.workerSpawnFailed = false;
+		this.spawnedAt = spawnedAt;
 
-		this.worker.stderr?.on('data', (chunk: Buffer) => {
+		// 起動できなかった（実行ファイルが無い等）とき・落ちた判定係に書き込んだとき（EPIPE）は 'error' が出る。
+		// 受け取る人がいないと未捕捉の例外になるので、ここで受ける
+		worker.on('error', (err) => {
+			this.logger.warn('gpu worker process error', { err });
+			if (this.worker !== worker) return;
+			this.workerReady = false;
+			// 起動そのものに失敗したときは 'exit' が来ないので、準備待ち（最大10分）をここで終わらせる
+			if (worker.pid == null) this.workerSpawnFailed = true;
+			this.lastError = String(err);
+			this.rejectAllPending(new Error(`gpu worker process error: ${String(err)}`));
+		});
+		worker.stdin?.on('error', (err) => {
+			this.logger.warn('gpu worker stdin error', { err });
+		});
+
+		worker.stderr?.on('data', (chunk: Buffer) => {
 			const text = chunk.toString();
 			if (text.trim().length > 0) this.logger.warn('gpu worker stderr', { text: text.trim() });
 		});
 
-		this.worker.on('exit', (code, signal) => {
+		worker.on('exit', (code, signal) => {
 			this.logger.warn('gpu worker exited', { code, signal });
-			void this.hanamiGpuQueueService.recordEvent({ type: 'workerExit', durationMs: Date.now() - this.spawnedAt, detail: `code=${code} signal=${signal}` });
+			void this.hanamiGpuQueueService.recordEvent({ type: 'workerExit', durationMs: Date.now() - spawnedAt, detail: `code=${code} signal=${signal}` });
+			// 止めたあとに遅れて届いた前の判定係の終了で、起動し直した判定係の状態を壊さない
+			if (this.worker !== worker) return;
 			this.workerReady = false;
 			this.rejectAllPending(new Error(`gpu worker exited (code=${code} signal=${signal})`));
 		});
 
-		this.stdoutLines = createInterface({ input: this.worker.stdout! });
-		this.stdoutLines.on('line', (line) => this.onWorkerLine(line));
+		this.stdoutLines = createInterface({ input: worker.stdout! });
+		this.stdoutLines.on('line', (line) => {
+			if (this.worker === worker) this.onWorkerLine(line);
+		});
+
+		await this.hanamiGpuQueueService.recordEvent({ type: 'workerSpawn', detail: `pid=${worker.pid ?? '?'}` });
+	}
+
+	/** 判定係のプロセスがもう終わっているか（待機中に落ちた・kill された） */
+	private workerHasExited(): boolean {
+		return this.worker != null && (this.workerSpawnFailed || this.worker.exitCode != null || this.worker.signalCode != null);
 	}
 
 	private onWorkerLine(line: string): void {
@@ -364,6 +410,7 @@ export class HanamiGpuDispatcherService {
 		if (this.worker == null) return false;
 		const deadline = Date.now() + READY_TIMEOUT_MS;
 		while (this.workerReady === false && Date.now() < deadline) {
+			if (this.workerSpawnFailed || this.worker == null) return false;
 			if (this.worker.exitCode != null || this.worker.signalCode != null) return false;
 			await sleep(200);
 		}
@@ -374,21 +421,26 @@ export class HanamiGpuDispatcherService {
 		if (this.worker == null) return;
 		const worker = this.worker;
 		this.workerReady = false;
-		try {
-			this.workerStdin?.write(JSON.stringify({ op: 'exit' }) + '\n');
-			const exited = await Promise.race([
-				new Promise<boolean>(resolve => worker.once('exit', () => resolve(true))),
-				sleep(EXIT_GRACE_MS).then(() => false),
-			]);
-			if (!exited) worker.kill('SIGKILL');
-		} catch {
-			worker.kill('SIGKILL');
+		// もう終わっている判定係は待たない（'exit' は二度と来ないので、待つと毎回 EXIT_GRACE_MS かかる）
+		if (!this.workerHasExited()) {
+			try {
+				const exitedPromise = new Promise<boolean>(resolve => worker.once('exit', () => resolve(true)));
+				this.workerStdin?.write(JSON.stringify({ op: 'exit' }) + '\n');
+				const exited = await Promise.race([
+					exitedPromise,
+					sleep(EXIT_GRACE_MS).then(() => false),
+				]);
+				if (!exited) worker.kill('SIGKILL');
+			} catch {
+				worker.kill('SIGKILL');
+			}
 		}
 		this.stdoutLines?.close();
 		this.stdoutLines = null;
 		this.workerStdin = null;
 		this.worker = null;
-		this.pending.clear();
+		// 待っている要求があれば失敗として返す（黙って捨てると、呼び出し側が時間切れまで待ち続ける）
+		this.rejectAllPending(new Error('gpu worker stopped'));
 	}
 
 	private async teardownWorker(): Promise<void> {
@@ -410,23 +462,37 @@ export class HanamiGpuDispatcherService {
 				if (!this.isLeader) {
 					const got = await this.tryBecomeLeader();
 					if (!got) {
-						await sleep(LEADER_RETRY_MS);
+						await this.sleepUntilStopped(LEADER_RETRY_MS);
 						continue;
 					}
 				}
 				await this.maybeRenewLeader();
 				if (!this.isLeader) {
-					await sleep(LEADER_RETRY_MS);
+					await this.sleepUntilStopped(LEADER_RETRY_MS);
 					continue;
 				}
 				const waitMs = await this.tick();
 				await this.persistStatus();
-				await sleep(waitMs);
+				await this.sleepUntilStopped(waitMs);
 			} catch (err) {
 				this.logger.error('hanami GPU dispatcher tick failed', { err });
-				await sleep(IDLE_SLEEP_MS);
+				await this.sleepUntilStopped(IDLE_SLEEP_MS);
 			}
 		}
+	}
+
+	/** 次の回までの待ち。stop() が呼ばれたらすぐ終わる */
+	private sleepUntilStopped(ms: number): Promise<void> {
+		if (!this.running || ms <= 0) return Promise.resolve();
+		return new Promise(resolve => {
+			const done = (): void => {
+				clearTimeout(timer);
+				if (this.wakeLoop === done) this.wakeLoop = null;
+				resolve();
+			};
+			const timer = setTimeout(done, ms);
+			this.wakeLoop = done;
+		});
 	}
 
 	/** 1回分。戻り値は次に回るまでの待ち時間（ミリ秒）。 */
@@ -473,6 +539,10 @@ export class HanamiGpuDispatcherService {
 			this.lastError = `判定の実行環境が使えません: ${runtime.reason ?? 'unknown'}`;
 			return NO_GPU_WAIT_MS;
 		}
+
+		// 判定係が待機中に落ちていたら、仕事を渡す前に片付けて起動し直す
+		// （渡してから気づくと、取り出した項目の試行回数を1回無駄にする）
+		if (this.workerHasExited()) await this.teardownWorker();
 
 		// 4. GPU のロック（判定係が生きている間は持ち続ける）
 		if (this.worker == null) {

@@ -693,8 +693,12 @@ export class QueueProcessorService implements OnApplicationShutdown {
 
 	@bindThis
 	public async stop(): Promise<void> {
-		await this.hanamiGpuDispatcherService.stop();
 		await Promise.all([
+			// 配り役は判定係（Python）の終了を最大20秒ほど待つ。ジョブのワーカーはそれを待たずに閉じ始め、
+			// 配り役の停止に失敗してもワーカーは必ず閉じる（閉じないと処理中のジョブが stalled になる）
+			this.hanamiGpuDispatcherService.stop().catch(err => {
+				this.logger.warn('failed to stop the hanami GPU dispatcher', { err });
+			}),
 			this.systemQueueWorker.close(),
 			this.dbQueueWorker.close(),
 			this.deliverQueueWorker.close(),

@@ -23,6 +23,7 @@ import {
 	HANAMI_COMMON_GENERATION_READ,
 } from '@/core/hanami/HanamiCommonGenerationContracts.js';
 import { HanamiCommonHeadQueries } from '@/core/hanami/HanamiCommonHeadQueries.js';
+import { HanamiGpuDispatcherService } from '@/core/hanami/HanamiGpuDispatcherService.js';
 import { HanamiFeedLifecycleService } from '@/core/hanami/HanamiFeedLifecycleService.js';
 import { HanamiForYouBatchService } from '@/core/hanami/HanamiForYouBatchService.js';
 import { HanamiForYouProvenanceService } from '@/core/hanami/HanamiForYouProvenanceService.js';
@@ -168,7 +169,8 @@ describe('Hanami Phase 4/5 integration wiring workstream F', () => {
 			.filter((token): token is Type<unknown> => typeof token === 'function'
 				&& token !== Object
 				&& !qpsConcreteDependencies.has(token))
-			.map(provide => ({ provide, useValue: {} }));
+			// 配り役は QueueProcessorService の停止で stop() が呼ばれる。無いと停止が途中で落ち、ジョブのワーカーが閉じられない。
+			.map(provide => ({ provide, useValue: provide === HanamiGpuDispatcherService ? { start: jest.fn(), stop: jest.fn(async () => undefined) } : {} }));
 
 		// The alias objects come from CoreModule metadata; infrastructure and
 		// unrelated queue processors are the only replaced parts of this graph.

@@ -147,9 +147,15 @@ export class HanamiGpuQueueService {
 	public async take(kind: HanamiGpuQueueKind, n: number): Promise<HanamiGpuQueueTakenItem[]> {
 		const now = Date.now();
 		const results: HanamiGpuQueueTakenItem[] = [];
+		// 戻し直し（retry・recoverOrphans）が重なると同じ itemId が列に2回入ることがある。1回分に同じ項目を2度入れない
+		const seen = new Set<string>();
 		for (let i = 0; i < n; i++) {
 			const itemId = await this.redis.lpop(listKey(kind));
 			if (itemId == null) break;
+			if (seen.has(itemId)) {
+				i--;
+				continue;
+			}
 			const raw = await this.redis.hget(itemKey(kind), itemId);
 			const body = parseBody(raw);
 			if (body == null) {
@@ -163,6 +169,7 @@ export class HanamiGpuQueueService {
 				i--;
 				continue;
 			}
+			seen.add(itemId);
 			results.push({ itemId, payload: body.payload, enqueuedAt: body.enqueuedAt, attempts: body.attempts });
 		}
 		return results;
@@ -195,6 +202,45 @@ export class HanamiGpuQueueService {
 			await this.redis.hset(itemKey(kind), item.itemId, JSON.stringify(next));
 			await this.redis.lpush(listKey(kind), item.itemId);
 		}
+	}
+
+	/**
+	 * 迷子（本体はあるのに列に無い項目）を列に戻す。配り役がリーダーになった直後、まだ何も取り出していないときに呼ぶ。
+	 *
+	 * 取り出した項目は、判定が終わる（complete）か戻す（retry）まで本体だけが残る。その間に配り役のプロセスが
+	 * 止まる（デプロイ・再起動）と、本体が残ったまま誰にも取り出されず、同じ itemId は HSETNX で弾かれて
+	 * 二度と入れられなくなる。前のリーダーの判定中の数（inflight）も残るので、ここで消す。
+	 *
+	 * 入れている最中（HSETNX と RPUSH の間）の項目を拾わないよう、入れてから graceMs 以上たったものだけを戻す。
+	 * 戻すときは retry と同じ扱い（attempts+1・3回目で諦める）。戻した件数を返す。
+	 */
+	public async recoverOrphans(kind: HanamiGpuQueueKind, graceMs = 60_000): Promise<number> {
+		await this.redis.del(inflightKey(kind));
+		const [listIds, bodies] = await Promise.all([
+			this.redis.lrange(listKey(kind), 0, -1),
+			this.redis.hgetall(itemKey(kind)),
+		]);
+		const inList = new Set(listIds);
+		const now = Date.now();
+		const orphans: HanamiGpuQueueTakenItem[] = [];
+		for (const [itemId, raw] of Object.entries(bodies)) {
+			if (inList.has(itemId)) continue;
+			const body = parseBody(raw);
+			if (body == null) {
+				// 壊れた本体は取り出せないので消す
+				await this.redis.hdel(itemKey(kind), itemId);
+				continue;
+			}
+			if (now - body.enqueuedAt < graceMs) continue;
+			orphans.push({ itemId, payload: body.payload, enqueuedAt: body.enqueuedAt, attempts: body.attempts });
+		}
+		if (orphans.length === 0) return 0;
+		// 古い順に先頭へ戻す（LPUSH は後から入れたものが先頭になるので、新しい順に入れる。同じ時刻なら本体の並びの逆順）
+		orphans.reverse();
+		orphans.sort((a, b) => b.enqueuedAt - a.enqueuedAt);
+		await this.retry(kind, orphans);
+		await this.recordEvent({ type: 'retry', kind, count: orphans.length, detail: 'recovered orphaned items after a dispatcher restart' });
+		return orphans.length;
 	}
 
 	public async length(kind: HanamiGpuQueueKind): Promise<number> {
@@ -324,21 +370,19 @@ export class HanamiGpuQueueService {
 	/** 列と本体の両方から、predicate に当たる項目を消す（全体スキャンの中止に使う）。 */
 	public async removeWhere(kind: HanamiGpuQueueKind, predicate: (payload: unknown) => boolean): Promise<number> {
 		const itemIds = await this.redis.lrange(listKey(kind), 0, -1);
-		const keep: string[] = [];
 		let removed = 0;
 		for (const itemId of itemIds) {
 			const raw = await this.redis.hget(itemKey(kind), itemId);
 			const body = parseBody(raw);
 			if (body != null && predicate(body.payload)) {
 				removed++;
-				await this.redis.hdel(itemKey(kind), itemId);
-			} else {
-				keep.push(itemId);
+				// 列を消して作り直すと、調べている間に入った項目（ほかのプロセスの enqueue・retry）が列から消えて
+				// 迷子になる。当たった項目だけを列と本体から外す。
+				await this.redis.multi()
+					.lrem(listKey(kind), 0, itemId)
+					.hdel(itemKey(kind), itemId)
+					.exec();
 			}
-		}
-		if (removed > 0) {
-			await this.redis.del(listKey(kind));
-			if (keep.length > 0) await this.redis.rpush(listKey(kind), ...keep);
 		}
 		return removed;
 	}
