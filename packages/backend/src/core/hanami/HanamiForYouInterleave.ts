@@ -71,11 +71,15 @@ const AXIS_ORDER: Record<HanamiConfidence, HanamiAxis[]> = {
 export const AXIS_MAX_SHARE: Record<HanamiConfidence, Partial<Record<HanamiAxis, number>>> = {
 	high: { globalPopular: 0.20, neighborTrending: 0.42, reactionSimilar: 0.03, catchup: 0.14, trending: 0.03, fof: 0.10 },
 	low: { globalPopular: 0.47, neighborTrending: 0.24, reactionSimilar: 0.02, catchup: 0.07, trending: 0.04, fof: 0.08 },
-	none: { globalPopular: 0.73, neighborTrending: 0.00, reactionSimilar: 0.00, catchup: 0.00, trending: 0.05, fof: 0.12 },
+	// 反応が無い人向け（共通の並びもこの割合）。友達の友達は候補が無いことが多いので据え置き、いま話題を減らした分は人気に回す。
+	none: { globalPopular: 0.79, neighborTrending: 0.00, reactionSimilar: 0.00, catchup: 0.00, trending: 0.05, fof: 0.06 },
 };
 
 // exploration の専用 quota（§10/§14-D1。score には混ぜない独立枠）。
 export const EXPLORATION_SHARE: Record<HanamiConfidence, number> = { high: 0.08, low: 0.08, none: 0.10 };
+
+/** 枠の件数を切り上げるときに引く、浮動小数の誤差ぶんの値 */
+const CAP_ROUNDING_EPSILON = 1e-9;
 
 // 共通生成のページ作者上限。個人生成は authorCap に応じた窓で判定する。
 const AUTHOR_PER_PAGE_CAP = 2;
@@ -118,7 +122,9 @@ export function computeCaps(confidence: HanamiConfidence, limit: number, order: 
 	const budget = limit * naturalTotal;
 	for (const axis of order) {
 		const w = weights.get(axis) ?? 0;
-		if (w > 0) caps.set(axis, Math.max(1, Math.ceil(budget * w / totalWeight)));
+		// 割合の足し算・掛け算は浮動小数の誤差が出る（例: 0.05*1.6 が 0.08 をわずかに超える）。
+		// ちょうど整数になるはずの値が 1 件多く切り上がらないよう、ごく小さい値を引いてから切り上げる。
+		if (w > 0) caps.set(axis, Math.max(1, Math.ceil(budget * w / totalWeight - CAP_ROUNDING_EPSILON)));
 	}
 	return caps;
 }

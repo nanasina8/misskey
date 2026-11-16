@@ -90,7 +90,7 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		});
 	});
 
-	it('confidence=none で AXIS_MAX_SHARE の cap を尊重（limit=10 → gp8/trending1/fof2/exploration1）', () => {
+	it('confidence=none で AXIS_MAX_SHARE の cap を尊重（limit=10 → gp8/trending1/fof1/exploration1）', () => {
 		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>([
 			['globalPopular', uniqueCands('gp', 20)],
 			['trending', uniqueCands('tr', 20)],
@@ -101,12 +101,12 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		]);
 		const out = hanamiInterleave({ confidence: 'none', limit: 10, axisCandidates });
 		const c = countBySource(out);
-		expect(c.globalPopular).toBe(8); // ceil(10*0.73)
+		expect(c.globalPopular).toBe(8); // ceil(10*0.79)
 		expect(c.trending).toBe(1); // ceil(10*0.05)
-		expect(c.fof).toBe(2); // ceil(10*0.12)
+		expect(c.fof).toBe(1); // ceil(10*0.06)
 		expect(c.exploration).toBe(1); // ceil(10*0.10)
 		expect(c.neighborTrending).toBeUndefined(); // 軸順に無い
-		expect(out.length).toBe(12);
+		expect(out.length).toBe(11);
 	});
 
 	it('Q1: 有効軸で比率再配分する（OFFは0、量「多」は実際に増える）', () => {
@@ -126,11 +126,10 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		const c = countBySource(out);
 		expect(c.globalPopular).toBeUndefined(); // OFF=0
 		expect(c.exploration).toBeUndefined(); // OFF=0
-		// 有効なのは trending(高=0.05*1.6=0.08) と fof(普通=0.12)。budget(=limit*1.0=10) を比率配分:
-		//   trending=ceil(10*0.08/0.20)=5（0.05*1.6 が浮動小数で 0.08 をわずかに超えるので 4 でなく 5）/ fof=ceil(10*0.12/0.20)=6。
-		//   全軸ONのとき(trending1/fof2)より増える。
-		expect(c.trending).toBe(5);
-		expect(c.fof).toBe(6);
+		// 有効なのは trending(高=0.05*1.6=0.08) と fof(普通=0.06)。budget(=limit*1.0=10) を比率配分:
+		//   trending=ceil(10*0.08/0.14)=6 / fof=ceil(10*0.06/0.14)=5。全軸ONのとき(trending1/fof1)より増える。
+		expect(c.trending).toBe(6);
+		expect(c.fof).toBe(5);
 		expect(out.length).toBe(11);
 	});
 

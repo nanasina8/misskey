@@ -326,7 +326,7 @@ export class HanamiUserRecommendationPageService {
 					recommended_user_id: row.recommendedUserId,
 					reason: row.reason,
 					mutual_count: row.mutualCount,
-				}))) ]);
+				})))]);
 			}
 
 			const updated = hanamiReturningRows(await queryRunner.query(`

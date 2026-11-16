@@ -111,8 +111,8 @@ describe('HanamiCommonFeedMaterializer', () => {
 	test('resets quotas and interleave state for seven independent 30-item segments', () => {
 		const result = materializeHanamiCommonFeed({
 			source: source({
-				globalPopular: candidates('globalPopular', 154),
-				trending: candidates('trending', 28),
+				globalPopular: candidates('globalPopular', 168),
+				trending: candidates('trending', 14),
 				exploration: candidates('exploration', 28),
 			}),
 			recentCommonNoteIds: new Set(),
@@ -125,7 +125,8 @@ describe('HanamiCommonFeedMaterializer', () => {
 			for (const item of result.items.slice(start, start + 30)) {
 				counts.set(item.source, (counts.get(item.source) ?? 0) + 1);
 			}
-			expect(Object.fromEntries(counts)).toEqual({ globalPopular: 22, trending: 4, exploration: 4 });
+			// 共通の並びの割合（人気 79・いま話題 5・発見 10）を 30 件に割り振ると 24・2・4。
+			expect(Object.fromEntries(counts)).toEqual({ globalPopular: 24, trending: 2, exploration: 4 });
 		}
 		expect(new Set(result.items.map(item => item.noteId)).size).toBe(210);
 	});

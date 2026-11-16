@@ -122,7 +122,8 @@ export function computeHanamiCaps(amounts: ReadonlyMap<HanamiAxis, number>, limi
 	const total = HANAMI_TUNING_ORDER.reduce((sum, axis) => sum + HANAMI_BASE_SHARE[axis] * (amounts.get(axis) ?? 0), 0);
 	return new Map(HANAMI_TUNING_ORDER.map(axis => {
 		const weight = HANAMI_BASE_SHARE[axis] * (amounts.get(axis) ?? 0);
-		return [axis, total > 0 && weight > 0 ? Math.max(1, Math.ceil(limit * natural * weight / total)) : 0];
+		// backend の computeCaps と同じく、浮動小数の誤差で 1 件多く切り上がらないようにする。
+		return [axis, total > 0 && weight > 0 ? Math.max(1, Math.ceil(limit * natural * weight / total - 1e-9)) : 0];
 	}));
 }
 export function hanamiComposition(tuning: HanamiTuning, config: HanamiAxisServerConfig = {}): Map<HanamiAxis, number> {

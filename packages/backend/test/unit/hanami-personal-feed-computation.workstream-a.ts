@@ -319,8 +319,11 @@ describe('Phase 4 workstream A personal feed computation', () => {
 			expect(first.some(item => item.source === 'trending')).toBe(level !== 'off');
 		}
 		expect(counts[0]).toBe(0);
-		expect(counts[1]).toBeLessThan(counts[2]);
-		expect(counts[2]).toBeLessThan(counts[3]);
+		// いま話題の初期の割合は小さい（5%）ので、30 件の区切りでは「少なめ」と「ふつう」が同じ件数になることがある。
+		// 順序が逆転しないこと、「多め」が「少なめ」より多いことを確かめる。
+		expect(counts[1]).toBeLessThanOrEqual(counts[2]);
+		expect(counts[2]).toBeLessThanOrEqual(counts[3]);
+		expect(counts[1]).toBeLessThan(counts[3]);
 
 		const overflow = createComputation({
 			confidence: 'high',
@@ -329,9 +332,9 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		});
 		const overflowResult = await overflow.service.computePersonalFeed(input());
 		const firstOverflowSegment = overflowResult.items.slice(0, overflowResult.segmentLengths[0]);
-		// catchup cap in a 30-item segment = ceil(30 × 0.12) = 4; the rest is overflow.
-		expect(firstOverflowSegment.slice(0, 4).every(item => item.reasonMetadata.fallbackOverflow === undefined)).toBe(true);
-		expect(firstOverflowSegment.slice(4).every(item => item.reasonMetadata.fallbackOverflow === true)).toBe(true);
+		// catchup cap in a 30-item segment = ceil(30 × 0.14) = 5; the rest is overflow.
+		expect(firstOverflowSegment.slice(0, 5).every(item => item.reasonMetadata.fallbackOverflow === undefined)).toBe(true);
+		expect(firstOverflowSegment.slice(5).every(item => item.reasonMetadata.fallbackOverflow === true)).toBe(true);
 	});
 
 	test('restarts quota and cursor state for seven 30-item segments and keeps discarded headroom available', async () => {
