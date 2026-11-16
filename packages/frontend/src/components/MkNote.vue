@@ -210,6 +210,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 <script lang="ts" setup>
 import { $i } from '@/i.js';
 import { showHanamiReasonMenuForNote } from '@/utility/hanami-tuning-reason.js';
+import { hanamiReasonLabel as hanamiReasonLabelText } from '@/utility/hanami-reason-label.js';
+import type { HanamiReason } from '@/utility/hanami-reason-label.js';
 import { inject, ref, useTemplateRef, provide, computed, watch, onUnmounted, onActivated, onDeactivated } from 'vue';
 import type { Ref } from 'vue';
 import * as Misskey from 'misskey-js';
@@ -263,7 +265,7 @@ const currentAntenna = inject<Ref<Misskey.entities.Antenna | null> | null>('curr
 // はなみTL おすすめの内部マーカーと理由ラベル。
 const hanamiRecommendationMeta = computed(() => props.note as {
 	_hanamiRecommended?: boolean;
-	_hanamiReason?: { reason: string; term?: string; socialCount?: number; clusterId?: number; bucket?: 'cluster' | 'recent' };
+	_hanamiReason?: HanamiReason;
 });
 const hanamiReason = computed(() => $i?.hanamiShowRecommendationReason === false ? null : hanamiRecommendationMeta.value._hanamiReason ?? null);
 
@@ -272,25 +274,7 @@ function showHanamiReasonMenu(event: MouseEvent): void {
 }
 
 const hanamiRecommended = computed(() => hanamiRecommendationMeta.value._hanamiRecommended === true || hanamiReason.value != null);
-const hanamiReasonLabel = computed(() => {
-	const r = hanamiReason.value;
-	if (r == null) return '';
-	const reasons = i18n.ts._hana._recommendation._reason;
-	const reasonText = reasons as Record<string, string>;
-	switch (r.reason) {
-		case 'popular': return reasons.popular;
-		case 'globalPopular': return reasonText.globalPopular;
-		case 'exploration': return reasonText.exploration;
-		case 'neighborTrending': return reasonText.neighborTrending;
-		case 'reactionSimilar': return reasons.reactionSimilar;
-		case 'catchup': return reasons.catchup;
-		case 'trending':
-			if (r.term && r.socialCount) return i18n.tsx._hana._recommendation._reason.trendingTermSocial({ term: r.term, count: r.socialCount });
-			return r.term ? i18n.tsx._hana._recommendation._reason.trendingTerm({ term: r.term }) : reasons.trending;
-		case 'fof': return reasons.fof;
-		default: return '';
-	}
-});
+const hanamiReasonLabel = computed(() => hanamiReason.value == null ? '' : hanamiReasonLabelText(hanamiReason.value));
 const hanamiReasonIcon = computed(() => {
 	switch (hanamiReason.value?.reason) {
 		case 'popular': return 'ti ti-flame';

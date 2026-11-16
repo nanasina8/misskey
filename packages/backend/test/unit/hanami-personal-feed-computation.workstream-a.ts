@@ -925,7 +925,7 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 			computeConfidence: { value: computeConfidence },
 			applyAuthorAffinityRerank: { value: jest.fn(async (_userId: string, _runId: string, values: unknown[]) => values) },
 			applyTasteClusterOrdering: { value: jest.fn(async (_userId: string, values: unknown[]) => values) },
-			neighborTrendingCandidates: { value: jest.fn(async (..._args: unknown[]) => [{ noteId: 'neighbor', userId: 'neighbor-author', score: 1 }]) },
+			neighborTrendingCandidates: { value: jest.fn(async (..._args: unknown[]) => [{ noteId: 'neighbor', userId: 'neighbor-author', score: 1, socialCount: 2 }]) },
 			reactionSimilarCandidates: { value: jest.fn(async (..._args: unknown[]) => [{ noteId: 'reaction', userId: 'reaction-author', score: 1, clusterId: 3, bucket: 'cluster' as const }]) },
 			catchupCandidates: { value: jest.fn(async (..._args: unknown[]) => [{ noteId: 'catchup', userId: 'catchup-author', score: 1 }]) },
 			fofCandidates: { value: jest.fn(async (..._args: unknown[]) => [{ noteId: 'fof', userId: 'fof-author', score: 1 }]) },
@@ -947,6 +947,7 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 
 		expect(result.confidence).toBe('high');
 		expect(result.candidates.find(value => value.noteId === 'trend')).toMatchObject({ socialCount: 3, term: 'term' });
+		expect(result.candidates.find(value => value.noteId === 'neighbor')).toMatchObject({ axis: 'neighborTrending', socialCount: 2 });
 		expect(new Set(result.candidates.map(value => value.axis))).toEqual(new Set(HANAMI_FOR_YOU_AXES));
 		for (const value of result.candidates) {
 			const commonAxis = value.axis === 'globalPopular' || value.axis === 'trending' || value.axis === 'exploration';

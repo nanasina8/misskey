@@ -79,6 +79,14 @@ const TASTE_RECENT_SHARE_MAX = 0.5;
 const TASTE_HEAT_SAT = 12;
 const TASTE_HEAT_BETA = 2.0;
 const TOP_RELATION_OTHERS = 100;
+// 近くで話題（neighborTrending）の「近い人」。ALS の近傍・フォロー中・関係値の上位を合わせる。
+// 人数の上限は NEIGHBOR_CIRCLE_MAX 人。関係値の上位（最大 TOP_RELATION_OTHERS 人）→ ALS の近傍
+// （最大 NEIGHBOR_ALS_MAX 人）→ フォロー中（新しくフォローした順）の順に詰め、上限に達したら残りは入れない。
+// フォローが数千人いても SQL に渡す配列はこの人数で止まる。
+const NEIGHBOR_ALS_MAX = 100;
+const NEIGHBOR_CIRCLE_MAX = 1500;
+// 1 人あたり数える 48 時間以内のリアクションの上限（新しい順）。大量に反応する人が 1 人で問い合わせを重くしないため。
+const NEIGHBOR_REACTIONS_PER_PERSON = 500;
 const DB_GLOBAL_FALLBACK_WINDOW_MS = 30 * DAY_MS;
 const DB_GLOBAL_FALLBACK_SAMPLE = 5000;
 
@@ -161,6 +169,43 @@ const AXIS_TO_UI_REASON: Record<HanamiAxis, string> = {
 	catchup: 'catchup',
 	fof: 'fof',
 };
+
+/**
+ * 近くで話題の「近い人」と重みを決める（本人は入れない）。
+ * - 関係値の上位: 1 + relScore / 最大の relScore（1〜2。最大が 0 以下なら 1）
+ * - ALS の近傍・フォロー中: 1
+ * 同じ人が複数に入るときは重みの大きいほう。詰める順と上限は NEIGHBOR_CIRCLE_MAX のコメントのとおり。
+ */
+export function buildHanamiNeighborCircle(opts: {
+	meId: string;
+	relations: readonly { id: string; relScore: number }[];
+	alsNeighborIds: readonly string[];
+	followeeIds: readonly string[];
+	max?: number;
+}): Map<string, number> {
+	const max = opts.max ?? NEIGHBOR_CIRCLE_MAX;
+	const circle = new Map<string, number>();
+	const add = (id: string, weight: number): void => {
+		if (id === opts.meId) return;
+		const current = circle.get(id);
+		if (current !== undefined) {
+			if (weight > current) circle.set(id, weight);
+			return;
+		}
+		if (circle.size >= max) return;
+		circle.set(id, weight);
+	};
+	const relations = opts.relations.filter(relation => relation.id !== opts.meId);
+	const maxRel = Math.max(0, ...relations.map(relation => Number(relation.relScore)).filter(Number.isFinite));
+	for (const relation of relations) {
+		const relScore = Number(relation.relScore);
+		const ratio = maxRel > 0 && Number.isFinite(relScore) ? Math.min(1, Math.max(0, relScore / maxRel)) : 0;
+		add(relation.id, 1 + ratio);
+	}
+	for (const id of opts.alsNeighborIds) add(id, 1);
+	for (const id of opts.followeeIds) add(id, 1);
+	return circle;
+}
 
 export function refreshHanamiForYouActiveMarker(redisClient: Redis.Redis, userId: MiUser['id']): void {
 	redisClient.set(HANAMI_FORYOU_ACTIVE_KEY_PREFIX + userId, '1', 'EX', HANAMI_FORYOU_ACTIVE_TTL_SEC).catch(() => { /* 次回ページで再試行 */ });
@@ -1017,29 +1062,66 @@ export class HanamiForYouService {
 		return fof.map(({ noteId, userId, score }) => ({ noteId, userId, score: score / max }));
 	}
 
-	/** neighborTrending: ALS taste 近傍が"今"反応してる投稿（§4）。48h 窓。ALS run 未生成なら skip。 */
+	/**
+	 * neighborTrending（近くで話題）: 近い人が 48 時間以内に反応した投稿（§4）。
+	 * 近い人 = ALS の近傍＋フォロー中＋関係値の上位（buildHanamiNeighborCircle）。ALS の run が無くても、
+	 * フォロー中か関係値があれば候補を出す。作者がフォロー中かどうかでは絞らない。
+	 * 点数 = 反応した近い人の重みの合計（1 人は 1 回だけ数える）。socialCount = 反応した近い人の人数。
+	 */
 	private async neighborTrendingCandidates(meId: MiUser['id'], alsRunId: string | null, generation?: HanamiPersonalFeedGenerationContext): Promise<ForYouCandidate[]> {
-		if (alsRunId == null) return [];
-		const neighbors = await this.generationDbQuery<Array<{ id: string; score: number }>>(generation,
-			`SELECT "neighborUserId" AS id, "score" FROM "hanami_foryou_neighbor_user" WHERE "runId" = $1 AND "userId" = $2 ORDER BY "rank" ASC, "neighborUserId" ASC LIMIT 100`,
-			[alsRunId, meId],
+		const relations = await this.generationDbQuery<Array<{ id: string; relScore: number }>>(generation,
+			`SELECT "otherUserId" AS id, "relScore" FROM "hanami_foryou_relation" WHERE "userId" = $1 ORDER BY "relScore" DESC, "otherUserId" ASC LIMIT $2`,
+			[meId, TOP_RELATION_OTHERS],
 		);
-		if (neighbors.length === 0) return [];
-		const neighborIds = neighbors.map(n => n.id);
+		const neighbors = alsRunId == null ? [] : await this.generationDbQuery<Array<{ id: string }>>(generation,
+			`SELECT "neighborUserId" AS id FROM "hanami_foryou_neighbor_user" WHERE "runId" = $1 AND "userId" = $2 ORDER BY "rank" ASC, "neighborUserId" ASC LIMIT $3`,
+			[alsRunId, meId, NEIGHBOR_ALS_MAX],
+		);
+		// 上限ぶんだけ取れば足りる（詰める順は関係値 → ALS → フォロー中なので、フォロー中が上限を超えることはない）。
+		const followees = await this.generationDbQuery<Array<{ id: string }>>(generation,
+			`SELECT "followeeId" AS id FROM following WHERE "followerId" = $1 ORDER BY following.id DESC LIMIT $2`,
+			[meId, NEIGHBOR_CIRCLE_MAX],
+		);
+		const circle = buildHanamiNeighborCircle({
+			meId,
+			relations,
+			alsNeighborIds: neighbors.map(row => row.id),
+			followeeIds: followees.map(row => row.id),
+		});
+		if (circle.size === 0) return [];
+
 		const sinceId = this.idService.gen(this.generationNow(generation) - NEIGHBOR_TRENDING_WINDOW_MS);
-		const rows = await this.generationDbQuery<Array<{ noteId: string; userId: string; c: number }>>(generation,
-			`SELECT n.id AS "noteId", n."userId" AS "userId", count(*)::int AS c
-			 FROM note_reaction r
-			 JOIN note n ON n.id = r."noteId"
-			 WHERE r."userId" = ANY($1) AND r.id >= $2
-			   AND n.visibility IN ('public','home') AND n."channelId" IS NULL AND n."userId" <> $3
-			 GROUP BY n.id, n."userId"
-			 ORDER BY c DESC, n.id DESC
-			 LIMIT $4`,
-			[neighborIds, sinceId, meId, NEIGHBOR_NOTE_POOL],
+		// 近い人の配列 → その人たちの 48 時間以内のリアクション（note_reaction("userId", id) の索引）→ 投稿 の順に引く。
+		// LATERAL ＋ 1 人あたりの上限で、1 人ずつ索引を引く形に固定する（サーバー全体の 48 時間ぶんを読まない）。
+		// 投稿ごとに先に集計してから note を主キーで引く。
+		const rows = await this.generationDbQuery<Array<{ noteId: string; userId: string; score: number; socialCount: number }>>(generation,
+			`WITH near AS MATERIALIZED (
+				SELECT u.id, u.weight FROM unnest($1::varchar[], $2::float8[]) AS u(id, weight)
+			),
+			scored AS MATERIALIZED (
+				SELECT x."noteId", sum(x.weight)::float8 AS score, count(*)::int AS "socialCount"
+				FROM (
+					SELECT DISTINCT r."noteId", near.id AS "reactorId", near.weight
+					FROM near
+					CROSS JOIN LATERAL (
+						SELECT nr."noteId" FROM note_reaction nr
+						WHERE nr."userId" = near.id AND nr.id >= $3
+						ORDER BY nr.id DESC
+						LIMIT $6
+					) r
+				) x
+				GROUP BY x."noteId"
+			)
+			SELECT n.id AS "noteId", n."userId" AS "userId", s.score, s."socialCount"
+			FROM scored s
+			JOIN note n ON n.id = s."noteId"
+			WHERE n.visibility IN ('public','home') AND n."channelId" IS NULL AND n."userId" <> $4
+			ORDER BY s.score DESC, n.id DESC
+			LIMIT $5`,
+			[[...circle.keys()], [...circle.values()], sinceId, meId, NEIGHBOR_NOTE_POOL, NEIGHBOR_REACTIONS_PER_PERSON],
 		);
-		const max = rows[0]?.c || 1;
-		return rows.map(r => ({ noteId: r.noteId, userId: r.userId, score: r.c / max }));
+		const max = Number(rows[0]?.score) || 1;
+		return rows.map(r => ({ noteId: r.noteId, userId: r.userId, score: Number(r.score) / max, socialCount: Number(r.socialCount) }));
 	}
 
 	private async readTasteMatchMeta(meId: MiUser['id'], generation?: HanamiPersonalFeedGenerationContext): Promise<TasteMatchMeta> {

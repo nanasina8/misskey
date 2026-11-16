@@ -15821,7 +15821,7 @@ export interface Locale extends ILocale {
              */
             "reasonGlobalPopular": string;
             /**
-             * 好みが近い人の間で話題の投稿です。
+             * フォロー中の人や好みが近い人が反応した投稿です。
              */
             "reasonNeighborTrending": string;
             /**
@@ -15996,9 +15996,13 @@ export interface Locale extends ILocale {
                  */
                 "exploration": string;
                 /**
-                 * 好みが近い人が反応中
+                 * 近い人が反応中
                  */
                 "neighborTrending": string;
+                /**
+                 * 近い {count} 人が反応
+                 */
+                "neighborTrendingSocial": ParameterizedString<"count">;
                 /**
                  * あなたの興味に近い投稿
                  */
