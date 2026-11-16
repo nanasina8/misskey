@@ -19,6 +19,13 @@ export const meta = {
 	requireCredential: true,
 	kind: 'read:account',
 
+	// 画面は 1 回の待ちで最大 22 回（1・2・3 秒後、以後 3 秒おき、約 60 秒まで）確かめる。
+	// デッキで列が複数あっても足りる回数にしつつ、外からの連打は止める。
+	limit: {
+		duration: 60 * 1000,
+		max: 120,
+	},
+
 	res: {
 		type: 'object',
 		optional: false, nullable: false,
