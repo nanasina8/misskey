@@ -37,7 +37,7 @@ import {
 	validateHanamiNoteJudgeSettings,
 	type HanamiNoteJudgeSettings,
 } from './HanamiNoteJudgeContracts.js';
-import { trendDailyKey, trendSameKey, trendSameSetKey, trendTitleKey, readTrendTitle, trendTitleNeedsRename, trendTitlePosts, validateTrendTitle, trendTopicVisible, TREND_TITLE_TOP, TREND_CONTENT_JUDGE_EXTRA, type HanamiTrendPreviousTopics } from './HanamiTrendService.js';
+import { trendDailyKey, trendSameKey, trendSameSetKey, trendTitleKey, readTrendTitle, trendTitleNeedsRename, trendTitlePosts, validateTrendTitle, trendTopicVisible, TREND_TITLE_TOP, TREND_CONTENT_JUDGE_EXTRA, TREND_SAME_VERDICT_TTL_SECONDS, TREND_SAME_EXTRA_PAIRS, TREND_TOPIC_JUDGE_TOPIC_MAX, type HanamiTrendPreviousTopics } from './HanamiTrendService.js';
 import { hanamiReturningRows } from './HanamiReturningRows.js';
 import { acquireHanamiLocalLlmLock, HANAMI_LOCAL_CPU_LOCK_KEY, recordHanamiLlmEvent, type HanamiGpuJob, type HanamiLlmEvent } from './HanamiLocalLlmLock.js';
 import { HanamiGpuQueueService, type HanamiGpuQueueTakenItem } from './HanamiGpuQueueService.js';
@@ -914,13 +914,51 @@ export class HanamiForYouBatchService implements OnModuleInit {
 		const sameTopics = visible.slice(0, 10);
 		const possiblePairs = sameTopics.flatMap((topic, i) => sameTopics.slice(i + 1).map(other => ({ a: topic.topicId, b: other.topicId })));
 		const same = possiblePairs.length === 0 ? [] : await this.redisClient.mget(...possiblePairs.map(pair => trendSameKey(pair.a, pair.b)));
-		const pairs = possiblePairs.filter((_, i) => same[i] == null);
+		const basePairs = possiblePairs.filter((_, i) => same[i] == null);
+		// 上位 10 件どうしのほかに、割れていそうな組も判定に回す。割れた片割れは人数が少なく 11 位以下に落ちるため。
+		// 候補 = 同じ見出しが付いた組 → 生成のときに挙げた組（共通の投稿・人・語、前回は 1 つの話題、内容が近い）。
+		const byTopicId = new Map(all.map(topic => [topic.topicId, topic]));
+		const visibleIds = new Set(visible.map(topic => topic.topicId));
+		const mayShow = (id: string): boolean => {
+			const topic = byTopicId.get(id);
+			return topic != null && (verdict.get(id) == null || trendTopicVisible(topic.origin, verdict.get(id)));
+		};
+		const titleOf = new Map(visible.map((topic, i) => [topic.topicId, readTrendTitle(cachedTitles[i])?.title ?? null]));
+		const sameTitlePairs = visible.flatMap((topic, i) => visible.slice(i + 1)
+			.filter(other => titleOf.get(topic.topicId) != null && titleOf.get(topic.topicId) === titleOf.get(other.topicId))
+			.map(other => ({ a: topic.topicId, b: other.topicId })));
+		const relatedPairs = (Array.isArray(parsed) ? [] : parsed.related ?? [])
+			.filter(pair => Array.isArray(pair) && typeof pair[0] === 'string' && typeof pair[1] === 'string' && pair[0] !== pair[1])
+			.map(([a, b]) => ({ a, b }))
+			.filter(pair => (visibleIds.has(pair.a) || visibleIds.has(pair.b)) && mayShow(pair.a) && mayShow(pair.b));
+		const asked = new Set(possiblePairs.map(pair => trendSameKey(pair.a, pair.b)));
+		const extraCandidates = [...sameTitlePairs, ...relatedPairs].filter(pair => {
+			const key = trendSameKey(pair.a, pair.b);
+			if (asked.has(key)) return false;
+			asked.add(key);
+			return true;
+		});
+		const extraSame = extraCandidates.length === 0 ? [] : await this.redisClient.mget(...extraCandidates.map(pair => trendSameKey(pair.a, pair.b)));
+		const baseTopicIds = new Set([...top, ...extra, ...visible].map(topic => topic.topicId));
+		const extraPairs: { a: string; b: string }[] = [];
+		const partnerIds = new Set<string>();
+		for (const [i, pair] of extraCandidates.entries()) {
+			if (extraSame[i] != null) continue;
+			if (extraPairs.length >= TREND_SAME_EXTRA_PAIRS) break;
+			const added = [pair.a, pair.b].filter(id => !baseTopicIds.has(id) && !partnerIds.has(id));
+			// 判定係に渡せる話題の数には上限がある（HanamiTrendTopicJudge.py と同じ値）。入りきらない組は次の回に回す。
+			if (baseTopicIds.size + partnerIds.size + added.length > TREND_TOPIC_JUDGE_TOPIC_MAX) continue;
+			for (const id of added) partnerIds.add(id);
+			extraPairs.push(pair);
+		}
+		const pairs = [...basePairs, ...extraPairs];
 		if (dailyIds.length === 0 && pairs.length === 0 && needsTitle.length === 0) {
 			await this.recordTrendTopicJudgeResult(null, 'nothingToDo');
 			await this.recordLlmEvent({ job: 'topicJudge', event: 'empty' });
 			return null;
 		}
-		const topics = [...new Map([...top, ...extra, ...visible].map(topic => [topic.topicId, topic])).values()];
+		const partners = [...partnerIds].flatMap(id => byTopicId.has(id) ? [byTopicId.get(id)!] : []);
+		const topics = [...new Map([...top, ...extra, ...visible, ...partners].map(topic => [topic.topicId, topic])).values()];
 		const ids = [...new Set(topics.flatMap(topic => topic.noteIds))];
 		const rows = await this.db.query<Array<{ id: string; text: string; replyId: string | null }>>('SELECT id, text, "replyId" FROM note WHERE id = ANY($1::varchar[]) AND text IS NOT NULL', [ids]);
 		const scores = await this.featuredService.getGlobalNotesScoresWithCache();
@@ -1024,11 +1062,11 @@ export class HanamiForYouBatchService implements OnModuleInit {
 			} else if (judgement.kind === 'same' && pairs.some(pair => pair.a === judgement.a && pair.b === judgement.b)) {
 				key = trendSameKey(judgement.a, judgement.b); verdict = judgement.probability >= 0.7;
 			} else throw new Error('Unexpected topic judgement');
-			const pipe = this.redisClient.multi().set(key, verdict ? '1' : '0', 'EX', 6 * 60 * 60);
+			const pipe = this.redisClient.multi().set(key, verdict ? '1' : '0', 'EX', TREND_SAME_VERDICT_TTL_SECONDS);
 			if (judgement.kind === 'same') {
 				if (verdict) {
-					pipe.sadd(trendSameSetKey(judgement.a), judgement.b).expire(trendSameSetKey(judgement.a), 6 * 60 * 60);
-					pipe.sadd(trendSameSetKey(judgement.b), judgement.a).expire(trendSameSetKey(judgement.b), 6 * 60 * 60);
+					pipe.sadd(trendSameSetKey(judgement.a), judgement.b).expire(trendSameSetKey(judgement.a), TREND_SAME_VERDICT_TTL_SECONDS);
+					pipe.sadd(trendSameSetKey(judgement.b), judgement.a).expire(trendSameSetKey(judgement.b), TREND_SAME_VERDICT_TTL_SECONDS);
 				} else {
 					pipe.srem(trendSameSetKey(judgement.a), judgement.b);
 					pipe.srem(trendSameSetKey(judgement.b), judgement.a);

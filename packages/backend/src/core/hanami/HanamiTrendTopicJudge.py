@@ -10,6 +10,8 @@ from HanamiNoteJudgeCpu import MODEL, output, probe, resolve_runtime
 SAME_PROMPT = 'SNS の2つの投稿のまとまりが、同じ出来事・同じ話題について話しているかを判定してください。「はい」か「いいえ」だけを出力してください。\n\n[A]\n{A}\n\n[B]\n{B}'
 TITLE_PROMPT = 'SNS で同じ時間帯に複数の人が投稿した内容です。共通する話題を、トレンド欄に載せる短い見出し（日本語・12字以内・名詞止め）にしてください。投稿に書かれていないことは足さないでください。共通する話題が無い・ただの挨拶や雑談の寄せ集めなら「なし」とだけ答えてください。見出しだけを出力してください。\n\n投稿:\n{posts}'
 
+# 1 回に受け取る話題の数の上限。HanamiTrendService.ts の TREND_TOPIC_JUDGE_TOPIC_MAX と同じ値にする。
+TOPIC_MAX = 60
 DAILY_PROMPT = 'SNS の投稿のまとまりです。これが「今この時に多くの人が同じ出来事・ニュース・番組・作品・企画について話している話題」なら「話題」、「毎日いつでも見かける日常のつぶやき・あいさつ・定型の投稿（帰宅、おはよう、質問箱の募集、参加表明、ハッシュタグで回答を集める遊びや診断など）」なら「日常」と答えてください。「話題」か「日常」だけを出力してください。\n{X}'
 
 
@@ -39,7 +41,7 @@ def judge_topic_job(torch, tokenizer, model, job, on_progress=None):
 
     try:
         topics = job['topics']
-        if not isinstance(topics, list) or len(topics) > 15 * 2 + 10:
+        if not isinstance(topics, list) or len(topics) > TOPIC_MAX:
             raise ValueError('too many topics')
         by_id = {topic['topicId']: topic['text'] for topic in topics}
         if len(by_id) != len(topics) or any(not isinstance(text, str) for text in by_id.values()):

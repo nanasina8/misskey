@@ -24,6 +24,8 @@ import { hanamiTrendAuthorGroups, hanamiTrendEffectiveAuthors, trendCleanText, t
 import { HanamiTokenizerService } from './tokenize/HanamiTokenizerService.js';
 import { centerTrendEmbeddings, nameTrendContentTopic, splitTrendTermTopics, trendTopicCenter } from './HanamiTrendTermSplit.js';
 import type { TrendCenteredVectors } from './HanamiTrendTermSplit.js';
+import { TREND_RECURRING_LOOKBACK_DAYS, TREND_RECURRING_MAX_AUTHORS, TREND_RECURRING_PREFIX_LENGTH, trendRecurringCandidates, trendRecurringPairKey, trendRecurringPairs, trendRecurringPrefix, trendRecurringTodayStart, trendTemplateKey } from './HanamiTrendRecurringPosts.js';
+import { trendRelatedTopicPairs } from './HanamiTrendRelatedPairs.js';
 
 // トレンド窓: おすすめ(FeaturedService)と同じ 15分グリッド × 288枠(72時間)。
 // 現窓“単独”だと毎窓境界でトレンドが消える崖が出るため、スライディング窓にする。
@@ -121,7 +123,8 @@ type TopicNote = { id: string; userId: string; replyId: string | null; renoteId:
 type RawTopic = { origin?: 'term' | 'content'; terms: string[]; noteIds: string[]; authors6h: number; authors2h: number; center: number[] | null };
 type TrendTopicContext = { noteTerms: Map<string, string[]>; vectors: TrendCenteredVectors | null };
 type Topic = RawTopic & { topicId: string; startedAt: string; daily: boolean; dailyJudged?: boolean; dailyVerdict?: string | null; tagGame?: boolean };
-export type HanamiTrendPreviousTopics = { computedAt: number; topics: Omit<Topic, 'center'>[] };
+/** related = 同じ出来事が割れていそうな話題の組（手がかりの強い順）。LLM の同一判定に回す候補。 */
+export type HanamiTrendPreviousTopics = { computedAt: number; topics: Omit<Topic, 'center'>[]; related?: Array<[string, string]> };
 type TrendNoteCandidate = { noteId: string; term: string };
 type TrendNoteCache = { computedAt: number; candidates: TrendNoteCandidate[] };
 const SAVE_COMPUTED_CACHE = `
@@ -133,6 +136,14 @@ end
 redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
 return 1
 `;
+/** 上位 10 件どうしのほかに、1 回の判定に足す「割れていそうな組」の上限 */
+export const TREND_SAME_EXTRA_PAIRS = 30;
+/** 1 回の判定に渡せる話題の数の上限。HanamiTrendTopicJudge.py の TOPIC_MAX と同じ値にする。 */
+export const TREND_TOPIC_JUDGE_TOPIC_MAX = 60;
+/** LLM の同一判定（same）を覚えておく時間。まとめた話題が続いている間は、生成のたびに延ばす。 */
+export const TREND_SAME_VERDICT_TTL_SECONDS = 6 * 60 * 60;
+/** 定期の投稿かどうかの結果を覚えておく時間 */
+const TREND_RECURRING_MEMO_MS = 3 * 60 * 60 * 1000;
 export function trendDailyKey(id: string): string { return `hanami:trend:llm:daily:${id}`; }
 export function trendSameKey(a: string, b: string): string { return `hanami:trend:llm:same:${[a, b].sort().join(':')}`; }
 export function trendSameSetKey(id: string): string { return `hanami:trend:llm:sameset:${id}`; }
@@ -231,6 +242,8 @@ export type HanamiTrendComputationBundle = {
 @Injectable()
 export class HanamiTrendService {
 	private readonly logger = new Logger('hanami');
+	/** (作者, 文) ごとの「定期の投稿か」の結果。プロセスごとに数時間だけ覚える。 */
+	private readonly recurringMemo = new Map<string, { recurring: boolean; until: number }>();
 
 	constructor(
 		@Inject(DI.redis)
@@ -596,6 +609,54 @@ export class HanamiTrendService {
 			for (const row of embedded) extra.set(row.id, { ...extra.get(row.id), ...row, createdAt: this.idService.parse(row.id).date.getTime(), terms: [], embeddingIndex: null, source: extra.has(row.id) ? 'link' : 'embedding', embeddingCandidate: true });
 			notes.push(...extra.values());
 		}
+		const kept = await this.dropRecurringNotes(notes, now);
+		return await this.withTopicParents(kept);
+	}
+
+	/**
+	 * 同じ人が毎日出している定型の投稿（質問箱の「質問募集中です」など）を、話題の材料から外す。
+	 * 作者ごとに過去 7 日の投稿を見て、今日より前の 2 日以上に同じ文があれば定期の投稿とみなす。
+	 * 結果は (作者, 文) ごとに数時間覚えるので、毎回読むのは新しく入った投稿のぶんだけ。
+	 * 1 回に調べる作者には上限があり、あふれた分は次の回に調べる（それまでは外さない）。調べられなかったときも外さない。
+	 */
+	private async dropRecurringNotes(notes: TopicNote[], now: number): Promise<TopicNote[]> {
+		const idService = this.idService;
+		if (idService == null) return notes;
+		try {
+			const candidates = trendRecurringCandidates(notes);
+			if (candidates.length === 0) return notes;
+			const keyOf = (note: TopicNote): string => trendRecurringPairKey(note.userId, trendTemplateKey(note.text) ?? '');
+			for (const [key, memo] of this.recurringMemo) if (memo.until <= now) this.recurringMemo.delete(key);
+			const unknown = candidates.filter(note => !this.recurringMemo.has(keyOf(note)));
+			if (unknown.length > 0) {
+				const authors = [...new Set(unknown.map(note => note.userId))].slice(0, TREND_RECURRING_MAX_AUTHORS);
+				const asked = new Set(authors);
+				const prefixes = [...new Set(unknown.flatMap(note => asked.has(note.userId) && note.text != null ? [trendRecurringPrefix(note.text)] : []))];
+				const todayStart = trendRecurringTodayStart(now);
+				// 作者ごとに ("userId", id) の索引で 7 日ぶんをたどり、文の先頭が同じものだけを読む。
+				const rows = await this.db.query<Array<{ id: string; userId: string; text: string | null }>>(`SELECT n.id, n."userId", n.text FROM note n
+					WHERE n."userId" = ANY($1::varchar[]) AND n.id >= $2 AND n.id < $3
+						AND n.text IS NOT NULL AND left(n.text, $5) = ANY($4::text[])`,
+				[authors, idService.gen(todayStart - TREND_RECURRING_LOOKBACK_DAYS * 24 * 60 * 60 * 1000), idService.gen(todayStart), prefixes, TREND_RECURRING_PREFIX_LENGTH]);
+				const recurring = trendRecurringPairs(rows.map(row => ({ userId: row.userId, text: row.text, createdAt: idService.parse(row.id).date.getTime() })), now);
+				for (const note of unknown) {
+					if (!asked.has(note.userId)) continue;
+					const key = keyOf(note);
+					this.recurringMemo.set(key, { recurring: recurring.has(key), until: now + TREND_RECURRING_MEMO_MS });
+				}
+			}
+			const dropped = new Set(candidates.filter(note => this.recurringMemo.get(keyOf(note))?.recurring === true).map(note => note.id));
+			if (dropped.size === 0) return notes;
+			this.logger.info('hanami trend recurring posts', { candidates: candidates.length, dropped: dropped.size });
+			return notes.filter(note => !dropped.has(note.id));
+		} catch (error) {
+			this.logger.warn('hanami trend recurring posts: check failed; keeping all posts', { error: String(error) });
+			return notes;
+		}
+	}
+
+	private async withTopicParents(notes: TopicNote[]): Promise<{ notes: TopicNote[]; parents: TopicNote[] }> {
+		type Row = Pick<TopicNote, 'id' | 'userId' | 'replyId' | 'renoteId' | 'text' | 'tags'>;
 		const parentIds = [...new Set(notes.flatMap(note => [note.replyId, note.text ? note.renoteId : null]).filter((id): id is string => id != null))];
 		const parents = parentIds.length === 0 ? [] : await this.db.query<Row[]>('SELECT id, "userId", "replyId", "renoteId", text FROM note WHERE id = ANY($1::varchar[])', [parentIds]);
 		return { notes, parents: parents.map(row => ({ ...row, createdAt: 0, terms: [], embeddingIndex: null })) };
@@ -868,9 +929,22 @@ export class HanamiTrendService {
 			}
 			return index;
 		};
-		[...pairs.values()].forEach(([a, b], index) => {
-			if (verdicts[index] === '1') parents[root(b)] = root(a);
-		});
+		const merged = [...pairs].filter((_, index) => verdicts[index] === '1');
+		for (const [, [a, b]] of merged) parents[root(b)] = root(a);
+		if (merged.length > 0) {
+			// まとめた話題が続いている間は判定を覚えたままにする（期限が切れるたびに割れ直さないように）。
+			try {
+				const keep = this.redisClient.pipeline();
+				for (const [key, [a, b]] of merged) {
+					keep.expire(key, TREND_SAME_VERDICT_TTL_SECONDS);
+					keep.expire(trendSameSetKey(topics[a].topicId), TREND_SAME_VERDICT_TTL_SECONDS);
+					keep.expire(trendSameSetKey(topics[b].topicId), TREND_SAME_VERDICT_TTL_SECONDS);
+				}
+				await keep.exec();
+			} catch (error) {
+				this.logger.warn('hanami trend topics: failed to extend same-topic verdicts', { error: String(error) });
+			}
+		}
 		const components = new Map<number, Topic[]>();
 		topics.forEach((topic, index) => {
 			const key = root(index);
@@ -921,7 +995,8 @@ export class HanamiTrendService {
 		const score = (topic: Topic) => Math.max(...topic.terms.map(term => scores.get(term) ?? 0));
 		const compare = (a: Topic, b: Topic) => b.authors2h * (b.daily ? 0.3 : 1) - a.authors2h * (a.daily ? 0.3 : 1) || b.authors6h - a.authors6h || score(b) - score(a);
 		unmerged.sort(compare);
-		const prev: HanamiTrendPreviousTopics = { computedAt: now, topics: unmerged.map(({ center: _center, ...topic }) => topic) };
+		const related = trendRelatedTopicPairs(unmerged, new Map(notes.map(note => [note.id, note.userId])), Array.isArray(previous) ? previous : previous.topics);
+		const prev: HanamiTrendPreviousTopics = { computedAt: now, topics: unmerged.map(({ center: _center, ...topic }) => topic), related };
 		await this.redisClient.eval(SAVE_COMPUTED_CACHE, 1, TREND_TOPIC_PREV_KEY, now, JSON.stringify(prev), 3600);
 		const topics = (await this.applyTopicJudgements(unmerged, notes, now)).filter(topic => trendTopicVisible(topic.origin, topic.dailyVerdict));
 		topics.forEach(rankReason);

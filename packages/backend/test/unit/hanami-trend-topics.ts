@@ -335,6 +335,54 @@ describe('GPU topic judge jobs (U-7)', () => {
 			expect(result.topics[0].text.split('\n')[2]).toBe('- ' + 'あ'.repeat(120));
 		});
 	});
+	test('割れていそうな組（11 位以下の片割れ・同じ見出し）も同一判定に回す', async () => {
+		await withRuntime(true, async () => {
+			const id = (i: number) => `t${String(i).padStart(2, '0')}`;
+			const topics = Array.from({ length: 20 }, (_, i) => ({ topicId: id(i), origin: 'term' as const, terms: [`語${i}`], noteIds: [`${id(i)}-0`, `${id(i)}-1`, `${id(i)}-2`], authors2h: 20 - i }));
+			const related: [string, string][] = [
+				[id(0), id(17)], // 上位の話題と 18 位の片割れ → 回す
+				[id(16), id(18)], // どちらも表示の上位 15 件の外 → 回さない
+				[id(1), id(2)], // 上位 10 件どうしで既に入っている → 重ねない
+				[id(3), id(19)], // 判定済み → 回さない
+			];
+			const title = (topicId: string) => JSON.stringify({ title: '同じ見出し', noteIds: [`${topicId}-0`, `${topicId}-1`, `${topicId}-2`] });
+			const rows = topics.flatMap(topic => topic.noteIds.map(noteId => ({ id: noteId, text: `${noteId} の投稿です`, replyId: null })));
+			const get = async (key: string) => key === 'hanami:trend:topics:prev' ? JSON.stringify({ computedAt: now, topics, related })
+				: key === trendSameKey(id(3), id(19)) ? '0'
+					: key === trendTitleKey(id(4)) ? title(id(4))
+						: key === trendTitleKey(id(12)) ? title(id(12)) : null;
+			const mget = jest.fn(async (...keys: string[]) => Promise.all(keys.map(get)));
+			const service = topicBatch({ get, mget }, jest.fn(async (..._args: unknown[]) => rows));
+
+			const result = (await service.prepareTrendTopicJudgeJob())!;
+
+			// 上位 10 件どうしの 45 組のあとに、同じ見出しの組 → 生成のときに挙げた組の順で足す。
+			expect(result.pairs).toHaveLength(47);
+			expect(result.pairs.slice(45)).toEqual([{ a: id(4), b: id(12) }, { a: id(0), b: id(17) }]);
+			// 表示の上位 15 件に無い片割れ（18 位）の本文も、判定係に渡す。
+			expect(result.topics.map(topic => topic.topicId)).toEqual([...Array.from({ length: 15 }, (_, i) => id(i)), id(17)]);
+			expect(mget.mock.calls.map(keys => keys.length)).toEqual([20, 15, 45, 3]);
+		});
+	});
+	test('割れていそうな組は 1 回 30 組まで、渡す話題は 60 件までに収める', async () => {
+		await withRuntime(true, async () => {
+			const id = (i: number) => `t${String(i).padStart(3, '0')}`;
+			const topics = Array.from({ length: 120 }, (_, i) => ({ topicId: id(i), origin: 'term' as const, terms: [`語${i}`], noteIds: [`${id(i)}-0`], authors2h: 200 - i }));
+			// 上位 1 件と、16 位以下の 100 件のそれぞれを組にする。
+			const related: [string, string][] = Array.from({ length: 100 }, (_, i) => [id(0), id(i + 16)]);
+			const rows = topics.flatMap(topic => topic.noteIds.map(noteId => ({ id: noteId, text: `${noteId} の投稿です`, replyId: null })));
+			const get = async (key: string) => key === 'hanami:trend:topics:prev' ? JSON.stringify({ computedAt: now, topics, related }) : null;
+			const service = topicBatch({ get, mget: async (...keys: string[]) => Promise.all(keys.map(get)) }, jest.fn(async (..._args: unknown[]) => rows));
+
+			const result = (await service.prepareTrendTopicJudgeJob())!;
+
+			expect(result.pairs).toHaveLength(45 + 30);
+			expect(result.topics.length).toBeLessThanOrEqual(60);
+			expect(new Set(result.topics.map(topic => topic.topicId)).size).toBe(result.topics.length);
+			const known = new Set(result.topics.map(topic => topic.topicId));
+			expect(result.pairs.every(pair => known.has(pair.a) && known.has(pair.b))).toBe(true);
+		});
+	});
 	test('the handler reads probabilities at the specified thresholds and stores six-hour verdicts', async () => {
 		const set = jest.fn(async (..._args: unknown[]) => 'OK');
 		const sets = new Map([[trendSameSetKey('a'), new Set(['c'])], [trendSameSetKey('c'), new Set(['a'])]]);

@@ -18,9 +18,11 @@ function fixture(notes: Note[], options: { python?: boolean; candidates?: string
 	const strings = new Map<string, string>();
 	const sets = new Map<string, Set<string>>();
 	const terms = options.candidates ?? [...new Set(notes.flatMap(note => note.terms))];
+	const expires: [string, number][] = [];
 	const pipeline = jest.fn(() => {
 		const requests: (() => unknown)[] = [];
 		const pipe = {
+			expire: jest.fn((key: string, seconds: number) => { requests.push(() => { expires.push([key, seconds]); return 1; }); return pipe; }),
 			zrange: jest.fn((key: string, ..._args: unknown[]) => { requests.push(() => notes.filter(note => note.terms.includes(key.slice('hanami:trend:notes:'.length))).sort((a, b) => b.at - a.at).flatMap(note => [note.id, String(note.at)])); return pipe; }),
 			smembers: jest.fn((key: string) => { requests.push(() => [...(sets.get(key) ?? [])]); return pipe; }),
 			exec: async () => requests.map(run => [null, run()]),
@@ -46,7 +48,7 @@ function fixture(notes: Note[], options: { python?: boolean; candidates?: string
 		const members = notes.filter(note => note.terms.includes(term));
 		return { terms: [term], noteIds: members.map(note => note.id), authors6h: new Set(members.map(note => note.userId)).size, authors2h: new Set(members.filter(note => note.at >= NOW - 2 * 3600000).map(note => note.userId)).size, center: null };
 	})) });
-	return { service, redis, strings, sets, db, pipeline };
+	return { service, redis, strings, sets, db, pipeline, expires };
 }
 
 function notesFor(term: string, count = 3): Note[] {
@@ -244,6 +246,11 @@ describe('topic materialization (U-4, U-5, U-6, U-7)', () => {
 		expect(before.topics.map((topic: { noteIds: string[] }) => topic.noteIds.length)).toEqual([6, 3, 3]);
 		expect(first.terms).toHaveLength(1);
 		expect(first.terms[0]).toMatchObject({ topicId: 'topic-1', distinctAuthors: 12, relatedTerms: ['b', 'c'] });
+		// まとめた組の判定と目印は、生成のたびに期限を延ばす（6 時間で割れ直さないように）。
+		expect(setup.expires).toEqual(expect.arrayContaining([
+			[trendSameKey('topic-1', 'topic-2'), 21600], [trendSameKey('topic-2', 'topic-3'), 21600],
+			[trendSameSetKey('topic-1'), 21600], [trendSameSetKey('topic-2'), 21600], [trendSameSetKey('topic-3'), 21600],
+		]));
 		clock.mockReturnValue(NOW + 600000);
 		const next = await setup.service.computeTrendBundle(new Map());
 		expect(next.terms).toHaveLength(1);
