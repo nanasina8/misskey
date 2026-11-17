@@ -4,7 +4,7 @@
  */
 
 // はなみ For You の軸・confidence・quota interleave の確定アルゴリズム（canonical spec §6.1/§10）。
-// スコア混合はしない。各軸 top をラウンドロビン＋作者dedup＋上限cap で併合する（実証：スコア混合は人気に占領され破綻）。
+// スコア混合はしない。各軸 top を、配分（cap）に比例した順＋作者dedup＋上限cap で併合する（実証：スコア混合は人気に占領され破綻）。
 
 export const HANAMI_FOR_YOU_AXES = [
 	'globalPopular',
@@ -133,9 +133,10 @@ export function computeCaps(confidence: HanamiConfidence, limit: number, order: 
  * §6.1 の quota interleave。確定アルゴリズム。
  *
  * - 各軸 candidates は score desc（呼び出し側責務）。同一 note は1件に統合し sources に全軸を残す。
- * - confidence ごとに軸順固定。1巡ごとに各軸から最大1件 round-robin。
+ *   source（枠を消費した軸）は、その note を先に取った軸。並びが cap に比例するので、cap の大きい軸が先に取ることが多い。
+ * - confidence ごとに軸順固定。並びは cap に比例させる（cap の大きい軸ほど早く・こまめに出る。同点は軸順）。
  * - 既出（served/seen）は呼び出し側で軸内スコアを弱く減点済み＝「沈むが再登場」。ここでは除外もtierも行わない（決定論）。
- * - 作者上限超過はスキップ。直前作者と同じ作者は round0 では後回し（候補不足の later round で許可）。
+ * - 作者上限超過はスキップ。直前作者と同じ作者は後回し（ほかに取れる候補が無いときだけ許可）。
  * - cap は computeCaps で「有効軸での比率再配分」（§Q1）。off軸=0、有効軸だけで budget を量レベル比で分配。
  *   通常枠では cap を超えない（amount=0 / share=0 の軸は拾わない）。
  * - 全体が limit 未満なら、候補が残っている有効軸から cap 比率で fallback overflow を許可（fallbackOverflow=true）。
@@ -303,67 +304,57 @@ export function hanamiInterleave(opts: {
 		return chosenIdx >= 0 ? chosenIdx : (allowSameAuthor ? fallbackIdx : -1);
 	};
 
-	// round-robin で out を target まで埋める（軸内スコア順・既出は減点済み）。
-	// cap は上限（amount=0 / share=0 の軸は cap=0 で常にスキップ）。round0 は直前作者制約あり、later round で緩める（作者上限は緩めない）。§6.1-5
-	const fill = (target: number): void => {
-		let round = 0;
-		for (;;) {
-			if (out.length >= target) break;
-			let pickedThisRound = false;
-			for (const axis of order) {
-				if (out.length >= target) break;
-				if ((used.get(axis) ?? 0) >= (cap.get(axis) ?? 0)) continue;
-				const pickIdx = nextPickIndex(axis, round > 0);
-				if (pickIdx >= 0) {
-					consumed.get(axis)!.add(pickIdx);
-					pushPick(axis, (opts.axisCandidates.get(axis) ?? [])[pickIdx]);
-					pickedThisRound = true;
-				}
-			}
-			round++;
-			if (!pickedThisRound) break;
-		}
-	};
-
-	const fillOverflow = (target: number): void => {
+	// 配分（cap）に比例した順で out を target まで埋める（軸内スコア順・既出は減点済み）。
+	// 各軸は 1 件ごとに cap ぶんの持ち点をため、いちばんたまった軸から 1 件取る。取った軸は、持ち点をためている軸の
+	// cap の合計ぶんを払う。cap の大きい軸ほど早く・こまめに出て、小さい軸は後ろに回る（同点は軸順）。
+	// 以前は 1 巡ごとに各軸から 1 件ずつ取っていたので、ページの上から 5〜7 件はどの軸も 1 件ずつになり、
+	// 配分どおりになるのはページを最後まで見たときだけだった（cap の大きい軸の残りが末尾に固まる）。
+	// overflow=false は cap を上限にする（amount=0 / share=0 の軸は cap=0 で常にスキップ）。
+	// overflow=true は cap を超えて取る（§6.1-6 の fallback overflow。off 軸 / share=0 軸は拾わない）。
+	// 直前と同じ作者は、ほかに取れる候補が無いときだけ許す（作者上限は緩めない）。§6.1-5
+	const fillByShare = (target: number, overflow: boolean): void => {
 		const credit = new Map<HanamiAxis, number>(order.map(a => [a, 0]));
-		let allowSameAuthor = false;
 		for (;;) {
 			if (out.length >= target) break;
-			const eligible: { axis: HanamiAxis; pickIdx: number; cap: number; credit: number }[] = [];
-			for (const axis of order) {
+			// 持ち点をためるのは、枠が残っていて、まだ見ていない候補がある軸。
+			const active = order.filter(axis => {
 				const axisCap = cap.get(axis) ?? 0;
-				if (axisCap <= 0) continue; // off 軸 / share=0 軸は fallback でも拾わない。
-				const pickIdx = nextPickIndex(axis, allowSameAuthor);
-				if (pickIdx >= 0) eligible.push({ axis, pickIdx, cap: axisCap, credit: credit.get(axis) ?? 0 });
+				if (axisCap <= 0) return false;
+				if (!overflow && (used.get(axis) ?? 0) >= axisCap) return false;
+				return consumed.get(axis)!.size < (opts.axisCandidates.get(axis)?.length ?? 0);
+			});
+			if (active.length === 0) break;
+			let totalActiveCap = 0;
+			for (const axis of active) {
+				const axisCap = cap.get(axis) ?? 0;
+				totalActiveCap += axisCap;
+				credit.set(axis, (credit.get(axis) ?? 0) + axisCap);
 			}
-			if (eligible.length === 0) {
-				if (!allowSameAuthor) {
-					allowSameAuthor = true;
-					continue;
+			// 持ち点の多い軸から順に試し、取れる候補がある最初の軸から 1 件取る（sort は安定なので同点は軸順）。
+			const byCredit = [...active].sort((x, y) => (credit.get(y) ?? 0) - (credit.get(x) ?? 0));
+			let picked = false;
+			for (const allowSameAuthor of [false, true]) {
+				for (const axis of byCredit) {
+					const pickIdx = nextPickIndex(axis, allowSameAuthor);
+					if (pickIdx < 0) continue;
+					consumed.get(axis)!.add(pickIdx);
+					pushPick(axis, (opts.axisCandidates.get(axis) ?? [])[pickIdx], overflow ? { fallbackOverflow: true } : {});
+					credit.set(axis, (credit.get(axis) ?? 0) - totalActiveCap);
+					picked = true;
+					break;
 				}
-				break;
+				if (picked) break;
 			}
-
-			const totalEligibleCap = eligible.reduce((sum, e) => sum + e.cap, 0);
-			for (const e of eligible) {
-				e.credit += e.cap;
-				credit.set(e.axis, e.credit);
-			}
-			const pick = eligible.reduce((best, e) => e.credit > best.credit ? e : best);
-			consumed.get(pick.axis)!.add(pick.pickIdx);
-			pushPick(pick.axis, (opts.axisCandidates.get(pick.axis) ?? [])[pick.pickIdx], { fallbackOverflow: true });
-			credit.set(pick.axis, (credit.get(pick.axis) ?? 0) - totalEligibleCap);
-			allowSameAuthor = false;
+			if (!picked) break;
 		}
 	};
 
 	// 1) quota interleave（軸内スコア順・cap 上限まで＝headroom）。safety で落ちた分の backfill 余裕を含む。
-	fill(headroom);
+	fillByShare(headroom, false);
 
 	// 2) fallback overflow（§6.1-6）: 候補がある軸が少ない実データでもページを痩せさせない。
 	// 後段 safety filter の脱落に備え、通常capと同じ headroom まで余分に渡す。
 	const overflowTarget = Math.max(limit, headroom);
-	if (out.length < overflowTarget) fillOverflow(overflowTarget);
+	if (out.length < overflowTarget) fillByShare(overflowTarget, true);
 	return out;
 }

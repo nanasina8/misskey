@@ -98,10 +98,12 @@ describe('HanamiCommonFeedMaterializer', () => {
 		});
 
 		const shared = result.items.find(item => item.noteId === 'shared');
+		// 人気と重なった分は いま話題 に寄せてあるので、人気は sources に入らない。
+		// source は枠を使った種類 = 先に取った種類。並びは配分に比例するので、枠の大きい 発見（3）が いま話題（2）より先に取る。
 		expect(shared).toEqual({
 			noteId: 'shared',
 			authorId: 'shared-author',
-			source: 'trending',
+			source: 'exploration',
 			sources: ['trending', 'exploration'],
 		});
 		expect(result.items.filter(item => item.noteId === 'shared')).toHaveLength(1);

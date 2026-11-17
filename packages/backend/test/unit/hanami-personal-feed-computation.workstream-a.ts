@@ -192,10 +192,12 @@ function firstSegmentSources(result: Awaited<ReturnType<HanamiPersonalFeedComput
 	return result.items.slice(0, result.segmentLengths[0] ?? 0).map(item => item.source);
 }
 
+// 並びは配分（枠の上限）に比例する。上限の大きい種類ほど早く・こまめに出て、小さい種類は後ろに回る。
+// high の上限（30 件あたり）: 人気 6・近くで話題 13・好みが近い 1・いま話題 1・見逃し 5・友達の友達 3・発見 3。
 const CONFIDENCE_CASES: ReadonlyArray<readonly [HanamiConfidence, readonly HanamiAxis[]]> = [
-	['high', ['globalPopular', 'neighborTrending', 'reactionSimilar', 'trending', 'catchup', 'fof', 'exploration']],
-	['low', ['globalPopular', 'neighborTrending', 'trending', 'reactionSimilar', 'catchup', 'fof', 'exploration']],
-	['none', ['globalPopular', 'trending', 'fof', 'exploration']],
+	['high', ['neighborTrending', 'globalPopular', 'catchup', 'neighborTrending', 'fof', 'exploration', 'neighborTrending', 'globalPopular', 'neighborTrending', 'catchup', 'neighborTrending', 'reactionSimilar']],
+	['low', ['globalPopular', 'neighborTrending', 'globalPopular', 'catchup', 'fof', 'globalPopular', 'neighborTrending', 'exploration', 'globalPopular', 'trending', 'globalPopular', 'neighborTrending']],
+	['none', ['globalPopular', 'globalPopular', 'globalPopular', 'exploration', 'globalPopular', 'globalPopular', 'trending', 'globalPopular', 'globalPopular', 'globalPopular', 'fof', 'globalPopular']],
 ];
 
 describe('Phase 4 workstream A personal feed computation', () => {
@@ -291,15 +293,23 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		expect(result.items.length).toBeGreaterThan(0);
 	});
 
-	test.each(CONFIDENCE_CASES)('uses the current %s confidence axis order', async (confidence, expected) => {
+	test.each(CONFIDENCE_CASES)('%s: 配分の大きい種類から、配分に比例した順で並べる', async (confidence, expected) => {
 		const fixture = createComputation({
 			confidence,
-			candidates: HANAMI_FOR_YOU_AXES.flatMap(axis => axis === 'exploration'
-				? Array.from({ length: 20 }, (_, index) => candidate(axis, `note-${axis}-${index}`))
-				: [candidate(axis, `note-${axis}`)]),
+			candidates: HANAMI_FOR_YOU_AXES.flatMap(axis => candidates(axis, 20)),
 		});
 		const result = await fixture.service.computePersonalFeed(input());
 		expect(firstSegmentSources(result).slice(0, expected.length)).toEqual(expected);
+	});
+
+	test('候補が 1 件しかない種類があっても、残りの種類を配分に比例して並べる', async () => {
+		const fixture = createComputation({
+			confidence: 'high',
+			candidates: HANAMI_FOR_YOU_AXES.flatMap(axis => axis === 'neighborTrending' ? [candidate(axis, 'only-neighbor')] : candidates(axis, 20)),
+		});
+		const result = await fixture.service.computePersonalFeed(input());
+		// 近くで話題は 1 件だけ先頭に出て、あとは 人気 6・見逃し 5・友達の友達 3・発見 3 の比で続く。
+		expect(firstSegmentSources(result).slice(0, 8)).toEqual(['neighborTrending', 'globalPopular', 'catchup', 'fof', 'exploration', 'globalPopular', 'catchup', 'globalPopular']);
 	});
 
 	test('honors off/low/normal/high settings and preserves overflow reason metadata', async () => {
@@ -923,7 +933,34 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 		expect(catchupQuery[0]).toContain('ORDER BY "relScore" DESC, "otherUserId" ASC');
 		expect(catchupQuery[0]).toContain('authors AS MATERIALIZED');
 		expect(catchupQuery[0]).toContain('JOIN note n ON n."userId" = a.id');
-		expect(catchupQuery[1]).toEqual([generation.userId, 100, 'since-id', 250]);
+		// 作者ごとに反応の多い 6 件までに絞ってから、点数（関係の近さ × 反応）の高い順に 250 件で切る。
+		expect(catchupQuery[0]).toContain('row_number() OVER (PARTITION BY c."userId" ORDER BY c."reactionCount" DESC, c."noteId" DESC)');
+		expect(catchupQuery[0]).toContain('WHERE k."authorRank" <= $5');
+		expect(catchupQuery[0]).toContain('ORDER BY ((k."relScore" / k."maxRel") + 0.3) * (0.5 + k."reactionCount"::float8 / k."maxReaction") DESC, k."noteId" DESC');
+		expect(catchupQuery[1]).toEqual([generation.userId, 100, 'since-id', 250, 6]);
+	});
+
+	test('見逃しの点数は、切る前の全候補の最大の反応数で割って付ける', async () => {
+		const service = createGenerationForYou({}, {}, {}, {
+			idService: { gen: jest.fn((..._args: unknown[]) => 'since-id') },
+		}) as unknown as {
+			catchupCandidates(userId: string, followeeIds: string[], input: HanamiPersonalFeedGenerationContext): Promise<Array<{ noteId: string; userId: string; score: number }>>;
+		};
+		// SQL が返す順（点数の高い順）。maxReaction は、作者ごと・250 件に絞る前の最大。
+		const queryRunner = createQueryRunner(async sql => sql.includes('WITH top_relation AS MATERIALIZED') ? [
+			{ noteId: 'close-quiet', userId: 'close', reactionCount: 2, relScore: 8, maxRel: 8, maxReaction: 10 },
+			{ noteId: 'far-popular', userId: 'far', reactionCount: 10, relScore: 0, maxRel: 8, maxReaction: 10 },
+			{ noteId: 'far-quiet', userId: 'far', reactionCount: 1, relScore: 0, maxRel: 8, maxReaction: 10 },
+		] : []);
+		const generation = { ...input(), queryRunner: queryRunner as never };
+
+		const result = await service.catchupCandidates(generation.userId, [], generation);
+
+		expect(result.map(row => row.noteId)).toEqual(['close-quiet', 'far-popular', 'far-quiet']);
+		// 近い人の静かな投稿 (1 + 0.3) × (0.5 + 0.2)、遠い人のいちばん反応された投稿 0.3 × (0.5 + 1)。
+		expect(result[0]!.score).toBeCloseTo(0.91);
+		expect(result[1]!.score).toBeCloseTo(0.45);
+		expect(result[2]!.score).toBeCloseTo(0.18);
 	});
 
 	test('7 日より前の投稿は、どの種類から来ても候補にしない', async () => {

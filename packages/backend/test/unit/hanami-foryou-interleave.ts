@@ -109,6 +109,32 @@ describe('hanamiInterleave (canonical spec §6.1/§10)', () => {
 		expect(out.length).toBe(11);
 	});
 
+	it('並びは配分に比例する: 上から数件を見ただけでも配分に近く、枠の小さい種類は後ろに回る', () => {
+		const axes: HanamiAxis[] = ['globalPopular', 'neighborTrending', 'reactionSimilar', 'catchup', 'trending', 'fof', 'exploration'];
+		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>(axes.map(axis => [axis, uniqueCands(axis, 40)]));
+		// high の上限（30 件あたり）: 人気 6・近くで話題 13・好みが近い 1・いま話題 1・見逃し 5・友達の友達 3・発見 3。
+		const out = hanamiInterleave({ confidence: 'high', limit: 30, axisCandidates }).slice(0, 30);
+		const sources = out.map(item => item.source);
+
+		// 先頭は、枠のいちばん大きい種類。
+		expect(sources[0]).toBe('neighborTrending');
+		// 上から 5 件・10 件でも、近くで話題が 4 割ほどを占める（以前はどの種類も 1 件ずつだった）。
+		expect(countBySource(out.slice(0, 5))).toEqual({ neighborTrending: 2, globalPopular: 1, catchup: 1, fof: 1 });
+		expect(countBySource(out.slice(0, 10))).toEqual({ neighborTrending: 4, globalPopular: 2, catchup: 2, fof: 1, exploration: 1 });
+		// 枠が 1 件の種類は、上から 10 件には入らない。
+		expect(sources.indexOf('reactionSimilar')).toBeGreaterThanOrEqual(10);
+		expect(sources.indexOf('trending')).toBeGreaterThanOrEqual(10);
+		// 枠が同じ種類どうしは、決まった軸順（友達の友達 → 発見、好みが近い → いま話題）で先に出る。
+		expect(sources.indexOf('fof')).toBeLessThan(sources.indexOf('exploration'));
+		expect(sources.indexOf('reactionSimilar')).toBeLessThan(sources.indexOf('trending'));
+		// 同じ種類が 3 件続くことはない（枠の大きい種類の残りが末尾に固まらない）。
+		for (let i = 2; i < sources.length; i++) expect(sources[i] === sources[i - 1] && sources[i] === sources[i - 2]).toBe(false);
+		// 件数は上限どおり（最後まで見たときの配分は変わらない）。
+		expect(countBySource(hanamiInterleave({ confidence: 'high', limit: 30, axisCandidates }))).toEqual({
+			globalPopular: 6, neighborTrending: 13, reactionSimilar: 1, trending: 1, catchup: 5, fof: 3, exploration: 3,
+		});
+	});
+
 	it('Q1: 有効軸で比率再配分する（OFFは0、量「多」は実際に増える）', () => {
 		const axisCandidates = new Map<HanamiAxis, ForYouCandidate[]>([
 			['globalPopular', uniqueCands('gp', 20)],

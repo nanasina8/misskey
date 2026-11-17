@@ -75,6 +75,15 @@ const TRENDING_POOL = 200;
 const FOF_POOL = 200;
 const NEIGHBOR_NOTE_POOL = 250;
 const CATCHUP_NOTE_POOL = 250;
+/**
+ * 見逃しの候補に残す、作者 1 人あたりの投稿数（反応の多い順）。
+ * 絞らずに関係の近さで並べると、よく投稿する近い人 5〜6 人の投稿だけで候補が埋まり、作者の上限に当たって出せる件数が減る。
+ * 絞らずに反応数で切ると（以前の作り）、フォローの多い人は反応の多いアカウントの投稿で埋まり、近い人の投稿が落ちる。
+ */
+const CATCHUP_NOTES_PER_AUTHOR = 6;
+/** 見逃しの点数 = (関係の近さ + この値) × (この値 + 反応数 ÷ 最大の反応数)。関係値の無いフォロー中の人も 0 にはしない。 */
+const CATCHUP_RELATION_FLOOR = 0.3;
+const CATCHUP_REACTION_FLOOR = 0.5;
 
 // reactionSimilar（興味マッチ新着）: バッチ事前計算 zset（24h窓・cos≥τ）の取り出し。
 // zset score = cos×鮮度（バッチ側で焼き込み済み・毎10分更新）。人気条件なし＝埋もれた投稿でも内容が興味に合えば出る。
@@ -1293,7 +1302,9 @@ export class HanamiForYouService {
 	private async catchupCandidates(meId: MiUser['id'], followeeIds: string[], generation?: HanamiPersonalFeedGenerationContext): Promise<ForYouCandidate[]> {
 		if (generation != null) {
 			const sinceId = this.idService.gen(this.generationNow(generation) - CATCHUP_WINDOW_MS);
-			const rows = await this.generationDbQuery<Array<{ noteId: string; userId: string; reactionCount: number; relScore: number; maxRel: number }>>(generation, `
+			// 作者ごとに反応の多い数件までに絞ってから、点数（関係の近さ × 反応）の高い順に切る。
+			// 点数の式は下の JS と同じ（SQL では、切る前の全候補の最大の反応数で割る）。
+			const rows = await this.generationDbQuery<Array<{ noteId: string; userId: string; reactionCount: number; relScore: number; maxRel: number; maxReaction?: number }>>(generation, `
 				WITH top_relation AS MATERIALIZED (
 					SELECT "otherUserId" AS id, "relScore"
 					FROM "hanami_foryou_relation"
@@ -1305,28 +1316,39 @@ export class HanamiForYouService {
 					SELECT id FROM top_relation
 					UNION
 					SELECT f."followeeId" FROM following f WHERE f."followerId" = $1
+				),
+				counted AS (
+					SELECT n.id AS "noteId", n."userId" AS "userId", count(r.id)::int AS "reactionCount",
+						COALESCE(tr."relScore", 0)::float8 AS "relScore"
+					FROM authors a
+					JOIN note n ON n."userId" = a.id AND n.id >= $3
+					JOIN note_reaction r ON r."noteId" = n.id AND r.id >= $3
+					LEFT JOIN top_relation tr ON tr.id = n."userId"
+					WHERE n.id >= $3
+						AND n.visibility IN ('public','home') AND n."channelId" IS NULL AND n."userId" <> $1
+						AND (n."replyId" IS NULL OR n."replyUserId" = n."userId")
+						AND (n."renoteId" IS NULL OR n.text IS NOT NULL OR n."hasPoll" = TRUE OR n."fileIds" <> '{}')
+					GROUP BY n.id, n."userId", tr."relScore"
+				),
+				ranked AS (
+					SELECT c.*,
+						row_number() OVER (PARTITION BY c."userId" ORDER BY c."reactionCount" DESC, c."noteId" DESC) AS "authorRank",
+						GREATEST(1, max(c."reactionCount") OVER ())::int AS "maxReaction",
+						GREATEST(1, COALESCE((SELECT max("relScore") FROM top_relation), 1))::float8 AS "maxRel"
+					FROM counted c
 				)
-				SELECT n.id AS "noteId", n."userId" AS "userId", count(r.id)::int AS "reactionCount",
-					COALESCE(tr."relScore", 0)::float8 AS "relScore",
-					COALESCE((SELECT max("relScore") FROM top_relation), 1)::float8 AS "maxRel"
-				FROM authors a
-				JOIN note n ON n."userId" = a.id AND n.id >= $3
-				JOIN note_reaction r ON r."noteId" = n.id AND r.id >= $3
-				LEFT JOIN top_relation tr ON tr.id = n."userId"
-				WHERE n.id >= $3
-					AND n.visibility IN ('public','home') AND n."channelId" IS NULL AND n."userId" <> $1
-					AND (n."replyId" IS NULL OR n."replyUserId" = n."userId")
-					AND (n."renoteId" IS NULL OR n.text IS NOT NULL OR n."hasPoll" = TRUE OR n."fileIds" <> '{}')
-				GROUP BY n.id, n."userId", tr."relScore"
-				ORDER BY count(r.id) DESC, n.id DESC
+				SELECT k."noteId", k."userId", k."reactionCount", k."relScore", k."maxRel", k."maxReaction"
+				FROM ranked k
+				WHERE k."authorRank" <= $5
+				ORDER BY ((k."relScore" / k."maxRel") + ${CATCHUP_RELATION_FLOOR}) * (${CATCHUP_REACTION_FLOOR} + k."reactionCount"::float8 / k."maxReaction") DESC, k."noteId" DESC
 				LIMIT $4
-			`, [meId, TOP_RELATION_OTHERS, sinceId, CATCHUP_NOTE_POOL]);
-			const maxReaction = Math.max(1, ...rows.map(row => Number(row.reactionCount)));
+			`, [meId, TOP_RELATION_OTHERS, sinceId, CATCHUP_NOTE_POOL, CATCHUP_NOTES_PER_AUTHOR]);
+			const maxReaction = Math.max(1, ...rows.map(row => Number(row.maxReaction) || Number(row.reactionCount) || 0));
 			return rows
 				.map(row => ({
 					noteId: row.noteId,
 					userId: row.userId,
-					w: ((Number(row.relScore) / Math.max(1, Number(row.maxRel))) + 0.3) * (0.5 + (Number(row.reactionCount) / maxReaction)),
+					w: ((Number(row.relScore) / Math.max(1, Number(row.maxRel))) + CATCHUP_RELATION_FLOOR) * (CATCHUP_REACTION_FLOOR + (Number(row.reactionCount) / maxReaction)),
 				}))
 				.sort((a, b) => b.w - a.w || (a.noteId < b.noteId ? 1 : -1))
 				.map(row => ({ noteId: row.noteId, userId: row.userId, score: row.w }));
