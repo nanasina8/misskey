@@ -803,7 +803,7 @@ export type paths = {
     '/admin/hanami/rank-backtest-start': {
         /**
          * admin/hanami/rank-backtest-start
-         * @description Start a Hanami rank backtest now instead of waiting for the automatic weekly run. The records are sampled immediately; scoring proceeds little by little while the GPU has no other work.
+         * @description Start a Hanami rank backtest now instead of waiting for the automatic weekly run. The records are sampled immediately; scoring proceeds little by little while the GPU has no other work. With force, a run that is still in progress is cut short first (its scores so far are kept).
          *
          *     **Credential required**: *Yes* / **Permission**: *write:admin:queue*
          */
@@ -14627,7 +14627,7 @@ export interface operations {
                              */
                             finishedAt: string | null;
                             /**
-                             * @description auto = started by itself while the GPU was idle, manual = started through the API.
+                             * @description auto = started by itself (weekly, and once after the scoring methods change; without the GPU methods), manual = started through the API.
                              * @enum {string}
                              */
                             startedBy: 'auto' | 'manual';
@@ -14655,13 +14655,13 @@ export interface operations {
                                 /** @description Records the GPU worker failed to score. */
                                 errors: number;
                             }[];
-                            /** @description One row per scoring method and subset. interest = the stored note-judge interest score, follow = 1 when the author is followed. */
+                            /** @description One row per scoring method and subset. Besides the GPU methods: interest = the stored note-judge interest score, follow = 1 when the author is followed, prior = how often the viewer reacted to other notes of the author in the 90 days before, social = followees of the viewer who had reacted to the note before, reactions = reactions the note had before (known to this server, the viewer excluded), fresh = newer notes score higher, clustered = 1 when the note matched one of the viewer's taste clusters when served. All of them use only what was known when the note was seen. */
                             results: {
                                 /**
                                  * @description Scoring method.
                                  * @enum {string}
                                  */
-                                variant: 'personal' | 'generic' | 'interest' | 'follow';
+                                variant: 'personal' | 'generic' | 'interest' | 'follow' | 'prior' | 'social' | 'reactions' | 'fresh' | 'clustered';
                                 /**
                                  * @description all, or only records whose author had this relationship to the viewer when served.
                                  * @enum {string}
@@ -14696,6 +14696,74 @@ export interface operations {
                                     engaged: number;
                                 }[];
                             }[];
+                            /** @description Check of a combined score before it is used for ordering: a logistic regression over the stored values, fitted on the older half of the compared records and tested on the newer half. Null when either half has too few engaged or non-engaged records. */
+                            model: {
+                                /** @description Older half, used to fit the weights. */
+                                train: {
+                                    /** @description Records. */
+                                    seen: number;
+                                    /** @description Engaged records. */
+                                    engaged: number;
+                                };
+                                /** @description Newer half, used to test. */
+                                test: {
+                                    /** @description Records. */
+                                    seen: number;
+                                    /** @description Engaged records. */
+                                    engaged: number;
+                                };
+                                /** @description Fitted weights on values scaled to mean 0 and deviation 1; larger means more engagement. Counts enter as log(1 + n); age enters as three bands against "under 6 hours". */
+                                weights: {
+                                    /**
+                                     * @description Value name.
+                                     * @enum {string}
+                                     */
+                                    feature: 'follow' | 'prior' | 'social' | 'reactions' | 'age6to24h' | 'age1to3d' | 'ageOver3d' | 'clustered';
+                                    /** @description Weight. */
+                                    weight: number;
+                                }[];
+                                /** @description Results on the newer half. model = the combined score, follow = followed or not (the baseline). */
+                                results: {
+                                    /**
+                                     * @description Score.
+                                     * @enum {string}
+                                     */
+                                    scoring: 'model' | 'follow';
+                                    /**
+                                     * @description Subset.
+                                     * @enum {string}
+                                     */
+                                    subset: 'all' | 'unknown' | 'directFollow';
+                                    /** @description Records with a score in this subset. */
+                                    seen: number;
+                                    /** @description Of those, records the viewer reacted to, replied to or renoted. */
+                                    engaged: number;
+                                    /** @description Chance that an engaged record scores higher than a non-engaged one, over all viewers together (0.5 = random). Null without both kinds of records. */
+                                    auc: number | null;
+                                    /** @description The same chance computed inside each viewer and pooled, which removes differences in how readily viewers react. This is the number that matters for ordering one viewer's timeline. */
+                                    withinUserAuc: number | null;
+                                    /** @description Viewers that had both engaged and non-engaged records. */
+                                    withinUsers: number;
+                                    /** @description The fifth of the records with the highest scores. */
+                                    top20: {
+                                        /** @description Records. */
+                                        seen: number;
+                                        /** @description Engaged records. */
+                                        engaged: number;
+                                    };
+                                    /** @description Records split into five equal parts from the lowest score to the highest. */
+                                    buckets: {
+                                        /** @description Lowest score in the part. */
+                                        from: number;
+                                        /** @description Highest score in the part. */
+                                        to: number;
+                                        /** @description Records. */
+                                        seen: number;
+                                        /** @description Engaged records. */
+                                        engaged: number;
+                                    }[];
+                                }[];
+                            } | null;
                         } | null;
                     };
                 };
@@ -14763,6 +14831,11 @@ export interface operations {
                     limit?: number;
                     /** @description GPU scoring methods to run. All of them when omitted. */
                     variants?: ('personal' | 'generic')[];
+                    /**
+                     * @description Cut the run in progress short and start a new one.
+                     * @default false
+                     */
+                    force?: boolean;
                 };
             };
         };

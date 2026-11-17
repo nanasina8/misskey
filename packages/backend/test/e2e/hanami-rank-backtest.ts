@@ -41,10 +41,12 @@ describe('並べ替えの物差し（admin/hanami/rank-backtest）', () => {
 			{ variant: 'personal', scored: 0, pending: 0, skipped: 0, errors: 0 },
 			{ variant: 'generic', scored: 0, pending: 0, skipped: 0, errors: 0 },
 		]);
-		// 付け方 4 つ × 対象の分け方 3 つ。記録が無いので、どれも 0 件・比べられない（null）。
-		assert.strictEqual(run.results.length, 12);
-		assert.deepStrictEqual([...new Set(run.results.map(row => row.variant))], ['personal', 'generic', 'interest', 'follow']);
+		// 付け方 9 つ（GPU 2 つ＋記録と DB の値 7 つ）× 対象の分け方 3 つ。記録が無いので、どれも 0 件・比べられない（null）。
+		assert.strictEqual(run.results.length, 27);
+		assert.deepStrictEqual([...new Set(run.results.map(row => row.variant))], ['personal', 'generic', 'interest', 'follow', 'prior', 'social', 'reactions', 'fresh', 'clustered']);
 		assert.ok(run.results.every(row => row.seen === 0 && row.engaged === 0 && row.auc === null && row.withinUserAuc === null && row.buckets.length === 0));
+		// 組み合わせた点数の検証も、記録が無いのでしない。
+		assert.strictEqual(run.model, null);
 	});
 
 	test('管理者でなければ、見ることも始めることもできない', async () => {

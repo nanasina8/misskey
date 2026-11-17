@@ -6,10 +6,36 @@
 import { Injectable } from '@nestjs/common';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { HanamiRankBacktestService } from '@/core/hanami/HanamiRankBacktestService.js';
-import { HANAMI_RANK_BACKTEST_GPU_VARIANTS, HANAMI_RANK_BACKTEST_SUBSETS, HANAMI_RANK_BACKTEST_VARIANTS } from '@/core/hanami/HanamiRankBacktest.js';
+import { HANAMI_RANK_BACKTEST_GPU_VARIANTS, HANAMI_RANK_BACKTEST_MODEL_FEATURES, HANAMI_RANK_BACKTEST_SUBSETS, HANAMI_RANK_BACKTEST_VARIANTS } from '@/core/hanami/HanamiRankBacktest.js';
 
 const count = (description: string) => ({ type: 'integer', optional: false, nullable: false, description } as const);
 const numberOrNull = (description: string) => ({ type: 'number', optional: false, nullable: true, description } as const);
+
+/** One scoring method on one subset: how well the score separates engaged records from the rest. */
+const summary = {
+	seen: count('Records with a score in this subset.'),
+	engaged: count('Of those, records the viewer reacted to, replied to or renoted.'),
+	auc: numberOrNull('Chance that an engaged record scores higher than a non-engaged one, over all viewers together (0.5 = random). Null without both kinds of records.'),
+	withinUserAuc: numberOrNull('The same chance computed inside each viewer and pooled, which removes differences in how readily viewers react. This is the number that matters for ordering one viewer\'s timeline.'),
+	withinUsers: count('Viewers that had both engaged and non-engaged records.'),
+	top20: {
+		type: 'object', optional: false, nullable: false, description: 'The fifth of the records with the highest scores.',
+		properties: { seen: count('Records.'), engaged: count('Engaged records.') },
+	},
+	buckets: {
+		type: 'array', optional: false, nullable: false,
+		description: 'Records split into five equal parts from the lowest score to the highest.',
+		items: {
+			type: 'object', optional: false, nullable: false, description: 'One part.',
+			properties: {
+				from: { type: 'number', optional: false, nullable: false, description: 'Lowest score in the part.' },
+				to: { type: 'number', optional: false, nullable: false, description: 'Highest score in the part.' },
+				seen: count('Records.'),
+				engaged: count('Engaged records.'),
+			},
+		},
+	},
+} as const;
 
 export const meta = {
 	tags: ['admin'],
@@ -29,7 +55,7 @@ export const meta = {
 					id: { type: 'string', optional: false, nullable: false, description: 'Run ID.' },
 					createdAt: { type: 'string', optional: false, nullable: false, format: 'date-time', description: 'When the run was started.' },
 					finishedAt: { type: 'string', optional: false, nullable: true, format: 'date-time', description: 'When scoring finished, or null while it is still in progress.' },
-					startedBy: { type: 'string', optional: false, nullable: false, enum: ['auto', 'manual'], description: 'auto = started by itself while the GPU was idle, manual = started through the API.' },
+					startedBy: { type: 'string', optional: false, nullable: false, enum: ['auto', 'manual'], description: 'auto = started by itself (weekly, and once after the scoring methods change; without the GPU methods), manual = started through the API.' },
 					days: count('How many days of seen records were sampled.'),
 					limit: count('Maximum number of sampled records.'),
 					samples: count('Sampled records: one per (viewer, note), newest first, text notes by other users only.'),
@@ -50,32 +76,48 @@ export const meta = {
 					},
 					results: {
 						type: 'array', optional: false, nullable: false,
-						description: 'One row per scoring method and subset. interest = the stored note-judge interest score, follow = 1 when the author is followed.',
+						description: 'One row per scoring method and subset. Besides the GPU methods: interest = the stored note-judge interest score, follow = 1 when the author is followed, prior = how often the viewer reacted to other notes of the author in the 90 days before, social = followees of the viewer who had reacted to the note before, reactions = reactions the note had before (known to this server, the viewer excluded), fresh = newer notes score higher, clustered = 1 when the note matched one of the viewer\'s taste clusters when served. All of them use only what was known when the note was seen.',
 						items: {
 							type: 'object', optional: false, nullable: false, description: 'One scoring method on one subset.',
 							properties: {
 								variant: { type: 'string', optional: false, nullable: false, enum: HANAMI_RANK_BACKTEST_VARIANTS, description: 'Scoring method.' },
 								subset: { type: 'string', optional: false, nullable: false, enum: HANAMI_RANK_BACKTEST_SUBSETS, description: 'all, or only records whose author had this relationship to the viewer when served.' },
-								seen: count('Records with a score in this subset.'),
-								engaged: count('Of those, records the viewer reacted to, replied to or renoted.'),
-								auc: numberOrNull('Chance that an engaged record scores higher than a non-engaged one, over all viewers together (0.5 = random). Null without both kinds of records.'),
-								withinUserAuc: numberOrNull('The same chance computed inside each viewer and pooled, which removes differences in how readily viewers react. This is the number that matters for ordering one viewer\'s timeline.'),
-								withinUsers: count('Viewers that had both engaged and non-engaged records.'),
-								top20: {
-									type: 'object', optional: false, nullable: false, description: 'The fifth of the records with the highest scores.',
-									properties: { seen: count('Records.'), engaged: count('Engaged records.') },
+								...summary,
+							},
+						},
+					},
+					model: {
+						type: 'object', optional: false, nullable: true,
+						description: 'Check of a combined score before it is used for ordering: a logistic regression over the stored values, fitted on the older half of the compared records and tested on the newer half. Null when either half has too few engaged or non-engaged records.',
+						properties: {
+							train: {
+								type: 'object', optional: false, nullable: false, description: 'Older half, used to fit the weights.',
+								properties: { seen: count('Records.'), engaged: count('Engaged records.') },
+							},
+							test: {
+								type: 'object', optional: false, nullable: false, description: 'Newer half, used to test.',
+								properties: { seen: count('Records.'), engaged: count('Engaged records.') },
+							},
+							weights: {
+								type: 'array', optional: false, nullable: false,
+								description: 'Fitted weights on values scaled to mean 0 and deviation 1; larger means more engagement. Counts enter as log(1 + n); age enters as three bands against "under 6 hours".',
+								items: {
+									type: 'object', optional: false, nullable: false, description: 'One value.',
+									properties: {
+										feature: { type: 'string', optional: false, nullable: false, enum: HANAMI_RANK_BACKTEST_MODEL_FEATURES, description: 'Value name.' },
+										weight: { type: 'number', optional: false, nullable: false, description: 'Weight.' },
+									},
 								},
-								buckets: {
-									type: 'array', optional: false, nullable: false,
-									description: 'Records split into five equal parts from the lowest score to the highest.',
-									items: {
-										type: 'object', optional: false, nullable: false, description: 'One part.',
-										properties: {
-											from: { type: 'number', optional: false, nullable: false, description: 'Lowest score in the part.' },
-											to: { type: 'number', optional: false, nullable: false, description: 'Highest score in the part.' },
-											seen: count('Records.'),
-											engaged: count('Engaged records.'),
-										},
+							},
+							results: {
+								type: 'array', optional: false, nullable: false,
+								description: 'Results on the newer half. model = the combined score, follow = followed or not (the baseline).',
+								items: {
+									type: 'object', optional: false, nullable: false, description: 'One score on one subset.',
+									properties: {
+										scoring: { type: 'string', optional: false, nullable: false, enum: ['model', 'follow'], description: 'Score.' },
+										subset: { type: 'string', optional: false, nullable: false, enum: HANAMI_RANK_BACKTEST_SUBSETS, description: 'Subset.' },
+										...summary,
 									},
 								},
 							},

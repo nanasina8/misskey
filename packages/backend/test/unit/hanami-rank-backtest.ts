@@ -6,13 +6,17 @@
 import { describe, expect, test } from 'vitest';
 import {
 	buildHanamiRankBacktestPrompt,
+	evaluateHanamiRankBacktestModel,
+	fitHanamiRankBacktestModel,
 	hanamiRankBacktestAuc,
 	hanamiRankBacktestBuckets,
+	hanamiRankBacktestFeatureVector,
 	hanamiRankBacktestItemId,
 	hanamiRankBacktestStoredScore,
 	hanamiRankBacktestText,
 	hanamiRankBacktestWithinUserAuc,
 	parseHanamiRankBacktestItemId,
+	scoreHanamiRankBacktestModel,
 	summarizeHanamiRankBacktest,
 	type HanamiRankBacktestSample,
 } from '@/core/hanami/HanamiRankBacktest.js';
@@ -58,6 +62,73 @@ describe('記録にある値を点数にする付け方', () => {
 		expect(hanamiRankBacktestStoredScore('interest', sample({ interest: null }))).toBeNull();
 		expect(hanamiRankBacktestStoredScore('follow', sample({ relationship: 'directFollow' }))).toBe(1);
 		expect(hanamiRankBacktestStoredScore('follow', sample({ relationship: 'unknown' }))).toBe(0);
+	});
+
+	test('見た時点までの値（前からの反応・先に反応した人・反応数・新しさ・好み）をそのまま点数にする。値の無い記録は対象外', () => {
+		const withFeatures = sample({ clustered: true, features: { prior: 3, social: 2, reactions: 10, ageHours: 5 } });
+		expect(hanamiRankBacktestStoredScore('prior', withFeatures)).toBe(3);
+		expect(hanamiRankBacktestStoredScore('social', withFeatures)).toBe(2);
+		expect(hanamiRankBacktestStoredScore('reactions', withFeatures)).toBe(10);
+		// 新しい投稿ほど高い
+		expect(hanamiRankBacktestStoredScore('fresh', withFeatures)).toBe(-5);
+		expect(hanamiRankBacktestStoredScore('clustered', withFeatures)).toBe(1);
+		expect(hanamiRankBacktestStoredScore('clustered', sample({ clustered: false }))).toBe(0);
+		for (const variant of ['prior', 'social', 'reactions', 'fresh', 'clustered'] as const) {
+			expect(hanamiRankBacktestStoredScore(variant, sample())).toBeNull();
+		}
+	});
+});
+
+describe('組み合わせた点数の検証', () => {
+	test('数は対数に、新しさは「6 時間以内」を基準にした 3 つの区分にする', () => {
+		const vector = (ageHours: number) => hanamiRankBacktestFeatureVector(sample({ relationship: 'directFollow', clustered: true, features: { prior: 0, social: 1, reactions: 9, ageHours } }))!;
+		// follow, prior, social, reactions, 6〜24 時間, 1〜3 日, 3 日以上, clustered
+		expect(vector(3)).toEqual([1, 0, Math.log(2), Math.log(10), 0, 0, 0, 1]);
+		expect(vector(12).slice(4, 7)).toEqual([1, 0, 0]);
+		expect(vector(48).slice(4, 7)).toEqual([0, 1, 0]);
+		expect(vector(100).slice(4, 7)).toEqual([0, 0, 1]);
+		expect(hanamiRankBacktestFeatureVector(sample())).toBeNull();
+	});
+
+	test('反応に効いている値には正の重みが付き、効いていない値の重みは小さい', () => {
+		// 1 つめの値が大きいほど反応する。2 つめは 10 件ごとに入れ替わるだけで、反応とは関係が無い。
+		const rows = Array.from({ length: 200 }, (_, i) => ({ x: [i % 10, Math.floor(i / 10) % 2], engaged: i % 10 >= 7 }));
+		const model = fitHanamiRankBacktestModel(rows);
+		expect(model.weights[0]).toBeGreaterThan(1);
+		expect(Math.abs(model.weights[1])).toBeLessThan(0.2);
+		expect(scoreHanamiRankBacktestModel(model, [9, 0])).toBeGreaterThan(scoreHanamiRankBacktestModel(model, [0, 0]));
+		// 同じ入力なら同じ結果（乱数を使わない）
+		expect(fitHanamiRankBacktestModel(rows)).toEqual(model);
+	});
+
+	test('値がどの記録でも同じ（ばらつき 0）でも、割り算で壊れない', () => {
+		const model = fitHanamiRankBacktestModel([{ x: [1, 5], engaged: true }, { x: [1, 2], engaged: false }, { x: [1, 4], engaged: true }, { x: [1, 1], engaged: false }]);
+		expect(model.weights.every(Number.isFinite)).toBe(true);
+		expect(Number.isFinite(scoreHanamiRankBacktestModel(model, [1, 3]))).toBe(true);
+	});
+
+	test('古い半分で式を作り、新しい半分で確かめる。フォロー中かどうかだけの点数と並べて返す', () => {
+		// 作者に前から反応している人ほど反応する、という 400 件。フォロー中かどうかは反応と関係なし。
+		const samples = Array.from({ length: 400 }, (_, i) => sample({
+			id: String(i), userId: `u${i % 4}`, seenAt: i, relationship: i % 2 === 0 ? 'directFollow' : 'unknown',
+			engaged: i % 5 >= 3, clustered: false,
+			features: { prior: i % 5 >= 3 ? 6 + (i % 3) : i % 3, social: 0, reactions: 1, ageHours: 12 },
+		}));
+		const evaluation = evaluateHanamiRankBacktestModel(samples)!;
+		expect(evaluation.train).toEqual({ seen: 200, engaged: 80 });
+		expect(evaluation.test).toEqual({ seen: 200, engaged: 80 });
+		expect(evaluation.weights.map(row => row.feature)).toEqual(['follow', 'prior', 'social', 'reactions', 'age6to24h', 'age1to3d', 'ageOver3d', 'clustered']);
+		expect(evaluation.weights.find(row => row.feature === 'prior')!.weight).toBeGreaterThan(1);
+		const result = (scoring: string, subset: string) => evaluation.results.find(row => row.scoring === scoring && row.subset === subset)!;
+		expect(result('model', 'all')).toMatchObject({ seen: 200, engaged: 80, auc: 1, withinUserAuc: 1 });
+		expect(result('follow', 'all').auc).toBeCloseTo(0.5, 1);
+		expect(result('model', 'unknown').seen).toBe(100);
+	});
+
+	test('反応した記録が少ないとき・値の付いた記録が無いときは確かめない', () => {
+		const few = Array.from({ length: 100 }, (_, i) => sample({ id: String(i), seenAt: i, engaged: i < 10, features: { prior: 0, social: 0, reactions: 0, ageHours: 1 } }));
+		expect(evaluateHanamiRankBacktestModel(few)).toBeNull();
+		expect(evaluateHanamiRankBacktestModel(Array.from({ length: 100 }, (_, i) => sample({ id: String(i), engaged: i % 2 === 0 })))).toBeNull();
 	});
 });
 

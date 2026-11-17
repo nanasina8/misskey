@@ -17,12 +17,9 @@ import type { HanamiGpuSpamScores } from '@/misc/hanami-gpu-queue.js';
 
 // GPU の有無は確かめず、判定係は下の偽物（Python）に差し替える。配り役とキューは本物を、実 Redis で動かす。
 const runtime = vi.hoisted(() => vi.fn(async () => ({ available: true, device: 'cuda', deviceName: 'fake', reason: null, probedAt: new Date().toISOString() })));
-/** ほかのジョブが確かめた GPU の有無（物差しを自動で始めるかどうかの判断に使う）。初めは「まだ分からない」 */
-const peekRuntime = vi.hoisted(() => vi.fn((): { available: boolean; device: string; deviceName: string | null; reason: string | null; probedAt: string } | null => null));
 vi.mock('@/core/hanami/HanamiPythonRuntime.js', async importOriginal => ({
 	...await importOriginal<typeof import('@/core/hanami/HanamiPythonRuntime.js')>(),
 	probeHanamiNoteJudgeRuntime: runtime,
-	peekHanamiNoteJudgeRuntime: peekRuntime,
 }));
 
 /** 本物の判定係（HanamiGpuWorker.py）と同じ JSON 行のやり取りだけをする偽物。モデルは読み込まない。 */
@@ -142,8 +139,6 @@ beforeEach(async () => {
 
 afterEach(() => {
 	vi.unstubAllEnvs();
-	peekRuntime.mockReset();
-	peekRuntime.mockReturnValue(null);
 });
 
 describe('はなみ GPU の配り役（HanamiGpuDispatcherService）', () => {
@@ -318,9 +313,15 @@ describe('はなみ GPU の配り役（HanamiGpuDispatcherService）', () => {
  * DB だけ差し替える（見た記録・投稿の文・本人が前に反応した投稿）。
  */
 function makeBacktest(data: {
-	samples: Array<{ uid: string; nid: string; at: string; source: string; relationship: string; engaged: boolean; interest: number | null }>;
+	samples: Array<{ uid: string; nid: string; author?: string; cluster?: string; at: string; source: string; relationship: string; engaged: boolean; interest: number | null }>;
 	notes: Record<string, string>;
 	history: Record<string, string[]>;
+	/** 本人が作者の投稿に付けた反応（prior の材料）。id は「r@時刻」の形 */
+	prior?: Record<string, Array<{ id: string; noteId: string; author: string }>>;
+	/** 投稿に本人以外が付けた反応（social・reactions の材料） */
+	reactions?: Array<{ noteId: string; id: string; followed: boolean }>;
+	/** 投稿の時刻（ID から読む時刻の代わり） */
+	postedAt?: Record<string, string>;
 }) {
 	const queue = new HanamiGpuQueueService(redis);
 	const dispatcher = new HanamiGpuDispatcherService(redis, queue, loggerService as never);
@@ -329,14 +330,20 @@ function makeBacktest(data: {
 		query: async (sql: string, params: unknown[] = []) => {
 			if (sql.startsWith('SET ')) return [];
 			queries.push({ sql, params });
-			if (sql.includes('FROM "hanami_metrics_event"')) return data.samples.slice(0, params[1] as number);
-			if (sql.includes('FROM note_reaction')) return (data.history[params[0] as string] ?? []).slice(0, params[3] as number).map(text => ({ text }));
+			if (sql.includes('FROM "hanami_metrics_event"')) return data.samples.slice(0, params[1] as number).map(row => ({ author: `author-${row.nid}`, cluster: 'none', ...row }));
+			if (sql.includes('AS followed')) return (data.reactions ?? []).filter(row => (params[1] as string[]).includes(row.noteId));
+			if (sql.includes('AS author')) return (data.prior?.[params[0] as string] ?? []).filter(row => (params[3] as string[]).includes(row.author));
+			if (sql.includes('SELECT n.text')) return (data.history[params[0] as string] ?? []).slice(0, params[3] as number).map(text => ({ text }));
 			if (sql.includes('FROM note WHERE id = ANY')) return (params[0] as string[]).flatMap(id => data.notes[id] == null ? [] : [{ id, text: data.notes[id] }]);
 			return [];
 		},
 	};
 	const db = { transaction: async <T>(run: (m: typeof manager) => Promise<T>) => await run(manager) };
-	const ids = { gen: (at?: number) => `id${at ?? 0}` };
+	// 時刻は ID から読む。テストでは、反応の ID を「r@時刻」、投稿の時刻を表で渡す。
+	const ids = {
+		gen: (at?: number) => `id${at ?? 0}`,
+		parse: (id: string) => ({ date: new Date(id.includes('@') ? id.split('@')[1] : (data.postedAt?.[id] ?? '2026-11-17T00:00:00Z')) }),
+	};
 	const service = new HanamiRankBacktestService(redis, db as never, ids as never, queue, dispatcher);
 	service.onModuleInit();
 	return { queue, dispatcher, service, queries };
@@ -389,7 +396,7 @@ describe('並べ替えの物差し（HanamiRankBacktestService）', () => {
 		]);
 		expect(await queue.pending('rankBacktest')).toBe(0);
 		// personal の文面には、見た時刻より前に本人が反応した投稿が入る（採点する投稿そのものは入れない）
-		const historyQuery = queries.find(query => query.sql.includes('FROM note_reaction'))!;
+		const historyQuery = queries.find(query => query.sql.includes('SELECT n.text'))!;
 		expect(historyQuery.params).toEqual(['u1', `id${Date.parse('2026-11-17T10:00:00Z')}`, 'n1', 8]);
 
 		// 比べるのは、どの付け方でも点数が付いた 2 件（u1 の n1・n2）だけ。
@@ -451,41 +458,63 @@ describe('並べ替えの物差し（HanamiRankBacktestService）', () => {
 		expect(await service.status()).toMatchObject({ active: false, run: { samples: 0, compared: 0 } });
 	});
 
-	test('GPU が使えると分かっているときだけ、空いた時間に自動で始める。前の実行から 7 日たつまでは始めない', async () => {
+	test('自動の実行は GPU を使わずにその場で終わる。前の実行から 7 日たつか、付け方の版が変わるまでは始めない', async () => {
 		const { queue, service, queries } = makeBacktest(BACKTEST_DATA);
-		// GPU があるかまだ分からない → 始めない（10 分後にまた確かめる）
+		// 実行がまだ無い → 既定（60 日・4,000 件まで）で始める。GPU の付け方は入れないので、順番待ちには何も入らず、すぐ終わる。
 		await service.refill();
-		expect((await service.status()).run).toBeNull();
-		expect(await redis.ttl('hanami:rankbt:v1:autoChecked')).toBeLessThanOrEqual(600);
-
-		// GPU が無い → 始めない
-		await redis.del('hanami:rankbt:v1:autoChecked');
-		peekRuntime.mockReturnValue({ available: false, device: 'cpu', deviceName: null, reason: 'no cuda', probedAt: new Date().toISOString() });
-		await service.refill();
-		expect((await service.status()).run).toBeNull();
-
-		// GPU がある → 既定（60 日・4,000 件まで）で始める
-		await redis.del('hanami:rankbt:v1:autoChecked');
-		peekRuntime.mockReturnValue({ available: true, device: 'cuda', deviceName: 'fake', reason: null, probedAt: new Date().toISOString() });
-		await service.refill();
-		const started = await service.status();
-		expect(started).toMatchObject({ active: true, run: { startedBy: 'auto', days: 60, limit: 4000, samples: 5 } });
+		const first = await service.status();
+		expect(first).toMatchObject({ active: false, run: { startedBy: 'auto', days: 60, limit: 4000, samples: 5, compared: 5, progress: [] } });
+		expect(first.run?.finishedAt).not.toBeNull();
 		expect(queries[0].params[1]).toBe(4000);
-		expect(await redis.ttl('hanami:rankbt:v1:autoChecked')).toBeGreaterThan(600);
+		expect(await queue.pending('rankBacktest')).toBe(0);
+		expect([...new Set(first.run!.results.map(row => row.variant))]).toEqual(['interest', 'follow', 'prior', 'social', 'reactions', 'fresh', 'clustered']);
 
-		// 次の補充で、順番待ちに文面が入る（付け方ごとに 16 件まで）。順番待ちが空くまでは足さない。
+		// 確かめるのは数時間に 1 回だけ。確かめる間隔が過ぎても、7 日たつまでは次を始めない。
 		await service.refill();
-		expect(await queue.length('rankBacktest')).toBe(6);
-		await service.refill();
-		expect(await queue.length('rankBacktest')).toBe(6);
-
-		// 実行が終わったあと、確かめる間隔が過ぎても、7 日たつまでは次を始めない
-		await redis.del('hanami:gpuq:v1:list:rankBacktest', 'hanami:gpuq:v1:item:rankBacktest');
-		await service.refill();
-		expect((await service.status()).active).toBe(false);
 		await redis.del('hanami:rankbt:v1:autoChecked');
 		await service.refill();
-		expect((await service.status()).run?.id).toBe(started.run?.id);
+		expect((await service.status()).run?.id).toBe(first.run?.id);
+
+		// 付け方の版が古い実行しか無いとき（デプロイで付け方が増えた直後）は、7 日を待たずに取り直す。
+		const key = `hanami:rankbt:v1:run:${first.run!.id}`;
+		await redis.set(key, JSON.stringify({ ...JSON.parse((await redis.get(key))!), version: 1 }));
+		await redis.del('hanami:rankbt:v1:autoChecked');
+		await service.refill();
+		expect((await service.status()).run?.id).not.toBe(first.run?.id);
+	});
+
+	test('記録と DB の値を使う付け方は、見た時点までに分かっていたことだけを数える', async () => {
+		const seenAt = '2026-11-17T10:00:00Z';
+		const { service } = makeBacktest({
+			samples: [{ uid: 'u1', nid: 'n1', author: 'a1', cluster: 'clustered', at: seenAt, source: 'neighborTrending', relationship: 'unknown', engaged: true, interest: null }],
+			notes: { n1: '好きな猫の写真の話' },
+			history: {},
+			postedAt: { n1: '2026-11-17T02:00:00Z' },
+			prior: { u1: [
+				{ id: 'r@2026-11-10T00:00:00Z', noteId: 'other-1', author: 'a1' }, // 数える
+				{ id: 'r@2026-10-01T00:00:00Z', noteId: 'other-2', author: 'a1' }, // 数える（90 日以内）
+				{ id: 'r@2026-08-01T00:00:00Z', noteId: 'other-3', author: 'a1' }, // 90 日より前 → 数えない
+				{ id: 'r@2026-11-17T11:00:00Z', noteId: 'other-4', author: 'a1' }, // 見たあと → 数えない
+				{ id: 'r@2026-11-17T09:00:00Z', noteId: 'n1', author: 'a1' }, // 採点する投稿そのもの → 数えない
+			] },
+			reactions: [
+				{ noteId: 'n1', id: 'r@2026-11-17T03:00:00Z', followed: true }, // 見る前・フォロー中の人
+				{ noteId: 'n1', id: 'r@2026-11-17T04:00:00Z', followed: false }, // 見る前・ほかの人
+				{ noteId: 'n1', id: 'r@2026-11-17T12:00:00Z', followed: true }, // 見たあと → 数えない
+			],
+		});
+		await service.start({ days: 30, limit: 100, variants: [] }, 'manual');
+
+		const status = await service.status();
+		const score = (variant: string) => status.run!.results.find(row => row.variant === variant && row.subset === 'all')!.buckets[0]?.from;
+		expect(score('prior')).toBe(2);
+		expect(score('social')).toBe(1);
+		expect(score('reactions')).toBe(2);
+		expect(score('fresh')).toBe(-8); // 投稿から 8 時間
+		expect(score('clustered')).toBe(1);
+		expect(score('follow')).toBe(0);
+		// 記録が少ないので、組み合わせた点数の検証はしない
+		expect(status.run?.model).toBeNull();
 	});
 });
 

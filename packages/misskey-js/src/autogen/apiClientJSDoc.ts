@@ -976,7 +976,7 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
-     * Start a Hanami rank backtest now instead of waiting for the automatic weekly run. The records are sampled immediately; scoring proceeds little by little while the GPU has no other work.
+     * Start a Hanami rank backtest now instead of waiting for the automatic weekly run. The records are sampled immediately; scoring proceeds little by little while the GPU has no other work. With force, a run that is still in progress is cut short first (its scores so far are kept).
      * 
      * **Credential required**: *Yes* / **Permission**: *write:admin:queue*
      */

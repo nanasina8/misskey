@@ -12,20 +12,23 @@ import Logger from '@/logger.js';
 import { IdService } from '@/core/IdService.js';
 import { HanamiGpuQueueService, type HanamiGpuQueueTakenItem } from '@/core/hanami/HanamiGpuQueueService.js';
 import { HanamiGpuDispatcherService } from '@/core/hanami/HanamiGpuDispatcherService.js';
-import { peekHanamiNoteJudgeRuntime } from '@/core/hanami/HanamiPythonRuntime.js';
 import {
 	HANAMI_RANK_BACKTEST_CHOICES,
 	HANAMI_RANK_BACKTEST_GPU_VARIANTS,
 	HANAMI_RANK_BACKTEST_HISTORY_MAX,
+	HANAMI_RANK_BACKTEST_PRIOR_DAYS,
 	HANAMI_RANK_BACKTEST_STORED_VARIANTS,
 	HANAMI_RANK_BACKTEST_SUBSETS,
+	HANAMI_RANK_BACKTEST_VERSION,
 	buildHanamiRankBacktestPrompt,
+	evaluateHanamiRankBacktestModel,
 	hanamiRankBacktestInSubset,
 	hanamiRankBacktestItemId,
 	hanamiRankBacktestStoredScore,
 	parseHanamiRankBacktestItemId,
 	summarizeHanamiRankBacktest,
 	type HanamiRankBacktestGpuVariant,
+	type HanamiRankBacktestModelEvaluation,
 	type HanamiRankBacktestSample,
 	type HanamiRankBacktestScored,
 	type HanamiRankBacktestSubset,
@@ -36,6 +39,7 @@ import {
 /**
  * 並べ替えの物差しの進行係。
  * 1 回の実行 = 過去 N 日の「はなみTL で見た」記録から新しい順に最大 M 件を取り、付け方ごとに点数を付け直す。
+ * 記録と DB の値を使う付け方は、始めるときにその場で値を調べる（GPU は使わない）。
  * GPU を使う付け方は、常駐の判定係の順番待ち（種類 rankBacktest、いちばん低い重要度）に少しずつ入れる。
  * 入れるのは配り役が「ほかの仕事が何も無い」ときに呼ぶ補充（refill）だけなので、ふだんの判定は待たせない。
  * 途中の状態と点数は Redis に置き（14 日で消える）、DB には何も書かない。
@@ -58,6 +62,9 @@ const STATEMENT_TIMEOUT_MS = 30_000;
 const REFILL_CHUNK = 16;
 /** 補充 1 回で読む回数の上限（対象外ばかりの区間を早く抜けるため） */
 const REFILL_ROUNDS = 8;
+/** 1 人ぶんの「投稿に付いた反応」を読む行数の上限（多すぎる人は、その人の値を付けない） */
+const REACTION_ROW_LIMIT = 300_000;
+const HOUR_MS = 60 * 60 * 1000;
 /** 自動で始めるかを確かめる間隔 */
 const AUTO_CHECK_SECONDS = 6 * 60 * 60;
 /** 前の実行からこれだけたったら、空いているときに自動で始める */
@@ -77,6 +84,8 @@ export class HanamiRankBacktestAlreadyRunningError extends Error {
 
 export type HanamiRankBacktestRun = {
 	id: string;
+	/** 付け方・集計の版（HANAMI_RANK_BACKTEST_VERSION）。古い実行には無い */
+	version?: number;
 	createdAt: number;
 	finishedAt: number | null;
 	startedBy: 'auto' | 'manual';
@@ -101,12 +110,16 @@ export type HanamiRankBacktestStatus = {
 		compared: number;
 		progress: Array<{ variant: HanamiRankBacktestGpuVariant; scored: number; pending: number; skipped: number; errors: number }>;
 		results: Array<{ variant: HanamiRankBacktestVariant; subset: HanamiRankBacktestSubset } & HanamiRankBacktestSummary>;
+		/** 記録と DB の値を組み合わせた点数の検証。記録が足りないときは null */
+		model: HanamiRankBacktestModelEvaluation | null;
 	};
 };
 
 type SampleRow = {
 	uid: string;
 	nid: string;
+	author: string;
+	cluster: string;
 	at: Date | string;
 	source: string;
 	relationship: string;
@@ -124,12 +137,13 @@ const SAMPLES_SQL = `
 		SELECT DISTINCT ON (e."userId", e."noteId") e."userId" AS uid, e."noteId" AS nid,
 			COALESCE(e."occurredAt", e."createdAt") AS at,
 			COALESCE(NULLIF(e.dimensions ->> 'source', ''), 'unknown') AS source,
-			COALESCE(NULLIF(e.dimensions ->> 'relationshipClass', ''), 'unknown') AS relationship
+			COALESCE(NULLIF(e.dimensions ->> 'relationshipClass', ''), 'unknown') AS relationship,
+			COALESCE(NULLIF(e.dimensions ->> 'cluster', ''), 'none') AS cluster
 		FROM "hanami_metrics_event" e
 		WHERE e."eventType" = 'seen' AND e."createdAt" >= $1
 		ORDER BY e."userId", e."noteId", COALESCE(e."occurredAt", e."createdAt") ASC
 	)
-	SELECT s.uid, s.nid, s.at, s.source, s.relationship,
+	SELECT s.uid, s.nid, s.at, s.source, s.relationship, s.cluster, n."userId" AS author,
 		EXISTS (SELECT 1 FROM "hanami_recommendation_event" e2
 			WHERE e2."userId" = s.uid AND e2."noteId" = s.nid
 				AND e2."eventType" IN ('reaction', 'reply', 'renote')) AS engaged,
@@ -150,6 +164,23 @@ const HISTORY_SQL = `
 		AND n.text IS NOT NULL AND n.text <> '' AND n."userId" <> $1
 	ORDER BY r.id DESC
 	LIMIT $4
+`;
+
+/** 本人が、対象の作者たちの投稿に付けた反応（prior を数える材料）。反応の時刻は ID から読む。 */
+const PRIOR_SQL = `
+	SELECT r.id, r."noteId" AS "noteId", n."userId" AS author
+	FROM note_reaction r
+	JOIN note n ON n.id = r."noteId"
+	WHERE r."userId" = $1 AND r.id >= $2 AND r.id < $3 AND n."userId" = ANY($4::varchar[])
+`;
+
+/** 対象の投稿に、本人以外が付けた反応（social・reactions を数える材料）。followed = 反応した人を本人がフォローしているか。 */
+const NOTE_REACTIONS_SQL = `
+	SELECT r."noteId" AS "noteId", r.id,
+		EXISTS (SELECT 1 FROM following f WHERE f."followerId" = $1 AND f."followeeId" = r."userId") AS followed
+	FROM note_reaction r
+	WHERE r."noteId" = ANY($2::varchar[]) AND r."userId" <> $1
+	LIMIT $3
 `;
 
 function parseJson<T>(raw: string | null | undefined): T | null {
@@ -208,10 +239,14 @@ export class HanamiRankBacktestService implements OnModuleInit {
 			relationship: row.relationship,
 			engaged: row.engaged === true,
 			interest: row.interest == null ? null : Number(row.interest),
+			authorId: row.author,
+			clustered: row.cluster === 'clustered',
 		}));
+		await this.attachFeatures(samples);
 		const pending = samples.length > 0 && variants.length > 0;
 		const run: HanamiRankBacktestRun = {
 			id: this.idService.gen(now),
+			version: HANAMI_RANK_BACKTEST_VERSION,
 			createdAt: now,
 			finishedAt: pending ? null : now,
 			startedBy,
@@ -352,6 +387,7 @@ export class HanamiRankBacktestService implements OnModuleInit {
 				compared: compared.length,
 				progress,
 				results,
+				model: evaluateHanamiRankBacktestModel(compared),
 			},
 		};
 	}
@@ -367,23 +403,82 @@ export class HanamiRankBacktestService implements OnModuleInit {
 		return run;
 	}
 
+	/**
+	 * 自動の実行は GPU を使わない（記録と DB の値を使う付け方と、組み合わせた点数の検証だけ）。
+	 * LLM に聞く付け方は 1 回目で効かないと分かったので、試したいときに手で始める。
+	 */
 	private async maybeAutoStart(): Promise<void> {
 		// 配り役は数秒おきに補充を呼ぶ。確かめるのは数時間に 1 回だけにする
 		if (await this.redis.set(AUTO_CHECK_KEY, '1', 'EX', AUTO_CHECK_SECONDS, 'NX') == null) return;
-		// GPU の無い環境では始めない（順番待ちに入れても進まない）。ここでは調べ直さず、ほかのジョブが確かめた結果だけを見る
-		const runtime = peekHanamiNoteJudgeRuntime();
-		if (runtime == null || !runtime.available || runtime.device !== 'cuda') {
-			// まだ分からない・いまは使えないだけかもしれないので、次は 10 分後にもう一度見る
-			await this.redis.expire(AUTO_CHECK_KEY, 10 * 60);
-			return;
-		}
 		const latestId = await this.redis.get(LATEST_KEY);
 		const latest = latestId == null ? null : parseJson<HanamiRankBacktestRun>(await this.redis.get(runKey(latestId)));
-		if (latest != null && Date.now() - latest.createdAt < AUTO_INTERVAL_MS) return;
+		// 付け方や集計を変えたあと（版が違う）は、7 日を待たずに取り直す
+		if (latest != null && latest.version === HANAMI_RANK_BACKTEST_VERSION && Date.now() - latest.createdAt < AUTO_INTERVAL_MS) return;
 		try {
-			await this.start({ days: HANAMI_RANK_BACKTEST_DEFAULT_DAYS, limit: HANAMI_RANK_BACKTEST_DEFAULT_LIMIT }, 'auto');
+			await this.start({ days: HANAMI_RANK_BACKTEST_DEFAULT_DAYS, limit: HANAMI_RANK_BACKTEST_DEFAULT_LIMIT, variants: [] }, 'auto');
 		} catch (error) {
 			this.logger.warn('hanami rank backtest: failed to start automatically', { error: String(error) });
+		}
+	}
+
+	/**
+	 * 記録ごとに、見た時点までに分かっていた値を付ける（prior・social・reactions・投稿からの時間）。
+	 * 利用者ごとに 2 回の問い合わせでまとめて読み、時刻の前後は ID から読んだ時刻で判定する。
+	 * ある人の分が読めなかったとき（時間切れ・多すぎる）は、その人の記録には値を付けない。
+	 */
+	private async attachFeatures(samples: HanamiRankBacktestSample[]): Promise<void> {
+		const byUser = new Map<string, HanamiRankBacktestSample[]>();
+		for (const sample of samples) {
+			const list = byUser.get(sample.userId) ?? [];
+			list.push(sample);
+			byUser.set(sample.userId, list);
+		}
+		const timeOf = (id: string): number => {
+			try {
+				return this.idService.parse(id).date.getTime();
+			} catch {
+				return Number.NaN;
+			}
+		};
+		const priorWindowMs = HANAMI_RANK_BACKTEST_PRIOR_DAYS * DAY_MS;
+		for (const [userId, list] of byUser) {
+			try {
+				const authors = [...new Set(list.flatMap(sample => sample.authorId == null ? [] : [sample.authorId]))];
+				const noteIds = [...new Set(list.map(sample => sample.noteId))];
+				const earliest = Math.min(...list.map(sample => sample.seenAt));
+				const latest = Math.max(...list.map(sample => sample.seenAt));
+				const priorRows = authors.length === 0 ? [] : await this.query<{ id: string; noteId: string; author: string }>(
+					PRIOR_SQL, [userId, this.idService.gen(earliest - priorWindowMs), this.idService.gen(latest), authors]);
+				const reactionRows = await this.query<{ noteId: string; id: string; followed: boolean }>(NOTE_REACTIONS_SQL, [userId, noteIds, REACTION_ROW_LIMIT]);
+				if (reactionRows.length >= REACTION_ROW_LIMIT) throw new Error('too many reactions to read');
+
+				const priorByAuthor = new Map<string, Array<{ at: number; noteId: string }>>();
+				for (const row of priorRows) {
+					const entries = priorByAuthor.get(row.author) ?? [];
+					entries.push({ at: timeOf(row.id), noteId: row.noteId });
+					priorByAuthor.set(row.author, entries);
+				}
+				const reactionsByNote = new Map<string, Array<{ at: number; followed: boolean }>>();
+				for (const row of reactionRows) {
+					const entries = reactionsByNote.get(row.noteId) ?? [];
+					entries.push({ at: timeOf(row.id), followed: row.followed === true });
+					reactionsByNote.set(row.noteId, entries);
+				}
+				for (const sample of list) {
+					const postedAt = timeOf(sample.noteId);
+					if (!Number.isFinite(postedAt)) continue;
+					const before = (reactionsByNote.get(sample.noteId) ?? []).filter(entry => entry.at < sample.seenAt);
+					sample.features = {
+						prior: (sample.authorId == null ? [] : priorByAuthor.get(sample.authorId) ?? [])
+							.filter(entry => entry.noteId !== sample.noteId && entry.at < sample.seenAt && entry.at >= sample.seenAt - priorWindowMs).length,
+						social: before.filter(entry => entry.followed).length,
+						reactions: before.length,
+						ageHours: Math.max(0, (sample.seenAt - postedAt) / HOUR_MS),
+					};
+				}
+			} catch (error) {
+				this.logger.warn('hanami rank backtest: failed to read features for one user', { error: String(error), samples: list.length });
+			}
 		}
 	}
 
