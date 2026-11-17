@@ -135,6 +135,23 @@ export type HanamiAxisOutlookStrangerConversion = {
 
 export type HanamiAxisOutlookInterestBucket = { bucket: string; seen: number; engaged: number };
 
+export type HanamiAxisOutlookServedReacted = {
+	served: number;
+	reactedBefore: number;
+	reactedAfter: number;
+};
+
+export type HanamiAxisOutlookClusterEffect = {
+	users: number;
+	rows: Array<{ source: string; cluster: string; relationship: string; seen: number; engaged: number; users: number }>;
+};
+
+export type HanamiAxisOutlookAlreadyReacted = {
+	total: HanamiAxisOutlookServedReacted;
+	bySource: Array<HanamiAxisOutlookServedReacted & { source: string }>;
+	byRelationship: Array<HanamiAxisOutlookServedReacted & { relationship: string }>;
+};
+
 export type HanamiAxisOutlook = {
 	range: { from: string; to: string; days: number; poolFrom: string; poolHours: number };
 	population: HanamiAxisOutlookPopulation | null;
@@ -145,6 +162,8 @@ export type HanamiAxisOutlook = {
 	strangerSupply: HanamiAxisOutlookStrangerSupply | null;
 	strangerConversion: HanamiAxisOutlookStrangerConversion | null;
 	strangerInterest: HanamiAxisOutlookInterestBucket[] | null;
+	alreadyReacted: HanamiAxisOutlookAlreadyReacted | null;
+	tasteClusterEffect: HanamiAxisOutlookClusterEffect | null;
 	errors: Array<{ section: string; message: string }>;
 };
 
@@ -178,6 +197,7 @@ type PoolRow = {
 	local_notes: number;
 };
 
+type AlreadyReactedRow = { source: string; relationship: string; at: Date | string; reaction_id: string | null };
 type ConversionRow = { source: string; at: Date | string; follow_id: string | null; engaged_after: boolean; engaged_elsewhere: boolean };
 
 const INTEREST_BUCKETS = ['under3', '3to3.5', '3.5to4', '4to4.5', '4.5plus'] as const;
@@ -390,6 +410,81 @@ const STRANGER_INTEREST_SQL = `
 	GROUP BY 1
 `;
 
+/**
+ * はなみTL に出した投稿（利用者と投稿の組ごとに、初めて出したとき）と、本人のその投稿へのリアクション。
+ * リアクションの時刻は ID から読むので、前後の判定は呼び出し側でする。
+ */
+const ALREADY_REACTED_SQL = `
+	WITH served AS (
+		SELECT DISTINCT ON (e."userId", e."noteId") e."userId" AS uid, e."noteId" AS nid,
+			COALESCE(NULLIF(e.dimensions ->> 'source', ''), 'unknown') AS source,
+			COALESCE(NULLIF(e.dimensions ->> 'relationshipClass', ''), 'unknown') AS relationship,
+			COALESCE(e."occurredAt", e."createdAt") AS at
+		FROM "hanami_metrics_event" e
+		WHERE e."eventType" = 'served' AND e."createdAt" >= $1
+		ORDER BY e."userId", e."noteId", COALESCE(e."occurredAt", e."createdAt") ASC
+	)
+	SELECT s.source, s.relationship, s.at, r.id AS reaction_id
+	FROM served s
+	LEFT JOIN note_reaction r ON r."userId" = s.uid AND r."noteId" = s.nid
+`;
+
+/**
+ * 好みのまとまり（内容の近さ）に当たった投稿と当たらなかった投稿で、見たあとの反応がどう違うか。
+ * まとまりを持つ人と持たない人では反応のしかたが違うので、期間中に「当たった投稿」を 1 件でも見た人だけで比べる。
+ */
+const TASTE_CLUSTER_EFFECT_SQL = `
+	WITH seen AS (
+		SELECT e."userId" AS uid, e."noteId" AS nid,
+			COALESCE(NULLIF(e.dimensions ->> 'source', ''), 'unknown') AS source,
+			COALESCE(NULLIF(e.dimensions ->> 'cluster', ''), 'none') AS cluster,
+			COALESCE(NULLIF(e.dimensions ->> 'relationshipClass', ''), 'unknown') AS relationship
+		FROM "hanami_metrics_event" e
+		WHERE e."eventType" = 'seen' AND e."createdAt" >= $1
+	),
+	compared AS (
+		SELECT DISTINCT uid FROM seen WHERE cluster = 'clustered'
+	)
+	SELECT s.source, s.cluster, s.relationship, count(*)::int AS seen,
+		count(*) FILTER (WHERE EXISTS (SELECT 1 FROM "hanami_recommendation_event" e2
+			WHERE e2."userId" = s.uid AND e2."noteId" = s.nid
+				AND e2."eventType" IN ('reaction', 'reply', 'renote')))::int AS engaged,
+		count(DISTINCT s.uid)::int AS users,
+		(SELECT count(*) FROM compared)::int AS compared_users
+	FROM seen s
+	JOIN compared c ON c.uid = s.uid
+	GROUP BY s.source, s.cluster, s.relationship
+`;
+
+/** 出した時点で本人がもう反応していた投稿を、種類ごと・関係ごとに数える。 */
+export function countHanamiAlreadyReacted(rows: ReadonlyArray<{ source: string; relationship: string; servedAt: number; reactedAt: number | null }>): HanamiAxisOutlookAlreadyReacted {
+	const empty = (): HanamiAxisOutlookServedReacted => ({ served: 0, reactedBefore: 0, reactedAfter: 0 });
+	const total = empty();
+	const bySource = new Map<string, HanamiAxisOutlookServedReacted>();
+	const byRelationship = new Map<string, HanamiAxisOutlookServedReacted>();
+	const bucket = (map: Map<string, HanamiAxisOutlookServedReacted>, key: string): HanamiAxisOutlookServedReacted => {
+		const value = map.get(key) ?? empty();
+		map.set(key, value);
+		return value;
+	};
+	for (const row of rows) {
+		for (const target of [total, bucket(bySource, row.source), bucket(byRelationship, row.relationship)]) {
+			target.served++;
+			if (row.reactedAt == null) continue;
+			if (row.reactedAt < row.servedAt) target.reactedBefore++;
+			else target.reactedAfter++;
+		}
+	}
+	const largestFirst = (map: Map<string, HanamiAxisOutlookServedReacted>): Array<[string, HanamiAxisOutlookServedReacted]> => (
+		[...map.entries()].sort((a, b) => b[1].served - a[1].served || (a[0] < b[0] ? -1 : 1))
+	);
+	return {
+		total,
+		bySource: largestFirst(bySource).map(([source, value]) => ({ source, ...value })),
+		byRelationship: largestFirst(byRelationship).map(([relationship, value]) => ({ relationship, ...value })),
+	};
+}
+
 export function hanamiAxisOutlookDistribution(values: readonly number[]): HanamiAxisOutlookDistribution {
 	const sorted = [...values].sort((a, b) => a - b);
 	// 人数が少ないので補間はせず、実際にある値（下側）を返す。
@@ -449,6 +544,8 @@ export class HanamiAxisOutlookService {
 		const strangerSupply = await this.section('strangerSupply', errors, async () => this.strangerSupply(poolFromId));
 		const strangerConversion = await this.section('strangerConversion', errors, async () => this.strangerConversion(from));
 		const strangerInterest = await this.section('strangerInterest', errors, async () => this.strangerInterest(from));
+		const alreadyReacted = await this.section('alreadyReacted', errors, async () => this.alreadyReacted(from));
+		const tasteClusterEffect = await this.section('tasteClusterEffect', errors, async () => this.tasteClusterEffect(from));
 
 		return {
 			range: { from: from.toISOString(), to: now.toISOString(), days: input.days, poolFrom: poolFrom.toISOString(), poolHours: input.poolHours },
@@ -460,6 +557,8 @@ export class HanamiAxisOutlookService {
 			strangerSupply,
 			strangerConversion,
 			strangerInterest,
+			alreadyReacted,
+			tasteClusterEffect,
 			errors,
 		};
 	}
@@ -625,6 +724,27 @@ export class HanamiAxisOutlookService {
 			seen: Number(byBucket.get(bucket)?.seen ?? 0),
 			engaged: Number(byBucket.get(bucket)?.engaged ?? 0),
 		}));
+	}
+
+	private async tasteClusterEffect(from: Date): Promise<HanamiAxisOutlookClusterEffect> {
+		const rows = await this.query<{ source: string; cluster: string; relationship: string; seen: number; engaged: number; users: number; compared_users: number }>(TASTE_CLUSTER_EFFECT_SQL, [from]);
+		return {
+			users: Number(rows[0]?.compared_users ?? 0),
+			rows: rows
+				.map(row => ({ source: row.source, cluster: row.cluster, relationship: row.relationship, seen: Number(row.seen), engaged: Number(row.engaged), users: Number(row.users) }))
+				.sort((a, b) => b.seen - a.seen || `${a.source}/${a.cluster}/${a.relationship}`.localeCompare(`${b.source}/${b.cluster}/${b.relationship}`)),
+		};
+	}
+
+	private async alreadyReacted(from: Date): Promise<HanamiAxisOutlookAlreadyReacted> {
+		const rows = await this.query<AlreadyReactedRow>(ALREADY_REACTED_SQL, [from]);
+		return countHanamiAlreadyReacted(rows.map(row => ({
+			source: row.source,
+			relationship: row.relationship,
+			servedAt: new Date(row.at).getTime(),
+			// リアクションの時刻は ID から読む。
+			reactedAt: row.reaction_id == null ? null : this.idService.parse(row.reaction_id).date.getTime(),
+		})));
 	}
 
 	/** 1 つの集計が失敗・時間切れになっても、残りは返す。失敗は errors に名前つきで残す。 */

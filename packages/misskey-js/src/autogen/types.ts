@@ -12441,6 +12441,60 @@ export interface operations {
                             /** @description Of those, notes the same user reacted to, replied to or renoted. */
                             engaged: number;
                         }[] | null;
+                        /** @description Notes served on the Hanami timeline inside the reaction window that the user had already reacted to elsewhere. Such a note takes a slot but cannot earn a reaction. */
+                        alreadyReacted: {
+                            /** @description All sources. Counts of (user, note) pairs, taken at the first time the note was served to the user. */
+                            total: {
+                                /** @description Pairs served on the Hanami timeline. */
+                                served: number;
+                                /** @description Of those, pairs where the user had already reacted to the note before it was served. */
+                                reactedBefore: number;
+                                /** @description Of those, pairs where the user reacted to the note at or after that time. */
+                                reactedAfter: number;
+                            };
+                            /** @description Grouped by axis, largest first. */
+                            bySource: {
+                                /** @description Axis. */
+                                source: string;
+                                /** @description Pairs served on the Hanami timeline. */
+                                served: number;
+                                /** @description Of those, pairs where the user had already reacted to the note before it was served. */
+                                reactedBefore: number;
+                                /** @description Of those, pairs where the user reacted to the note at or after that time. */
+                                reactedAfter: number;
+                            }[];
+                            /** @description Grouped by the relationship to the author recorded when the note was served (directFollow, known, unknown), largest first. */
+                            byRelationship: {
+                                /** @description Relationship class. */
+                                relationship: string;
+                                /** @description Pairs served on the Hanami timeline. */
+                                served: number;
+                                /** @description Of those, pairs where the user had already reacted to the note before it was served. */
+                                reactedBefore: number;
+                                /** @description Of those, pairs where the user reacted to the note at or after that time. */
+                                reactedAfter: number;
+                            }[];
+                        } | null;
+                        /** @description Whether notes matched to one of the viewer's taste clusters (content similarity) earn more engagement than unmatched notes. Only users who saw at least one matched note inside the reaction window are compared, so both groups come from the same people. */
+                        tasteClusterEffect: {
+                            /** @description Users compared. */
+                            users: number;
+                            /** @description Seen notes of the compared users, grouped by axis, cluster match and relationship, largest first. */
+                            rows: {
+                                /** @description Axis. */
+                                source: string;
+                                /** @description clustered = matched to a taste cluster, none = not matched. */
+                                cluster: string;
+                                /** @description Relationship to the author recorded when the note was served (directFollow, known, unknown). */
+                                relationship: string;
+                                /** @description Seen notes in the group. */
+                                seen: number;
+                                /** @description Of those, notes the same user reacted to, replied to or renoted. */
+                                engaged: number;
+                                /** @description Users in the group. */
+                                users: number;
+                            }[];
+                        } | null;
                         /** @description Sections that failed or timed out; their value above is null. */
                         errors: {
                             /** @description Section name. */

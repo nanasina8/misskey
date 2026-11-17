@@ -38,6 +38,16 @@ const age = (description: string) => ({
 	},
 } as const);
 
+const servedReacted = (description: string) => ({
+	type: 'object', optional: false, nullable: false,
+	description: `${description} Counts of (user, note) pairs, taken at the first time the note was served to the user.`,
+	properties: {
+		served: count('Pairs served on the Hanami timeline.'),
+		reactedBefore: count('Of those, pairs where the user had already reacted to the note before it was served.'),
+		reactedAfter: count('Of those, pairs where the user reacted to the note at or after that time.'),
+	},
+} as const);
+
 const conversion = (description: string) => ({
 	type: 'object', optional: false, nullable: false,
 	description: `${description} Counts of (user, author) pairs.`,
@@ -192,6 +202,51 @@ export const meta = {
 						bucket: text('Bucket name.'),
 						seen: count('Seen notes in the bucket.'),
 						engaged: count('Of those, notes the same user reacted to, replied to or renoted.'),
+					},
+				},
+			},
+			alreadyReacted: {
+				type: 'object', optional: false, nullable: true,
+				description: 'Notes served on the Hanami timeline inside the reaction window that the user had already reacted to elsewhere. Such a note takes a slot but cannot earn a reaction.',
+				properties: {
+					total: servedReacted('All sources.'),
+					bySource: {
+						type: 'array', optional: false, nullable: false,
+						description: 'Grouped by axis, largest first.',
+						items: {
+							type: 'object', optional: false, nullable: false, description: 'One axis.',
+							properties: { source: text('Axis.'), ...servedReacted('').properties },
+						},
+					},
+					byRelationship: {
+						type: 'array', optional: false, nullable: false,
+						description: 'Grouped by the relationship to the author recorded when the note was served (directFollow, known, unknown), largest first.',
+						items: {
+							type: 'object', optional: false, nullable: false, description: 'One relationship class.',
+							properties: { relationship: text('Relationship class.'), ...servedReacted('').properties },
+						},
+					},
+				},
+			},
+			tasteClusterEffect: {
+				type: 'object', optional: false, nullable: true,
+				description: 'Whether notes matched to one of the viewer\'s taste clusters (content similarity) earn more engagement than unmatched notes. Only users who saw at least one matched note inside the reaction window are compared, so both groups come from the same people.',
+				properties: {
+					users: count('Users compared.'),
+					rows: {
+						type: 'array', optional: false, nullable: false,
+						description: 'Seen notes of the compared users, grouped by axis, cluster match and relationship, largest first.',
+						items: {
+							type: 'object', optional: false, nullable: false, description: 'One group.',
+							properties: {
+								source: text('Axis.'),
+								cluster: text('clustered = matched to a taste cluster, none = not matched.'),
+								relationship: text('Relationship to the author recorded when the note was served (directFollow, known, unknown).'),
+								seen: count('Seen notes in the group.'),
+								engaged: count('Of those, notes the same user reacted to, replied to or renoted.'),
+								users: count('Users in the group.'),
+							},
+						},
 					},
 				},
 			},

@@ -115,6 +115,12 @@ describe('はなみの軸の見込み（admin/hanami/axis-outlook）', () => {
 		});
 		assert.deepStrictEqual(body.strangerInterest?.map(row => row.bucket), ['under3', '3to3.5', '3.5to4', '4to4.5', '4.5plus']);
 		assert.ok(body.strangerInterest?.every(row => row.seen === 0 && row.engaged === 0));
+		assert.deepStrictEqual(body.alreadyReacted, {
+			total: { served: 0, reactedBefore: 0, reactedAfter: 0 },
+			bySource: [],
+			byRelationship: [],
+		});
+		assert.deepStrictEqual(body.tasteClusterEffect, { users: 0, rows: [] });
 
 		assert.strictEqual(body.range.days, 1);
 		assert.strictEqual(body.range.poolHours, 6);
