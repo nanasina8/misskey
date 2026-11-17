@@ -791,6 +791,24 @@ export type paths = {
          */
         post: operations['admin___hanami___metrics___what-if'];
     };
+    '/admin/hanami/rank-backtest': {
+        /**
+         * admin/hanami/rank-backtest
+         * @description Progress and results of the latest Hanami rank backtest. A backtest re-scores past "seen on the Hanami timeline" records with several scoring methods and reports how well each score separates the notes the viewer engaged with from the ones they did not. Only counts and ratios are returned.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+         */
+        post: operations['admin___hanami___rank-backtest'];
+    };
+    '/admin/hanami/rank-backtest-start': {
+        /**
+         * admin/hanami/rank-backtest-start
+         * @description Start a Hanami rank backtest now instead of waiting for the automatic weekly run. The records are sampled immediately; scoring proceeds little by little while the GPU has no other work.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:admin:queue*
+         */
+        post: operations['admin___hanami___rank-backtest-start'];
+    };
     '/admin/hanami/suggestion-events-export': {
         /**
          * admin/hanami/suggestion-events-export
@@ -13049,7 +13067,7 @@ export interface operations {
                         }[];
                         kinds: {
                             /** @enum {string} */
-                            kind: 'judgeTrial' | 'spamJudge' | 'topicJudge' | 'noteJudge' | 'spamScan';
+                            kind: 'judgeTrial' | 'spamJudge' | 'topicJudge' | 'noteJudge' | 'spamScan' | 'rankBacktest';
                             base: number;
                             maxBatch: number;
                             deadlineSec: number | null;
@@ -13066,7 +13084,7 @@ export interface operations {
                         }[];
                         next: {
                             /** @enum {string} */
-                            kind: 'judgeTrial' | 'spamJudge' | 'topicJudge' | 'noteJudge' | 'spamScan';
+                            kind: 'judgeTrial' | 'spamJudge' | 'topicJudge' | 'noteJudge' | 'spamScan' | 'rankBacktest';
                             itemId: string;
                             waitSec: number;
                             base: number;
@@ -14533,6 +14551,233 @@ export interface operations {
                         }[];
                         unavailable: string[];
                         suppressed: string[];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___hanami___rank-backtest': {
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        /** @description Whether the latest run is still being scored. */
+                        active: boolean;
+                        /** @description The latest run, or null when no run has been made (results are kept for 14 days). */
+                        run: {
+                            /** @description Run ID. */
+                            id: string;
+                            /**
+                             * Format: date-time
+                             * @description When the run was started.
+                             */
+                            createdAt: string;
+                            /**
+                             * Format: date-time
+                             * @description When scoring finished, or null while it is still in progress.
+                             */
+                            finishedAt: string | null;
+                            /**
+                             * @description auto = started by itself while the GPU was idle, manual = started through the API.
+                             * @enum {string}
+                             */
+                            startedBy: 'auto' | 'manual';
+                            /** @description How many days of seen records were sampled. */
+                            days: number;
+                            /** @description Maximum number of sampled records. */
+                            limit: number;
+                            /** @description Sampled records: one per (viewer, note), newest first, text notes by other users only. */
+                            samples: number;
+                            /** @description Records scored by every GPU method of the run. Results are computed on these records only, so the methods are compared on the same records. */
+                            compared: number;
+                            /** @description Scoring progress of each GPU method. */
+                            progress: {
+                                /**
+                                 * @description personal = the prompt shows notes the viewer recently reacted to, generic = the prompt shows the note only.
+                                 * @enum {string}
+                                 */
+                                variant: 'personal' | 'generic';
+                                /** @description Records scored so far. */
+                                scored: number;
+                                /** @description Records not yet handed to the GPU queue. */
+                                pending: number;
+                                /** @description Records left out (the note is gone, or the viewer has too few earlier reactions for the personal prompt). */
+                                skipped: number;
+                                /** @description Records the GPU worker failed to score. */
+                                errors: number;
+                            }[];
+                            /** @description One row per scoring method and subset. interest = the stored note-judge interest score, follow = 1 when the author is followed. */
+                            results: {
+                                /**
+                                 * @description Scoring method.
+                                 * @enum {string}
+                                 */
+                                variant: 'personal' | 'generic' | 'interest' | 'follow';
+                                /**
+                                 * @description all, or only records whose author had this relationship to the viewer when served.
+                                 * @enum {string}
+                                 */
+                                subset: 'all' | 'unknown' | 'directFollow';
+                                /** @description Records with a score in this subset. */
+                                seen: number;
+                                /** @description Of those, records the viewer reacted to, replied to or renoted. */
+                                engaged: number;
+                                /** @description Chance that an engaged record scores higher than a non-engaged one, over all viewers together (0.5 = random). Null without both kinds of records. */
+                                auc: number | null;
+                                /** @description The same chance computed inside each viewer and pooled, which removes differences in how readily viewers react. This is the number that matters for ordering one viewer's timeline. */
+                                withinUserAuc: number | null;
+                                /** @description Viewers that had both engaged and non-engaged records. */
+                                withinUsers: number;
+                                /** @description The fifth of the records with the highest scores. */
+                                top20: {
+                                    /** @description Records. */
+                                    seen: number;
+                                    /** @description Engaged records. */
+                                    engaged: number;
+                                };
+                                /** @description Records split into five equal parts from the lowest score to the highest. */
+                                buckets: {
+                                    /** @description Lowest score in the part. */
+                                    from: number;
+                                    /** @description Highest score in the part. */
+                                    to: number;
+                                    /** @description Records. */
+                                    seen: number;
+                                    /** @description Engaged records. */
+                                    engaged: number;
+                                }[];
+                            }[];
+                        } | null;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___hanami___rank-backtest-start': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /**
+                     * @description How many days of seen records to sample.
+                     * @default 60
+                     */
+                    days?: number;
+                    /**
+                     * @description Maximum number of records, newest first.
+                     * @default 4000
+                     */
+                    limit?: number;
+                    /** @description GPU scoring methods to run. All of them when omitted. */
+                    variants?: ('personal' | 'generic')[];
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        /** @description Run ID. */
+                        id: string;
+                        /** @description Sampled records. */
+                        samples: number;
                     };
                 };
             };

@@ -1194,7 +1194,7 @@ function gpuWorkerStateLabel(state: string): string {
 }
 
 function gpuKindLabel(kind: string): string {
-	return ({ judgeTrial: t.gpuKindTrial, spamJudge: t.gpuKindJudge, spamScan: t.gpuKindScan, noteJudge: t.gpuKindNote, topicJudge: t.gpuKindTopic } as Record<string, string>)[kind] ?? kind;
+	return ({ judgeTrial: t.gpuKindTrial, spamJudge: t.gpuKindJudge, spamScan: t.gpuKindScan, noteJudge: t.gpuKindNote, topicJudge: t.gpuKindTopic, rankBacktest: t.gpuKindBacktest } as Record<string, string>)[kind] ?? kind;
 }
 
 function reloadAll(): void {

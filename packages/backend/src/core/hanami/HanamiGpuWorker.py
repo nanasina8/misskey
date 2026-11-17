@@ -15,9 +15,12 @@ import time
 
 from HanamiNoteJudgeCpu import MODEL, configure_torch_threads, judge_one as judge_note_one, resolve_runtime
 from HanamiSpamJudge import MAX_TEXT_LENGTH, PROMPT, one_token
-from HanamiTrendTopicJudge import judge_topic_job
+from HanamiTrendTopicJudge import answer_probabilities, judge_topic_job
 
 MAX_ITEMS = 32
+# promptChoice の 1 件あたりの上限（文面の文字数・選択肢の数）
+MAX_PROMPT_LENGTH = 6000
+MAX_CHOICES = 5
 # GPU では同じ種類をまとめて1回の forward にする。CPU（確認用）はまとめると遅くなるので1件ずつ
 CHUNK_SIZE_GPU = 16
 CHUNK_SIZE_CPU = 1
@@ -244,6 +247,44 @@ def handle_topic_judge(torch, tokenizer, model, device, request):
     emit({"op": "result", "requestId": request_id, "results": results, "errors": errors, "durationMs": int((time.time() - started) * 1000)})
 
 
+def handle_prompt_choice(torch, tokenizer, model, request):
+    """items: [{itemId, prompt, choices}]。prompt の答えが choices のどれになるかの確率を 1 件ずつ出す。
+
+    文面は呼ぶ側が作る（並べ替えの物差しなど、文面を試す仕事で使う）。失敗した項目は errors に入れる。
+    """
+    global processed
+    request_id = request.get("requestId")
+    items = request.get("items", [])
+    if not isinstance(items, list) or len(items) > MAX_ITEMS:
+        emit({"op": "error", "requestId": request_id, "error": "items must be an array of at most %d items" % MAX_ITEMS})
+        return
+    started = time.time()
+    results = []
+    errors = []
+    for item in items:
+        item_id = item.get("itemId") if isinstance(item, dict) else None
+        if not isinstance(item_id, str):
+            emit({"op": "error", "requestId": request_id, "error": "each item requires a string itemId"})
+            return
+        try:
+            prompt = item.get("prompt")
+            choices = item.get("choices")
+            if not isinstance(prompt, str) or prompt == "" or len(prompt) > MAX_PROMPT_LENGTH:
+                raise ValueError("prompt must be a non-empty string of at most %d characters" % MAX_PROMPT_LENGTH)
+            if not isinstance(choices, list) or not 2 <= len(choices) <= MAX_CHOICES or any(not isinstance(choice, str) or choice == "" for choice in choices):
+                raise ValueError("choices must be 2 to %d non-empty strings" % MAX_CHOICES)
+            results.append({"itemId": item_id, "output": {"probabilities": answer_probabilities(torch, tokenizer, model, prompt, choices)}})
+        except Exception as exc:
+            if "CUDA out of memory" in str(exc):
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+            errors.append({"itemId": item_id, "error": "%s: %s" % (type(exc).__name__, exc)})
+    processed += len(results)
+    emit({"op": "result", "requestId": request_id, "results": results, "errors": errors, "durationMs": int((time.time() - started) * 1000)})
+
+
 def handle_ping(torch, device):
     vram = None
     if device == "cuda":
@@ -290,6 +331,8 @@ def main():
             handle_note_judge(torch, tokenizer, model, request)
         elif op == "topicJudge":
             handle_topic_judge(torch, tokenizer, model, device, request)
+        elif op == "promptChoice":
+            handle_prompt_choice(torch, tokenizer, model, request)
         elif op == "ping":
             handle_ping(torch, device)
         elif op == "exit":

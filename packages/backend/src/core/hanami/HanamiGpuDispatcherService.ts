@@ -528,6 +528,8 @@ export class HanamiGpuDispatcherService {
 
 		if (kind == null) {
 			await this.callRefill('spamScan');
+			// ほかの仕事が何も無いときだけ、物差し（過去の記録の採点）を少し足す
+			await this.callRefill('rankBacktest');
 			// 載せたまま待つ（常駐）。ときどき状態を聞いて画面に出す
 			if (this.workerReady && now - this.lastPingAt >= PING_INTERVAL_MS) {
 				this.lastPingAt = now;
@@ -685,6 +687,7 @@ export class HanamiGpuDispatcherService {
 			case 'spamJudge': return { itemId: item.itemId, text: String(payload.text ?? '') };
 			case 'noteJudge': return { itemId: item.itemId, noteId: payload.noteId, cleanedText: payload.cleanedText, hasFiles: payload.hasFiles === true, settings: payload.settings };
 			case 'topicJudge': return { itemId: item.itemId, job: payload.job };
+			case 'promptChoice': return { itemId: item.itemId, prompt: String(payload.prompt ?? ''), choices: payload.choices };
 		}
 	}
 

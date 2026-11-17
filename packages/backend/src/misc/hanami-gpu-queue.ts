@@ -9,7 +9,7 @@
  * 各列の先頭から「次にやる1種類」を選ぶ方法。
  */
 
-export const HANAMI_GPU_QUEUE_KINDS = ['judgeTrial', 'spamJudge', 'topicJudge', 'noteJudge', 'spamScan'] as const;
+export const HANAMI_GPU_QUEUE_KINDS = ['judgeTrial', 'spamJudge', 'topicJudge', 'noteJudge', 'spamScan', 'rankBacktest'] as const;
 export type HanamiGpuQueueKind = typeof HANAMI_GPU_QUEUE_KINDS[number];
 
 export type HanamiGpuQueuePolicy = {
@@ -24,7 +24,7 @@ export type HanamiGpuQueuePolicy = {
 };
 
 /** 常駐の判定係が受け付ける仕事の種類 */
-export type HanamiGpuWorkerOp = 'spamJudge' | 'noteJudge' | 'topicJudge';
+export type HanamiGpuWorkerOp = 'spamJudge' | 'noteJudge' | 'topicJudge' | 'promptChoice';
 
 export const HANAMI_GPU_QUEUE_POLICIES: Record<HanamiGpuQueueKind, HanamiGpuQueuePolicy> = {
 	judgeTrial: { base: 100, deadlineMs: 60_000, maxBatch: 1, op: 'spamJudge' },
@@ -34,6 +34,9 @@ export const HANAMI_GPU_QUEUE_POLICIES: Record<HanamiGpuQueueKind, HanamiGpuQueu
 	// 投稿の判定は 1 投稿が 1 項目。判定係は 1 件ずつ判定するので、1 回に渡す件数は少なめにして割り込みやすくする
 	noteJudge: { base: 50, deadlineMs: null, maxBatch: 8, op: 'noteJudge' },
 	spamScan: { base: 10, deadlineMs: null, maxBatch: 32, op: 'spamJudge' },
+	// 並べ替えの物差し（過去の記録を採点し直す）。ほかの仕事が無いときだけ少しずつ足すので、いちばん低い。
+	// 待ち時間の加点（最大 40）が付いても、投稿の判定（50）は超えない
+	rankBacktest: { base: 5, deadlineMs: null, maxBatch: 8, op: 'promptChoice' },
 };
 
 /** 待ち時間の加点: 1分ごとに +1 */

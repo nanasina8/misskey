@@ -15,7 +15,8 @@ TOPIC_MAX = 60
 DAILY_PROMPT = 'SNS の投稿のまとまりです。これが「今この時に多くの人が同じ出来事・ニュース・番組・作品・企画について話している話題」なら「話題」、「毎日いつでも見かける日常のつぶやき・あいさつ・定型の投稿（帰宅、おはよう、質問箱の募集、参加表明、ハッシュタグで回答を集める遊びや診断など）」なら「日常」と答えてください。「話題」か「日常」だけを出力してください。\n{X}'
 
 
-def answer_probability(torch, tokenizer, model, prompt, choices, index):
+def answer_probabilities(torch, tokenizer, model, prompt, choices):
+    """prompt の答えの最初の 1 語が choices のどれになるかの確率を、choices の順で返す。"""
     text = tokenizer.apply_chat_template([{'role': 'user', 'content': prompt}], tokenize=False, add_generation_prompt=True)
     inputs = tokenizer(text, add_special_tokens=False, return_tensors='pt').to(model.device)
     answer_ids = [tokenizer.encode(choice, add_special_tokens=False)[0] for choice in choices]
@@ -23,7 +24,11 @@ def answer_probability(torch, tokenizer, model, prompt, choices, index):
         raise RuntimeError('answer choices have identical first tokens')
     with torch.no_grad():
         logits = model(**inputs).logits[0, -1, answer_ids].float()
-    return float(torch.softmax(logits, dim=0)[index].item())
+    return [float(value) for value in torch.softmax(logits, dim=0).tolist()]
+
+
+def answer_probability(torch, tokenizer, model, prompt, choices, index):
+    return answer_probabilities(torch, tokenizer, model, prompt, choices)[index]
 
 
 def judge_topic_job(torch, tokenizer, model, job, on_progress=None):

@@ -12,13 +12,17 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi 
 import { Redis } from 'ioredis';
 import { HanamiGpuDispatcherService } from '@/core/hanami/HanamiGpuDispatcherService.js';
 import { HanamiGpuQueueService, type HanamiGpuQueueTakenItem } from '@/core/hanami/HanamiGpuQueueService.js';
+import { HanamiRankBacktestService } from '@/core/hanami/HanamiRankBacktestService.js';
 import type { HanamiGpuSpamScores } from '@/misc/hanami-gpu-queue.js';
 
 // GPU の有無は確かめず、判定係は下の偽物（Python）に差し替える。配り役とキューは本物を、実 Redis で動かす。
 const runtime = vi.hoisted(() => vi.fn(async () => ({ available: true, device: 'cuda', deviceName: 'fake', reason: null, probedAt: new Date().toISOString() })));
+/** ほかのジョブが確かめた GPU の有無（物差しを自動で始めるかどうかの判断に使う）。初めは「まだ分からない」 */
+const peekRuntime = vi.hoisted(() => vi.fn((): { available: boolean; device: string; deviceName: string | null; reason: string | null; probedAt: string } | null => null));
 vi.mock('@/core/hanami/HanamiPythonRuntime.js', async importOriginal => ({
 	...await importOriginal<typeof import('@/core/hanami/HanamiPythonRuntime.js')>(),
 	probeHanamiNoteJudgeRuntime: runtime,
+	peekHanamiNoteJudgeRuntime: peekRuntime,
 }));
 
 /** 本物の判定係（HanamiGpuWorker.py）と同じ JSON 行のやり取りだけをする偽物。モデルは読み込まない。 */
@@ -60,6 +64,17 @@ while True:
         emit({"op": "result", "requestId": request.get("requestId"),
               "results": [{"itemId": item["itemId"], "output": {"status": "ok", "titles": [], "judgements": [{"kind": "daily", "topicId": topic, "probability": 0.9} for topic in item["job"]["dailyIds"]]}} for item in request["items"]],
               "errors": [], "durationMs": 5})
+    elif op == "promptChoice":
+        handled += 1
+        results, errors = [], []
+        for item in request["items"]:
+            # 文面の最後の区切り（採点する投稿）に「好き」があれば、高い確率で「はい」
+            target = item["prompt"].split("[")[-1]
+            if "boom" in target:
+                errors.append({"itemId": item["itemId"], "error": "RuntimeError: inference failed"})
+            else:
+                results.append({"itemId": item["itemId"], "output": {"probabilities": [0.9, 0.1] if "好き" in target else [0.2, 0.8]}})
+        emit({"op": "result", "requestId": request.get("requestId"), "results": results, "errors": errors, "durationMs": 2})
     elif op == "ping":
         emit({"op": "pong", "processed": handled, "uptimeSec": 0, "vramGiB": None})
     elif op == "exit":
@@ -127,6 +142,8 @@ beforeEach(async () => {
 
 afterEach(() => {
 	vi.unstubAllEnvs();
+	peekRuntime.mockReset();
+	peekRuntime.mockReturnValue(null);
 });
 
 describe('はなみ GPU の配り役（HanamiGpuDispatcherService）', () => {
@@ -295,3 +312,180 @@ describe('はなみ GPU の配り役（HanamiGpuDispatcherService）', () => {
 		}
 	}, 40_000);
 });
+
+/**
+ * 並べ替えの物差し（HanamiRankBacktestService）を、本物の配り役・順番待ち・実 Redis と、偽の判定係で通しで動かす。
+ * DB だけ差し替える（見た記録・投稿の文・本人が前に反応した投稿）。
+ */
+function makeBacktest(data: {
+	samples: Array<{ uid: string; nid: string; at: string; source: string; relationship: string; engaged: boolean; interest: number | null }>;
+	notes: Record<string, string>;
+	history: Record<string, string[]>;
+}) {
+	const queue = new HanamiGpuQueueService(redis);
+	const dispatcher = new HanamiGpuDispatcherService(redis, queue, loggerService as never);
+	const queries: Array<{ sql: string; params: unknown[] }> = [];
+	const manager = {
+		query: async (sql: string, params: unknown[] = []) => {
+			if (sql.startsWith('SET ')) return [];
+			queries.push({ sql, params });
+			if (sql.includes('FROM "hanami_metrics_event"')) return data.samples.slice(0, params[1] as number);
+			if (sql.includes('FROM note_reaction')) return (data.history[params[0] as string] ?? []).slice(0, params[3] as number).map(text => ({ text }));
+			if (sql.includes('FROM note WHERE id = ANY')) return (params[0] as string[]).flatMap(id => data.notes[id] == null ? [] : [{ id, text: data.notes[id] }]);
+			return [];
+		},
+	};
+	const db = { transaction: async <T>(run: (m: typeof manager) => Promise<T>) => await run(manager) };
+	const ids = { gen: (at?: number) => `id${at ?? 0}` };
+	const service = new HanamiRankBacktestService(redis, db as never, ids as never, queue, dispatcher);
+	service.onModuleInit();
+	return { queue, dispatcher, service, queries };
+}
+
+const BACKTEST_DATA = {
+	samples: [
+		// u1 は前に反応した投稿が 3 件ある（personal の対象）。u2 は 1 件だけ（personal では対象外）。
+		{ uid: 'u1', nid: 'n1', at: '2026-11-17T10:00:00Z', source: 'neighborTrending', relationship: 'directFollow', engaged: true, interest: 2 },
+		{ uid: 'u1', nid: 'n2', at: '2026-11-17T09:00:00Z', source: 'globalPopular', relationship: 'unknown', engaged: false, interest: 4 },
+		{ uid: 'u2', nid: 'n3', at: '2026-11-17T08:00:00Z', source: 'fof', relationship: 'unknown', engaged: true, interest: null },
+		{ uid: 'u2', nid: 'n4', at: '2026-11-17T07:00:00Z', source: 'exploration', relationship: 'unknown', engaged: false, interest: 3 },
+		// 採点の前に消えた投稿（文を読めない）
+		{ uid: 'u1', nid: 'gone', at: '2026-11-17T06:00:00Z', source: 'globalPopular', relationship: 'unknown', engaged: false, interest: null },
+	],
+	notes: { n1: '好きな猫の写真の話', n2: '税金の計算の話', n3: '好きな犬の話', n4: '株価の話' },
+	history: { u1: ['猫がかわいい', '好きな本の話', '犬もかわいい'], u2: ['一度だけ反応した投稿'] },
+};
+
+describe('並べ替えの物差し（HanamiRankBacktestService）', () => {
+	test('始めると、ほかの仕事が無いときに判定係が少しずつ採点し、付け方ごとの結果が出る', async () => {
+		const { queue, dispatcher, service, queries } = makeBacktest(BACKTEST_DATA);
+		expect(await service.status()).toEqual({ active: false, run: null });
+
+		const run = await service.start({ days: 30, limit: 100 }, 'manual', Date.parse('2026-11-17T12:00:00Z'));
+		expect(run).toMatchObject({ samples: 5, variants: ['personal', 'generic'], finishedAt: null });
+		// 対象は「過去 30 日・新しい順に 100 件まで」
+		expect(queries[0].params).toEqual([new Date('2026-10-18T12:00:00Z'), 100]);
+		// 実行中にもう 1 つは始められない
+		await expect(service.start({ days: 30, limit: 100 }, 'manual')).rejects.toThrow('already running');
+		expect((await service.status()).run?.progress).toEqual([
+			{ variant: 'personal', scored: 0, pending: 5, skipped: 0, errors: 0 },
+			{ variant: 'generic', scored: 0, pending: 5, skipped: 0, errors: 0 },
+		]);
+
+		dispatcher.start();
+		try {
+			await waitFor(async () => (await service.status()).active === false, 30_000);
+		} finally {
+			await dispatcher.stop();
+		}
+
+		const status = await service.status();
+		expect(status.run).toMatchObject({ id: run.id, startedBy: 'manual', days: 30, limit: 100, samples: 5, compared: 2 });
+		expect(status.run?.finishedAt).not.toBeNull();
+		// personal は、前の反応が少ない u2 の 2 件と、消えた投稿を飛ばす。generic は消えた投稿だけ飛ばす。
+		expect(status.run?.progress).toEqual([
+			{ variant: 'personal', scored: 2, pending: 0, skipped: 3, errors: 0 },
+			{ variant: 'generic', scored: 4, pending: 0, skipped: 1, errors: 0 },
+		]);
+		expect(await queue.pending('rankBacktest')).toBe(0);
+		// personal の文面には、見た時刻より前に本人が反応した投稿が入る（採点する投稿そのものは入れない）
+		const historyQuery = queries.find(query => query.sql.includes('FROM note_reaction'))!;
+		expect(historyQuery.params).toEqual(['u1', `id${Date.parse('2026-11-17T10:00:00Z')}`, 'n1', 8]);
+
+		// 比べるのは、どの付け方でも点数が付いた 2 件（u1 の n1・n2）だけ。
+		const result = (variant: string, subset: string) => status.run!.results.find(row => row.variant === variant && row.subset === subset)!;
+		for (const variant of ['personal', 'generic', 'follow']) {
+			// 反応した n1（「好き」を含む・フォロー中）のほうが点数が高い
+			expect(result(variant, 'all')).toMatchObject({ seen: 2, engaged: 1, auc: 1, withinUserAuc: 1, withinUsers: 1 });
+		}
+		// いまの判定の「興味」は、反応した n1 のほうが低い（2 対 4）
+		expect(result('interest', 'all')).toMatchObject({ seen: 2, engaged: 1, auc: 0 });
+		expect(result('generic', 'all').buckets.map(bucket => [bucket.from, bucket.to, bucket.seen, bucket.engaged])).toEqual([[0.2, 0.2, 1, 0], [0.9, 0.9, 1, 1]]);
+		// 関係ごとに分けると 1 件ずつなので、比べられない（null）
+		expect(result('generic', 'unknown')).toMatchObject({ seen: 1, engaged: 0, auc: null });
+		expect(result('generic', 'directFollow')).toMatchObject({ seen: 1, engaged: 1, auc: null });
+	}, 60_000);
+
+	test('判定係が失敗を返した記録は errors に数え、残りはそのまま採点し終える', async () => {
+		const { dispatcher, service } = makeBacktest({ ...BACKTEST_DATA, notes: { ...BACKTEST_DATA.notes, n2: 'boom' } });
+		await service.start({ days: 30, limit: 100, variants: ['generic'] }, 'manual');
+		dispatcher.start();
+		try {
+			await waitFor(async () => (await service.status()).active === false, 30_000);
+		} finally {
+			await dispatcher.stop();
+		}
+		const status = await service.status();
+		expect(status.run?.progress).toEqual([{ variant: 'generic', scored: 3, pending: 0, skipped: 1, errors: 1 }]);
+		expect(status.run?.compared).toBe(3);
+	}, 60_000);
+
+	test('進まなくなった実行は、やり直しの指定で打ち切って始め直せる（順番待ちに残った分は捨て、付いた点数は残す）', async () => {
+		const { queue, service } = makeBacktest(BACKTEST_DATA);
+		const first = await service.start({ days: 30, limit: 100 }, 'manual');
+		await service.refill();
+		expect(await queue.length('rankBacktest')).toBe(6);
+		// 別の種類の項目は巻き込まない
+		await queue.enqueue('spamScan', 'other', { text: 'そのまま残る' });
+		// 1 件だけ採点が済んだところで止まった、という状況
+		await service.handleScored([{ itemId: `${first.id}:generic:0`, payload: null, enqueuedAt: 0, attempts: 0 }], new Map([[`${first.id}:generic:0`, { probabilities: [0.9, 0.1] }]]), new Map());
+
+		await expect(service.start({ days: 30, limit: 100 }, 'manual')).rejects.toThrow('already running');
+		const second = await service.start({ days: 30, limit: 100, variants: ['generic'], force: true }, 'manual');
+
+		expect(second.id).not.toBe(first.id);
+		expect(await queue.length('rankBacktest')).toBe(0);
+		expect(await queue.length('spamScan')).toBe(1);
+		expect(await redis.exists(`hanami:rankbt:v1:pending:${first.id}:personal`, `hanami:rankbt:v1:pending:${first.id}:generic`)).toBe(0);
+		expect(await redis.hgetall(`hanami:rankbt:v1:scores:${first.id}:generic`)).toEqual({ 0: '0.900000' });
+		expect(JSON.parse((await redis.get(`hanami:rankbt:v1:run:${first.id}`))!).finishedAt).not.toBeNull();
+		expect(await service.status()).toMatchObject({ active: true, run: { id: second.id, progress: [{ variant: 'generic', scored: 0, pending: 5 }] } });
+	});
+
+	test('対象の記録が無ければ、何も採点せずに終わった実行として残る', async () => {
+		const { queue, service } = makeBacktest({ samples: [], notes: {}, history: {} });
+		const run = await service.start({ days: 7, limit: 100 }, 'manual');
+		expect(run.finishedAt).not.toBeNull();
+		await service.refill();
+		expect(await queue.pending('rankBacktest')).toBe(0);
+		expect(await service.status()).toMatchObject({ active: false, run: { samples: 0, compared: 0 } });
+	});
+
+	test('GPU が使えると分かっているときだけ、空いた時間に自動で始める。前の実行から 7 日たつまでは始めない', async () => {
+		const { queue, service, queries } = makeBacktest(BACKTEST_DATA);
+		// GPU があるかまだ分からない → 始めない（10 分後にまた確かめる）
+		await service.refill();
+		expect((await service.status()).run).toBeNull();
+		expect(await redis.ttl('hanami:rankbt:v1:autoChecked')).toBeLessThanOrEqual(600);
+
+		// GPU が無い → 始めない
+		await redis.del('hanami:rankbt:v1:autoChecked');
+		peekRuntime.mockReturnValue({ available: false, device: 'cpu', deviceName: null, reason: 'no cuda', probedAt: new Date().toISOString() });
+		await service.refill();
+		expect((await service.status()).run).toBeNull();
+
+		// GPU がある → 既定（60 日・4,000 件まで）で始める
+		await redis.del('hanami:rankbt:v1:autoChecked');
+		peekRuntime.mockReturnValue({ available: true, device: 'cuda', deviceName: 'fake', reason: null, probedAt: new Date().toISOString() });
+		await service.refill();
+		const started = await service.status();
+		expect(started).toMatchObject({ active: true, run: { startedBy: 'auto', days: 60, limit: 4000, samples: 5 } });
+		expect(queries[0].params[1]).toBe(4000);
+		expect(await redis.ttl('hanami:rankbt:v1:autoChecked')).toBeGreaterThan(600);
+
+		// 次の補充で、順番待ちに文面が入る（付け方ごとに 16 件まで）。順番待ちが空くまでは足さない。
+		await service.refill();
+		expect(await queue.length('rankBacktest')).toBe(6);
+		await service.refill();
+		expect(await queue.length('rankBacktest')).toBe(6);
+
+		// 実行が終わったあと、確かめる間隔が過ぎても、7 日たつまでは次を始めない
+		await redis.del('hanami:gpuq:v1:list:rankBacktest', 'hanami:gpuq:v1:item:rankBacktest');
+		await service.refill();
+		expect((await service.status()).active).toBe(false);
+		await redis.del('hanami:rankbt:v1:autoChecked');
+		await service.refill();
+		expect((await service.status()).run?.id).toBe(started.run?.id);
+	});
+});
+

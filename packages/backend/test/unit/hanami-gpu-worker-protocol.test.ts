@@ -36,8 +36,14 @@ def fake_topic(torch, tokenizer, model, job):
         raise error
     return [{"kind": "daily", "topicId": topic, "probability": 0.9} for topic in job["dailyIds"]], [{"topicId": "a", "title": "寒波"}]
 
+def fake_probabilities(torch, tokenizer, model, prompt, choices):
+    if "boom" in prompt:
+        raise RuntimeError("inference failed")
+    return [0.75] + [0.25 / (len(choices) - 1)] * (len(choices) - 1)
+
 worker.judge_note_one = fake_note
 worker.judge_topic_job = fake_topic
+worker.answer_probabilities = fake_probabilities
 ${body}
 `;
 	const { stdout } = await execFileAsync('python3', ['-c', script], { timeout: 30_000 });
@@ -97,5 +103,23 @@ except Exception as exc:
     print(json.dumps({"raised": True, "error": str(exc), "partial": list(exc.partial)}))
 `);
 		expect(message).toEqual({ raised: true, error: 'topics require unique IDs and text', partial: [[], []] });
+	});
+	test('promptChoice: 文面ごとに選択肢の確率を返し、形のおかしい項目・失敗した項目だけ errors に入れる', async () => {
+		const request = { op: 'promptChoice', requestId: 'r9', items: [
+			{ itemId: 'run:generic:0', prompt: 'この投稿に反応しそうですか', choices: ['はい', 'いいえ'] },
+			{ itemId: 'run:generic:1', prompt: 'boom', choices: ['はい', 'いいえ'] },
+			{ itemId: 'run:generic:2', prompt: '', choices: ['はい', 'いいえ'] },
+			{ itemId: 'run:generic:3', prompt: '選択肢が 1 つ', choices: ['はい'] },
+			{ itemId: 'run:generic:4', prompt: 'あ'.repeat(6001), choices: ['はい', 'いいえ'] },
+		] };
+		const [message] = await runWorkerHandlers(`worker.handle_prompt_choice(None, None, None, json.loads(${JSON.stringify(JSON.stringify(request))}))`);
+		expect(message).toMatchObject({ op: 'result', requestId: 'r9' });
+		expect(message.results).toEqual([{ itemId: 'run:generic:0', output: { probabilities: [0.75, 0.25] } }]);
+		expect(message.errors).toEqual([
+			{ itemId: 'run:generic:1', error: 'RuntimeError: inference failed' },
+			{ itemId: 'run:generic:2', error: 'ValueError: prompt must be a non-empty string of at most 6000 characters' },
+			{ itemId: 'run:generic:3', error: 'ValueError: choices must be 2 to 5 non-empty strings' },
+			{ itemId: 'run:generic:4', error: 'ValueError: prompt must be a non-empty string of at most 6000 characters' },
+		]);
 	});
 });

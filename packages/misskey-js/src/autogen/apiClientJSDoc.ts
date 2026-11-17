@@ -965,6 +965,28 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
+     * Progress and results of the latest Hanami rank backtest. A backtest re-scores past "seen on the Hanami timeline" records with several scoring methods and reports how well each score separates the notes the viewer engaged with from the ones they did not. Only counts and ratios are returned.
+     * 
+     * **Credential required**: *Yes* / **Permission**: *read:admin:queue*
+     */
+    request<E extends 'admin/hanami/rank-backtest', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * Start a Hanami rank backtest now instead of waiting for the automatic weekly run. The records are sampled immediately; scoring proceeds little by little while the GPU has no other work.
+     * 
+     * **Credential required**: *Yes* / **Permission**: *write:admin:queue*
+     */
+    request<E extends 'admin/hanami/rank-backtest-start', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
      * No description provided.
      * 
      * **Credential required**: *Yes* / **Permission**: *read:admin:account*

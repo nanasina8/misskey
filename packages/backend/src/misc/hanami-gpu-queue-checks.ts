@@ -65,7 +65,10 @@ const STUCK_AFTER_SEC: Record<HanamiGpuQueueKind, number> = {
 	topicJudge: 15 * 60,
 	noteJudge: 30 * 60,
 	spamScan: 6 * 60 * 60,
+	rankBacktest: 6 * 60 * 60,
 };
+/** 後回しが前提の種類。待ちすぎていても注意にはしない（知らせるだけ） */
+const BACKGROUND_KINDS: ReadonlySet<HanamiGpuQueueKind> = new Set(['spamScan', 'rankBacktest']);
 /** 判定係が載っている（はずの）状態 */
 const LOADED_STATES = new Set(['idle', 'running']);
 /** 判定係が降りている（はずの）状態 */
@@ -130,7 +133,7 @@ export function checkHanamiGpuQueue(input: HanamiGpuQueueCheckInput): HanamiGpuQ
 	for (const kind of HANAMI_GPU_QUEUE_KINDS) {
 		const wait = input.kinds[kind].oldestWaitSec;
 		if (wait != null && wait > STUCK_AFTER_SEC[kind]) {
-			add(`stuck:${kind}`, kind === 'spamScan' ? 'info' : 'warn', `${kind} が待ちすぎています`, `いちばん古い項目は ${Math.round(wait / 60)} 分待っています（目安 ${Math.round(STUCK_AFTER_SEC[kind] / 60)} 分）。状態: ${status?.state ?? '不明'}`);
+			add(`stuck:${kind}`, BACKGROUND_KINDS.has(kind) ? 'info' : 'warn', `${kind} が待ちすぎています`, `いちばん古い項目は ${Math.round(wait / 60)} 分待っています（目安 ${Math.round(STUCK_AFTER_SEC[kind] / 60)} 分）。状態: ${status?.state ?? '不明'}`);
 		}
 	}
 

@@ -122,6 +122,7 @@ import { HanamiTimelinePartitionService } from './hanami/HanamiTimelinePartition
 import { HanamiUserRecommendationPageService } from './hanami/HanamiUserRecommendationPageService.js';
 import { HanamiAffinityService } from './hanami/HanamiAffinityService.js';
 import { HanamiAxisOutlookService } from './hanami/HanamiAxisOutlookService.js';
+import { HanamiRankBacktestService } from './hanami/HanamiRankBacktestService.js';
 import { HanamiSuggestionExportService } from './hanami/HanamiSuggestionExportService.js';
 import { FanoutTimelineService } from './FanoutTimelineService.js';
 import { ChannelFollowingService } from './ChannelFollowingService.js';
@@ -484,6 +485,7 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		HanamiUserRecommendationPageService,
 		HanamiAffinityService,
 		HanamiAxisOutlookService,
+		HanamiRankBacktestService,
 		HanamiSuggestionExportService,
 		HanamiCommonComputationService,
 		HanamiCommonGenerationService,
@@ -856,6 +858,7 @@ const $ApQuestionService: Provider = { provide: 'ApQuestionService', useExisting
 		HanamiUserRecommendationPageService,
 		HanamiAffinityService,
 		HanamiAxisOutlookService,
+		HanamiRankBacktestService,
 		HanamiSuggestionExportService,
 		HanamiCommonComputationService,
 		HanamiCommonGenerationService,

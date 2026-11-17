@@ -452,6 +452,15 @@ type AdminHanamiMetricsWhatIfRequest = operations['admin___hanami___metrics___wh
 type AdminHanamiMetricsWhatIfResponse = operations['admin___hanami___metrics___what-if']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type AdminHanamiRankBacktestResponse = operations['admin___hanami___rank-backtest']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiRankBacktestStartRequest = operations['admin___hanami___rank-backtest-start']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminHanamiRankBacktestStartResponse = operations['admin___hanami___rank-backtest-start']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type AdminHanamiSuggestionEventsExportRequest = operations['admin___hanami___suggestion-events-export']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -1914,6 +1923,9 @@ declare namespace entities {
         AdminHanamiMetricsSummaryResponse,
         AdminHanamiMetricsWhatIfRequest,
         AdminHanamiMetricsWhatIfResponse,
+        AdminHanamiRankBacktestResponse,
+        AdminHanamiRankBacktestStartRequest,
+        AdminHanamiRankBacktestStartResponse,
         AdminHanamiSuggestionEventsExportRequest,
         AdminHanamiSuggestionEventsExportResponse,
         AdminHanamiTasteRebuildRequest,

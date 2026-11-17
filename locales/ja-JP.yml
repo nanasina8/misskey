@@ -1804,6 +1804,7 @@ _aiModeration:
   gpuKindScan: "全体スキャン"
   gpuKindNote: "はなみTLの投稿の判定"
   gpuKindTopic: "いま話題の判定"
+  gpuKindBacktest: "並べ替えの物差し"
   tickLabel: "定期実行（2分ごと）"
   tickNever: "まだ一度も動いていません"
   lastJudged: "最後の判定"
@@ -4539,6 +4540,7 @@ _hana:
         judgeTrial: "判定の試し"
         spamJudge: "AI投稿チェック"
         spamScan: "AI投稿チェックの全体スキャン"
+        rankBacktest: "並べ替えの物差し"
         gpuWorker: "常駐の判定係"
         generation: "共通の生成"
       _queue:

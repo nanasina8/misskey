@@ -137,6 +137,9 @@ import type {
 	AdminHanamiMetricsSummaryResponse,
 	AdminHanamiMetricsWhatIfRequest,
 	AdminHanamiMetricsWhatIfResponse,
+	AdminHanamiRankBacktestResponse,
+	AdminHanamiRankBacktestStartRequest,
+	AdminHanamiRankBacktestStartResponse,
 	AdminHanamiSuggestionEventsExportRequest,
 	AdminHanamiSuggestionEventsExportResponse,
 	AdminHanamiTasteRebuildRequest,
@@ -857,6 +860,8 @@ export type Endpoints = {
 	'admin/hanami/metrics/opportunities': { req: AdminHanamiMetricsOpportunitiesRequest; res: AdminHanamiMetricsOpportunitiesResponse };
 	'admin/hanami/metrics/summary': { req: AdminHanamiMetricsSummaryRequest; res: AdminHanamiMetricsSummaryResponse };
 	'admin/hanami/metrics/what-if': { req: AdminHanamiMetricsWhatIfRequest; res: AdminHanamiMetricsWhatIfResponse };
+	'admin/hanami/rank-backtest': { req: EmptyRequest; res: AdminHanamiRankBacktestResponse };
+	'admin/hanami/rank-backtest-start': { req: AdminHanamiRankBacktestStartRequest; res: AdminHanamiRankBacktestStartResponse };
 	'admin/hanami/suggestion-events-export': { req: AdminHanamiSuggestionEventsExportRequest; res: AdminHanamiSuggestionEventsExportResponse };
 	'admin/hanami/taste-rebuild': { req: AdminHanamiTasteRebuildRequest; res: AdminHanamiTasteRebuildResponse };
 	'admin/hanami/taste-rebuild-status': { req: EmptyRequest; res: AdminHanamiTasteRebuildStatusResponse };

@@ -7140,6 +7140,10 @@ export interface Locale extends ILocale {
          */
         "gpuKindTopic": string;
         /**
+         * 並べ替えの物差し
+         */
+        "gpuKindBacktest": string;
+        /**
          * 定期実行（2分ごと）
          */
         "tickLabel": string;
@@ -17096,6 +17100,10 @@ export interface Locale extends ILocale {
                      * AI投稿チェックの全体スキャン
                      */
                     "spamScan": string;
+                    /**
+                     * 並べ替えの物差し
+                     */
+                    "rankBacktest": string;
                     /**
                      * 常駐の判定係
                      */
