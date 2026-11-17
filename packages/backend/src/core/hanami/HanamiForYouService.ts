@@ -60,6 +60,12 @@ const CONFIDENCE_LOW_ENGAGEMENT = 5;
 
 // 候補窓（§10）。
 const NEIGHBOR_TRENDING_WINDOW_MS = 48 * 60 * 60 * 1000;
+/**
+ * はなみTL に出す投稿の古さの上限（どの種類でも）。見逃しの対象期間と同じ 7 日。
+ * 近くで話題は「近い人が 48 時間以内に反応した投稿」で投稿そのものの古さを見ておらず、友達の友達は 365 日前まで
+ * 対象にしていたので、何か月も前の投稿が流れてくることがあった。
+ */
+export const HANAMI_TL_NOTE_MAX_AGE_MS = 7 * DAY_MS;
 const CATCHUP_WINDOW_MS = 7 * DAY_MS; // §14-D8 = 7d 固定
 
 // 候補プールサイズ（§10。safety filter で多く落ちる前提の余裕）。
@@ -287,6 +293,16 @@ export class HanamiForYouService {
 		return input == null ? Date.now() : Date.parse(input.generatedAt);
 	}
 
+	/** 投稿の時刻（ID から読む）。読めない ID は null。 */
+	private noteTime(noteId: string): number | null {
+		try {
+			const at = this.idService.parse(noteId).date.getTime();
+			return Number.isFinite(at) ? at : null;
+		} catch {
+			return null;
+		}
+	}
+
 	private async generationDbQuery<T extends unknown[] = unknown[]>(generation: HanamiPersonalFeedGenerationContext | undefined, sql: string, parameters: unknown[] = []): Promise<T> {
 		return await this.generationBoundary(generation, async () => (
 			generation == null
@@ -402,10 +418,14 @@ export class HanamiForYouService {
 		const confidence = await this.computeConfidence(input.userId, hasFollowing, alsRunId, input);
 		const axisCandidates = await this.gatherGenerationCandidates(input, confidence, alsRunId, amounts, commonCandidates);
 
+		const oldestAllowed = this.generationNow(input) - HANAMI_TL_NOTE_MAX_AGE_MS;
 		const candidates: HanamiPersonalFeedCandidate[] = [];
 		for (const axis of hanamiAxisOrder(confidence)) {
 			for (const candidate of axisCandidates.get(axis) ?? []) {
 				if (candidate.userId == null || !Number.isFinite(candidate.score)) continue;
+				// 古すぎる投稿は、どの種類から来ても出さない。
+				const postedAt = this.noteTime(candidate.noteId);
+				if (postedAt != null && postedAt < oldestAllowed) continue;
 				candidates.push({
 					noteId: candidate.noteId,
 					authorId: candidate.userId,
@@ -1070,8 +1090,14 @@ export class HanamiForYouService {
 		const fof = generation == null
 			? await this.hanamiUserRecommendationService.getFoFNoteIds(meId, FOF_POOL, { withFiles })
 			: await this.generationBoundary(generation, async () => await this.hanamiUserRecommendationService.getPersonalFeedFoFNoteIds(generation, FOF_POOL));
-		const max = fof[0]?.score || 1;
-		return fof.map(({ noteId, userId, score }) => ({ noteId, userId, score: score / max }));
+		// 友達の友達の候補は 365 日前まで対象にしている。TL に出すのは古さの上限までにする。
+		const oldestAllowed = this.generationNow(generation) - HANAMI_TL_NOTE_MAX_AGE_MS;
+		const recent = fof.filter(note => {
+			const postedAt = this.noteTime(note.noteId);
+			return postedAt == null || postedAt >= oldestAllowed;
+		});
+		const max = recent[0]?.score || 1;
+		return recent.map(({ noteId, userId, score }) => ({ noteId, userId, score: score / max }));
 	}
 
 	/**
@@ -1103,6 +1129,8 @@ export class HanamiForYouService {
 		if (circle.size === 0) return [];
 
 		const sinceId = this.idService.gen(this.generationNow(generation) - NEIGHBOR_TRENDING_WINDOW_MS);
+		// 反応が最近でも、投稿そのものが古すぎるものは候補にしない。
+		const oldestNoteId = this.idService.gen(this.generationNow(generation) - HANAMI_TL_NOTE_MAX_AGE_MS);
 		// 近い人の配列 → その人たちの 48 時間以内のリアクション（note_reaction("userId", id) の索引）→ 投稿 の順に引く。
 		// LATERAL ＋ 1 人あたりの上限で、1 人ずつ索引を引く形に固定する（サーバー全体の 48 時間ぶんを読まない）。
 		// 投稿ごとに先に集計してから note を主キーで引く。
@@ -1127,10 +1155,10 @@ export class HanamiForYouService {
 			SELECT n.id AS "noteId", n."userId" AS "userId", s.score, s."socialCount"
 			FROM scored s
 			JOIN note n ON n.id = s."noteId"
-			WHERE n.visibility IN ('public','home') AND n."channelId" IS NULL AND n."userId" <> $4
+			WHERE n.visibility IN ('public','home') AND n."channelId" IS NULL AND n."userId" <> $4 AND n.id >= $7
 			ORDER BY s.score DESC, n.id DESC
 			LIMIT $5`,
-			[[...circle.keys()], [...circle.values()], sinceId, meId, NEIGHBOR_NOTE_POOL, NEIGHBOR_REACTIONS_PER_PERSON],
+			[[...circle.keys()], [...circle.values()], sinceId, meId, NEIGHBOR_NOTE_POOL, NEIGHBOR_REACTIONS_PER_PERSON, oldestNoteId],
 		);
 		const max = Number(rows[0]?.score) || 1;
 		return rows.map(r => ({ noteId: r.noteId, userId: r.userId, score: Number(r.score) / max, socialCount: Number(r.socialCount) }));

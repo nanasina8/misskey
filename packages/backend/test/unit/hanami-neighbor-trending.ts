@@ -159,7 +159,8 @@ describe('近くで話題の候補', () => {
 		]);
 		expect(nearOf(query)).toEqual(new Map([['rel', 2], ['both', 1.5], ['als', 1], ['followee', 1]]));
 		const reactionCall = query.mock.calls.find(value => String(value[0]).includes('WITH near AS MATERIALIZED'))!;
-		expect(reactionCall[1]?.slice(2)).toEqual(['since-id', 'me', 250, 500]);
+		// 末尾は、投稿そのものの古さの上限（7 日）の ID。
+		expect(reactionCall[1]?.slice(2)).toEqual(['since-id', 'me', 250, 500, 'since-id']);
 		// 1 人ずつ索引を引く・1 人 1 回・本人の投稿は出さない・重みの合計で並べる
 		expect(reactionCall[0]).toContain('CROSS JOIN LATERAL');
 		expect(reactionCall[0]).toContain('WHERE nr."userId" = near.id AND nr.id >= $3');

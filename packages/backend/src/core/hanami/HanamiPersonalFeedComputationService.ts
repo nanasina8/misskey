@@ -413,7 +413,18 @@ export class HanamiPersonalFeedComputationService implements HanamiPersonalFeedC
 			WHERE e."userId" = $1 AND e."noteId" = ANY($2::varchar[]) AND e."eventType" = 'seen'
 				AND e."occurredAt" >= $3::timestamptz - INTERVAL '7 days' AND e."occurredAt" <= $3::timestamptz
 		`, [context.userId, ids, context.generatedAt]) as Array<{ note_id: string }>;
-		const excluded = new Set([...existingRows, ...seenRows].map(row => row.note_id));
+		// 本人がもう反応・リノート・返信した投稿は、ほかの TL で読み終えているので出さない。
+		// 本人の投稿は、いちばん古い候補より後のものだけを読む（リノートと返信は元の投稿より必ず新しい）。
+		const oldestCandidateId = ids.reduce((oldest, id) => id < oldest ? id : oldest);
+		const actedRows = await context.queryRunner.query(`
+			SELECT r."noteId" AS note_id FROM note_reaction r
+			WHERE r."userId" = $1 AND r."noteId" = ANY($2::varchar[])
+			UNION
+			SELECT target.note_id FROM note own
+			CROSS JOIN LATERAL (VALUES (own."renoteId"), (own."replyId")) AS target(note_id)
+			WHERE own."userId" = $1 AND own.id > $3 AND target.note_id = ANY($2::varchar[])
+		`, [context.userId, ids, oldestCandidateId]) as Array<{ note_id: string }>;
+		const excluded = new Set([...existingRows, ...seenRows, ...actedRows].map(row => row.note_id));
 		const eligible = candidates.filter(candidate => !excluded.has(candidate.noteId));
 		const detailRows = await context.queryRunner.query(`
 			SELECT n.id AS note_id, n."userId" AS author_id, COALESCE(n.text, '') AS text, n.tags AS tags, n."fileIds" <> '{}' AS has_files, u."isBot" AS is_bot,

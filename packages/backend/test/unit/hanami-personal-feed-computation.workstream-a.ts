@@ -432,6 +432,37 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		expect(result.items.some(item => item.noteId === 'global-survives')).toBe(true);
 	});
 
+	test('本人がもう反応・リノート・返信した投稿は出さない', async () => {
+		const acted = ['reacted', 'renoted', 'replied'].map(noteId => candidate('globalPopular', noteId, `author-${noteId}`));
+		const untouched = candidate('globalPopular', 'untouched', 'author-untouched');
+		let actedParameters: unknown[] | undefined;
+		const queryRunner = createQueryRunner(async (sql, parameters) => {
+			if (sql.includes("set_config('statement_timeout'")) return [{}];
+			if (sql.includes('AS before_deadline')) return [{ before_deadline: true }];
+			if (sql.includes('FROM note_reaction r') && sql.includes('FROM note own')) {
+				actedParameters = parameters;
+				return acted.map(item => ({ note_id: item.noteId }));
+			}
+			if (sql.includes('FROM note n JOIN "user" u')) return (parameters?.[1] as string[]).map(noteId => ({
+				note_id: noteId, author_id: `author-${noteId}`, text: noteId, tags: [], is_bot: false,
+				ephemeral_score: 0, interest: 3, relationship_class: 'unknown',
+			}));
+			return [];
+		});
+		const fixture = createComputation({
+			confidence: 'none',
+			axisLevels: new Map([['globalPopular', 'normal']]),
+			candidates: [...acted, untouched],
+			queryRunner,
+		});
+
+		const result = await fixture.service.computePersonalFeed(input());
+
+		expect(result.items.map(item => item.noteId)).toEqual(['untouched']);
+		// 本人の投稿は、いちばん古い候補より後のものだけを読む。
+		expect(actedParameters).toEqual(['user-1', expect.arrayContaining(['reacted', 'renoted', 'replied', 'untouched']), 'reacted']);
+	});
+
 	test('uses raw common exploration scores and the unfiltered pool maximum for discovery selection', async () => {
 		const queryRunner = createQueryRunner(async (sql, parameters) => {
 			if (sql.includes("set_config('statement_timeout'")) return [{}];
@@ -630,7 +661,7 @@ describe('Phase 4 workstream A personal feed computation', () => {
 		expect(fixture.driverQuery.mock.calls[1]![0]).toContain("set_config('statement_timeout'");
 		expect(fixture.driverQuery.mock.calls[1]![1]).toEqual([databaseDeadlineAt, '5000']);
 		expect(fixture.driverQuery.mock.calls.at(-1)?.[0]).toContain('clock_timestamp() < $1::timestamptz');
-		expect(fixture.driverQuery.mock.calls.filter(call => String(call[0]).includes("set_config('statement_timeout'"))).toHaveLength(6);
+		expect(fixture.driverQuery.mock.calls.filter(call => String(call[0]).includes("set_config('statement_timeout'"))).toHaveLength(7);
 		expect(fixture.queryRunner.commitTransaction).toHaveBeenCalledTimes(1);
 		expect(fixture.queryRunner.release).toHaveBeenCalledTimes(1);
 		expect(fixture.safety.filterAndPack).not.toHaveBeenCalled();
@@ -893,6 +924,54 @@ describe('HanamiForYouService generation-only ranking adaptation', () => {
 		expect(catchupQuery[0]).toContain('authors AS MATERIALIZED');
 		expect(catchupQuery[0]).toContain('JOIN note n ON n."userId" = a.id');
 		expect(catchupQuery[1]).toEqual([generation.userId, 100, 'since-id', 250]);
+	});
+
+	test('7 日より前の投稿は、どの種類から来ても候補にしない', async () => {
+		const DAY = 24 * 60 * 60 * 1000;
+		const at = Date.parse(generatedAt);
+		// 投稿の時刻は ID から読む。ここでは ID ごとの時刻を表で渡す。
+		const postedAt = new Map([
+			['global-old', at - 8 * DAY], ['global-new', at - DAY],
+			['neighbor-old', at - 200 * DAY], ['neighbor-new', at - 6 * DAY],
+			['fof-old', at - 30 * DAY], ['fof-new', at - 2 * DAY],
+		]);
+		const idService = { parse: (id: string) => ({ date: new Date(postedAt.get(id) ?? Number.NaN) }) };
+		const service = new HanamiForYouService(
+			{} as never, {} as never, {} as never, {} as never, {} as never, {} as never,
+			idService as never,
+			{ countRecentTermAuthors: jest.fn(async (..._args: unknown[]) => new Map()) } as never,
+			{} as never, {} as never, {} as never, {} as never, {} as never,
+		);
+		Object.defineProperties(service, {
+			computeConfidence: { value: jest.fn(async (..._args: unknown[]): Promise<HanamiConfidence> => 'high') },
+			applyAuthorAffinityRerank: { value: jest.fn(async (_userId: string, _runId: string, values: unknown[]) => values) },
+			applyTasteClusterOrdering: { value: jest.fn(async (_userId: string, values: unknown[]) => values) },
+			neighborTrendingCandidates: { value: jest.fn(async (..._args: unknown[]) => [
+				{ noteId: 'neighbor-old', userId: 'a', score: 1, socialCount: 3 },
+				{ noteId: 'neighbor-new', userId: 'b', score: 0.5, socialCount: 1 },
+			]) },
+			reactionSimilarCandidates: { value: jest.fn(async (..._args: unknown[]) => []) },
+			catchupCandidates: { value: jest.fn(async (..._args: unknown[]) => [{ noteId: 'time-unknown', userId: 'c', score: 1 }]) },
+		});
+		const queryRunner = createQueryRunner(async sql => {
+			if (sql.includes('FROM "user_profile"')) return [{ hanamiRecommendationEnabled: true, hanamiRecommendationAxes: {} }];
+			if (sql.includes('SELECT 1 FROM following')) return [{ present: 1 }];
+			if (sql.includes('FROM "hanami_foryou_model_run"')) return [{ id: 'als-run' }];
+			return [];
+		});
+		const generation = { ...input(), queryRunner: queryRunner as never };
+		// 友達の友達は、候補を読む側（365 日前まで対象）から受け取ったあとで古いものを落とす。
+		Object.defineProperty(service, 'hanamiUserRecommendationService', { value: { getPersonalFeedFoFNoteIds: jest.fn(async (..._args: unknown[]) => [
+			{ noteId: 'fof-old', userId: 'd', score: 8 },
+			{ noteId: 'fof-new', userId: 'e', score: 4 },
+		]) } });
+
+		const result = await service.gatherPersonalFeedCandidates(generation, [candidate('globalPopular', 'global-old'), candidate('globalPopular', 'global-new')]);
+
+		// 時刻を読めない ID の投稿は落とさない。
+		expect(result.candidates.map(value => value.noteId).sort()).toEqual(['fof-new', 'global-new', 'neighbor-new', 'time-unknown']);
+		// 友達の友達の点数は、残った投稿の中の最大を 1 として付け直す。
+		expect(result.candidates.find(value => value.noteId === 'fof-new')).toMatchObject({ axis: 'fof', score: 1 });
 	});
 
 	test('maps persisted and personal acquisition to the authoritative seven axes without Featured or trend calls', async () => {
