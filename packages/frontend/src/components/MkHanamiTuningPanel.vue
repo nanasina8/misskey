@@ -6,161 +6,139 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <div :class="[$style.root, { [$style.disabled]: disabled }]" :inert="disabled">
 	<!-- 1. 調整のしかた -->
-	<section :class="$style.card">
+	<section :class="$style.section">
 		<h2 :class="$style.heading">{{ t.mode }}</h2>
-		<div :class="$style.scale" aria-hidden="true">
-			<div :class="$style.scaleTrack">
-				<span v-for="mode in HANAMI_TUNING_MODES" :key="mode" :class="[$style.scaleDot, { [$style.scaleDotActive]: tuning.mode === mode }]"></span>
-			</div>
-			<div :class="$style.scaleLabels"><span>{{ t.automatic }}</span><span>{{ t.manualSide }}</span></div>
+		<MkHanamiTuningModes :modelValue="tuning.mode" :disabled="disabled" @update:modelValue="setMode"/>
+		<p :class="$style.text"><strong :class="$style.modeName" data-testid="mode-name">{{ t._modes[tuning.mode] }}</strong><span>{{ modeDescription }}</span></p>
+	</section>
+
+	<!-- 2. 選んだしかたの中身（おまかせは決めるものが無い） -->
+	<section v-if="tuning.mode === 'direction'" :class="$style.section">
+		<h2 :class="$style.heading">{{ t.directionTitle }}</h2>
+		<MkHanamiTuningDirection :modelValue="tuning.direction" :previews="directionPreviews" :disabled="disabled" @update:modelValue="setTuning({ ...tuning, direction: $event })"/>
+	</section>
+
+	<section v-else-if="tuning.mode === 'recommend'" :class="$style.section">
+		<h2 :class="$style.heading">{{ t.groupsTitle }}</h2>
+		<MkHanamiTuningGroupSliders :modelValue="tuning.groups" :recommended="suggestion?.groups ?? null" :disabled="disabled" @update:modelValue="setTuning({ ...tuning, groups: $event })"/>
+		<div :class="$style.buttons">
+			<MkButton :disabled="disabled || !suggestion || sameGroups" @click="resetRecommend">{{ t.resetRecommend }}</MkButton>
 		</div>
-		<div role="group" :aria-label="t.mode" :class="$style.modes">
-			<button
-				v-for="mode in HANAMI_TUNING_MODES" :key="mode" type="button" class="_button"
-				:class="[$style.mode, { [$style.selected]: tuning.mode === mode }]" :aria-pressed="tuning.mode === mode" :disabled="disabled"
-				:data-mode="mode" @click="setMode(mode)"
+	</section>
+
+	<section v-else-if="tuning.mode === 'manual'" :class="$style.section">
+		<h2 :class="$style.heading">{{ t.manualTitle }}</h2>
+		<div v-for="group in manualGroups" :key="group.group" :class="$style.manualGroup">
+			<h3 :class="$style.subheading"><span :class="$style.swatch" :style="{ background: HANAMI_GROUP_FILLS[group.group] }" aria-hidden="true"></span>{{ t._groups[group.group] }}</h3>
+			<MkHanamiTuningRange
+				v-for="axis in group.axes" :key="axis"
+				:modelValue="manualAmounts.get(axis) ?? 0" :max="3" :step="0.05" :label="t._axis[axis]"
+				:valueText="percent(manualAmounts.get(axis) ?? 0)" :textConverter="percent" :disabled="disabled"
+				@update:modelValue="setAmount(axis, $event)"
 			>
-				<span :class="$style.modeIcon" aria-hidden="true"><i :class="HANAMI_MODE_ICONS[mode]"></i></span>
-				<span :class="$style.modeName">{{ t._modes[mode] }}</span>
-				<span :class="$style.modeCaption">{{ t._modeCaptions[mode] }}</span>
-				<i v-if="tuning.mode === mode" class="ti ti-check" :class="$style.modeCheck" aria-hidden="true"></i>
+				<template #caption><span :class="$style.caption">{{ t._axisDescriptions[axis] }}</span></template>
+			</MkHanamiTuningRange>
+		</div>
+		<p :class="$style.caption">{{ t.manualHint }}</p>
+		<MkRadios :modelValue="manualAuthorCap" :options="authorCapOptions" @update:modelValue="setAuthorCap">
+			<template #label>{{ t.authorCap }}</template>
+			<template #caption>{{ t.per30 }}</template>
+		</MkRadios>
+		<div :class="$style.buttons">
+			<MkButton :disabled="disabled || !suggestion" @click="applySuggestion">{{ t.applySuggestion }}</MkButton>
+		</div>
+	</section>
+
+	<!-- 3. いまは、10 件のうち -->
+	<section :class="$style.section">
+		<MkHanamiTuningBar :counts="tiles.counts" :shares="shares" :range="range" :rangeText="rangeText" :note="tilesNote" data-testid="tiles"/>
+	</section>
+
+	<!-- 4. 反応への寄せ方（方向だけ決める のときだけ選べる） -->
+	<section v-if="tuning.mode === 'direction'" :class="$style.section">
+		<h2 :id="driftHeadingId" :class="$style.heading">{{ t.drift }}</h2>
+		<div role="group" :aria-labelledby="driftHeadingId" :class="$style.options">
+			<button
+				v-for="drift in [0, 1, 2]" :key="drift" type="button" class="_button"
+				:class="[$style.option, { [$style.selected]: tuning.drift === drift }]" :aria-pressed="tuning.drift === drift" :disabled="disabled"
+				@click="setTuning({ ...tuning, drift })"
+			>
+				<span>{{ hanamiDriftName(drift) }}</span>
+				<!-- 動く幅の広さを、かっこの幅で見せる。 -->
+				<span :class="$style.optionBracket" :style="{ width: `${DRIFT_BRACKET_WIDTHS[drift]}px` }" aria-hidden="true"></span>
 			</button>
 		</div>
 	</section>
 
-	<!-- 2. 選んだしかたの中身 と 3. いまは、10 件のうち -->
-	<section :class="$style.card">
-		<div v-if="tuning.mode === 'auto'" :class="$style.stack">
-			<h2 :class="$style.heading">{{ t._modes.auto }}</h2>
-			<p :class="$style.text">{{ t.autoDescription }}</p>
-		</div>
-
-		<div v-else-if="tuning.mode === 'direction'" :class="$style.stack">
-			<h2 :class="$style.heading">{{ t.directionTitle }}</h2>
-			<MkHanamiTuningDirection :modelValue="tuning.direction" :disabled="disabled" @update:modelValue="setTuning({ ...tuning, direction: $event })"/>
-			<div :class="$style.stack">
-				<h3 :class="$style.subheading">{{ t.rangeTitle }}</h3>
-				<div role="img" :aria-label="bandLabel" :class="$style.band" data-testid="direction-band">
-					<span :class="$style.bandTrack"></span>
-					<span :class="$style.bandRange" :style="{ left: `${band.low}%`, width: `${band.high - band.low}%` }" data-part="range"></span>
-					<span :class="$style.bandBase" :style="{ left: `${band.base}%` }" data-part="base"></span>
-					<span :class="$style.bandNow" :style="{ left: `${band.now}%` }" data-part="now"></span>
-				</div>
-				<div :class="$style.bandEnds" aria-hidden="true"><span>{{ t.rangeClose }}</span><span>{{ t.rangeWide }}</span></div>
-				<div :class="$style.bandLegend" aria-hidden="true">
-					<span><span :class="[$style.bandKey, $style.bandKeyBase]"></span>{{ t.rangeBase }}</span>
-					<span><span :class="[$style.bandKey, $style.bandKeyNow]"></span>{{ t.rangeNow }}</span>
-					<span><span :class="[$style.bandKey, $style.bandKeyRange]"></span>{{ t.rangeBand }}</span>
-				</div>
-			</div>
-			<div :class="$style.stack">
-				<h3 :id="driftHeadingId" :class="$style.subheading">{{ t.drift }}</h3>
-				<div role="group" :aria-labelledby="driftHeadingId" :class="$style.segments">
-					<button
-						v-for="drift in [0, 1, 2]" :key="drift" type="button" class="_button"
-						:class="[$style.segment, { [$style.selected]: tuning.drift === drift }]" :aria-pressed="tuning.drift === drift" :disabled="disabled"
-						@click="setTuning({ ...tuning, drift })"
-					>{{ hanamiDriftName(drift) }}</button>
-				</div>
-			</div>
-		</div>
-
-		<div v-else-if="tuning.mode === 'recommend'" :class="$style.stack">
-			<h2 :class="$style.heading">{{ t._modes.recommend }}</h2>
-			<p :class="$style.text">{{ t.recommendDescription }}</p>
-			<MkHanamiTuningGroupSliders :modelValue="tuning.groups" :recommended="suggestion?.groups ?? null" :disabled="disabled" @update:modelValue="setTuning({ ...tuning, groups: $event })"/>
-			<div :class="$style.buttons">
-				<MkButton :disabled="disabled || !suggestion || sameGroups" @click="resetRecommend">{{ t.resetRecommend }}</MkButton>
-			</div>
-		</div>
-
-		<div v-else :class="$style.stack">
-			<h2 :class="$style.heading">{{ t._modes.manual }}</h2>
-			<p :class="$style.text">{{ t.manualDescription }}</p>
-			<div v-for="group in manualGroups" :key="group.group" :class="$style.manualGroup">
-				<h3 :class="$style.subheading"><span :class="$style.swatch" :style="{ background: HANAMI_GROUP_COLORS[group.group] }" aria-hidden="true"></span>{{ t._groups[group.group] }}</h3>
-				<MkHanamiTuningRange
-					v-for="axis in group.axes" :key="axis"
-					:modelValue="manualAmounts.get(axis) ?? 0" :max="3" :step="0.05" :label="t._axis[axis]"
-					:valueText="percent(manualAmounts.get(axis) ?? 0)" :textConverter="percent" :disabled="disabled"
-					@update:modelValue="setAmount(axis, $event)"
-				>
-					<template #caption><span :class="$style.caption">{{ t._axisDescriptions[axis] }}</span></template>
-				</MkHanamiTuningRange>
-			</div>
-			<p :class="$style.caption">{{ t.manualHint }}</p>
-			<MkRadios :modelValue="manualAuthorCap" :options="authorCapOptions" @update:modelValue="setAuthorCap">
-				<template #label>{{ t.authorCap }}</template>
-				<template #caption>{{ t.per30 }}</template>
-			</MkRadios>
-			<div :class="$style.buttons">
-				<MkButton :disabled="disabled || !suggestion" @click="applySuggestion">{{ t.applySuggestion }}</MkButton>
-			</div>
-		</div>
-
-		<hr :class="$style.divider">
-		<MkHanamiTuningTiles :counts="tiles.counts" :note="tilesNote" data-testid="tiles"/>
-	</section>
-
-	<!-- 4. あなたの反応から -->
-	<section :class="$style.card" data-testid="reactions">
-		<div>
-			<h2 :class="$style.heading">{{ t.suggestion }}</h2>
-			<p :class="$style.caption">{{ t.period }}</p>
-		</div>
+	<!-- 5. あなたの反応から -->
+	<section :class="$style.section" data-testid="reactions">
+		<h2 :class="[$style.heading, $style.headingRow]">{{ t.suggestion }}<span :class="$style.caption">{{ t.period }}</span></h2>
 		<MkError v-if="!suggestion && status === 'error'" @retry="load(true)"/>
 		<MkLoading v-else-if="!suggestion && !disabled"/>
 		<template v-else-if="suggestion">
-			<p v-if="suggestion.totalSeen === 0" :class="$style.text">{{ t.noActivity }}</p>
+			<p v-if="!reactionFigure" :class="$style.text">{{ t.noActivity }}</p>
 			<template v-else>
-				<div :class="$style.barLegend" aria-hidden="true">
-					<span><span :class="[$style.barKey, $style.seenBar]"></span>{{ t.seenShare }}</span>
-					<span><span :class="[$style.barKey, $style.reactedBar]"></span>{{ t.reactionShare }}</span>
+				<!-- 上の帯が見た投稿、下の帯が反応した投稿。下のほうが広いまとまりへ寄せる。 -->
+				<div role="img" :aria-label="reactionFigure.label" :class="$style.compare">
+					<div :class="$style.compareHead" aria-hidden="true">
+						<span :class="$style.compareName">{{ t.seenShare }}</span>
+						<span :class="$style.compareNumbers"><span v-for="row in reactionRows" :key="row.group">{{ percentOf(row.seen) }}</span></span>
+					</div>
+					<div :class="$style.compareBar" aria-hidden="true">
+						<span v-for="row in reactionFigure.seen" :key="row.group" :style="{ flexGrow: row.count, background: HANAMI_GROUP_FILLS[row.group] }"></span>
+					</div>
+					<svg v-if="reactionFigure.reactionEdges" aria-hidden="true" viewBox="0 0 100 28" preserveAspectRatio="none" :class="$style.compareLinks">
+						<polygon :points="reactionFigure.band"/>
+						<line v-for="(edge, index) in reactionFigure.seenEdges" :key="index" :x1="edge" y1="0" :x2="reactionFigure.reactionEdges[index]" y2="28"/>
+					</svg>
+					<div :class="[$style.compareBar, { [$style.compareEmpty]: !reactionFigure.reactionEdges }]" aria-hidden="true">
+						<span v-for="row in reactionFigure.reacted" :key="row.group" :style="{ flexGrow: row.count, background: HANAMI_GROUP_FILLS[row.group] }"></span>
+					</div>
+					<div :class="$style.compareHead" aria-hidden="true">
+						<span :class="$style.compareName">{{ t.reactionShare }}</span>
+						<span :class="$style.compareNumbers"><span v-for="row in reactionRows" :key="row.group">{{ percentOf(row.reactions) }}</span></span>
+					</div>
 				</div>
-				<div v-for="row in reactionRows" :key="row.group" :class="$style.reactionRow" :data-group="row.group">
-					<span :class="$style.reactionIcon" :style="{ background: HANAMI_GROUP_COLORS[row.group] }" aria-hidden="true"><i :class="HANAMI_GROUP_ICONS[row.group]"></i></span>
-					<div :class="$style.reactionBody">
-						<div :class="$style.reactionHead">
-							<span :class="$style.reactionName">{{ t._groups[row.group] }}</span>
-							<span :class="[$style.chip, { [$style.chipUp]: row.tone === 'up', [$style.chipDown]: row.tone === 'down' }]" data-part="chip">
-								<i v-if="row.tone === 'up'" class="ti ti-arrow-up" aria-hidden="true"></i>
-								<i v-else-if="row.tone === 'down'" class="ti ti-arrow-down" aria-hidden="true"></i>
-								{{ row.chip }}
-							</span>
-						</div>
-						<div :class="$style.bars" aria-hidden="true">
-							<span :class="$style.barTrack"><span :class="$style.seenBar" :style="{ width: `${row.seen}%` }"></span></span>
-							<span :class="$style.barTrack"><span :class="$style.reactedBar" :style="{ width: `${row.reactions}%` }"></span></span>
-						</div>
-						<span :class="$style.caption">{{ i18n.tsx._hana._tuning.shares({ seen: row.seen, reactions: row.reactions }) }}</span>
+				<div :class="$style.verdicts">
+					<div v-for="row in reactionRows" :key="row.group" :class="$style.verdictRow" :data-group="row.group">
+						<span :class="$style.verdictName"><span :class="$style.swatch" :style="{ background: HANAMI_GROUP_FILLS[row.group] }" aria-hidden="true"></span>{{ t._groups[row.group] }}</span>
+						<span :class="[$style.verdict, { [$style.verdictUp]: row.tone === 'up', [$style.verdictDown]: row.tone === 'down' }]" data-part="chip">{{ row.chip }}</span>
+						<span :class="[$style.caption, $style.verdictShares]">{{ i18n.tsx._hana._tuning.shares({ seen: row.seen, reactions: row.reactions }) }}</span>
 					</div>
 				</div>
 			</template>
-			<p v-if="!suggestion.eligible" :class="$style.notice" data-testid="ineligible">
-				<i class="ti ti-info-circle" aria-hidden="true"></i>
-				{{ i18n.tsx._hana._tuning.ineligible({ seen: suggestion.minSeen, reactions: suggestion.minReactions }) }}
-			</p>
+			<p v-if="!suggestion.eligible" :class="$style.notice" data-testid="ineligible">{{ i18n.tsx._hana._tuning.ineligible({ seen: suggestion.minSeen, reactions: suggestion.minReactions }) }}</p>
 			<p :class="$style.caption">{{ reactionsNote }}</p>
-			<MkFolder>
-				<template #label>{{ t.perAxis }}</template>
-				<div :class="$style.axisList">
-					<div v-for="axis in suggestionAxes" :key="axis.axis" :class="$style.axisRow">
-						<span>{{ t._axis[axis.axis] }}</span>
-						<span :class="$style.caption">{{ i18n.tsx._hana._tuning.suggestionCounts({ seen: axis.seen, reactions: axis.reactions }) }}</span>
-					</div>
-				</div>
-			</MkFolder>
+			<table :class="$style.axisTable">
+				<caption>{{ t.perAxis }}</caption>
+				<thead>
+					<tr>
+						<th scope="col">{{ t.axisColumn }}</th>
+						<th scope="col" :class="$style.numeric">{{ t.seenColumn }}</th>
+						<th scope="col" :class="$style.numeric">{{ t.reactionsColumn }}</th>
+						<th scope="col">{{ t.rateColumn }}</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr v-for="row in axisRows" :key="row.axis">
+						<th scope="row"><span :class="$style.axisName"><span :class="$style.swatch" :style="{ background: HANAMI_GROUP_FILLS[row.group] }" aria-hidden="true"></span>{{ t._axis[row.axis] }}</span></th>
+						<td :class="$style.numeric">{{ row.seen }}</td>
+						<td :class="$style.numeric">{{ row.reactions }}</td>
+						<td><span :class="$style.rate"><span :class="$style.rateBar" aria-hidden="true"><span :style="{ width: `${row.width}%` }"></span></span>{{ row.rateText }}</span></td>
+					</tr>
+				</tbody>
+			</table>
 		</template>
 	</section>
 
-	<!-- 5. 内訳 -->
+	<!-- 6. 内訳 -->
 	<MkFolder>
 		<template #icon><i class="ti ti-stack-2"></i></template>
 		<template #label>{{ t.breakdown }}</template>
 		<div :class="$style.stack">
 			<section v-for="group in breakdown" :key="group.group" :class="$style.breakdownGroup">
 				<div :class="$style.breakdownHead">
-					<span :class="$style.reactionIcon" :style="{ background: HANAMI_GROUP_COLORS[group.group] }" aria-hidden="true"><i :class="HANAMI_GROUP_ICONS[group.group]"></i></span>
+					<span :class="$style.swatch" :style="{ background: HANAMI_GROUP_FILLS[group.group] }" aria-hidden="true"></span>
 					<div :class="$style.breakdownTitle">
 						<h3 :class="$style.subheading">{{ t._groups[group.group] }}</h3>
 						<span :class="$style.caption">{{ t._groupCaptions[group.group] }}</span>
@@ -168,11 +146,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<span :class="$style.breakdownShare">{{ i18n.tsx._hana._tuning.count({ n: group.share }) }}</span>
 				</div>
 				<div v-for="axis in group.axes" :key="axis.axis" :class="$style.breakdownAxis">
-					<div :class="$style.reactionHead">
+					<div :class="$style.breakdownAxisHead">
 						<span>{{ t._axis[axis.axis] }}</span>
 						<span :class="$style.breakdownShare">{{ i18n.tsx._hana._tuning.count({ n: axis.share }) }}</span>
 					</div>
-					<span :class="$style.barTrack" aria-hidden="true"><span :style="{ width: `${axis.width}%`, background: HANAMI_GROUP_COLORS[group.group] }"></span></span>
+					<span :class="$style.barTrack" aria-hidden="true"><span :style="{ width: `${axis.width}%`, background: HANAMI_GROUP_FILLS[group.group] }"></span></span>
 					<span :class="$style.caption">{{ t._axisDescriptions[axis.axis] }}</span>
 				</div>
 			</section>
@@ -180,8 +158,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</div>
 	</MkFolder>
 
-	<!-- 6. そのほか -->
-	<section :class="$style.card">
+	<!-- 7. そのほか -->
+	<section :class="$style.section">
 		<h2 :class="$style.heading">{{ t.others }}</h2>
 		<MkSwitch :modelValue="state!.hanamiReduceEphemeralPosts" :disabled="disabled" @update:modelValue="update({ ...state!, hanamiReduceEphemeralPosts: $event })">
 			<template #label>{{ t.reduceEphemeral }}</template>
@@ -203,17 +181,18 @@ import MkButton from '@/components/MkButton.vue';
 import MkHanamiTuningRange from '@/components/MkHanamiTuningRange.vue';
 import MkHanamiTuningDirection from '@/components/MkHanamiTuningDirection.vue';
 import MkHanamiTuningGroupSliders from '@/components/MkHanamiTuningGroupSliders.vue';
-import MkHanamiTuningTiles from '@/components/MkHanamiTuningTiles.vue';
+import MkHanamiTuningBar from '@/components/MkHanamiTuningBar.vue';
+import MkHanamiTuningModes from '@/components/MkHanamiTuningModes.vue';
 import { i18n } from '@/i18n.js';
 import { useHanamiTuning } from '@/utility/hanami-tuning-client.js';
 import { useHanamiTuningSuggestion } from '@/utility/hanami-tuning-suggestion.js';
 import {
-	HANAMI_AXIS_GROUPS, HANAMI_AXIS_GROUP_NAMES, HANAMI_TUNING_MODES,
-	applyHanamiSuggestedAmounts, getAvailableHanamiAxes, hanamiComposition, hanamiDirectionBand, hanamiGroupTrends,
-	hanamiTilesSummary, resetHanamiTuning, resolveHanamiTuning, switchHanamiModeWithSuggestion,
+	HANAMI_AXIS_GROUPS, HANAMI_AXIS_GROUP_NAMES,
+	applyHanamiSuggestedAmounts, getAvailableHanamiAxes, hanamiComposition, hanamiDirectionPreviews, hanamiGroupComposition, hanamiGroupTrends,
+	hanamiShareRange, hanamiTilesSummary, resetHanamiTuning, resolveHanamiTuning, switchHanamiModeWithSuggestion,
 } from '@/utility/hanami-tuning.js';
 import type { HanamiAxis, HanamiAxisGroup, HanamiTuning, HanamiTuningMode, HanamiTuningUpdate } from '@/utility/hanami-tuning.js';
-import { HANAMI_GROUP_COLORS, HANAMI_GROUP_ICONS, HANAMI_MODE_ICONS, hanamiDriftName, hanamiLevelName } from '@/utility/hanami-tuning-view.js';
+import { HANAMI_GROUP_FILLS, hanamiDriftName, hanamiLevelName } from '@/utility/hanami-tuning-view.js';
 
 const props = withDefaults(defineProps<{
 	disabled?: boolean;
@@ -241,9 +220,12 @@ function setMode(mode: HanamiTuningMode): void {
 	setTuning(switchHanamiModeWithSuggestion(tuning.value, mode, config, suggestion.value));
 }
 
+const modeDescription = computed(() => ({ auto: t.autoDescription, direction: t.directionDescription, recommend: t.recommendDescription, manual: t.manualDescription })[tuning.value.mode]);
+
 // ---- 方向だけ決める ----
-const band = computed(() => hanamiDirectionBand(tuning.value, config, factors.value));
-const bandLabel = computed(() => band.value.lean === 'close' ? t.rangeNowClose : band.value.lean === 'wide' ? t.rangeNowWide : t.rangeNowSame);
+const directionPreviews = computed(() => hanamiDirectionPreviews(tuning.value, config));
+/** 寄せ方（ひかえめ・ふつう・しっかり）のボタンに出す、かっこの幅（px）。 */
+const DRIFT_BRACKET_WIDTHS = [16, 34, 60];
 
 // ---- おすすめから調整 ----
 const sameGroups = computed(() => suggestion.value != null && HANAMI_AXIS_GROUP_NAMES.every(group => suggestion.value!.groups[group] === tuning.value.groups[group]));
@@ -282,6 +264,12 @@ function applySuggestion(): void {
 
 // ---- いまは、10 件のうち ----
 const tiles = computed(() => hanamiTilesSummary(tuning.value, config, factors.value));
+const shares = computed(() => hanamiGroupComposition(tuning.value, config, factors.value));
+const range = computed(() => hanamiShareRange(tuning.value, config, factors.value));
+const rangeText = computed(() => {
+	if (range.value == null) return null;
+	return (tuning.value.mode === 'direction' ? i18n.tsx._hana._tuning.rangeDirection : i18n.tsx._hana._tuning.rangeAuto)(range.value);
+});
 const groupNames = (groups: HanamiAxisGroup[]): string => groups.map(group => t._groups[group]).join(t.listSeparator);
 const tilesNote = computed(() => {
 	if (!tiles.value.moving) return t.tilesFixed;
@@ -289,7 +277,6 @@ const tilesNote = computed(() => {
 });
 
 // ---- あなたの反応から ----
-const suggestionAxes = computed(() => (suggestion.value?.axes ?? []).filter(axis => available.has(axis.axis)));
 const trends = computed(() => hanamiGroupTrends(tuning.value, config, factors.value));
 const share = (part: number, total: number): number => total > 0 ? Math.round(part / total * 100) : 0;
 const reactionRows = computed(() => {
@@ -297,8 +284,10 @@ const reactionRows = computed(() => {
 	if (!s) return [];
 	return HANAMI_AXIS_GROUP_NAMES.map(group => {
 		const members = s.axes.filter(axis => HANAMI_AXIS_GROUPS[group].includes(axis.axis));
-		const seen = share(members.reduce((sum, axis) => sum + axis.seen, 0), s.totalSeen);
-		const reactions = share(members.reduce((sum, axis) => sum + axis.reactions, 0), s.totalReactions);
+		const seenCount = members.reduce((sum, axis) => sum + axis.seen, 0);
+		const reactionCount = members.reduce((sum, axis) => sum + axis.reactions, 0);
+		const seen = share(seenCount, s.totalSeen);
+		const reactions = share(reactionCount, s.totalReactions);
 		let chip: string;
 		let tone: 'up' | 'down' | 'flat';
 		if (tuning.value.mode === 'recommend') {
@@ -311,9 +300,45 @@ const reactionRows = computed(() => {
 			tone = trends.value?.[group] ?? 'flat';
 			chip = tone === 'up' ? t.trendUp : tone === 'down' ? t.trendDown : t.trendFlat;
 		}
-		return { group, seen, reactions, chip, tone };
+		return { group, seen, reactions, seenCount, reactionCount, chip, tone };
 	});
 });
+const percentOf = (value: number): string => `${value}%`;
+
+// 見た投稿の帯と、反応した投稿の帯。境目どうしを線で結んで、ずれを見せる。
+const reactionFigure = computed(() => {
+	const rows = reactionRows.value;
+	const seenTotal = rows.reduce((sum, row) => sum + row.seenCount, 0);
+	const reactionTotal = rows.reduce((sum, row) => sum + row.reactionCount, 0);
+	if (seenTotal <= 0) return null;
+	// まとまりの境目の位置（%）。最後のまとまりの右端は入れない。
+	const edges = (key: 'seenCount' | 'reactionCount', total: number): number[] => {
+		let sum = 0;
+		return rows.slice(0, -1).map(row => { sum += row[key]; return Math.round(sum / total * 1000) / 10; });
+	};
+	const seenEdges = edges('seenCount', seenTotal);
+	const reactionEdges = reactionTotal > 0 ? edges('reactionCount', reactionTotal) : null;
+	return {
+		seen: rows.filter(row => row.seenCount > 0).map(row => ({ group: row.group, count: row.seenCount })),
+		reacted: rows.filter(row => row.reactionCount > 0).map(row => ({ group: row.group, count: row.reactionCount })),
+		seenEdges,
+		reactionEdges,
+		band: reactionEdges ? `${seenEdges[0]},0 ${seenEdges[1]},0 ${reactionEdges[1]},28 ${reactionEdges[0]},28` : '',
+		label: rows.map(row => `${t._groups[row.group]} ${i18n.tsx._hana._tuning.shares({ seen: row.seen, reactions: row.reactions })}`).join(t.listSeparator),
+	};
+});
+
+// 種類ごとの表。まとまりの順に並べ、反応した割合の棒は、いちばん高い種類を端にする。
+const axisRows = computed(() => {
+	const found = new Map((suggestion.value?.axes ?? []).map(axis => [axis.axis, axis]));
+	const rows = HANAMI_AXIS_GROUP_NAMES.flatMap(group => HANAMI_AXIS_GROUPS[group].filter(axis => available.has(axis)).flatMap(axis => {
+		const counts = found.get(axis);
+		return counts ? [{ axis, group, seen: counts.seen, reactions: counts.reactions, rate: counts.seen > 0 ? counts.reactions / counts.seen * 100 : null }] : [];
+	}));
+	const max = Math.max(...rows.map(row => row.rate ?? 0));
+	return rows.map(row => ({ ...row, width: row.rate != null && max > 0 ? Math.round(row.rate / max * 100) : 0, rateText: row.rate != null ? `${row.rate.toFixed(1)}%` : '–' }));
+});
+
 const reactionsNote = computed(() => tuning.value.mode === 'recommend' ? t.reactionsNoteRecommend : tuning.value.mode === 'manual' ? t.reactionsNoteManual : t.reactionsNoteMoving);
 
 // ---- 内訳 ----
@@ -334,7 +359,7 @@ const breakdown = computed(() => {
 .root {
 	display: flex;
 	flex-direction: column;
-	gap: var(--MI-margin);
+	gap: 28px;
 	min-width: 0;
 	max-width: 100%;
 	overflow-wrap: anywhere;
@@ -344,26 +369,37 @@ const breakdown = computed(() => {
 	opacity: 0.5;
 }
 
-.card {
+// まとまりは、枠で囲まず、上の太い線で区切る。
+.section {
 	display: flex;
 	flex-direction: column;
 	gap: 12px;
-	padding: 16px;
-	border: solid 1px var(--MI_THEME-divider);
-	border-radius: var(--MI-radius);
-	background: var(--MI_THEME-panel);
+	padding-top: 10px;
+	border-top: solid 2px var(--MI_THEME-fg);
 }
 
 .stack {
 	display: flex;
 	flex-direction: column;
-	gap: 12px;
+	gap: 16px;
 }
 
 .heading {
 	margin: 0;
-	font-size: 1.05em;
+	font-size: 0.95em;
 	font-weight: 700;
+}
+
+.headingRow {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 0 12px;
+
+	> .caption {
+		font-weight: 400;
+	}
 }
 
 .subheading {
@@ -380,18 +416,15 @@ const breakdown = computed(() => {
 	line-height: 1.7;
 }
 
+.modeName {
+	display: block;
+}
+
 .caption {
 	margin: 0;
 	font-size: 0.85em;
 	line-height: 1.6;
 	opacity: 0.75;
-}
-
-.divider {
-	width: 100%;
-	margin: 4px 0;
-	border: none;
-	border-top: solid 1px var(--MI_THEME-divider);
 }
 
 .buttons {
@@ -404,222 +437,30 @@ const breakdown = computed(() => {
 	flex: 0 0 auto;
 	width: 12px;
 	height: 12px;
-	border-radius: 3px;
 }
 
-// ---- 調整のしかた ----
-.scale {
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	padding: 0 20px;
+.numeric {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
 }
 
-.scaleTrack {
-	position: relative;
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	height: 16px;
-
-	&::before {
-		content: "";
-		position: absolute;
-		left: 0;
-		right: 0;
-		top: 7px;
-		height: 2px;
-		background: var(--MI_THEME-divider);
-	}
-}
-
-.scaleDot {
-	position: relative;
-	width: 10px;
-	height: 10px;
-	border-radius: 50%;
-	background: color-mix(in srgb, var(--MI_THEME-fg) 45%, transparent);
-}
-
-.scaleDotActive {
-	width: 16px;
-	height: 16px;
-	background: var(--MI_THEME-accent);
-}
-
-.scaleLabels {
-	display: flex;
-	justify-content: space-between;
-	margin: 0 -20px;
-	font-size: 0.8em;
-	opacity: 0.75;
-}
-
-.modes {
-	display: grid;
-	grid-template-columns: repeat(2, minmax(0, 1fr));
-	gap: 8px;
-}
-
-.mode {
-	position: relative;
-	display: flex;
-	flex-direction: column;
-	align-items: flex-start;
-	gap: 6px;
-	min-height: 112px;
-	padding: 10px;
-	border: solid 2px var(--MI_THEME-divider);
-	border-radius: var(--MI-radius);
-	text-align: left;
-
-	&:focus-visible {
-		outline: 2px solid var(--MI_THEME-focus);
-		outline-offset: 2px;
-	}
-
-	&.selected {
-		border-color: var(--MI_THEME-accent);
-		background: var(--MI_THEME-accentedBg);
-
-		.modeIcon {
-			background: var(--MI_THEME-accent);
-			color: var(--MI_THEME-fgOnAccent);
-		}
-	}
-}
-
-.modeIcon {
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	width: 40px;
-	height: 40px;
-	border-radius: 10px;
-	background: var(--MI_THEME-buttonBg);
-	font-size: 20px;
-}
-
-.modeName {
-	font-weight: 700;
-	line-height: 1.4;
-}
-
-.modeCaption {
-	font-size: 0.8em;
-	line-height: 1.5;
-	opacity: 0.75;
-}
-
-.modeCheck {
-	position: absolute;
-	top: 8px;
-	right: 8px;
-	color: var(--MI_THEME-accent);
-}
-
-// ---- 方向の帯 ----
-.band {
-	position: relative;
-	height: 28px;
-}
-
-.bandTrack {
-	position: absolute;
-	left: 0;
-	right: 0;
-	top: 12px;
-	height: 4px;
-	border-radius: 2px;
-	background: var(--MI_THEME-divider);
-}
-
-.bandRange {
-	position: absolute;
-	top: 6px;
-	height: 16px;
-	border-radius: 8px;
-	background: color-mix(in srgb, var(--MI_THEME-accent) 25%, transparent);
-}
-
-.bandBase {
-	position: absolute;
-	top: 2px;
-	width: 3px;
-	height: 24px;
-	margin-left: -1.5px;
-	border-radius: 2px;
-	background: color-mix(in srgb, var(--MI_THEME-fg) 60%, transparent);
-}
-
-.bandNow {
-	position: absolute;
-	top: 6px;
-	width: 16px;
-	height: 16px;
-	margin-left: -8px;
-	border: solid 2px var(--MI_THEME-panel);
-	border-radius: 50%;
-	box-sizing: border-box;
-	background: var(--MI_THEME-accent);
-}
-
-.bandEnds {
-	display: flex;
-	justify-content: space-between;
-	font-size: 0.8em;
-	opacity: 0.75;
-}
-
-.bandLegend {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 4px 16px;
-	font-size: 0.8em;
-
-	> span {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-	}
-}
-
-.bandKey {
-	display: inline-block;
-}
-
-.bandKeyBase {
-	width: 3px;
-	height: 12px;
-	border-radius: 2px;
-	background: color-mix(in srgb, var(--MI_THEME-fg) 60%, transparent);
-}
-
-.bandKeyNow {
-	width: 10px;
-	height: 10px;
-	border-radius: 50%;
-	background: var(--MI_THEME-accent);
-}
-
-.bandKeyRange {
-	width: 18px;
-	height: 10px;
-	border-radius: 5px;
-	background: color-mix(in srgb, var(--MI_THEME-accent) 25%, transparent);
-}
-
-.segments {
+// ---- 反応への寄せ方 ----
+.options {
 	display: grid;
 	grid-template-columns: repeat(3, minmax(0, 1fr));
 	gap: 8px;
 }
 
-.segment {
-	min-height: 40px;
-	padding: 4px 8px;
-	border: solid 2px var(--MI_THEME-divider);
-	border-radius: var(--MI-radius);
+.option {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	min-height: 56px;
+	padding: 8px;
+	box-shadow: inset 0 0 0 1px var(--MI_THEME-divider);
+	font-size: 0.9em;
 
 	&:focus-visible {
 		outline: 2px solid var(--MI_THEME-focus);
@@ -627,10 +468,16 @@ const breakdown = computed(() => {
 	}
 
 	&.selected {
-		border-color: var(--MI_THEME-accent);
-		background: var(--MI_THEME-accentedBg);
+		box-shadow: inset 0 0 0 2px var(--MI_THEME-fg);
 		font-weight: 700;
 	}
+}
+
+.optionBracket {
+	height: 7px;
+	box-sizing: border-box;
+	border: solid 2px var(--MI_THEME-fg);
+	border-top: none;
 }
 
 // ---- すべて自分で ----
@@ -638,142 +485,178 @@ const breakdown = computed(() => {
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
-	padding-top: 8px;
-	border-top: solid 1px var(--MI_THEME-divider);
+
+	& + & {
+		padding-top: 12px;
+		border-top: solid 1px var(--MI_THEME-divider);
+	}
 }
 
 // ---- あなたの反応から ----
-.barLegend {
+.compare {
 	display: flex;
-	gap: 16px;
-	font-size: 0.8em;
-
-	> span {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-	}
-}
-
-.barKey {
-	display: inline-block;
-	width: 18px;
-	height: 6px;
-	border-radius: 3px;
-}
-
-.reactionRow {
-	display: flex;
-	gap: 12px;
-	align-items: flex-start;
-}
-
-.reactionIcon {
-	display: flex;
-	flex: 0 0 auto;
-	align-items: center;
-	justify-content: center;
-	width: 36px;
-	height: 36px;
-	border-radius: 10px;
-	color: var(--MI-hanamiGroupOn);
-	font-size: 18px;
-}
-
-.reactionBody {
-	display: flex;
-	flex: 1 1 auto;
 	flex-direction: column;
-	gap: 4px;
-	min-width: 0;
 }
 
-.reactionHead {
+.compareHead {
 	display: flex;
 	flex-wrap: wrap;
-	align-items: center;
 	justify-content: space-between;
-	gap: 4px 8px;
+	gap: 0 12px;
+	padding: 4px 0;
+	font-size: 0.85em;
 }
 
-.reactionName {
+.compareName {
 	font-weight: 700;
 }
 
-.chip {
+.compareNumbers {
 	display: inline-flex;
-	align-items: center;
-	gap: 4px;
-	padding: 2px 8px;
-	border-radius: 999px;
-	font-size: 0.8em;
-	background: var(--MI_THEME-buttonBg);
+	gap: 10px;
+	font-variant-numeric: tabular-nums;
 }
 
-.chipUp {
-	background: var(--MI_THEME-accentedBg);
-	color: var(--MI_THEME-accent);
-	font-weight: 700;
-}
-
-.chipDown {
-	background: color-mix(in srgb, var(--MI_THEME-warn) 18%, transparent);
-	color: var(--MI_THEME-warn);
-	font-weight: 700;
-}
-
-.bars {
+.compareBar {
 	display: flex;
-	flex-direction: column;
-	gap: 3px;
-}
-
-.barTrack {
-	display: block;
-	height: 6px;
-	border-radius: 3px;
-	overflow: clip;
-	background: var(--MI_THEME-divider);
+	gap: 2px;
+	height: 18px;
 
 	> span {
-		display: block;
-		height: 100%;
-		border-radius: 3px;
+		flex: 0 1 0;
+		min-width: 0;
+	}
+
+	&.compareEmpty {
+		margin-top: 12px;
+		background: var(--MI_THEME-divider);
 	}
 }
 
-.seenBar {
-	background: color-mix(in srgb, var(--MI_THEME-fg) 45%, transparent);
+.compareLinks {
+	display: block;
+	width: 100%;
+	height: 28px;
+
+	> polygon {
+		fill: color-mix(in srgb, var(--MI_THEME-fg) 8%, transparent);
+	}
+
+	> line {
+		stroke: var(--MI_THEME-fg);
+		stroke-width: 1;
+		vector-effect: non-scaling-stroke;
+	}
 }
 
-.reactedBar {
-	background: var(--MI_THEME-accent);
+.verdicts {
+	display: flex;
+	flex-direction: column;
+}
+
+.verdictRow {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 0 12px;
+	align-items: center;
+	padding: 8px 0;
+	border-top: solid 1px var(--MI_THEME-divider);
+}
+
+.verdictName {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.verdict {
+	font-weight: 700;
+	text-align: right;
+}
+
+.verdictUp::before {
+	content: "▲ ";
+	font-size: 0.8em;
+}
+
+.verdictDown::before {
+	content: "▼ ";
+	font-size: 0.8em;
+}
+
+.verdictShares {
+	grid-column: 1 / 3;
+	font-variant-numeric: tabular-nums;
 }
 
 .notice {
-	display: flex;
-	gap: 6px;
 	margin: 0;
-	padding: 8px 12px;
-	border-radius: var(--MI-radius);
-	background: var(--MI_THEME-infoBg);
-	color: var(--MI_THEME-infoFg);
+	padding-left: 10px;
+	border-left: solid 2px var(--MI_THEME-fg);
 	font-size: 0.85em;
 	line-height: 1.6;
 }
 
-.axisList {
-	display: flex;
-	flex-direction: column;
+.axisTable {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 0.9em;
+
+	caption {
+		padding: 8px 0 4px;
+		font-weight: 700;
+		text-align: left;
+	}
+
+	th,
+	td {
+		padding: 6px 0 6px 8px;
+		font-weight: 400;
+		text-align: left;
+
+		&:first-child {
+			padding-left: 0;
+		}
+
+		&.numeric {
+			text-align: right;
+		}
+	}
+
+	thead th {
+		font-size: 0.85em;
+		opacity: 0.75;
+		vertical-align: bottom;
+	}
+
+	tbody tr {
+		border-top: solid 1px var(--MI_THEME-divider);
+	}
+}
+
+.axisName {
+	display: inline-flex;
+	align-items: center;
 	gap: 6px;
 }
 
-.axisRow {
-	display: flex;
-	flex-wrap: wrap;
-	justify-content: space-between;
-	gap: 4px 12px;
+.rate {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
 	font-variant-numeric: tabular-nums;
+}
+
+.rateBar {
+	display: block;
+	width: 44px;
+	height: 8px;
+
+	> span {
+		display: block;
+		height: 100%;
+		background: var(--MI_THEME-fg);
+	}
 }
 
 // ---- 内訳 ----
@@ -785,8 +668,8 @@ const breakdown = computed(() => {
 
 .breakdownHead {
 	display: flex;
-	align-items: center;
-	gap: 12px;
+	align-items: baseline;
+	gap: 8px;
 }
 
 .breakdownTitle {
@@ -806,6 +689,25 @@ const breakdown = computed(() => {
 	display: flex;
 	flex-direction: column;
 	gap: 4px;
-	padding-left: 48px;
+	padding-left: 20px;
+}
+
+.breakdownAxisHead {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 4px 8px;
+}
+
+.barTrack {
+	display: block;
+	height: 8px;
+	background: var(--MI_THEME-divider);
+
+	> span {
+		display: block;
+		height: 100%;
+	}
 }
 </style>

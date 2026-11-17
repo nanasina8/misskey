@@ -53,13 +53,12 @@
 		--MI-margin: var(--MI-marginHalf);
 	}
 
-	// はなみTL の調整で使う、3 つのまとまりの色（身近＝緑系 / 話題＝橙系 / 出会い＝青系）。
-	// テーマの文字色を混ぜて、明るいテーマでは沈んだ色、暗いテーマでは明るい色になるようにする。
-	--MI-hanamiGroupClose: color-mix(in oklab, #2f8a46 72%, var(--MI_THEME-fg));
-	--MI-hanamiGroupBuzz: color-mix(in oklab, #d9761c 72%, var(--MI_THEME-fg));
-	--MI-hanamiGroupFresh: color-mix(in oklab, #2f6fc4 72%, var(--MI_THEME-fg));
-	// 上の色の上に載せる文字・アイコンの色。
-	--MI-hanamiGroupOn: var(--MI_THEME-panel);
+	// はなみTL の調整で使う、3 つのまとまりの塗り。色はテーマのアクセント色 1 つだけで、柄で分ける
+	// （身近＝べた塗り / 話題＝斜線 / 出会い＝点）。background にそのまま渡す。
+	--MI-hanamiGroupBase: color-mix(in srgb, var(--MI_THEME-accent) 14%, var(--MI_THEME-panel));
+	--MI-hanamiGroupClose: var(--MI_THEME-accent);
+	--MI-hanamiGroupBuzz: repeating-linear-gradient(135deg, var(--MI_THEME-accent) 0 2px, var(--MI-hanamiGroupBase) 2px 6px);
+	--MI-hanamiGroupFresh: radial-gradient(var(--MI_THEME-accent) 1.3px, transparent 1.6px) 0 0 / 6px 6px var(--MI-hanamiGroupBase);
 }
 
 html {

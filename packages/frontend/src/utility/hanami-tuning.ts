@@ -313,44 +313,27 @@ export function hanamiGroupTrends(tuning: HanamiTuning, config: HanamiAxisServer
 	return { close: trend('close'), buzz: trend('buzz'), fresh: trend('fresh') };
 }
 
-/** 方向の 3 択の、帯の上での位置（%）。左が身近、右が広く。 */
-export const HANAMI_DIRECTION_POSITIONS = [20, 50, 80] as const;
-
-export type HanamiDirectionBand = { base: number; low: number; high: number; now: number; lean: 'close' | 'wide' | 'none' };
+export type HanamiShareRange = { base: number; low: number; high: number; now: number };
 
 /**
- * 「選んだ方向から、ここまで動きます」の帯。
- * - 動ける幅は HANAMI_DRIFT_BOUNDS[drift] の倍率の幅（対数）に比例させる。寄せ方を強めるほど広がる。
- * - いまの位置は、寄せ方の幅に収めた倍率を、身近（close）とそれ以外（buzz・fresh）で平均した差から出す。
- *   身近が相対的に増えていれば左に、減っていれば右に寄る。倍率が無ければ選んだ方向と同じ位置。
+ * 「身近な人から」の割合（%）が、反応に合わせてどこからどこまで動けるか。「10 件のうち」の帯の下に出す。
+ * - low / high は、寄せ方の幅（HANAMI_DRIFT_BOUNDS）の端まで寄せたときの割合。
+ *   身近な種類だけを上限まで増やし、ほかを下限まで減らすと high、その逆が low。
+ * - base は寄せる前、now は反応に合わせて寄せたあとの割合。倍率がまだ無ければ now は base と同じ。
+ * 自動で動かないしかた・身近な種類だけ（または無し）の設定では null。
  */
-export function hanamiDirectionBand(tuning: HanamiTuning, config: HanamiAxisServerConfig = {}, driftFactors?: ReadonlyMap<HanamiAxis, number> | null): HanamiDirectionBand {
-	const base = HANAMI_DIRECTION_POSITIONS[tuning.direction] ?? HANAMI_DIRECTION_POSITIONS[1];
-	const [lowBound, highBound] = HANAMI_DRIFT_BOUNDS[tuning.drift] ?? HANAMI_DRIFT_BOUNDS[HANAMI_AUTO_DRIFT];
-	const reach = Math.log(highBound / lowBound);
-	const half = 16 * reach;
-	const low = Math.max(0, base - half);
-	const high = Math.min(100, base + half);
-	let lean = 0;
-	if (driftFactors != null) {
-		const amounts = resolveHanamiTuning({ hanamiTuning: { ...tuning, mode: 'direction' } }, config).amounts;
-		const side = (axes: readonly HanamiAxis[]): number => {
-			let weight = 0;
-			let sum = 0;
-			for (const axis of axes) {
-				const w = HANAMI_BASE_SHARE[axis] * (amounts.get(axis) ?? 0);
-				if (w <= 0) continue;
-				weight += w;
-				sum += w * Math.log(applyHanamiDrift(axis, 1, driftFactors.get(axis), tuning.drift));
-			}
-			return weight > 0 ? sum / weight : 0;
-		};
-		lean = side(HANAMI_AXIS_GROUPS.close) - side([...HANAMI_AXIS_GROUPS.buzz, ...HANAMI_AXIS_GROUPS.fresh]);
-	}
-	const ratio = reach > 0 ? Math.max(-1, Math.min(1, lean / reach)) : 0;
-	const now = Math.max(low, Math.min(high, base - ratio * half));
-	const round = (value: number): number => Math.round(value * 10) / 10;
-	return { base, low: round(low), high: round(high), now: round(now), lean: Math.abs(base - now) < 1 ? 'none' : now < base ? 'close' : 'wide' };
+export function hanamiShareRange(tuning: HanamiTuning, config: HanamiAxisServerConfig = {}, driftFactors?: ReadonlyMap<HanamiAxis, number> | null): HanamiShareRange | null {
+	if (hanamiDriftLevel(tuning) == null) return null;
+	const close = (factors?: ReadonlyMap<HanamiAxis, number> | null): number => hanamiGroupComposition(tuning, config, factors).close;
+	const base = close();
+	if (base <= 0 || base >= 100) return null;
+	const pushed = (closeFactor: number, otherFactor: number): Map<HanamiAxis, number> => new Map(HANAMI_FOR_YOU_AXES.map(axis => [axis, HANAMI_AXIS_GROUPS.close.includes(axis) ? closeFactor : otherFactor]));
+	return { base: Math.round(base), low: Math.round(close(pushed(0.01, 100))), high: Math.round(close(pushed(100, 0.01))), now: Math.round(close(driftFactors)) };
+}
+
+/** 方向の 3 択それぞれの、まとまりごとの割合（%）。選ぶ前に見せる。反応に合わせて寄せる前の値。 */
+export function hanamiDirectionPreviews(tuning: HanamiTuning, config: HanamiAxisServerConfig = {}): Record<HanamiAxisGroup, number>[] {
+	return [0, 1, 2].map(direction => hanamiGroupComposition({ ...tuning, mode: 'direction', direction }, config));
 }
 
 /**

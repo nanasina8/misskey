@@ -11,7 +11,7 @@ import MkHanamiTuningQuick from '@/components/MkHanamiTuningQuick.vue';
 import { i18n, updateI18n } from '@/i18n.js';
 import { useHanamiTuning } from '@/utility/hanami-tuning-client.js';
 import { clearHanamiTuningSuggestion } from '@/utility/hanami-tuning-suggestion.js';
-import { HANAMI_FOR_YOU_AXES, hanamiDriftFactors, hanamiGroupComposition, hanamiTenTiles, resetHanamiTuning } from '@/utility/hanami-tuning.js';
+import { HANAMI_FOR_YOU_AXES, hanamiDriftFactors, hanamiGroupComposition, hanamiShareRange, hanamiTenTiles, resetHanamiTuning } from '@/utility/hanami-tuning.js';
 import type { HanamiTuning, HanamiTuningUpdate } from '@/utility/hanami-tuning.js';
 
 const api = vi.hoisted(() => vi.fn());
@@ -69,7 +69,7 @@ function modeButton(view: ReturnType<typeof mount>, mode: HanamiTuning['mode']):
 }
 
 function tileCounts(root: HTMLElement) {
-	const count = (group: string) => root.querySelectorAll(`[role="img"] [data-group="${group}"]`).length;
+	const count = (group: string) => Number(root.querySelector(`[data-group-count="${group}"]`)!.getAttribute('data-count'));
 	return { close: count('close'), buzz: count('buzz'), fresh: count('fresh') };
 }
 
@@ -78,10 +78,13 @@ describe('Hanami tuning panel', () => {
 		api.mockResolvedValue(suggestion());
 		const view = mount();
 		for (const mode of ['auto', 'direction', 'recommend', 'manual'] as const) {
-			expect(within(modeButton(view, mode)).getByText(t()._modes[mode])).toBeTruthy();
+			expect(within(modeButton(view, mode)).getByText(t()._modeShort[mode])).toBeTruthy();
+			expect(modeButton(view, mode).getAttribute('aria-label')).toBe(t()._modes[mode]);
 			expect(modeButton(view, mode).getAttribute('aria-pressed')).toBe(String(mode === 'auto'));
 		}
 		expect(view.getByText(t().autoDescription)).toBeTruthy();
+		// 選んでいるしかたの名前は、説明の上に省略せずに出す。
+		expect(view.getByTestId('mode-name').textContent).toBe(t()._modes.auto);
 	});
 
 	test('switching modes saves the new shape (mode, direction, drift, groups, manual)', async () => {
@@ -94,7 +97,10 @@ describe('Hanami tuning panel', () => {
 		await fireEvent.click(view.getByRole('button', { name: new RegExp(t()._directions.close) }));
 		await fireEvent.click(view.getByRole('button', { name: t()._drifts.strong }));
 		expect(save.mock.lastCall![0].hanamiTuning).toMatchObject({ mode: 'direction', direction: 0, drift: 2 });
-		expect(view.getByTestId('direction-band')).toBeTruthy();
+		// 動ける幅のかっこと、その説明の文が出る。
+		const range = hanamiShareRange(useHanamiTuning().state.value!.hanamiTuning, config, hanamiDriftFactors(suggestion().axes))!;
+		expect(view.getByTestId('range').querySelector<HTMLElement>('[data-part="bracket"]')!.style.left).toBe(`${range.low}%`);
+		expect(view.getByText(i18n.tsx._hana._tuning.rangeDirection(range))).toBeTruthy();
 
 		await fireEvent.click(modeButton(view, 'manual'));
 		const manual = save.mock.lastCall![0].hanamiTuning;
@@ -215,9 +221,9 @@ describe('Hanami tuning popup content', () => {
 		const view = mountQuick();
 		await waitFor(() => expect(api).toHaveBeenCalledOnce());
 		expect(view.getByText(t().tilesTitle)).toBeTruthy();
-		await fireEvent.click(view.getByRole('button', { name: t()._modeShort.recommend }));
+		await fireEvent.click(view.getByRole('button', { name: t()._modes.recommend }));
 		await waitFor(() => expect(save.mock.lastCall![0].hanamiTuning).toMatchObject({ mode: 'recommend' }));
-		await fireEvent.click(view.getByRole('button', { name: t()._modeShort.manual }));
+		await fireEvent.click(view.getByRole('button', { name: t()._modes.manual }));
 		expect(view.getByText(t().openManual).closest('a')!.getAttribute('href')).toBe('/settings/hanamode');
 		expect(view.getByText(t().openSettings).closest('a')!.getAttribute('href')).toBe('/settings/hanamode');
 	});

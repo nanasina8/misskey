@@ -29,7 +29,7 @@ const props = withDefaults(defineProps<{
 	textConverter?: (value: number) => string;
 	/** 目盛りを出す（段階が少ないとき）。 */
 	showTicks?: boolean;
-	/** ラベルの前に出す小さな色見本（CSS の色）。 */
+	/** ラベルの前に出す小さな見本（CSS の background。色でも柄でもよい）。 */
 	swatch?: string;
 }>(), { min: 0, step: 1, disabled: false, showTicks: false });
 const emit = defineEmits<{ (ev: 'update:modelValue', value: number): void }>();
@@ -49,6 +49,6 @@ function onKeydown(event: KeyboardEvent): void {
 .root { min-width: 0; }
 .label { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; font-variant-numeric: tabular-nums; }
 .name { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; }
-.swatch { flex: 0 0 auto; width: 12px; height: 12px; border-radius: 3px; }
+.swatch { flex: 0 0 auto; width: 12px; height: 12px; }
 .value { opacity: 0.75; }
 </style>

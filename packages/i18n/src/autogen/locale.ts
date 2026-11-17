@@ -15511,11 +15511,11 @@ export interface Locale extends ILocale {
              */
             "mode": string;
             /**
-             * 自動
+             * まかせる
              */
             "automatic": string;
             /**
-             * 手動
+             * 自分で決める
              */
             "manualSide": string;
             "_modes": {
@@ -15542,33 +15542,15 @@ export interface Locale extends ILocale {
                  */
                 "auto": string;
                 /**
-                 * 方向
+                 * 方向だけ
                  */
                 "direction": string;
                 /**
-                 * おすすめ
+                 * おすすめから
                  */
                 "recommend": string;
                 /**
                  * 自分で
-                 */
-                "manual": string;
-            };
-            "_modeCaptions": {
-                /**
-                 * 反応を見て自動で変わります
-                 */
-                "auto": string;
-                /**
-                 * 方向を選ぶと、その近くで自動で動きます
-                 */
-                "direction": string;
-                /**
-                 * おすすめの量から、自分で動かします
-                 */
-                "recommend": string;
-                /**
-                 * 種類ごとの量を全部自分で決めます
                  */
                 "manual": string;
             };
@@ -15577,9 +15559,17 @@ export interface Locale extends ILocale {
              */
             "autoDescription": string;
             /**
+             * 方向を選ぶと、その近くで、あなたの反応に合わせて自動で動きます。
+             */
+            "directionDescription": string;
+            /**
              * どんな投稿を多めにしますか
              */
             "directionTitle": string;
+            /**
+             * {name}（{detail}）
+             */
+            "directionLabel": ParameterizedString<"name" | "detail">;
             "_directions": {
                 /**
                  * 身近な人中心
@@ -15595,43 +15585,15 @@ export interface Locale extends ILocale {
                 "wide": string;
             };
             /**
-             * 選んだ方向から、ここまで動きます
+             * 身近な人からは {low}〜{high}% の間で、反応に合わせて動きます。選んだ方向は {base}%、いまは {now}% です。
              */
-            "rangeTitle": string;
+            "rangeDirection": ParameterizedString<"low" | "high" | "base" | "now">;
             /**
-             * 身近
+             * 身近な人からは {low}〜{high}% の間で、反応に合わせて動きます。はじめは {base}%、いまは {now}% です。
              */
-            "rangeClose": string;
+            "rangeAuto": ParameterizedString<"low" | "high" | "base" | "now">;
             /**
-             * 広く
-             */
-            "rangeWide": string;
-            /**
-             * 選んだ方向
-             */
-            "rangeBase": string;
-            /**
-             * いま
-             */
-            "rangeNow": string;
-            /**
-             * 動ける幅
-             */
-            "rangeBand": string;
-            /**
-             * 選んだ方向を中心に、左右に動けます。いまは少し身近寄りです。
-             */
-            "rangeNowClose": string;
-            /**
-             * 選んだ方向を中心に、左右に動けます。いまは少し広く寄りです。
-             */
-            "rangeNowWide": string;
-            /**
-             * 選んだ方向を中心に、左右に動けます。いまは選んだ方向のままです。
-             */
-            "rangeNowSame": string;
-            /**
-             * 反応への寄せ方
+             * 反応への寄せ方（動く幅）
              */
             "drift": string;
             "_drifts": {
@@ -15675,9 +15637,17 @@ export interface Locale extends ILocale {
                 "veryMany": string;
             };
             /**
+             * まとまりごとの量
+             */
+            "groupsTitle": string;
+            /**
              * おすすめに戻す
              */
             "resetRecommend": string;
+            /**
+             * 種類ごとの量
+             */
+            "manualTitle": string;
             /**
              * 7 つの種類の量を、ひとつずつ自分で決めます。自動では変わりません。
              */
@@ -15781,19 +15751,19 @@ export interface Locale extends ILocale {
              */
             "suggestion": string;
             /**
-             * 直近 14 日。見た投稿と、反応した投稿の割合です。
+             * 直近 14 日
              */
             "period": string;
             /**
-             * 見た
+             * 見た投稿
              */
             "seenShare": string;
             /**
-             * 反応した
+             * 反応した投稿
              */
             "reactionShare": string;
             /**
-             * 見た {seen}% ・ 反応した {reactions}%
+             * 見た {seen}% → 反応した {reactions}%
              */
             "shares": ParameterizedString<"seen" | "reactions">;
             /**
@@ -15817,7 +15787,7 @@ export interface Locale extends ILocale {
              */
             "referenceChip": string;
             /**
-             * 反応した割合が見た割合より多い種類を、少しずつ増やします。動く幅には上限があります。
+             * 下の帯が上より広い種類は、見せた数のわりに反応が多かった種類です。そちらへ少しずつ寄せます。動く幅には上限があります。
              */
             "reactionsNoteMoving": string;
             /**
@@ -15837,13 +15807,25 @@ export interface Locale extends ILocale {
              */
             "noActivity": string;
             /**
-             * 種類ごとに見る
+             * 種類ごと
              */
             "perAxis": string;
             /**
-             * 見た {seen} 件・反応 {reactions} 件
+             * 種類
              */
-            "suggestionCounts": ParameterizedString<"seen" | "reactions">;
+            "axisColumn": string;
+            /**
+             * 見た
+             */
+            "seenColumn": string;
+            /**
+             * 反応
+             */
+            "reactionsColumn": string;
+            /**
+             * 反応した割合
+             */
+            "rateColumn": string;
             /**
              * 内訳を見る
              */

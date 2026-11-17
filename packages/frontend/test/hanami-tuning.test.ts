@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
 	HANAMI_FOR_YOU_AXES, adjustHanamiAmount, applyHanamiSuggestedAmounts, createHanamiTuningUndo, getAvailableHanamiAxes,
-	HanamiTuningSaveQueue, hanamiDirectionBand, hanamiGroupComposition, hanamiGroupTrends, hanamiTenTiles, hanamiTilesSummary,
+	HanamiTuningSaveQueue, hanamiDirectionPreviews, hanamiGroupComposition, hanamiGroupTrends, hanamiShareRange, hanamiTenTiles, hanamiTilesSummary,
 	normalizeHanamiTuning, resetHanamiTuning, roundHanamiWeight, resolveHanamiTuning, switchHanamiMode, switchHanamiModeWithSuggestion,
 } from '@/utility/hanami-tuning.js';
 import type { HanamiAxis } from '@/utility/hanami-tuning.js';
@@ -121,20 +121,38 @@ describe('Hanami tuning view helpers', () => {
 		expect(hanamiGroupTrends({ ...normalizeHanamiTuning({}), mode: 'manual' }, {}, closeFactors)).toBeNull();
 		expect(hanamiGroupTrends(normalizeHanamiTuning({}), {}, null)).toBeNull();
 	});
-	test('direction band widens with the drift level and leans toward the side that grew', () => {
+	test('share range widens with the drift level, contains the current share, and is null when nothing moves', () => {
 		const base = { ...normalizeHanamiTuning({}), mode: 'direction' as const, direction: 1 };
-		const widths = [0, 1, 2].map(drift => { const band = hanamiDirectionBand({ ...base, drift }); return band.high - band.low; });
+		const ranges = [0, 1, 2].map(drift => hanamiShareRange({ ...base, drift })!);
+		const widths = ranges.map(range => range.high - range.low);
 		expect(widths[0]).toBeLessThan(widths[1]);
 		expect(widths[1]).toBeLessThan(widths[2]);
-		const still = hanamiDirectionBand(base);
-		expect(still).toMatchObject({ base: 50, now: 50, lean: 'none' });
-		const leaning = hanamiDirectionBand(base, {}, closeFactors);
-		expect(leaning.lean).toBe('close');
-		expect(leaning.now).toBeLessThan(leaning.base);
-		expect(leaning.now).toBeGreaterThanOrEqual(leaning.low);
+		for (const range of ranges) {
+			expect(range.low).toBeLessThan(range.base);
+			expect(range.high).toBeGreaterThan(range.base);
+			// 倍率がまだ無いときは、寄せる前のまま。
+			expect(range.now).toBe(range.base);
+		}
+		expect(ranges[0].base).toBe(Math.round(hanamiGroupComposition(base).close));
+		const leaning = hanamiShareRange(base, {}, closeFactors)!;
+		expect(leaning.now).toBeGreaterThan(leaning.base);
+		expect(leaning.now).toBeLessThanOrEqual(leaning.high);
 		const wider = new Map([...closeFactors].map(([axis, factor]) => [axis, 1 / factor]));
-		expect(hanamiDirectionBand(base, {}, wider).lean).toBe('wide');
-		expect(hanamiDirectionBand({ ...base, direction: 0 }).base).toBeLessThan(hanamiDirectionBand({ ...base, direction: 2 }).base);
+		const away = hanamiShareRange(base, {}, wider)!;
+		expect(away.now).toBeLessThan(away.base);
+		expect(away.now).toBeGreaterThanOrEqual(away.low);
+		// おまかせは「ふつう」の幅。
+		expect(hanamiShareRange(normalizeHanamiTuning({}))).toEqual(hanamiShareRange({ ...normalizeHanamiTuning({}), mode: 'direction', direction: 1, drift: 1 }));
+		expect(hanamiShareRange({ ...base, mode: 'recommend' })).toBeNull();
+		expect(hanamiShareRange({ ...base, mode: 'manual' })).toBeNull();
+	});
+	test('direction previews show the share of each direction before any drift', () => {
+		const previews = hanamiDirectionPreviews(normalizeHanamiTuning({}));
+		expect(previews).toHaveLength(3);
+		expect(previews[0].close).toBeGreaterThan(previews[1].close);
+		expect(previews[1].close).toBeGreaterThan(previews[2].close);
+		expect(previews[2].fresh).toBeGreaterThan(previews[0].fresh);
+		expect(previews[1]).toEqual(hanamiGroupComposition({ ...normalizeHanamiTuning({}), mode: 'direction', direction: 1 }));
 	});
 });
 

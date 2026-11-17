@@ -4,25 +4,15 @@
  */
 
 import { i18n } from '@/i18n.js';
-import type { HanamiAxisGroup, HanamiTuningMode } from '@/utility/hanami-tuning.js';
+import type { HanamiAxisGroup } from '@/utility/hanami-tuning.js';
 
 /** 調整パネル・ポップアップで共通の、見た目だけの決まりごと。 */
 
-export const HANAMI_MODE_ICONS: Record<HanamiTuningMode, string> = {
-	auto: 'ti ti-sparkles',
-	direction: 'ti ti-compass',
-	recommend: 'ti ti-adjustments-star',
-	manual: 'ti ti-adjustments-horizontal',
-};
-
-export const HANAMI_GROUP_ICONS: Record<HanamiAxisGroup, string> = {
-	close: 'ti ti-user',
-	buzz: 'ti ti-flame',
-	fresh: 'ti ti-seedling',
-};
-
-/** style.scss の :root で定義している、まとまりの色。 */
-export const HANAMI_GROUP_COLORS: Record<HanamiAxisGroup, string> = {
+/**
+ * まとまりの塗り（style.scss の :root で定義）。色はテーマのアクセント色 1 つだけで、柄で分ける。
+ * 身近＝べた塗り / 話題＝斜線 / 出会い＝点。background にそのまま渡す。
+ */
+export const HANAMI_GROUP_FILLS: Record<HanamiAxisGroup, string> = {
 	close: 'var(--MI-hanamiGroupClose)',
 	buzz: 'var(--MI-hanamiGroupBuzz)',
 	fresh: 'var(--MI-hanamiGroupFresh)',

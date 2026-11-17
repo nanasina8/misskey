@@ -10,16 +10,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<button type="button" class="_button" :class="$style.close" :aria-label="i18n.ts.close" @click="emit('close')"><i class="ti ti-x"></i></button>
 	</div>
 
-	<div role="group" :aria-label="t.mode" :class="$style.modes">
-		<button
-			v-for="mode in HANAMI_TUNING_MODES" :key="mode" type="button" class="_button"
-			:class="[$style.mode, { [$style.selected]: tuning.mode === mode }]" :aria-pressed="tuning.mode === mode" :title="t._modes[mode]"
-			:data-mode="mode" @click="setMode(mode)"
-		>{{ t._modeShort[mode] }}</button>
-	</div>
+	<MkHanamiTuningModes :modelValue="tuning.mode" compact @update:modelValue="setMode"/>
 
 	<p v-if="tuning.mode === 'auto'" :class="$style.text">{{ t.autoDescription }}</p>
-	<MkHanamiTuningDirection v-else-if="tuning.mode === 'direction'" :modelValue="tuning.direction" compact @update:modelValue="setTuning({ ...tuning, direction: $event })"/>
+	<MkHanamiTuningDirection v-else-if="tuning.mode === 'direction'" :modelValue="tuning.direction" :previews="directionPreviews" compact @update:modelValue="setTuning({ ...tuning, direction: $event })"/>
 	<MkHanamiTuningGroupSliders v-else-if="tuning.mode === 'recommend'" :modelValue="tuning.groups" compact @update:modelValue="setTuning({ ...tuning, groups: $event })"/>
 	<div v-else :class="$style.manual">
 		<p :class="$style.text">{{ t.manualDescription }}</p>
@@ -28,7 +22,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</MkA>
 	</div>
 
-	<MkHanamiTuningTiles :counts="tiles.counts" :note="t.popupNote" compact/>
+	<MkHanamiTuningBar :counts="tiles.counts" :shares="shares" :note="t.popupNote" compact/>
 
 	<MkA to="/settings/hanamode" :class="$style.settingsLink" @click="emit('close')">
 		<span>{{ t.openSettings }}</span><i class="ti ti-chevron-right" aria-hidden="true"></i>
@@ -38,13 +32,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script lang="ts" setup>
 import { computed, onMounted } from 'vue';
+import MkHanamiTuningBar from '@/components/MkHanamiTuningBar.vue';
 import MkHanamiTuningDirection from '@/components/MkHanamiTuningDirection.vue';
 import MkHanamiTuningGroupSliders from '@/components/MkHanamiTuningGroupSliders.vue';
-import MkHanamiTuningTiles from '@/components/MkHanamiTuningTiles.vue';
+import MkHanamiTuningModes from '@/components/MkHanamiTuningModes.vue';
 import { i18n } from '@/i18n.js';
 import { useHanamiTuning } from '@/utility/hanami-tuning-client.js';
 import { useHanamiTuningSuggestion } from '@/utility/hanami-tuning-suggestion.js';
-import { HANAMI_TUNING_MODES, hanamiTilesSummary, switchHanamiModeWithSuggestion } from '@/utility/hanami-tuning.js';
+import { hanamiDirectionPreviews, hanamiGroupComposition, hanamiTilesSummary, switchHanamiModeWithSuggestion } from '@/utility/hanami-tuning.js';
 import type { HanamiTuning, HanamiTuningMode } from '@/utility/hanami-tuning.js';
 
 const emit = defineEmits<{
@@ -56,6 +51,8 @@ const { suggestion, factors, load } = useHanamiTuningSuggestion();
 const t = i18n.ts._hana._tuning;
 const tuning = computed(() => state.value!.hanamiTuning);
 const tiles = computed(() => hanamiTilesSummary(tuning.value, config, factors.value));
+const shares = computed(() => hanamiGroupComposition(tuning.value, config, factors.value));
+const directionPreviews = computed(() => hanamiDirectionPreviews(tuning.value, config));
 
 // 「いま」の件数と、おすすめへ切り替えたときの初めの値に使う。
 onMounted(() => { void load(); });
@@ -98,33 +95,6 @@ function setMode(mode: HanamiTuningMode): void {
 	margin: -8px -8px -8px 0;
 }
 
-.modes {
-	display: grid;
-	grid-template-columns: repeat(4, minmax(0, 1fr));
-	gap: 4px;
-	padding: 4px;
-	border-radius: var(--MI-radius);
-	background: var(--MI_THEME-buttonBg);
-}
-
-.mode {
-	min-height: 40px;
-	padding: 0 2px;
-	border-radius: 8px;
-	font-size: 0.85em;
-
-	&:focus-visible {
-		outline: 2px solid var(--MI_THEME-focus);
-		outline-offset: 1px;
-	}
-
-	&.selected {
-		background: var(--MI_THEME-accent);
-		color: var(--MI_THEME-fgOnAccent);
-		font-weight: 700;
-	}
-}
-
 .text {
 	margin: 0;
 	font-size: 0.9em;
@@ -143,9 +113,8 @@ function setMode(mode: HanamiTuningMode): void {
 	justify-content: space-between;
 	min-height: 44px;
 	padding: 0 16px;
-	border-radius: var(--MI-radius);
-	background: var(--MI_THEME-accent);
-	color: var(--MI_THEME-fgOnAccent);
+	background: var(--MI_THEME-fg);
+	color: var(--MI_THEME-panel);
 	font-weight: 700;
 	text-decoration: none;
 }

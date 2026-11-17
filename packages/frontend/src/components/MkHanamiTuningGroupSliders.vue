@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <div :class="[$style.root, { [$style.compact]: compact }]">
 	<MkHanamiTuningRange
 		v-for="group in HANAMI_AXIS_GROUP_NAMES" :key="group"
-		:modelValue="modelValue[group]" :max="4" :showTicks="true" :swatch="HANAMI_GROUP_COLORS[group]"
+		:modelValue="modelValue[group]" :max="4" :showTicks="true" :swatch="HANAMI_GROUP_FILLS[group]"
 		:label="t._groups[group]" :valueText="hanamiLevelName(modelValue[group])" :textConverter="hanamiLevelName" :disabled="disabled"
 		@update:modelValue="set(group, $event)"
 	>
@@ -25,7 +25,7 @@ import MkHanamiTuningRange from '@/components/MkHanamiTuningRange.vue';
 import { i18n } from '@/i18n.js';
 import { HANAMI_AXIS_GROUP_NAMES } from '@/utility/hanami-tuning.js';
 import type { HanamiAxisGroup } from '@/utility/hanami-tuning.js';
-import { HANAMI_GROUP_COLORS, hanamiLevelName } from '@/utility/hanami-tuning-view.js';
+import { HANAMI_GROUP_FILLS, hanamiLevelName } from '@/utility/hanami-tuning-view.js';
 
 const props = withDefaults(defineProps<{
 	/** まとまりごとの量 0〜4。 */
