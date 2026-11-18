@@ -5,7 +5,7 @@
 
 import { afterEach, describe, expect, vi as jest, test } from 'vitest';
 import Logger from '@/logger.js';
-import { HanamiTrendService, trendDailyKey, trendSameKey, trendSameSetKey, trendTopicTagGame, trendTitleKey } from '@/core/hanami/HanamiTrendService.js';
+import { HanamiTrendService, TREND_TOPIC_ID_STATS_KEY, readTrendTopicIdStats, trendDailyKey, trendSameKey, trendSameSetKey, trendTopicTagGame, trendTitleKey } from '@/core/hanami/HanamiTrendService.js';
 
 import { HanamiCommonComputationService, type HanamiTrendSnapshotTerm } from '@/core/hanami/HanamiCommonComputationService.js';
 import { HanamiCommonGenerationService } from '@/core/hanami/HanamiCommonGenerationService.js';
@@ -230,6 +230,56 @@ describe('topic materialization (U-4, U-5, U-6, U-7)', () => {
 		expect(next.terms[0].topicId).toBe(first.terms[0].topicId);
 		expect(next.terms[0].startedAt).toBe(first.terms[0].startedAt);
 	});
+	test('消えた話題が戻ってきたら同じ ID と始まった時刻を使い、引き継ぎの数を記録する', async () => {
+		const clock = jest.spyOn(Date, 'now').mockReturnValue(NOW);
+		const iso = (at: number) => new Date(at).toISOString();
+		const setup = fixture([...notesFor('a', 6), ...notesFor('b')]);
+		const builder = setup.service['buildTopics'] as import('vitest').Mock<typeof setup.service['buildTopics']>;
+		const original = builder.getMockImplementation()!;
+		const first = await setup.service.computeTrendBundle(new Map());
+		const b = first.terms.find(term => term.term === 'b')!;
+
+		// 10 分後は b が話題にならない。b の ID は「消えた話題」として覚えておく。
+		clock.mockReturnValue(NOW + 600000);
+		builder.mockImplementationOnce(async (...args) => (await original(...args)).filter(topic => topic.terms[0] !== 'b'));
+		const second = await setup.service.computeTrendBundle(new Map());
+		expect(second.terms.map(term => term.term)).toEqual(['a']);
+		expect(JSON.parse(setup.strings.get('hanami:trend:topics:prev')!).retired).toEqual([expect.objectContaining({ topicId: b.topicId, startedAt: b.startedAt, retiredAt: NOW })]);
+
+		// 20 分後に b が戻る。新しい ID は作らない。
+		clock.mockReturnValue(NOW + 1200000);
+		const third = await setup.service.computeTrendBundle(new Map());
+		expect(third.terms.find(term => term.term === 'b')).toMatchObject({ topicId: b.topicId, startedAt: b.startedAt });
+		expect(JSON.parse(setup.strings.get('hanami:trend:topics:prev')!).retired).toEqual([]);
+		expect(readTrendTopicIdStats(setup.strings.get(TREND_TOPIC_ID_STATS_KEY))).toEqual([
+			{ at: iso(NOW + 1200000), topics: 2, continued: 1, revived: 1, heading: 0, created: 0, remembered: 0, splits: 0, merged: 0, recurringDropped: 0, recurringWaiting: 0 },
+			{ at: iso(NOW + 600000), topics: 1, continued: 1, revived: 0, heading: 0, created: 0, remembered: 1, splits: 0, merged: 0, recurringDropped: 0, recurringWaiting: 0 },
+			{ at: iso(NOW), topics: 2, continued: 0, revived: 0, heading: 0, created: 2, remembered: 0, splits: 0, merged: 0, recurringDropped: 0, recurringWaiting: 0 },
+		]);
+	});
+	test('人数が近い話題をまとめたときは、古いほうを代表にする（大きいほうに入れ替わらない）', async () => {
+		const clock = jest.spyOn(Date, 'now').mockReturnValue(NOW);
+		const setup = fixture([...notesFor('a', 6), ...notesFor('b', 4)]);
+		const builder = setup.service['buildTopics'] as import('vitest').Mock<typeof setup.service['buildTopics']>;
+		const original = builder.getMockImplementation()!;
+		// はじめは b だけ。10 分後に、b より大きい a があらわれ、LLM が「同じ話題」と判定済み。
+		builder.mockImplementationOnce(async (...args) => (await original(...args)).filter(topic => topic.terms[0] === 'b'));
+		const first = await setup.service.computeTrendBundle(new Map());
+		const b = first.terms[0];
+		const bId = b.topicId!;
+		clock.mockReturnValue(NOW + 600000);
+		const unmergedNext = (await original([], [], [], NOW)).map(topic => topic.terms[0]);
+		expect(unmergedNext).toEqual(['a', 'b']);
+		// a の ID は次に作られる topic-2。
+		setup.sets.set(trendSameSetKey(bId), new Set(['topic-2']));
+		setup.sets.set(trendSameSetKey('topic-2'), new Set([bId]));
+		setup.strings.set(trendSameKey(bId, 'topic-2'), '1');
+		const next = await setup.service.computeTrendBundle(new Map());
+
+		expect(next.terms).toHaveLength(1);
+		expect(next.terms[0]).toMatchObject({ topicId: bId, startedAt: b.startedAt, term: 'b', relatedTerms: ['a'], distinctAuthors: 10 });
+		expect(readTrendTopicIdStats(setup.strings.get(TREND_TOPIC_ID_STATS_KEY))[0]).toMatchObject({ topics: 2, continued: 1, created: 1, merged: 1 });
+	});
 	test('U-12: preserves A/B/C IDs before merging and merges again on the next generation', async () => {
 		const clock = jest.spyOn(Date, 'now').mockReturnValue(NOW);
 		const setup = fixture([...notesFor('a', 6), ...notesFor('b'), ...notesFor('c')]);
@@ -296,7 +346,8 @@ describe('topic materialization (U-4, U-5, U-6, U-7)', () => {
 		jest.spyOn(Date, 'now').mockReturnValue(NOW);
 		const setup = fixture(Array.from({ length: 150 }, (_, i) => notesFor(`term-${i}`)).flat());
 		await setup.service.computeTrendBundle(new Map());
-		expect(setup.redis.get.mock.calls.map(([key]) => key)).toEqual(['hanami:trend:topics:prev']);
+		// 話題ごと・組ごとの GET はしない。読むのは前回の話題と、ID の引き継ぎの記録の 2 つだけ。
+		expect(setup.redis.get.mock.calls.map(([key]) => key)).toEqual(['hanami:trend:topics:prev', TREND_TOPIC_ID_STATS_KEY]);
 		expect(setup.redis.mget).toHaveBeenCalledTimes(2);
 		expect(setup.redis.mget.mock.calls[0]).toHaveLength(150);
 		const setsPipe = setup.pipeline.mock.results[1].value as ReturnType<typeof setup.pipeline>;

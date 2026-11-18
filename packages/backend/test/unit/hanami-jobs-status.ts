@@ -48,6 +48,22 @@ describe('Hanami jobs diagnostics', () => {
 		expect(await f.read()).toMatchObject({ gpu: status().runtime, noteJudge: { backlog: 12, secPerNote: 2.5 }, lock: { held: false, kind: null, acquiredAt: null, expiresInMs: null }, warnings: [], topicJudgeWaiting: false });
 		expect(f.redis.eval).toHaveBeenCalledWith(expect.stringContaining('pttl'), 1, 'hanami:llm:exclusive:v1');
 	});
+	test('reports the topic ID bookkeeping of the trend computations, or null before any record', async () => {
+		const f = fixture();
+		expect((await f.read()).trendTopics).toBeNull();
+		expect(f.redis.get).toHaveBeenCalledWith('hanami:trend:topic-ids:v1');
+
+		const record = (minutesAgo: number, created: number, revived: number) => ({ at: iso(now - minutesAgo * 60000), topics: 20, continued: 20 - created - revived, revived, heading: 0, created, remembered: 3, splits: 1, merged: 2, recurringDropped: created * 7, recurringWaiting: revived });
+		// 新しい順。壊れた記録は読み飛ばし、24 時間より前の記録は合計に入れない。
+		f.redis.get.mockResolvedValue(JSON.stringify([record(0, 2, 1), record(10, 0, 3), { at: 'broken' }, record(24 * 60 + 1, 9, 9)]));
+		expect((await f.read()).trendTopics).toEqual({
+			at: iso(now), latest: { topics: 20, continued: 17, revived: 1, heading: 0, created: 2, remembered: 3, splits: 1, merged: 2, recurringDropped: 14, recurringWaiting: 1 },
+			last24h: { computations: 2, created: 2, revived: 4, splits: 2, merged: 4, recurringDroppedMax: 14, recurringWaitingMax: 3 },
+		});
+
+		f.redis.get.mockRejectedValue(new Error('redis is down'));
+		expect((await f.read()).trendTopics).toBeNull();
+	});
 	test.each(['gpuWorker', 'noteJudge', 'topicJudge', 'als', 'tasteTick', 'judgeTrial'])('reads %s lock metadata, and whether a topic judge waits in the GPU queue', async kind => {
 		const f = fixture();
 		f.redis.eval.mockResolvedValue([`${kind}:${now - 1000}:123:nonce`, 89000] as never);

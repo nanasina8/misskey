@@ -23,6 +23,7 @@ import { TASTE_EMBED_MODEL } from './HanamiTasteClusterBatchService.js';
 import { hanamiTrendAuthorGroups, hanamiTrendEffectiveAuthors, trendCleanText, trendPlayTag, trendShingles, trendSimilarText } from './HanamiTrendEffectiveAuthors.js';
 import { HanamiTokenizerService } from './tokenize/HanamiTokenizerService.js';
 import { centerTrendEmbeddings, nameTrendContentTopic, splitTrendTermTopics, trendTopicCenter } from './HanamiTrendTermSplit.js';
+import { assignTrendTopicIds, nextTrendRetiredTopics, pickTrendTopicLeader, type TrendRetiredTopic, type TrendTopicIdOrigin } from './HanamiTrendTopicIds.js';
 import type { TrendCenteredVectors } from './HanamiTrendTermSplit.js';
 import { TREND_RECURRING_LOOKBACK_DAYS, TREND_RECURRING_MAX_AUTHORS, TREND_RECURRING_MIN_DAYS, TREND_RECURRING_PREFIX_IGNORED, TREND_RECURRING_PREFIX_LENGTH, TREND_RECURRING_PREFIX_SCAN, trendRecurringCandidates, trendRecurringDayCounts, trendRecurringMemoUntil, trendRecurringPairKey, trendRecurringPrefix, trendRecurringTodayStart, trendTemplateKey } from './HanamiTrendRecurringPosts.js';
 import { trendRelatedTopicPairs } from './HanamiTrendRelatedPairs.js';
@@ -123,8 +124,11 @@ type TopicNote = { id: string; userId: string; replyId: string | null; renoteId:
 type RawTopic = { origin?: 'term' | 'content'; terms: string[]; noteIds: string[]; authors6h: number; authors2h: number; center: number[] | null };
 type TrendTopicContext = { noteTerms: Map<string, string[]>; vectors: TrendCenteredVectors | null };
 type Topic = RawTopic & { topicId: string; startedAt: string; daily: boolean; dailyJudged?: boolean; dailyVerdict?: string | null; tagGame?: boolean };
-/** related = 同じ出来事が割れていそうな話題の組（手がかりの強い順）。LLM の同一判定に回す候補。 */
-export type HanamiTrendPreviousTopics = { computedAt: number; topics: Omit<Topic, 'center'>[]; related?: Array<[string, string]> };
+/**
+ * related = 同じ出来事が割れていそうな話題の組（手がかりの強い順）。LLM の同一判定に回す候補。
+ * retired = 消えて間もない話題。同じ投稿のまとまりが戻ってきたら、同じ ID を使う。
+ */
+export type HanamiTrendPreviousTopics = { computedAt: number; topics: Omit<Topic, 'center'>[]; related?: Array<[string, string]>; retired?: TrendRetiredTopic[] };
 type TrendNoteCandidate = { noteId: string; term: string };
 type TrendNoteCache = { computedAt: number; candidates: TrendNoteCandidate[] };
 const SAVE_COMPUTED_CACHE = `
@@ -146,6 +150,29 @@ export const TREND_SAME_VERDICT_TTL_SECONDS = 6 * 60 * 60;
 const TREND_RECURRING_MEMO_MS = 3 * 60 * 60 * 1000;
 /** 覚えた結果の期限が切れても、調べ直すまでのあいだ使い続ける時間（調べ直しが上限で後回しになっても、外していた投稿が戻らないように） */
 const TREND_RECURRING_MEMO_GRACE_MS = 60 * 60 * 1000;
+/** 話題の ID の引き継ぎの記録（計算 1 回につき 1 件、新しい順）。管理 API（admin/hanami/jobs-status）が読む。 */
+export const TREND_TOPIC_ID_STATS_KEY = 'hanami:trend:topic-ids:v1';
+/** 覚えておく件数。10 分ごとの計算で 24 時間ぶん。 */
+export const TREND_TOPIC_ID_STATS_MAX = 144;
+const TREND_TOPIC_ID_STATS_TTL_SECONDS = 2 * 24 * 60 * 60;
+const TREND_TOPIC_ID_STATS_FIELDS = ['topics', 'continued', 'revived', 'heading', 'created', 'remembered', 'splits', 'merged', 'recurringDropped', 'recurringWaiting'] as const;
+/**
+ * topics = まとめる前の話題の数 / continued = 前回の話題の続き / revived = 消えていた話題が同じ ID で戻った /
+ * heading = 先頭の語が同じなので引き継いだ / created = 新しい ID を作った / remembered = 覚えている消えた話題の数 /
+ * splits = 語の束ね直しで割った話題の数 / merged = 「同じ話題」の判定でほかの話題にまとめた数 /
+ * recurringDropped = 定期の投稿として材料から外した投稿の数 / recurringWaiting = 上限であふれて、まだ調べていない作者の数
+ */
+export type HanamiTrendTopicIdStats = { at: string } & Record<typeof TREND_TOPIC_ID_STATS_FIELDS[number], number>;
+export function readTrendTopicIdStats(json: string | null | undefined): HanamiTrendTopicIdStats[] {
+	if (json == null) return [];
+	try {
+		const value = JSON.parse(json) as unknown;
+		if (!Array.isArray(value)) return [];
+		return value.filter((item): item is HanamiTrendTopicIdStats => item != null && typeof item === 'object'
+			&& typeof (item as { at?: unknown }).at === 'string' && Number.isFinite(Date.parse((item as { at: string }).at))
+			&& TREND_TOPIC_ID_STATS_FIELDS.every(field => Number.isSafeInteger((item as Record<string, unknown>)[field]) && ((item as Record<string, number>)[field]) >= 0));
+	} catch { return []; }
+}
 export function trendDailyKey(id: string): string { return `hanami:trend:llm:daily:${id}`; }
 export function trendSameKey(a: string, b: string): string { return `hanami:trend:llm:same:${[a, b].sort().join(':')}`; }
 export function trendSameSetKey(id: string): string { return `hanami:trend:llm:sameset:${id}`; }
@@ -896,27 +923,14 @@ export class HanamiTrendService {
 		}
 	}
 
-	private assignTopicIds(raw: readonly RawTopic[], previous: readonly Omit<Topic, 'center'>[], now: number): Topic[] {
-		const matches = raw.map((topic, index) => previous.map((prev, prevIndex) => {
-			const ids = new Set(prev.noteIds);
-			const intersection = topic.noteIds.filter(id => ids.has(id)).length;
-			return { index, prevIndex, jaccard: intersection / Math.max(1, new Set([...topic.noteIds, ...prev.noteIds]).size) };
-		}).sort((a, b) => b.jaccard - a.jaccard)[0]).filter((match): match is { index: number; prevIndex: number; jaccard: number } => match != null && match.jaccard >= 0.2)
-			.sort((a, b) => b.jaccard - a.jaccard);
-		const proposed = new Set(matches.map(match => match.index));
-		const inherited = new Map<number, Omit<Topic, 'center'>>();
-		const used = new Set<string>();
-		for (const match of matches) {
-			const prev = previous[match.prevIndex];
-			if (inherited.has(match.index) || used.has(prev.topicId)) continue;
-			inherited.set(match.index, prev); used.add(prev.topicId);
-		}
+	/** 話題の ID を、前回の話題・消えて間もない話題から引き継ぐ（決まりは HanamiTrendTopicIds.ts）。origins に、話題ごとの引き継ぎ方を足す。 */
+	private assignTopicIds(raw: readonly RawTopic[], previous: readonly Omit<Topic, 'center'>[], now: number, retired: readonly TrendRetiredTopic[] = [], origins?: TrendTopicIdOrigin[]): Topic[] {
+		const assigned = assignTrendTopicIds(raw, previous, retired, now);
 		return raw.map((topic, index) => {
-			let prev = inherited.get(index);
-			if (prev == null && !proposed.has(index)) prev = previous.find(p => p.terms[0] === topic.terms[0] && !used.has(p.topicId));
-			if (prev != null) used.add(prev.topicId);
-			if (prev == null && this.idService == null) throw new Error('IdService is required to allocate trend topic IDs');
-			return { ...topic, topicId: prev?.topicId ?? this.idService!.gen(), startedAt: prev?.startedAt ?? new Date(now).toISOString(), daily: false };
+			const { source, origin } = assigned[index];
+			if (source == null && this.idService == null) throw new Error('IdService is required to allocate trend topic IDs');
+			origins?.push(origin);
+			return { ...topic, topicId: source?.topicId ?? this.idService!.gen(), startedAt: source?.startedAt ?? new Date(now).toISOString(), daily: false };
 		});
 	}
 
@@ -968,7 +982,7 @@ export class HanamiTrendService {
 		return [...components.values()].map(component => {
 			// Components retain the pre-merge ranking, which also breaks author-count ties.
 			const leaders = component.filter(topic => topic.origin !== 'content');
-			const keep = (leaders.length ? leaders : component).reduce((leader, topic) => topic.authors6h > leader.authors6h ? topic : leader);
+			const keep = pickTrendTopicLeader(leaders.length ? leaders : component);
 			const ordered = [keep, ...component.filter(topic => topic !== keep)];
 			const noteIds = [...new Set(ordered.flatMap(topic => topic.noteIds))];
 			const ids = new Set(noteIds);
@@ -979,6 +993,16 @@ export class HanamiTrendService {
 				authors2h: hanamiTrendEffectiveAuthors(members.filter(note => note.createdAt >= now - TREND_RECENT_SPAN_MS)),
 			};
 		});
+	}
+
+	/** 話題の ID の引き継ぎを 1 回ぶん記録する（失敗しても計算は止めない）。 */
+	private async recordTopicIdStats(stats: HanamiTrendTopicIdStats): Promise<void> {
+		try {
+			const saved = readTrendTopicIdStats(await this.redisClient.get(TREND_TOPIC_ID_STATS_KEY));
+			await this.redisClient.set(TREND_TOPIC_ID_STATS_KEY, JSON.stringify([stats, ...saved].slice(0, TREND_TOPIC_ID_STATS_MAX)), 'EX', TREND_TOPIC_ID_STATS_TTL_SECONDS);
+		} catch (error) {
+			this.logger.warn('hanami trend topics: failed to record topic id stats', { error: String(error) });
+		}
 	}
 
 	/** Compute topic snapshots and the common candidate pool from one observation. */
@@ -997,7 +1021,11 @@ export class HanamiTrendService {
 		if (splits.length > 0) this.logger.info('hanami trend term split', { topics: splits });
 		const previousJson = await this.redisClient.get(TREND_TOPIC_PREV_KEY);
 		const previous = previousJson == null ? [] : (JSON.parse(previousJson) as HanamiTrendPreviousTopics | Topic[]);
-		const unmerged = this.assignTopicIds(raw, Array.isArray(previous) ? previous : previous.topics, now);
+		const previousTopics = Array.isArray(previous) ? previous : previous.topics;
+		const previousRetired = Array.isArray(previous) ? [] : previous.retired ?? [];
+		const origins: TrendTopicIdOrigin[] = [];
+		const unmerged = this.assignTopicIds(raw, previousTopics, now, previousRetired, origins);
+		const retired = nextTrendRetiredTopics(previousTopics, previousRetired, new Set(unmerged.map(topic => topic.topicId)), Array.isArray(previous) ? now : previous.computedAt, now);
 		const daily = unmerged.length === 0 ? [] : await this.redisClient.mget(...unmerged.map(topic => trendDailyKey(topic.topicId)));
 		const byId = new Map(notes.map(note => [note.id, note]));
 		const rankReason = (topic: Topic) => {
@@ -1009,10 +1037,17 @@ export class HanamiTrendService {
 		const score = (topic: Topic) => Math.max(...topic.terms.map(term => scores.get(term) ?? 0));
 		const compare = (a: Topic, b: Topic) => b.authors2h * (b.daily ? 0.3 : 1) - a.authors2h * (a.daily ? 0.3 : 1) || b.authors6h - a.authors6h || score(b) - score(a);
 		unmerged.sort(compare);
-		const related = trendRelatedTopicPairs(unmerged, new Map(notes.map(note => [note.id, note.userId])), Array.isArray(previous) ? previous : previous.topics);
-		const prev: HanamiTrendPreviousTopics = { computedAt: now, topics: unmerged.map(({ center: _center, ...topic }) => topic), related };
+		const related = trendRelatedTopicPairs(unmerged, new Map(notes.map(note => [note.id, note.userId])), previousTopics);
+		const prev: HanamiTrendPreviousTopics = { computedAt: now, topics: unmerged.map(({ center: _center, ...topic }) => topic), related, retired };
 		await this.redisClient.eval(SAVE_COMPUTED_CACHE, 1, TREND_TOPIC_PREV_KEY, now, JSON.stringify(prev), 3600);
-		const topics = (await this.applyTopicJudgements(unmerged, notes, now)).filter(topic => trendTopicVisible(topic.origin, topic.dailyVerdict));
+		const judged = await this.applyTopicJudgements(unmerged, notes, now);
+		const idCount = (origin: TrendTopicIdOrigin): number => origins.filter(value => value === origin).length;
+		await this.recordTopicIdStats({
+			at: new Date(now).toISOString(), topics: unmerged.length, continued: idCount('live'), revived: idCount('retired'), heading: idCount('heading'), created: idCount('new'),
+			remembered: retired.length, splits: splits.length, merged: unmerged.length - judged.length,
+			recurringDropped: this.recurringStats.dropped, recurringWaiting: this.recurringStats.waiting,
+		});
+		const topics = judged.filter(topic => trendTopicVisible(topic.origin, topic.dailyVerdict));
 		topics.forEach(rankReason);
 		const duplicateAuthors = new Map(topics.map(topic => [topic.topicId, new Set(hanamiTrendAuthorGroups(notes.filter(note => topic.noteIds.includes(note.id))).filter(group => group.length > 1).flat())]));
 		const ranked = new Map(topics.map(topic => [topic.topicId, notes.filter(note => topic.noteIds.includes(note.id))

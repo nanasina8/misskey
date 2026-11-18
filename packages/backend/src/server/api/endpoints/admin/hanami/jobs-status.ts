@@ -11,6 +11,7 @@ import { DI } from '@/di-symbols.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { QueueService } from '@/core/QueueService.js';
 import { HANAMI_EVENT_JOBS, HANAMI_GPU_JOBS, HANAMI_LLM_EVENTS, HANAMI_LLM_EVENTS_KEY, HANAMI_LLM_EVENTS_MAX, HANAMI_LOCAL_LLM_LOCK_KEY, type HanamiLlmEvent } from '@/core/hanami/HanamiLocalLlmLock.js';
+import { TREND_TOPIC_ID_STATS_KEY, readTrendTopicIdStats } from '@/core/hanami/HanamiTrendService.js';
 import { getHanamiJudgeStatus } from './judge-status.js';
 
 const RUN_KINDS = ['note-judge', 'als', 'embedding'] as const;
@@ -91,6 +92,24 @@ export const meta = {
 				waitedMs: { ...count('Elapsed queue waiting time in milliseconds when recorded.'), optional: true },
 				error: { ...text('Recorded topic error, at most 300 characters.'), optional: true },
 			} },
+			trendTopics: { type: 'object', optional: false, nullable: true, description: 'Topic ID bookkeeping of the trend computations (one record per computation, about every ten minutes) from hanami:trend:topic-ids:v1 (two-day TTL); null before any record. A healthy trend keeps the same topic ID while an event splits and re-merges, so created stays close to the number of genuinely new topics.', properties: {
+				at: date('UTC time of the latest recorded trend computation.'),
+				latest: { type: 'object', optional: false, nullable: false, description: 'Counts of the latest computation.', properties: {
+					topics: count('Topics before same-topic merging.'), continued: count('Topics that kept the ID of a topic in the previous computation.'),
+					revived: count('Topics that took back the ID of a topic that had disappeared within the last three hours.'),
+					heading: count('Topics that inherited an ID only because their leading term matched (no shared notes).'),
+					created: count('Topics that received a newly generated ID.'), remembered: count('Disappeared topics currently remembered for revival.'),
+					splits: count('Term bundles divided into several topics by the term split.'), merged: count('Topics folded into another topic by cached same-topic verdicts.'),
+					recurringDropped: count('Notes removed from the trend input as recurring scheduled posts (the same author posted the same text, digits masked, on two or more earlier days).'),
+					recurringWaiting: count('Authors whose recurring-post check was deferred to a later computation by the per-computation author cap.'),
+				} },
+				last24h: { type: 'object', optional: false, nullable: false, description: 'Sums over the records of the last 24 hours.', properties: {
+					computations: count('Recorded computations in the window.'), created: count('Newly generated topic IDs.'), revived: count('Revived topic IDs.'),
+					splits: count('Term bundles divided by the term split.'), merged: count('Topics folded into another topic, summed per computation.'),
+					recurringDroppedMax: count('Largest number of notes removed as recurring scheduled posts in one computation.'),
+					recurringWaitingMax: count('Largest number of authors deferred by the author cap in one computation.'),
+				} },
+			} },
 			recentFailures: { type: 'array', optional: false, nullable: false, description: 'At most ten failed model runs in the last 24 hours, newest completion first (startedAt fallback).', items: {
 				type: 'object', optional: false, nullable: false, description: 'One persisted model run failure.', properties: {
 					kind: text('Persisted model_run kind.'), startedAt: date('UTC start time of the failed run.'),
@@ -138,7 +157,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		super(meta, paramDef, async ps => {
 			const now = Date.now();
 			const dayAgo = new Date(now - 24 * 60 * 60 * 1000);
-			const [judge, queue, lockSnapshot, waiting, summaries, failures, conditions, rawEvents] = await Promise.all([
+			const [judge, queue, lockSnapshot, waiting, summaries, failures, conditions, rawEvents, rawTopicIds] = await Promise.all([
 				getHanamiJudgeStatus(this.db, this.redisClient), this.queueService.getHanamiJobsStatus(),
 				this.redisClient.eval('return {redis.call("get", KEYS[1]), redis.call("pttl", KEYS[1])}', 1, HANAMI_LOCAL_LLM_LOCK_KEY) as Promise<[string | null, number]>,
 				this.hanamiGpuQueueService?.pending('topicJudge').catch(() => 0) ?? Promise.resolve(0),
@@ -156,6 +175,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					EXISTS (SELECT 1 FROM hanami_foryou_model_run WHERE kind = ANY($1::varchar[]) AND status = 'failed' AND COALESCE("finishedAt", "startedAt") >= $2) AS "recentFailures",
 					EXISTS (SELECT 1 FROM hanami_foryou_model_run WHERE kind = ANY($1::varchar[]) AND status = 'pending' AND "startedAt" < CASE WHEN kind = 'note-judge' THEN $3::timestamptz ELSE $4::timestamptz END) AS "stuckPending"`, [RUN_KINDS, new Date(now - 60 * 60 * 1000), new Date(now - 10 * 60 * 1000), new Date(now - 35 * 60 * 1000)]),
 				this.redisClient.lrange(HANAMI_LLM_EVENTS_KEY, 0, HANAMI_LLM_EVENTS_MAX - 1),
+				this.redisClient.get(TREND_TOPIC_ID_STATS_KEY).catch(() => null),
 			]);
 			const [token, ttl] = lockSnapshot;
 			const parts = typeof token === 'string' ? token.split(':') : [];
@@ -180,7 +200,23 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					return ps.eventJobs == null || ps.eventJobs.includes(event.job) ? [event] : [];
 				} catch { return []; }
 			}).slice(0, ps.eventsLimit);
-			return { gpu: judge.runtime, lock, topicJudgeWaiting: waiting > 0, queue,
+			const topicIds = readTrendTopicIdStats(rawTopicIds);
+			const recentTopicIds = topicIds.filter(item => Date.parse(item.at) >= dayAgo.getTime());
+			const sum = (field: 'created' | 'revived' | 'splits' | 'merged'): number => recentTopicIds.reduce((total, item) => total + item[field], 0);
+			const trendTopics = topicIds.length === 0 ? null : {
+				at: topicIds[0].at,
+				latest: {
+					topics: topicIds[0].topics, continued: topicIds[0].continued, revived: topicIds[0].revived, heading: topicIds[0].heading, created: topicIds[0].created,
+					remembered: topicIds[0].remembered, splits: topicIds[0].splits, merged: topicIds[0].merged,
+					recurringDropped: topicIds[0].recurringDropped, recurringWaiting: topicIds[0].recurringWaiting,
+				},
+				last24h: {
+					computations: recentTopicIds.length, created: sum('created'), revived: sum('revived'), splits: sum('splits'), merged: sum('merged'),
+					recurringDroppedMax: recentTopicIds.reduce((max, item) => Math.max(max, item.recurringDropped), 0),
+					recurringWaitingMax: recentTopicIds.reduce((max, item) => Math.max(max, item.recurringWaiting), 0),
+				},
+			};
+			return { gpu: judge.runtime, lock, topicJudgeWaiting: waiting > 0, queue, trendTopics,
 				runs: summaries.map(row => ({ kind: row.kind, latest: packRun(row.latest), latestWork: packRun(row.latestWork), last24h: { ready: row.ready, failed: row.failed, interrupted: row.interrupted, empty: row.empty } })),
 				noteJudge: { backlog: judge.backlog, secPerNote: judge.secPerNote ?? null }, topicJudge: judge.trendTopicJudge,
 				recentFailures: failures.map(row => ({ ...row, startedAt: new Date(row.startedAt).toISOString() })), warnings, events };

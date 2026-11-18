@@ -13360,6 +13360,54 @@ export interface operations {
                             /** @description Recorded topic error, at most 300 characters. */
                             error?: string;
                         } | null;
+                        /** @description Topic ID bookkeeping of the trend computations (one record per computation, about every ten minutes) from hanami:trend:topic-ids:v1 (two-day TTL); null before any record. A healthy trend keeps the same topic ID while an event splits and re-merges, so created stays close to the number of genuinely new topics. */
+                        trendTopics: {
+                            /**
+                             * Format: date-time
+                             * @description UTC time of the latest recorded trend computation.
+                             */
+                            at: string;
+                            /** @description Counts of the latest computation. */
+                            latest: {
+                                /** @description Topics before same-topic merging. */
+                                topics: number;
+                                /** @description Topics that kept the ID of a topic in the previous computation. */
+                                continued: number;
+                                /** @description Topics that took back the ID of a topic that had disappeared within the last three hours. */
+                                revived: number;
+                                /** @description Topics that inherited an ID only because their leading term matched (no shared notes). */
+                                heading: number;
+                                /** @description Topics that received a newly generated ID. */
+                                created: number;
+                                /** @description Disappeared topics currently remembered for revival. */
+                                remembered: number;
+                                /** @description Term bundles divided into several topics by the term split. */
+                                splits: number;
+                                /** @description Topics folded into another topic by cached same-topic verdicts. */
+                                merged: number;
+                                /** @description Notes removed from the trend input as recurring scheduled posts (the same author posted the same text, digits masked, on two or more earlier days). */
+                                recurringDropped: number;
+                                /** @description Authors whose recurring-post check was deferred to a later computation by the per-computation author cap. */
+                                recurringWaiting: number;
+                            };
+                            /** @description Sums over the records of the last 24 hours. */
+                            last24h: {
+                                /** @description Recorded computations in the window. */
+                                computations: number;
+                                /** @description Newly generated topic IDs. */
+                                created: number;
+                                /** @description Revived topic IDs. */
+                                revived: number;
+                                /** @description Term bundles divided by the term split. */
+                                splits: number;
+                                /** @description Topics folded into another topic, summed per computation. */
+                                merged: number;
+                                /** @description Largest number of notes removed as recurring scheduled posts in one computation. */
+                                recurringDroppedMax: number;
+                                /** @description Largest number of authors deferred by the author cap in one computation. */
+                                recurringWaitingMax: number;
+                            };
+                        } | null;
                         /** @description At most ten failed model runs in the last 24 hours, newest completion first (startedAt fallback). */
                         recentFailures: {
                             /** @description Persisted model_run kind. */
