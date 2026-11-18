@@ -403,7 +403,7 @@ describe('topic materialization (U-4, U-5, U-6, U-7)', () => {
 describe('V-20: tag-game ranking', () => {
 	test.each([
 		['あいう漢字', 6, true], ['あいう漢字', 5, false], ['あい漢字', 10, false],
-		...['shindanmaker', 'fediqb', 'クイズメーカー', 'mewk', 'marshmallow', 'peing', 'odaibako'].map(tag => [tag, 6, true] as [string, number, boolean]),
+		...['shindanmaker', 'fediqb', 'クイズメーカー', 'mewk', 'marshmallow', 'peing', 'odaibako', 'misshaialert'].map(tag => [tag, 6, true] as [string, number, boolean]),
 	])('tag %s on %s of ten posts => %s', (tag, count, expected) => {
 		expect(trendTopicTagGame(Array.from({ length: 10 }, (_, i) => ({ tags: i < Number(count) ? [String(tag), String(tag)] : [] })))).toBe(expected);
 	});

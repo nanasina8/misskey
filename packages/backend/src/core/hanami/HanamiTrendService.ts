@@ -24,7 +24,7 @@ import { hanamiTrendAuthorGroups, hanamiTrendEffectiveAuthors, trendCleanText, t
 import { HanamiTokenizerService } from './tokenize/HanamiTokenizerService.js';
 import { centerTrendEmbeddings, nameTrendContentTopic, splitTrendTermTopics, trendTopicCenter } from './HanamiTrendTermSplit.js';
 import type { TrendCenteredVectors } from './HanamiTrendTermSplit.js';
-import { TREND_RECURRING_LOOKBACK_DAYS, TREND_RECURRING_MAX_AUTHORS, TREND_RECURRING_PREFIX_LENGTH, trendRecurringCandidates, trendRecurringPairKey, trendRecurringPairs, trendRecurringPrefix, trendRecurringTodayStart, trendTemplateKey } from './HanamiTrendRecurringPosts.js';
+import { TREND_RECURRING_LOOKBACK_DAYS, TREND_RECURRING_MAX_AUTHORS, TREND_RECURRING_MIN_DAYS, TREND_RECURRING_PREFIX_IGNORED, TREND_RECURRING_PREFIX_LENGTH, TREND_RECURRING_PREFIX_SCAN, trendRecurringCandidates, trendRecurringDayCounts, trendRecurringMemoUntil, trendRecurringPairKey, trendRecurringPrefix, trendRecurringTodayStart, trendTemplateKey } from './HanamiTrendRecurringPosts.js';
 import { trendRelatedTopicPairs } from './HanamiTrendRelatedPairs.js';
 
 // トレンド窓: おすすめ(FeaturedService)と同じ 15分グリッド × 288枠(72時間)。
@@ -144,6 +144,8 @@ export const TREND_TOPIC_JUDGE_TOPIC_MAX = 60;
 export const TREND_SAME_VERDICT_TTL_SECONDS = 6 * 60 * 60;
 /** 定期の投稿かどうかの結果を覚えておく時間 */
 const TREND_RECURRING_MEMO_MS = 3 * 60 * 60 * 1000;
+/** 覚えた結果の期限が切れても、調べ直すまでのあいだ使い続ける時間（調べ直しが上限で後回しになっても、外していた投稿が戻らないように） */
+const TREND_RECURRING_MEMO_GRACE_MS = 60 * 60 * 1000;
 export function trendDailyKey(id: string): string { return `hanami:trend:llm:daily:${id}`; }
 export function trendSameKey(a: string, b: string): string { return `hanami:trend:llm:same:${[a, b].sort().join(':')}`; }
 export function trendSameSetKey(id: string): string { return `hanami:trend:llm:sameset:${id}`; }
@@ -244,6 +246,8 @@ export class HanamiTrendService {
 	private readonly logger = new Logger('hanami');
 	/** (作者, 文) ごとの「定期の投稿か」の結果。プロセスごとに数時間だけ覚える。 */
 	private readonly recurringMemo = new Map<string, { recurring: boolean; until: number }>();
+	/** いちばん新しい計算で、定期の投稿として外した投稿の数と、上限であふれてまだ調べていない作者の数 */
+	private recurringStats = { dropped: 0, waiting: 0 };
 
 	constructor(
 		@Inject(DI.redis)
@@ -614,40 +618,50 @@ export class HanamiTrendService {
 	}
 
 	/**
-	 * 同じ人が毎日出している定型の投稿（質問箱の「質問募集中です」など）を、話題の材料から外す。
-	 * 作者ごとに過去 7 日の投稿を見て、今日より前の 2 日以上に同じ文があれば定期の投稿とみなす。
-	 * 結果は (作者, 文) ごとに数時間覚えるので、毎回読むのは新しく入った投稿のぶんだけ。
-	 * 1 回に調べる作者には上限があり、あふれた分は次の回に調べる（それまでは外さない）。調べられなかったときも外さない。
+	 * 同じ人が毎日出している定型の投稿（質問箱の「質問募集中です」や、毎日の活動報告など）を、話題の材料から外す。
+	 * 作者ごとに過去 7 日の投稿を見て、今日より前の 2 日以上に同じ文（数字だけが違うものを含む）があれば定期の投稿とみなす。
+	 * 結果は (作者, 文) ごとに数時間覚えるので、毎回読むのは新しく入った投稿のぶんだけ
+	 * （あと 1 日ぶんで定期の投稿になる組だけは、日付が変わったら調べ直す）。
+	 * 1 回に調べる作者には上限があり、まだ調べていない投稿のうち、大勢が同じ文のもの・出たばかりのものから先に調べる。
+	 * あふれた分は次の回に調べる（初めての組は、それまで外さない。調べ直しの組は、前の結果を使い続ける）。調べられなかったときも外さない。
 	 */
 	private async dropRecurringNotes(notes: TopicNote[], now: number): Promise<TopicNote[]> {
 		const idService = this.idService;
+		this.recurringStats = { dropped: 0, waiting: 0 };
 		if (idService == null) return notes;
 		try {
 			const candidates = trendRecurringCandidates(notes);
 			if (candidates.length === 0) return notes;
 			const keyOf = (note: TopicNote): string => trendRecurringPairKey(note.userId, trendTemplateKey(note.text) ?? '');
-			for (const [key, memo] of this.recurringMemo) if (memo.until <= now) this.recurringMemo.delete(key);
-			const unknown = candidates.filter(note => !this.recurringMemo.has(keyOf(note)));
+			// 期限の切れた結果も、調べ直すまではしばらく使い続ける。
+			for (const [key, memo] of this.recurringMemo) if (memo.until + TREND_RECURRING_MEMO_GRACE_MS <= now) this.recurringMemo.delete(key);
+			const pending = candidates.filter(note => (this.recurringMemo.get(keyOf(note))?.until ?? 0) <= now);
+			// 調べる順: まだ一度も調べていない組（候補の並び順 = 大勢が同じ文 → 出たばかり）が先。調べ直す組はそのあと。
+			const unknown = [...pending.filter(note => !this.recurringMemo.has(keyOf(note))), ...pending.filter(note => this.recurringMemo.has(keyOf(note)))];
 			if (unknown.length > 0) {
-				const authors = [...new Set(unknown.map(note => note.userId))].slice(0, TREND_RECURRING_MAX_AUTHORS);
+				const allAuthors = [...new Set(unknown.map(note => note.userId))];
+				const authors = allAuthors.slice(0, TREND_RECURRING_MAX_AUTHORS);
+				this.recurringStats.waiting = allAuthors.length - authors.length;
 				const asked = new Set(authors);
 				const prefixes = [...new Set(unknown.flatMap(note => asked.has(note.userId) && note.text != null ? [trendRecurringPrefix(note.text)] : []))];
 				const todayStart = trendRecurringTodayStart(now);
-				// 作者ごとに ("userId", id) の索引で 7 日ぶんをたどり、文の先頭が同じものだけを読む。
+				// 作者ごとに ("userId", id) の索引で 7 日ぶんをたどり、文の先頭（数字と符号を除いたもの）が同じものだけを読む。
 				const rows = await this.db.query<Array<{ id: string; userId: string; text: string | null }>>(`SELECT n.id, n."userId", n.text FROM note n
 					WHERE n."userId" = ANY($1::varchar[]) AND n.id >= $2 AND n.id < $3
-						AND n.text IS NOT NULL AND left(n.text, $5) = ANY($4::text[])`,
-				[authors, idService.gen(todayStart - TREND_RECURRING_LOOKBACK_DAYS * 24 * 60 * 60 * 1000), idService.gen(todayStart), prefixes, TREND_RECURRING_PREFIX_LENGTH]);
-				const recurring = trendRecurringPairs(rows.map(row => ({ userId: row.userId, text: row.text, createdAt: idService.parse(row.id).date.getTime() })), now);
+						AND n.text IS NOT NULL AND left(translate(left(n.text, $6), $7, ''), $5) = ANY($4::text[])`,
+				[authors, idService.gen(todayStart - TREND_RECURRING_LOOKBACK_DAYS * 24 * 60 * 60 * 1000), idService.gen(todayStart), prefixes, TREND_RECURRING_PREFIX_LENGTH, TREND_RECURRING_PREFIX_SCAN, TREND_RECURRING_PREFIX_IGNORED]);
+				const priorDays = trendRecurringDayCounts(rows.map(row => ({ userId: row.userId, text: row.text, createdAt: idService.parse(row.id).date.getTime() })), now);
 				for (const note of unknown) {
 					if (!asked.has(note.userId)) continue;
 					const key = keyOf(note);
-					this.recurringMemo.set(key, { recurring: recurring.has(key), until: now + TREND_RECURRING_MEMO_MS });
+					const days = priorDays.get(key) ?? 0;
+					this.recurringMemo.set(key, { recurring: days >= TREND_RECURRING_MIN_DAYS, until: trendRecurringMemoUntil(now, TREND_RECURRING_MEMO_MS, days) });
 				}
 			}
 			const dropped = new Set(candidates.filter(note => this.recurringMemo.get(keyOf(note))?.recurring === true).map(note => note.id));
+			this.recurringStats.dropped = dropped.size;
 			if (dropped.size === 0) return notes;
-			this.logger.info('hanami trend recurring posts', { candidates: candidates.length, dropped: dropped.size });
+			this.logger.info('hanami trend recurring posts', { candidates: candidates.length, dropped: dropped.size, waiting: this.recurringStats.waiting });
 			return notes.filter(note => !dropped.has(note.id));
 		} catch (error) {
 			this.logger.warn('hanami trend recurring posts: check failed; keeping all posts', { error: String(error) });

@@ -5,7 +5,7 @@
 
 export const TREND_DUP_JACCARD = 0.3;
 export const TREND_DUP_EXTRA_WEIGHT = 0.1;
-const TAG_GAMES = new Set(['shindanmaker', 'fediqb', 'クイズメーカー', 'mewk', 'marshmallow', 'peing', 'odaibako']);
+const TAG_GAMES = new Set(['shindanmaker', 'fediqb', 'クイズメーカー', 'mewk', 'marshmallow', 'peing', 'odaibako', 'misshaialert']);
 const MARKUP = /https?:\/\/\S+|@[\w.-]+(@[\w.-]+)?|:[a-zA-Z0-9_+-]+:|\$\[[^\s\]]*|\]|<\/?[a-z]+>|[#＃][^\s#＃]+/g;
 
 export type TrendAuthorNote = { userId: string; text: string | null; tags?: readonly string[] };

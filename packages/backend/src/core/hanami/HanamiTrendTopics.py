@@ -46,7 +46,7 @@ TREND_CONTENT_PULL_COS = 0.6
 TREND_CONTENT_PULL_MIN = 2
 TREND_CONTENT_PULL_MIN_LENGTH = 15
 CONTENT_CLEAN_RE = re.compile(r'https?://\S+|@[\w.-]+(@[\w.-]+)?|:[a-zA-Z0-9_+-]+:|\$\[[^\s\]]*|\]|<\/?[a-z]+>|[#＃][^\s#＃]+|\s')
-TAG_GAMES = {'shindanmaker', 'fediqb', 'クイズメーカー', 'mewk', 'marshmallow', 'peing', 'odaibako'}
+TAG_GAMES = {'shindanmaker', 'fediqb', 'クイズメーカー', 'mewk', 'marshmallow', 'peing', 'odaibako', 'misshaialert'}
 
 
 def shingles(text):
